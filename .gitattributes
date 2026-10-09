@@ -1,0 +1,5 @@
+* text=auto eol=lf
+# STEP files are text but must never be normalized: byte offsets matter.
+*.stp  -text
+*.step -text
+*.p21  -text

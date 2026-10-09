@@ -1,0 +1,55 @@
+name: Bug report
+description: A wrong verdict, a crash, or a hang.
+labels: [bug]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of problem
+      description: A false positive is the most serious kind of bug.
+      options:
+        - False positive (a candidate was accepted that does not fit)
+        - False negative (a candidate that fits was rejected)
+        - Wrong socket or features
+        - Crash, error or hang
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: fitment version
+      description: Output of `fitment --version`, or the commit hash.
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      placeholder: fitment match socket.json candidates/*.stp
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Paste the full output, including the verdict's evidence or the error.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: STEP files
+      description: >
+        Attach the assembly and candidate, or the smallest files that
+        reproduce the problem. If they are confidential,
+        `stepq strip FILE --anonymize -o OUT` removes names and text without
+        changing geometry; otherwise say which CAD system wrote them and
+        paste the HEADER section.

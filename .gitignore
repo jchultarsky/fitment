@@ -1,0 +1,21 @@
+/target
+
+# Generated test corpora and scratch STEP output (scripts write here)
+/step/
+/corpus/out/
+
+# Local catalog data and secrets, once the catalog and API exist
+/data/
+.env
+.env.*
+!.env.example
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python bytecode and virtualenvs from tools/ and docs/spike/
+__pycache__/
+.venv/

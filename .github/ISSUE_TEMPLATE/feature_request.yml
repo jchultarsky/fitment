@@ -1,0 +1,22 @@
+name: Feature request
+description: Propose something fitment should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The task, not the feature. "Replace a discontinued bracket held by four bolts" beats "add --bolt-mode".
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This is deterministic (no machine learning) and needs no data source besides the STEP files.
+          required: true

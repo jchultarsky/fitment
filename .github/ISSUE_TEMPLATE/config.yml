@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/jchultarsky/fitment/security/advisories/new
+    about: Please report crashes on crafted input or API access issues privately.
+  - name: STEP parsing problem
+    url: https://github.com/jchultarsky/stepq/issues
+    about: If stepq itself misreads the file, report it there.
