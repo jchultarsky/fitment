@@ -3,24 +3,23 @@
 As of 2026-10-09 · Julian Chultarsky
 Living copy of this plan: https://claude.ai/code/artifact/b5f9353c-62ad-4f43-868d-9b7b5eebbb27
 
-Given an assembly and one part in it that is no longer available, the system suggests catalog parts whose interfaces match. It is named `fitment`, will be published as open source, and is deterministic, written in Rust and built on stepq. Nothing is built yet except a throwaway spike, which confirmed that holes, placements and a socket can be read with stepq's current public API.
+Given an assembly and one part in it that is no longer available, the system suggests catalog parts whose interfaces match. It is named `fitment`, will be published as open source, and is deterministic, written in Rust and built on stepq. The workspace (`fitment-core`, `fitment`) and the verdict types exist; nothing reads a STEP file yet. A throwaway spike confirmed that holes, placements and a socket can be read with stepq's current public API.
 
 ## Resume here
 
-Work starts at milestone M0. D1 was answered on 9 Oct 2026 (see Decisions made, row 10); code starts once the workspace layout is agreed.
-
-1. On the laptop, create an empty project folder and open it in Code mode.
-2. Save this plan into it as `docs/PLAN.md`, and the two spike files (`spike.rs`, `gen.py`) under `docs/spike/`.
-3. Paste the kickoff prompt below, with the Vectera path filled in.
+M0 was completed on 9 Oct 2026: the audit is written, D1 is recorded (Decisions made, row 10), and the workspace layout is agreed (row 11) and built. Work continues at M1, in the stepq repository. Open it in Code mode, with this repository added, and paste:
 
 ```text
-Read docs/PLAN.md. It is the plan for fitment, a part substitution finder built on my stepq crate.
-We are at milestone M0. Do these in order and stop after each for my review:
-1. Audit the Vectera project at <path> against the "Vectera audit checklist" in the plan.
-   Report what can be reused and how.
-2. Ask me open decision D1.
-3. Propose the workspace layout for the fitment crates.
-Do not write code yet.
+Read ../fitment/docs/PLAN.md, sections "Changes to stepq" and "Milestones", and
+../fitment/docs/research/workspace-layout.md, section 6. We are at fitment's milestone M1:
+stepq 0.5 with the six read-only additions.
+1. Set stepq's version to 0.5.0 in the first M1 PR; fitment's [patch] needs it.
+   Keep rust-version at 1.85 or lower.
+2. Propose an order for the six additions and the API of each, then stop for my review.
+3. Implement them one PR at a time, each with tests and the Open CASCADE comparison
+   (tools/verify-occt.py), stopping for review after each.
+Done when stepq's placements and cylinder axes equal Open CASCADE's on the fixtures and
+README.md, CLAUDE.md, docs/ARCHITECTURE.md and ROADMAP.md state the new rule.
 ```
 
 The project is named `fitment` and will be published as open source. stepq is at [github.com/jchultarsky/stepq](https://github.com/jchultarsky/stepq), version 0.4.1 when this plan was written.
@@ -41,6 +40,21 @@ These were settled in the planning conversation and should not be reopened witho
 | 8 | No other data sources. Any metadata comes from the STEP file as properties. | See Metadata from STEP only. |
 | 9 | Vectera is checked for reuse, but the system must be buildable without it. | Audit in M0 ([vectera-audit.md](vectera-audit.md)); nothing becomes a dependency. |
 | 10 | D1: `Match` requires a verified body fit. Without a fit verifier the best verdict is `InterfaceMatch`. The M7 verifier runs Open CASCADE in a separate helper process (Python, pinned through uv), and official release artifacts never bundle Open CASCADE while [OCCT #1564](https://github.com/Open-Cascade-SAS/OCCT/issues/1564) is open. | Fit is a first-class field of every verdict. Published crates stay pure Rust and MIT. Research: [research/d1-body-fit.md](research/d1-body-fit.md). |
+| 11 | Workspace layout, as proposed in [research/workspace-layout.md](research/workspace-layout.md) with every recommendation in its section 10 accepted. | See below. |
+
+Decision 11 in brief (details and reasons in the layout document):
+
+- **Crates:** `fitment-core` (library) and `fitment` (CLI) now; `fitment-catalog` at M5, `fitment-server` and the test-only `fitment-corpus` at M6, `fitment-fit` at M7. All published crates share one version.
+- **Rust 1.85**, matching stepq. No nalgebra, whose recent versions need 1.87 or later; the small amount of 3D maths is written by hand.
+- **stepq during M1–M2:** a pinned git commit through `[patch.crates-io]` until stepq 0.5.0 is published, which must happen before M4.
+- **First publish at M4 exit**, accepting the risk to the `fitment` name until then.
+- **Errors:** `thiserror` in libraries, `anyhow` only in binaries and tests, in fitment and stepq alike.
+- **`fitment-core` is not `no_std`;** clippy bans and the dependency allowlist enforce its rules.
+- **A small set of generated unit parts is committed** (M2, at most 300 KB, excluded from packages) so extraction tests run on every OS without Python.
+- **Strict corpus gate:** a bad case must be rejected for its injected defect, and any change in the false-negative set fails until the baseline is re-blessed.
+- **Two kernels in tools:** the corpus generator may use cadquery's Open CASCADE 7.9; the oracle and the M7 helper pin 8.0.1.
+- **The server is its own package**, shipped as a container image without uv or Open CASCADE.
+- **CLI features:** `catalog` is on by default from M5; `fit` is compiled into release binaries from M7, which embed only the helper script, so no Open CASCADE ships.
 
 ## How it works
 
@@ -90,15 +104,15 @@ These seven rules are how "no false positives" is enforced. Every design choice 
 
 ## Components
 
-One Cargo workspace holds four new crates on top of stepq; the fit verifier and the viewer are optional later additions.
+One Cargo workspace grows one crate per milestone on top of stepq (decision 11); the fit verifier and the viewer are optional later additions.
 
 | Component | Where | Responsibility | Reuse |
 | --- | --- | --- | --- |
 | STEP reading | stepq (extended) | Parsing, product structure, placements, geometry values, units, properties, PMI | Exists; six additions in M1 |
-| Matcher | New library crate | Features, socket, signature, alignment, verification, evidence; a `FitVerifier` trait. No storage, no network. | New |
-| CLI | New binary crate | `features`, `socket`, `match`, later `catalog`. Proves the matcher before any server exists. | stepq's CLI pattern |
-| Catalog | New crate | File store, feature index, canonical gate, CRUD, re-index when the extractor version changes | Check Vectera |
-| API | New crate | REST over catalog and matcher. Ingest and matching run as jobs. | Check Vectera |
+| Matcher | `fitment-core` (M0) | Features, socket, signature, alignment, verification, evidence; a `FitVerifier` trait. No storage, no network, enforced by CI. The only crate that depends on stepq. | New |
+| CLI | `fitment`, binary `fitment` (M0) | `features`, `socket`, `match`, later `catalog`. Proves the matcher before any server exists. | stepq's CLI pattern |
+| Catalog | `fitment-catalog` (M5), synchronous | File store, feature index, canonical gate, CRUD, re-index when the extractor version changes | Vectera's lessons only |
+| API | `fitment-server` (M6), the only async crate | REST over catalog and matcher. Ingest and matching run as jobs. | Vectera's auth, ported |
 | Fit verifier | Optional crate, pure Rust, plus a helper script | Body clearance against the neighbors. The crate implements `FitVerifier` and drives a pinned Open CASCADE helper in a separate process; a crash, timeout or warning there means "not verified", never a pass | New; stepq's Open CASCADE oracle stack (D1) |
 | Viewer | Later | Shows the socket and a candidate in 3D. Needs tessellation, which stepq will not do. | Check Vectera |
 | Test corpus | Dev-time scripts | Generated good and bad candidates with known answers | stepq's Open CASCADE oracle pattern |
@@ -237,7 +251,7 @@ For each item found, note its technology and decide: depend on it, copy it, or s
 
 ## Open decisions
 
-Eight decisions are open; D1, D3 and D4 were settled on 9 Oct 2026. Each has a default that applies if nothing else is decided.
+Seven decisions are open; D1, D3, D4 and D5 were settled on 9 Oct 2026. Each has a default that applies if nothing else is decided.
 
 | # | Decision | Recommended default | Needed by |
 | --- | --- | --- | --- |
@@ -245,7 +259,7 @@ Eight decisions are open; D1, D3 and D4 were settled on 9 Oct 2026. Each has a d
 | D2 | What "canonical" guarantees: exporter, application protocol, analytic surfaces, units, one solid per part | Write it as the ingest gate's checklist, from three real sample files | M2 |
 | D3 | Whether the matcher is public like stepq or private | Decided: open source. | M0 |
 | D4 | Project and crate names | Decided: fitment | M0 |
-| D5 | Catalog storage and API stack | Decide after the Vectera audit. Fallback: SQLite, content-addressed files on disk, axum. | M5 |
+| D5 | Catalog storage and API stack | Decided: SQLite through rusqlite, content-addressed files on disk, axum. Keeps the catalog synchronous and the `fitment` binary free of an async runtime. | M5 |
 | D6 | Clearance holes: strict (no larger than the original) or functional (any hole the shaft passes) | Strict | M4 |
 | D7 | Grip length: hard requirement or warning | Hard requirement | M4 |
 | D8 | Real ground truth: obsolete parts with the replacement someone accepted | Collect any that exist; use the generated corpus until then | M4 |

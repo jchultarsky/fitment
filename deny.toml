@@ -23,7 +23,29 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# D1: Open CASCADE never enters the Cargo graph. The fit verifier drives it
+# in a separate helper process (docs/PLAN.md, Decisions made, row 10).
+deny = [
+  { crate = "occt-sys", reason = "D1: no Open CASCADE in the Cargo graph" },
+  { crate = "opencascade", reason = "D1: no Open CASCADE in the Cargo graph" },
+  { crate = "opencascade-sys", reason = "D1: no Open CASCADE in the Cargo graph" },
+  { crate = "cadrum", reason = "D1: no Open CASCADE in the Cargo graph" },
+  { crate = "cxx", reason = "D1: no C++ bridge; kernels run out of process" },
+  { crate = "cxx-build", reason = "D1: no C++ bridge; kernels run out of process" },
+]
+# fitment-core's file formats depend on serde_json's exact features:
+# preserve_order changes map order and arbitrary_precision changes how floats
+# parse, and Cargo would turn either on for fitment-core if any sibling asked.
+features = [
+  { crate = "serde_json", allow = ["default", "std", "float_roundtrip"], exact = true, reason = "fitment-core's JSON must not change with what else is in the build" },
+]
+# From M2: stepq may be used only by fitment-core, the one crate that reads
+# STEP. Add to `deny` above:
+#   { crate = "stepq", wrappers = ["fitment-core"], reason = "STEP reading lives in fitment-core" },
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# From the first M2 PR until stepq 0.5.0 is on crates.io; remove together
+# with the [patch] in Cargo.toml:
+# allow-git = ["https://github.com/jchultarsky/stepq"]

@@ -38,7 +38,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-features
+      - run: cargo test --workspace --all-features --locked
 
   msrv:
     name: MSRV
@@ -62,10 +62,18 @@ jobs:
         id: msrv
         run: echo "version=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
+        id: toolchain
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
+      # rust-toolchain.toml pins stable, and it outranks the toolchain the step
+      # above installs unless RUSTUP_TOOLCHAIN is set. Without this, the job
+      # checks with stable and passes vacuously.
+      - name: Use the MSRV toolchain over rust-toolchain.toml
+        run: echo "RUSTUP_TOOLCHAIN=${{ steps.toolchain.outputs.name }}" >> "$GITHUB_ENV"
+      - name: Assert the MSRV toolchain is active
+        run: rustc --version | grep -q "^rustc ${{ steps.msrv.outputs.version }}\." || { rustc --version; exit 1; }
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-features
+      - run: cargo check --workspace --all-features --locked
 
   docs:
     name: rustdoc
@@ -74,7 +82,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --workspace --no-deps --all-features
+      - run: cargo doc --workspace --no-deps --all-features --locked
 
   deny:
     name: cargo-deny
@@ -84,3 +92,11 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+      # fitment-core: its dependency allowlist (alone and as the workspace
+      # builds it), banned std modules, async code and global state.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: fitment-core checks
+        run: tools/check-core.sh

@@ -1,25 +1,59 @@
-[package]
-name = "fitment"
-version = "0.0.0"
+[workspace]
+# Must be explicit: a virtual manifest has no edition and would default to
+# resolver 1. Resolver 3 also makes `cargo update` respect rust-version.
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
 edition = "2024"
+# CI's MSRV job reads the first `rust-version` line in this file.
 rust-version = "1.85"
-description = "Find catalog parts that can replace a part in a STEP assembly, by matching interfaces"
 authors = ["Julian Chultarsky"]
 license = "MIT"
 repository = "https://github.com/jchultarsky/fitment"
-readme = "README.md"
-# Placeholder until the workspace layout (M0) is agreed; not published.
+homepage = "https://github.com/jchultarsky/fitment"
+# Nothing is published before M4; the first release PR flips this.
 publish = false
 
-[dependencies]
+# One version per dependency for the whole workspace, with the reason for any
+# pin next to it. Members opt in with `foo = { workspace = true }`.
+[workspace.dependencies]
+# Internal crates: exact versions, released in lockstep.
+fitment-core = { path = "crates/fitment-core", version = "=0.1.0" }
 
-[lints.rust]
+# From M2. `default-features = false` must be set here: Cargo refuses it on a
+# member that inherits the dependency, and stepq's default feature is its CLI.
+# stepq = { version = "0.5", default-features = false }
+
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: socket files must parse back to the exact f64 that was
+# written, or a value at the tolerance edge can move by one ULP.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+clap = { version = "4", features = ["derive", "wrap_help"] }
+
+# Dev-only.
+assert_cmd = "2"
+predicates = "3"
+
+[workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
 
-[lints.clippy]
+[workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# From the first M2 PR until stepq 0.5.0 is on crates.io; remove together
+# with `allow-git` in deny.toml. See CONTRIBUTING.md.
+# [patch.crates-io]
+# stepq = { git = "https://github.com/jchultarsky/stepq", rev = "<sha>" }

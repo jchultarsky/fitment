@@ -1,0 +1,28 @@
+[package]
+name = "fitment-core"
+description = "The fitment matcher: tests catalog parts against the interface an assembly requires of a part"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+readme = "README.md"
+keywords = ["step", "cad", "iso-10303", "interchangeability"]
+categories = ["science", "mathematics"]
+
+# Every crate this one may depend on is listed in deny/core.toml; CI fails on
+# anything else. Adding one is a soundness change: say why in the PR.
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
