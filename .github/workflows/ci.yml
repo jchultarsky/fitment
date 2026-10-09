@@ -89,14 +89,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check
-      # fitment-core: its dependency allowlist (alone and as the workspace
-      # builds it), banned std modules, async code and global state.
       - uses: dtolnay/rust-toolchain@stable
+      # A prebuilt binary rather than EmbarkStudios/cargo-deny-action, which
+      # builds a Docker image and fails when Docker Hub rate-limits the pull.
+      # Pinned so a new cargo-deny cannot change what the configs mean.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny@0.20.2
+      - run: cargo deny check
+      # fitment-core: its dependency allowlist (alone and as the workspace
+      # builds it), banned std modules, async code and global state.
       - name: fitment-core checks
         run: tools/check-core.sh
