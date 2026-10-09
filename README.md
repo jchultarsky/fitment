@@ -11,9 +11,10 @@ same axes, diameters within limits, the same seating planes and grip
 length. It is deterministic (rules and arithmetic, no machine learning),
 written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 
-> **Status: planning (milestone M0).** Nothing usable is built yet. The
-> design is in [docs/PLAN.md](docs/PLAN.md); the commands below are the
-> intended interface, not a working one.
+> **Status: early (M0 done, M1 next).** The workspace and the verdict
+> types exist; nothing that reads a STEP file does yet. The design is in
+> [docs/PLAN.md](docs/PLAN.md); the commands below are the intended
+> interface, not a working one.
 
 ## How it works
 

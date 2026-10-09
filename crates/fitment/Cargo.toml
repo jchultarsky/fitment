@@ -1,0 +1,32 @@
+[package]
+name = "fitment"
+description = "Find catalog parts that can replace a part in a STEP assembly, by matching interfaces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+readme = "../../README.md"
+# docs.rs does not document binary-only crates; the library's docs are the API.
+documentation = "https://docs.rs/fitment-core"
+keywords = ["step", "cad", "iso-10303", "interchangeability", "cli"]
+categories = ["command-line-utilities", "science"]
+
+[[bin]]
+name = "fitment"
+path = "src/main.rs"
+
+# The CLI never depends on stepq directly (deny.toml) and never on an async
+# runtime: the server is a separate package.
+[dependencies]
+clap = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+
+[lints]
+workspace = true

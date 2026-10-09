@@ -3,6 +3,8 @@
 As of 2026-10-09. Vectera at `1c01763` (develop, after release v2026-06-26).
 
 This is the M0 audit against the checklist in [PLAN.md](PLAN.md#vectera-audit-checklist).
+
+> **Superseded in part by later decisions.** D1 ([PLAN.md](PLAN.md), Decisions made, row 10) rules out parry3d and any mesh check for body fit: M7 uses an out-of-process Open CASCADE helper. Decision 11 rules out nalgebra: the 3D maths is hand-written in f64. It also settles the error-handling rule: `thiserror` in libraries, `anyhow` in binaries. Kabsch and the 24 rotations are still worth porting, minus nalgebra.
 Plan decision 9 says fitment must build without Vectera, so the options are
 **depend**, **copy** (with attribution: Vectera is MIT, same author) or
 **skip**.
@@ -224,10 +226,13 @@ Worth copying, rewritten in f64 with nalgebra's `Isometry3`:
   It is relevant only if a relative tolerance is ever wanted. The plan
   uses absolute tolerances (D9), so this is low priority.
 
-For the M7 clearance check, use `parry3d` rather than Vectera's BVH. The
-BVH answers ray and nearest-point queries but has no mesh-to-mesh
-distance. Its `nearest_hit` also uses a fixed 64-entry stack that can
-silently drop nodes.
+Skip Vectera's BVH for the M7 clearance check. It answers ray and
+nearest-point queries but has no mesh-to-mesh distance, and its
+`nearest_hit` uses a fixed 64-entry stack that can silently drop nodes.
+(Superseded: per D1, M7 uses no mesh library at all. Fit is checked by
+an out-of-process Open CASCADE helper, because mesh checks with parry3d
+can wrongly pass a candidate; see
+[research/d1-body-fit.md](research/d1-body-fit.md), option e.)
 
 ## 7. Configuration, CI and release patterns
 

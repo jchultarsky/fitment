@@ -19,3 +19,13 @@
 # Python bytecode and virtualenvs from tools/ and docs/spike/
 __pycache__/
 .venv/
+
+# Fetched fixtures (tools/fetch-fixtures.sh, from M2): only the index is tracked
+/fixtures/*
+!/fixtures/README.md
+!/fixtures/manifest.toml
+
+# cargo-fuzz (separate workspace, from M3)
+/fuzz/target
+/fuzz/artifacts
+/fuzz/corpus

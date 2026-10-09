@@ -1,0 +1,42 @@
+# The exact crates fitment-core may depend on. tools/check-core.sh checks it
+# twice: with fitment-core as the only root,
+#
+#   cargo deny --manifest-path crates/fitment-core/Cargo.toml \
+#     --config deny/core.toml check bans
+#
+# and against the workspace-wide graph (tools/core-deps.py), because Cargo
+# unifies features across a build: a sibling crate that turns on a feature
+# of a shared dependency can add crates to fitment-core's build.
+#
+# Any crate not listed fails CI. That is the point: the matcher has no
+# storage, network, async runtime or other I/O, and a new dependency is how
+# one would arrive. Adding a line here is a soundness change; say why in the
+# PR. Versions are not pinned here; Cargo.lock does that.
+
+[graph]
+all-features = true
+exclude-dev = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow = [
+  # fitment-core itself
+  { crate = "fitment-core", reason = "the crate under check" },
+  # errors
+  { crate = "thiserror", reason = "error types" },
+  { crate = "thiserror-impl", reason = "thiserror's derive" },
+  # JSON file formats: features, sockets, reports
+  { crate = "serde", reason = "file formats" },
+  { crate = "serde_core", reason = "part of serde" },
+  { crate = "serde_derive", reason = "serde's derive" },
+  { crate = "serde_json", reason = "file formats" },
+  { crate = "itoa", reason = "serde_json integer formatting" },
+  { crate = "zmij", reason = "serde_json float formatting" },
+  { crate = "memchr", reason = "serde_json parsing" },
+  # proc-macro support for the derives, compile time only
+  { crate = "proc-macro2", reason = "derive macros" },
+  { crate = "quote", reason = "derive macros" },
+  { crate = "syn", reason = "derive macros" },
+  { crate = "unicode-ident", reason = "derive macros" },
+]
