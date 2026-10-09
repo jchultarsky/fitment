@@ -178,9 +178,10 @@ Skip the headless three-d renderers (`search3d/src/geometry/render.rs`
 and its copy in `catalog/src/view_renderer.rs`). They need a GL context,
 are `!Send`, and are never tested in CI.
 
-Tessellation runs through `step2stl`: 31 lines wrapping a git fork of
-`opencascade-rs` (`bschwind/opencascade-rs@7e8d78a`). That fork builds
-Open CASCADE **7.8.1** from source with CMake and links it statically.
+Tessellation runs through `step2stl`: 31 lines wrapping `opencascade-rs`,
+pinned as a git dependency on the upstream repository
+(`bschwind/opencascade-rs@7e8d78a`). It builds Open CASCADE **7.8.1** from
+source with CMake and links it statically.
 It converts a file path to an STL path and exposes no faces, surfaces or
 edges. Its one test passes vacuously when its sample file is missing.
 
@@ -191,8 +192,10 @@ Skip the wrapper. Keep the build lessons, which bear on D1:
   build.
 - A git dependency cannot be published to crates.io. Since fitment will
   be published, the optional fit-verifier crate needs a kernel binding
-  that is itself on crates.io (cadrum, or a released opencascade-rs) or
-  that stays unpublished.
+  from crates.io (cadrum 0.8.20, or opencascade 0.3.0, released
+  2026-08-24) or must stay unpublished. The D1 research
+  ([d1-body-fit.md](research/d1-body-fit.md)) favours keeping Open CASCADE
+  out of the Cargo graph altogether.
 - Run Open CASCADE out of process, or at least behind `spawn_blocking`,
   with an eye on crashes. Vectera runs it inside the server process, so a
   crash in Open CASCADE takes the server down.

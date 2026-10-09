@@ -7,7 +7,7 @@ Given an assembly and one part in it that is no longer available, the system sug
 
 ## Resume here
 
-Work starts at milestone M0. No code should be written before decision D1 is answered.
+Work starts at milestone M0. D1 was answered on 9 Oct 2026 (see Decisions made, row 10); code starts once the workspace layout is agreed.
 
 1. On the laptop, create an empty project folder and open it in Code mode.
 2. Save this plan into it as `docs/PLAN.md`, and the two spike files (`spike.rs`, `gen.py`) under `docs/spike/`.
@@ -39,7 +39,8 @@ These were settled in the planning conversation and should not be reopened witho
 | 6 | A catalog of STEP models with full create, read, update and delete. | Catalog crate with a feature index. |
 | 7 | An API, probably REST, to operate the system. | API crate over catalog and matcher. |
 | 8 | No other data sources. Any metadata comes from the STEP file as properties. | See Metadata from STEP only. |
-| 9 | Vectera is checked for reuse, but the system must be buildable without it. | Audit in M0; every component has a fallback. |
+| 9 | Vectera is checked for reuse, but the system must be buildable without it. | Audit in M0 ([vectera-audit.md](vectera-audit.md)); nothing becomes a dependency. |
+| 10 | D1: `Match` requires a verified body fit. Without a fit verifier the best verdict is `InterfaceMatch`. The M7 verifier runs Open CASCADE in a separate helper process (Python, pinned through uv), and official release artifacts never bundle Open CASCADE while [OCCT #1564](https://github.com/Open-Cascade-SAS/OCCT/issues/1564) is open. | Fit is a first-class field of every verdict. Published crates stay pure Rust and MIT. Research: [research/d1-body-fit.md](research/d1-body-fit.md). |
 
 ## How it works
 
@@ -98,7 +99,7 @@ One Cargo workspace holds four new crates on top of stepq; the fit verifier and 
 | CLI | New binary crate | `features`, `socket`, `match`, later `catalog`. Proves the matcher before any server exists. | stepq's CLI pattern |
 | Catalog | New crate | File store, feature index, canonical gate, CRUD, re-index when the extractor version changes | Check Vectera |
 | API | New crate | REST over catalog and matcher. Ingest and matching run as jobs. | Check Vectera |
-| Fit verifier | Optional crate | Body clearance against the neighbors, using a kernel | Decision D1 |
+| Fit verifier | Optional crate, pure Rust, plus a helper script | Body clearance against the neighbors. The crate implements `FitVerifier` and drives a pinned Open CASCADE helper in a separate process; a crash, timeout or warning there means "not verified", never a pass | New; stepq's Open CASCADE oracle stack (D1) |
 | Viewer | Later | Shows the socket and a candidate in 3D. Needs tessellation, which stepq will not do. | Check Vectera |
 | Test corpus | Dev-time scripts | Generated good and bad candidates with known answers | stepq's Open CASCADE oracle pattern |
 
@@ -162,7 +163,10 @@ A candidate is never compared with the original part. It is tested against the s
 4. **Shortlist.** Candidates whose signature contains the socket's. Extra holes on a candidate are allowed.
 5. **Alignment.** The candidate sits in its own frame. Each pair of candidate holes that matches two socket axes in diameter and spacing gives a placement, tried in both axis directions. A seating plane fixes the slide along the axes. A symmetric part gives several valid placements; one is enough.
 6. **Verification.** Under each placement every requirement must find a candidate feature within tolerance: axis position and angle, diameter within its limits, depth at least as required, seating plane present and covering the contact outline, grip length equal.
-7. **Verdict.** `Match`: every requirement and the fit are verified. `InterfaceMatch`: every requirement is verified and the fit is not checked. `Reject`: with the failed requirements listed. Flags ride along, such as "thread not confirmed" and "material not compared".
+7. **Verdict.** `Match`: every requirement and the fit are verified. `InterfaceMatch`: every requirement is verified and the fit is not checked or could not be verified. `Reject`: with the failed requirements listed, or a body that interferes. Flags ride along, such as "thread not confirmed" and "material not compared".
+    - Fit is its own field: `verified` (with the kernel and its version), `interferes` (with evidence), `not_verified` (with a reason) or `not_checked` (with a reason). Only `verified` can make a `Match`; `interferes` makes a `Reject`.
+    - Without a verifier, the CLI says `InterfaceMatch: interface verified; body fit not checked (no fit verifier in this build)`.
+    - `Match`, `InterfaceMatch` and `Reject` have separate exit codes. `--require-fit` treats `InterfaceMatch` as a failure.
 
 Tolerances are one linear and one angular value, held in a named policy stored with each result. The floor is the larger stated uncertainty of the two files. Lengths are converted to millimetres before any comparison.
 
@@ -211,10 +215,10 @@ M2 to M4 carry all the technical risk, so the catalog and API (M5, M6) do not st
 | M1 | stepq 0.5: the six additions | stepq's placements and cylinder axes equal Open CASCADE's on the fixtures; the four documents are updated |
 | M2 | Matcher crate: features of one part; `features part.stp` prints JSON | Holes, shafts, depths and planes are correct on generated parts with known features; non-canonical input is refused with a reason |
 | M3 | Socket extraction and the reviewable socket file; `socket asm.stp --part X` | Generated assemblies and the AS1 fixture give the expected requirements; holes with nothing on their axis are left out |
-| M4 | Signature, alignment, verification, evidence; `match`; the corpus and its harness | Zero false positives on the known-bad set; the false-negative rate is reported |
+| M4 | Signature, alignment, verification, evidence; `match`; the corpus and its harness | Zero false positives on the known-bad set; the false-negative rate is reported. A false positive is `Match` on any bad case, or any pass on a bad interface. `InterfaceMatch` on the colliding-body case is correct until M7 |
 | M5 | Catalog: store, index, canonical gate, CRUD, re-index | Ingest, list, get, replace and delete work from the CLI; a match reads only the index |
 | M6 | REST API with jobs | The M4 corpus passes end to end through the API |
-| M7 | Fit verifier, per D1 | Candidates that collide with a neighbor are rejected on the corpus |
+| M7 | Fit verifier: Open CASCADE in a separate helper process (D1) | On the corpus, colliding candidates end as `Reject`, or as `InterfaceMatch` with fit not verified, never as `Match`; the original part passes its own fit check |
 | M8 | Viewer, per the Vectera audit | A socket and a candidate can be inspected in 3D |
 
 The corpus for M4 is generated the way the spike's was: a script builds an assembly and candidates with known answers. Each bad candidate breaks one thing: a hole shifted, a wrong diameter, a missing hole, a wrong thickness, a blind hole where a through hole is needed, a body that collides.
@@ -233,11 +237,11 @@ For each item found, note its technology and decide: depend on it, copy it, or s
 
 ## Open decisions
 
-Nine decisions are open and two were settled on 9 Oct 2026; D1 is needed before any code. Each has a default that applies if nothing else is decided.
+Eight decisions are open; D1, D3 and D4 were settled on 9 Oct 2026. Each has a default that applies if nothing else is decided.
 
 | # | Decision | Recommended default | Needed by |
 | --- | --- | --- | --- |
-| D1 | Body-fit check: use a kernel, or stop at the interface | Ship `InterfaceMatch` with fit not checked. Add an Open CASCADE-backed verifier as an optional crate in M7, and evaluate monstertruck as the pure-Rust alternative. | M0 for result wording, M7 to build |
+| D1 | Body-fit check: use a kernel, or stop at the interface | Decided: `Match` needs a verified fit; until then `InterfaceMatch`. M7 runs Open CASCADE out of process; no Open CASCADE in official artifacts. See Decisions made, row 10. | M0 |
 | D2 | What "canonical" guarantees: exporter, application protocol, analytic surfaces, units, one solid per part | Write it as the ingest gate's checklist, from three real sample files | M2 |
 | D3 | Whether the matcher is public like stepq or private | Decided: open source. | M0 |
 | D4 | Project and crate names | Decided: fitment | M0 |
@@ -249,7 +253,7 @@ Nine decisions are open and two were settled on 9 Oct 2026; D1 is needed before 
 | D10 | Property names that carry thread and material | Read them off real sample files | M5 |
 | D11 | How the user names the part to replace | By part number, all occurrences; see Choosing the part to replace | M3 |
 
-D1 is still unanswered from the planning conversation. It is the one decision that changes what the system can honestly claim: without a fit check, a candidate with the right interface and a body that collides is reported as an interface match, not a match.
+D1 was the one decision that changes what the system can honestly claim. It was answered on 9 Oct 2026 after the research in [research/d1-body-fit.md](research/d1-body-fit.md). Without a fit check, a candidate with the right interface and a body that collides is reported as an interface match, never a match. In-process bindings, monstertruck, and meshes checked with parry3d were each rejected as a source of `Match`, because each can wrongly pass a candidate. That research also defines what a sound fit check must test.
 
 ## Reference
 
@@ -279,8 +283,9 @@ VERTEX_POINT(name, vertex_geometry)
 
 **Kernel options for D1**
 
-- [cadrum](https://docs.rs/crate/cadrum/latest): Rust bindings to Open CASCADE 7.9.3 with STEP reading, booleans and face traversal. A C++ build dependency.
-- `opencascade-rs`: the older set of Open CASCADE bindings.
+- [cadrum](https://docs.rs/crate/cadrum/latest): Rust bindings to Open CASCADE 8.0.1 (0.8.20, MIT) with STEP reading, booleans and face traversal. A C++ build dependency; no distance or validity API.
+- [opencascade](https://crates.io/crates/opencascade) 0.3.0 and `occt-sys` (LGPL-2.1, Open CASCADE 7.8.1), from opencascade-rs: the older set of Open CASCADE bindings.
+- [cadquery-ocp](https://pypi.org/project/cadquery-ocp/): Python bindings to Open CASCADE 8.0.1, used by stepq's oracle and chosen for the M7 helper (D1).
 - [monstertruck](https://docs.rs/monstertruck): a pure-Rust B-rep kernel forked from truck, with a STEP reader and booleans. Much less proven on real exports.
 
 **Related**

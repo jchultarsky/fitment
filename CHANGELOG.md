@@ -11,5 +11,7 @@ Until 1.0, minor versions may contain breaking changes.
 ### Added
 
 - Project plan (`docs/PLAN.md`) and the feasibility spike (`docs/spike/`).
+- The Vectera reuse audit (`docs/vectera-audit.md`) and decision D1 on
+  body-fit checking, with its research (`docs/research/d1-body-fit.md`).
 - Repository scaffolding: license, contributing guide, code of conduct,
   security policy, CI, and issue and pull request templates.
