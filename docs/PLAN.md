@@ -123,14 +123,14 @@ Assemblies, the chosen part, the extracted socket and the user's corrections to 
 
 ## Changes to stepq
 
-stepq 0.4.1 reads the file and the assembly structure but interprets no geometry. Six read-only additions close that gap, proposed as stepq 0.5 (M1).
+stepq 0.4.1 reads the file and the assembly structure but interprets no geometry. Six read-only additions close that gap. Five are stepq 0.5 (M1); PMI to faces (row 5) follows in stepq 0.6, before M5. The accepted design, PR by PR, is [research/m1-stepq-read.md](research/m1-stepq-read.md).
 
 | # | Addition | Today in 0.4.1 | Needed |
 | --- | --- | --- | --- |
-| 1 | Placement transforms | `model::Placement` holds only `#id`s; its doc says no transformation is evaluated | A rigid transform from each `axis2_placement_3d`; `item_defined_transformation` as M(item_2) · M(item_1)⁻¹; `mapped_item` origin to target; composed from root to every occurrence |
+| 1 | Placement transforms | `model::Placement` holds only `#id`s; its doc says no transformation is evaluated | A rigid transform from each `axis2_placement_3d`; `item_defined_transformation` as M(assembly-side item) · M(component-side item)⁻¹, the component side decided by the usage, not the relationship's order (refused where ISO and Open CASCADE disagree); `mapped_item` origin to target; composed from root to every occurrence |
 | 2 | Geometry values | Only `Literal::to_f64` | Typed readers for `cartesian_point`, `direction`, `axis2_placement_3d`, `plane`, `cylindrical_surface`, `conical_surface`, `toroidal_surface`, `circle`, `line`; every other surface reported as "other" |
 | 3 | Topology walk | None | Solid → shell → `advanced_face` with `same_sense` → bounds → loops → oriented edges → `edge_curve` → `vertex_point`; face adjacency through shared edges; `brep_with_voids` handled or refused |
-| 4 | Unit scale | `info::Units` gives names only | Numeric factor to millimetres per representation context (SI prefix, `conversion_based_unit`), plus the file's `uncertainty_measure_with_unit` |
+| 4 | Unit scale | `info::Units` gives names only | Numeric factor to millimetres per representation context (SI prefix, `conversion_based_unit`), plus each context's `uncertainty_measure_with_unit`, in its own unit |
 | 5 | PMI to faces | `pmi` resolves a tolerance to a shape aspect and its product | Follow `geometric_item_specific_usage` to the faces a tolerance or dimension applies to |
 | 6 | Solids of a definition | `Definition.shape_representations` lists `#id`s | A helper that returns the solids, following a simple `shape_representation_relationship` when the solid sits in a second representation |
 
@@ -182,7 +182,7 @@ A candidate is never compared with the original part. It is tested against the s
     - Without a verifier, the CLI says `InterfaceMatch: interface verified; body fit not checked (no fit verifier in this build)`.
     - `Match`, `InterfaceMatch` and `Reject` have separate exit codes. `--require-fit` treats `InterfaceMatch` as a failure.
 
-Tolerances are one linear and one angular value, held in a named policy stored with each result. The floor is the larger stated uncertainty of the two files. Lengths are converted to millimetres before any comparison.
+Tolerances are one linear and one angular value, held in a named policy stored with each result. The floor is the largest stated uncertainty of the contexts involved; uncertainty is stated per representation context and varies by exporter (Pro/E's "closure" reaches 0.672 mm), so the policy for it is fitment's to set. Lengths are converted to millimetres before any comparison.
 
 ## Metadata from STEP only
 
@@ -226,11 +226,11 @@ M2 to M4 carry all the technical risk, so the catalog and API (M5, M6) do not st
 | # | Delivers | Done when |
 | --- | --- | --- |
 | M0 | Repository and workspace, this plan in `docs/`, the Vectera audit, decision D1 | The audit is written and D1 is recorded |
-| M1 | stepq 0.5: the six additions | stepq's placements and cylinder axes equal Open CASCADE's on the fixtures; the four documents are updated |
+| M1 | stepq 0.5: units, geometry values, placements, topology, solids of a definition (five PRs; [design](research/m1-stepq-read.md)) | stepq's placements and cylinder axes equal Open CASCADE's on the fixtures; the four documents are updated; stepq 0.5.0 is published |
 | M2 | Matcher crate: features of one part; `features part.stp` prints JSON | Holes, shafts, depths and planes are correct on generated parts with known features; non-canonical input is refused with a reason |
 | M3 | Socket extraction and the reviewable socket file; `socket asm.stp --part X` | Generated assemblies and the AS1 fixture give the expected requirements; holes with nothing on their axis are left out |
 | M4 | Signature, alignment, verification, evidence; `match`; the corpus and its harness | Zero false positives on the known-bad set; the false-negative rate is reported. A false positive is `Match` on any bad case, or any pass on a bad interface. `InterfaceMatch` on the colliding-body case is correct until M7 |
-| M5 | Catalog: store, index, canonical gate, CRUD, re-index | Ingest, list, get, replace and delete work from the CLI; a match reads only the index |
+| M5 | Catalog: store, index, canonical gate, CRUD, re-index; stepq 0.6 with PMI to faces first | Ingest, list, get, replace and delete work from the CLI; a match reads only the index |
 | M6 | REST API with jobs | The M4 corpus passes end to end through the API |
 | M7 | Fit verifier: Open CASCADE in a separate helper process (D1) | On the corpus, colliding candidates end as `Reject`, or as `InterfaceMatch` with fit not verified, never as `Match`; the original part passes its own fit check |
 | M8 | Viewer, per the Vectera audit | A socket and a candidate can be inspected in 3D |
@@ -304,5 +304,5 @@ VERTEX_POINT(name, vertex_geometry)
 
 **Related**
 
-- [stepq](https://github.com/jchultarsky/stepq) and its `docs/ARCHITECTURE.md`, which records the placement conventions: `transform_item_1` is the child frame, `transform_item_2` the parent frame, and the usage occurrence wins when a file reverses the relationship.
+- [stepq](https://github.com/jchultarsky/stepq) and its `docs/ARCHITECTURE.md`, which records the placement conventions: `transform_item_k` is an item of `rep_k`, and the usage, not the relationship's order, decides which side is the component's (131 reversed usages in the Pro/ENGINEER fixtures). Corrected in stepq 0.5, PR 3.
 - [Inside the STEP File](https://jchultarsky.github.io/step-book/), the companion book, for the entity vocabulary used here.

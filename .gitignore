@@ -29,3 +29,6 @@ __pycache__/
 /fuzz/target
 /fuzz/artifacts
 /fuzz/corpus
+
+# Probe output behind docs/research/m1-stepq-read.md; large, not committed
+/docs/research/m1-evidence/
