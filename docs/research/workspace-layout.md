@@ -1,5 +1,7 @@
 # Workspace layout proposal (M0, step 3)
 
+> **Update, 11 Oct 2026:** stepq 0.6.0 was published at the end of M1, before M2, so the temporary git-rev `[patch]` and `allow-git` line this document plans (section 6) are never needed. fitment depends on `stepq = { version = "0.6", default-features = false }` from crates.io. Where the text says 0.5 or 0.5.0, read 0.6 or 0.6.0.
+
 As of 2026-10-09. Status: **accepted** on 2026-10-09, with every recommendation in section 10 taken and the first publish at M4. It is recorded in [PLAN.md](../PLAN.md), Decisions made, row 11.
 
 How the M0 skeleton departs from this document:

@@ -1,28 +1,28 @@
 # fitment (Part Substitution Finder): Project Plan
 
-As of 2026-10-09 · Julian Chultarsky
+As of 2026-10-11 · Julian Chultarsky
 Living copy of this plan: https://claude.ai/code/artifact/b5f9353c-62ad-4f43-868d-9b7b5eebbb27
 
-Given an assembly and one part in it that is no longer available, the system suggests catalog parts whose interfaces match. It is named `fitment`, will be published as open source, and is deterministic, written in Rust and built on stepq. The workspace (`fitment-core`, `fitment`) and the verdict types exist; nothing reads a STEP file yet. A throwaway spike confirmed that holes, placements and a socket can be read with stepq's current public API.
+Given an assembly and one part in it that is no longer available, the system suggests catalog parts whose interfaces match. It is named `fitment`, will be published as open source, and is deterministic, written in Rust and built on stepq. The workspace (`fitment-core`, `fitment`) and the verdict types exist, and stepq 0.6.0 reads the geometry fitment needs; nothing in fitment reads a STEP file yet. A throwaway spike confirmed that holes, placements and a socket can be read with stepq's current public API.
 
 ## Resume here
 
-M0 was completed on 9 Oct 2026: the audit is written, D1 is recorded (Decisions made, row 10), and the workspace layout is agreed (row 11) and built. Work continues at M1, in the stepq repository. Open it in Code mode, with this repository added, and paste:
+M0 was completed on 9 Oct 2026 and M1 on 11 Oct 2026: stepq 0.6.0 is on crates.io with all six read additions (see Changes to stepq). Work continues at M2, in this repository. Open it in Code mode, with ../stepq added, and paste:
 
 ```text
-Read ../fitment/docs/PLAN.md, sections "Changes to stepq" and "Milestones", and
-../fitment/docs/research/workspace-layout.md, section 6. We are at fitment's milestone M1:
-stepq 0.5 with the six read-only additions.
-1. Set stepq's version to 0.5.0 in the first M1 PR; fitment's [patch] needs it.
-   Keep rust-version at 1.85 or lower.
-2. Propose an order for the six additions and the API of each, then stop for my review.
-3. Implement them one PR at a time, each with tests and the Open CASCADE comparison
-   (tools/verify-occt.py), stopping for review after each.
-Done when stepq's placements and cylinder axes equal Open CASCADE's on the fixtures and
-README.md, CLAUDE.md, docs/ARCHITECTURE.md and ROADMAP.md state the new rule.
+Read docs/PLAN.md, sections "How it works", "Soundness rules" and "Milestones", and
+docs/research/workspace-layout.md. We are at fitment's milestone M2: the features of
+one part, and `fitment features part.stp` printing them as JSON.
+1. Depend on stepq 0.6 from crates.io in fitment-core only (the commented lines in
+   Cargo.toml and deny.toml); no [patch] is needed.
+2. Propose the feature types, the extraction rules and the generated test parts,
+   then stop for my review.
+3. Implement them one PR at a time, each with tests, stopping for review after each.
+Done when holes, shafts, depths and planes are correct on generated parts with known
+features, and non-canonical input is refused with a reason.
 ```
 
-The project is named `fitment` and will be published as open source. stepq is at [github.com/jchultarsky/stepq](https://github.com/jchultarsky/stepq), version 0.4.1 when this plan was written.
+The project is named `fitment` and will be published as open source. stepq is at [github.com/jchultarsky/stepq](https://github.com/jchultarsky/stepq); it was at 0.4.1 when this plan was written and is at 0.6.0 since M1.
 
 ## Decisions made
 
@@ -46,7 +46,7 @@ Decision 11 in brief (details and reasons in the layout document):
 
 - **Crates:** `fitment-core` (library) and `fitment` (CLI) now; `fitment-catalog` at M5, `fitment-server` and the test-only `fitment-corpus` at M6, `fitment-fit` at M7. All published crates share one version.
 - **Rust 1.85**, matching stepq. No nalgebra, whose recent versions need 1.87 or later; the small amount of 3D maths is written by hand.
-- **stepq during M1–M2:** a pinned git commit through `[patch.crates-io]` until stepq 0.5.0 is published, which must happen before M4.
+- **stepq from crates.io:** the layout planned a pinned git commit through `[patch.crates-io]` until stepq was published. stepq 0.6.0 was published at the end of M1, before M2, so fitment depends on `stepq = "0.6"` from the start and the patch is never needed.
 - **First publish at M4 exit**, accepting the risk to the `fitment` name until then.
 - **Errors:** `thiserror` in libraries, `anyhow` only in binaries and tests, in fitment and stepq alike.
 - **`fitment-core` is not `no_std`;** clippy bans and the dependency allowlist enforce its rules.
@@ -108,7 +108,7 @@ One Cargo workspace grows one crate per milestone on top of stepq (decision 11);
 
 | Component | Where | Responsibility | Reuse |
 | --- | --- | --- | --- |
-| STEP reading | stepq (extended) | Parsing, product structure, placements, geometry values, units, properties, PMI | Exists; six additions in M1 |
+| STEP reading | stepq (extended) | Parsing, product structure, placements, geometry values, units, properties, PMI | Exists; six additions in M1 (0.6.0) |
 | Matcher | `fitment-core` (M0) | Features, socket, signature, alignment, verification, evidence; a `FitVerifier` trait. No storage, no network, enforced by CI. The only crate that depends on stepq. | New |
 | CLI | `fitment`, binary `fitment` (M0) | `features`, `socket`, `match`, later `catalog`. Proves the matcher before any server exists. | stepq's CLI pattern |
 | Catalog | `fitment-catalog` (M5), synchronous | File store, feature index, canonical gate, CRUD, re-index when the extractor version changes | Vectera's lessons only |
@@ -123,7 +123,7 @@ Assemblies, the chosen part, the extracted socket and the user's corrections to 
 
 ## Changes to stepq
 
-stepq 0.4.1 reads the file and the assembly structure but interprets no geometry. Six read-only additions close that gap. Five are stepq 0.5 (M1); PMI to faces (row 5) follows in stepq 0.6, before M5. The accepted design, PR by PR, is [research/m1-stepq-read.md](research/m1-stepq-read.md).
+stepq 0.4.1 read the file and the assembly structure but interpreted no geometry. Six read-only additions close that gap, following the accepted design, PR by PR, in [research/m1-stepq-read.md](research/m1-stepq-read.md). The design planned five for stepq 0.5 and PMI to faces (row 5) for 0.6; all six were merged before either was released, so they shipped together as stepq 0.6.0 on 11 Oct 2026, and 0.5.0 was never published. The PRs are stepq #43, #45, #46, #47, #50 and #49, in the order units, geometry values, placements, topology, solids of a definition, PMI to faces.
 
 | # | Addition | Today in 0.4.1 | Needed |
 | --- | --- | --- | --- |
@@ -226,11 +226,11 @@ M2 to M4 carry all the technical risk, so the catalog and API (M5, M6) do not st
 | # | Delivers | Done when |
 | --- | --- | --- |
 | M0 | Repository and workspace, this plan in `docs/`, the Vectera audit, decision D1 | The audit is written and D1 is recorded |
-| M1 | stepq 0.5: units, geometry values, placements, topology, solids of a definition (five PRs; [design](research/m1-stepq-read.md)) | stepq's placements and cylinder axes equal Open CASCADE's on the fixtures; the four documents are updated; stepq 0.5.0 is published |
+| M1 | stepq 0.6: units, geometry values, placements, topology, solids of a definition, PMI to faces (six PRs; [design](research/m1-stepq-read.md)). Done 11 Oct 2026 | stepq's placements and cylinder axes equal Open CASCADE's on the fixtures; the four documents are updated; stepq 0.6.0 is published |
 | M2 | Matcher crate: features of one part; `features part.stp` prints JSON | Holes, shafts, depths and planes are correct on generated parts with known features; non-canonical input is refused with a reason |
 | M3 | Socket extraction and the reviewable socket file; `socket asm.stp --part X` | Generated assemblies and the AS1 fixture give the expected requirements; holes with nothing on their axis are left out |
 | M4 | Signature, alignment, verification, evidence; `match`; the corpus and its harness | Zero false positives on the known-bad set; the false-negative rate is reported. A false positive is `Match` on any bad case, or any pass on a bad interface. `InterfaceMatch` on the colliding-body case is correct until M7 |
-| M5 | Catalog: store, index, canonical gate, CRUD, re-index; stepq 0.6 with PMI to faces first | Ingest, list, get, replace and delete work from the CLI; a match reads only the index |
+| M5 | Catalog: store, index, canonical gate, CRUD, re-index | Ingest, list, get, replace and delete work from the CLI; a match reads only the index |
 | M6 | REST API with jobs | The M4 corpus passes end to end through the API |
 | M7 | Fit verifier: Open CASCADE in a separate helper process (D1) | On the corpus, colliding candidates end as `Reject`, or as `InterfaceMatch` with fit not verified, never as `Match`; the original part passes its own fit check |
 | M8 | Viewer, per the Vectera audit | A socket and a candidate can be inspected in 3D |
@@ -304,5 +304,5 @@ VERTEX_POINT(name, vertex_geometry)
 
 **Related**
 
-- [stepq](https://github.com/jchultarsky/stepq) and its `docs/ARCHITECTURE.md`, which records the placement conventions: `transform_item_k` is an item of `rep_k`, and the usage, not the relationship's order, decides which side is the component's (131 reversed usages in the Pro/ENGINEER fixtures). Corrected in stepq 0.5, PR 3.
+- [stepq](https://github.com/jchultarsky/stepq) and its `docs/ARCHITECTURE.md`, which records the placement conventions: `transform_item_k` is an item of `rep_k`, and the usage, not the relationship's order, decides which side is the component's (131 reversed usages in the Pro/ENGINEER fixtures). Corrected in stepq 0.6.0 (read PR 3, stepq #46).
 - [Inside the STEP File](https://jchultarsky.github.io/step-book/), the companion book, for the entity vocabulary used here.

@@ -55,13 +55,10 @@ $ cd fitment
 $ cargo test --workspace --all-features --locked
 ```
 
-### Working against an unreleased stepq
+### Working against a local stepq
 
-From milestone M2 until stepq 0.5.0 is on crates.io, the root
-`Cargo.toml` has a `[patch.crates-io]` entry that points stepq at a pinned
-commit on GitHub, and `deny.toml` allows that one git source. Both are
-removed in the same PR, at the latest before fitment's first publish. To
-build against a local stepq checkout instead:
+fitment depends on stepq from crates.io. To build against a local stepq
+checkout, for example to try a change before it is released:
 
 ```console
 $ cargo --config 'patch.crates-io.stepq.path="../stepq"' test --workspace

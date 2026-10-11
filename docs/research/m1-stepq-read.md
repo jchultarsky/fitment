@@ -2,6 +2,8 @@
 
 As of 2026-10-09. Status: **accepted** on 2026-10-09, with one change: **PR 6 (PMI to faces) moves to stepq 0.6**, before fitment's M5. M1 is PRs 1–5, and stepq 0.5.0 is published after PR 5. Divergent placements are refused (decision 6), and every other recommendation in section 7 stands.
 
+**Outcome, 11 Oct 2026:** all six PRs were merged (stepq #43, #45, #46, #47, #50, #49) before either release, so they shipped together as **stepq 0.6.0**, and 0.5.0 was never published. #50 carries PR 5 because its first PR, #48, was merged into the wrong branch and reverted there.
+
 Six agents each designed one addition against stepq's code, the fixtures and the fitment spike. A separate adversarial reviewer checked each design, and a final agent ordered and unified them. Probe scripts, crafted STEP files and Open CASCADE comparison output are in [m1-evidence/](m1-evidence/), which is not committed. Paths in the text that point to `.../scratchpad/m1/` correspond to `m1-evidence/`.
 
 
