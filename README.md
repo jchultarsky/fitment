@@ -11,8 +11,9 @@ same axes, diameters within limits, the same seating planes and grip
 length. It is deterministic (rules and arithmetic, no machine learning),
 written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 
-> **Status: early (M0 done, M1 next).** The workspace and the verdict
-> types exist; nothing that reads a STEP file does yet. The design is in
+> **Status: early (M0 and M1 done, M2 next).** The workspace and the
+> verdict types exist, and stepq 0.6 reads the geometry fitment needs;
+> nothing in fitment reads a STEP file yet. The design is in
 > [docs/PLAN.md](docs/PLAN.md); the commands below are the intended
 > interface, not a working one.
 
@@ -70,7 +71,7 @@ test.
 | Milestone | Delivers |
 | --- | --- |
 | M0 | Repository, workspace, plan, Vectera audit, decision D1 |
-| M1 | stepq 0.5: placements, geometry values, topology, units |
+| M1 | stepq 0.6: units, geometry values, placements, topology, solids, PMI to faces |
 | M2 | Features of one part |
 | M3 | Socket extraction |
 | M4 | Matching, evidence, and the known-answer corpus |
