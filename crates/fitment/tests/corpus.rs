@@ -215,16 +215,18 @@ fn every_variant_has_its_base_s_sockets() {
             let doc = |bytes: &[u8]| {
                 let document =
                     fitment_core::SocketDocument::extract(bytes, Some(target), None).unwrap();
+                // Each document reads back.
+                fitment_core::SocketDocument::from_json(&document.to_json()).unwrap();
                 document.extracted().unwrap().clone()
             };
             let (base_doc, variant_doc) = (doc(&ours), doc(&theirs));
             // What the part's box bounds (U3's unknown ends, U1's partial
-            // cylinders) depends on the frame the part is modelled in: in a
-            // `_tgt` variant only the rest is compared.
-            let framed = |r: &&fitment_core::Requirement| {
-                let value = serde_json::to_value(r).unwrap();
-                let flags = value["flags"].as_array().unwrap().clone();
-                let kind = value["requires"]["kind"].as_str().unwrap_or("").to_owned();
+            // cylinders, I7) depends on the frame the part is modelled in:
+            // in a `_tgt` variant those requirements' stations and openings
+            // are left out; the rest is compared.
+            let framed = |r: &Value| {
+                let flags = r["flags"].as_array().cloned().unwrap_or_default();
+                let kind = r["requires"]["kind"].as_str().unwrap_or("").to_owned();
                 variant["kind"] == "tgt"
                     && (kind.starts_with("partial")
                         || flags.iter().any(|f| {
@@ -233,17 +235,36 @@ fn every_variant_has_its_base_s_sockets() {
                                 || f == "partial_neighbour"
                         }))
             };
-            let shape = |sockets: &[fitment_core::Socket], tilt: bool| {
-                let mut value = serde_json::json!(
-                    sockets
+            // Occurrence by occurrence, in path order: each with its socket.
+            let shape = |extracted: &fitment_core::Extracted, tilt: bool| {
+                let mut out = serde_json::Map::new();
+                for (k, occurrence) in extracted.occurrences.iter().enumerate() {
+                    let socket = extracted
+                        .sockets
                         .iter()
-                        .map(|s| serde_json::json!({
-                            "requirements": s.requirements.iter().filter(|r| !framed(r)).collect::<Vec<_>>(),
-                            "left_out": s.left_out,
-                            "occurrences": s.occurrences.len(),
-                        }))
-                        .collect::<Vec<_>>()
-                );
+                        .find(|s| occurrence.socket.as_deref() == Some(s.id.as_str()))
+                        .unwrap();
+                    let requirements: Vec<Value> = socket
+                        .requirements
+                        .iter()
+                        .map(|r| {
+                            let mut value = serde_json::to_value(r).unwrap();
+                            if framed(&value) {
+                                common::variants::unbounded(&mut value);
+                            }
+                            value
+                        })
+                        .collect();
+                    out.insert(
+                        format!("{k:06}"),
+                        serde_json::json!({
+                            "requirements": requirements,
+                            "left_out": socket.left_out,
+                            "occurrences": socket.occurrences.len(),
+                        }),
+                    );
+                }
+                let mut value = Value::Object(out);
                 if tilt {
                     moved(&mut value, &m);
                 }
@@ -255,31 +276,23 @@ fn every_variant_has_its_base_s_sockets() {
             let tilt = variant["kind"] == "tgt";
             let where_ = format!("{} {target}", case["id"].as_str().unwrap());
             if let Some(d) = differ(
-                &shape(&base_doc.sockets, tilt),
-                &shape(&variant_doc.sockets, false),
+                &shape(&base_doc, tilt),
+                &shape(&variant_doc, false),
                 1e-9,
                 &where_,
             ) {
                 failures.push(d);
             }
+            if base_doc.occurrences.len() != variant_doc.occurrences.len() {
+                failures.push(format!("{where_}: another number of occurrences"));
+            }
             if variant["kind"] == "rot" {
-                // Each placement is VARIANT ∘ the base's.
-                for (x, y) in base_doc.occurrences.iter().zip(&variant_doc.occurrences) {
-                    let (r, t) = (x.transform.rotation(), x.transform.translation());
-                    let (r2, t2) = (y.transform.rotation(), y.transform.translation());
-                    for i in 0..3 {
-                        for j in 0..3 {
-                            let want: f64 = (0..3).map(|k| m[i][k] * r[k][j]).sum();
-                            if (want - r2[i][j]).abs() > 1e-9 {
-                                failures.push(format!("{where_}: a rotation is not VARIANT's"));
-                            }
-                        }
-                        let want: f64 = (0..3).map(|k| m[i][k] * t[k]).sum::<f64>() + m[i][3];
-                        if (want - t2[i]).abs() > 1e-9 {
-                            failures.push(format!("{where_}: a translation is not VARIANT's"));
-                        }
-                    }
-                }
+                failures.extend(common::variants::placed_by(
+                    &m,
+                    &base_doc,
+                    &variant_doc,
+                    &where_,
+                ));
             }
             compared += 1;
         }

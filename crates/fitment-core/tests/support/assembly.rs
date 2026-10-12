@@ -811,7 +811,7 @@ type Names = std::collections::BTreeMap<Vec<u64>, String>;
 fn touchers_match(
     requirement: &fitment_core::Requirement,
     contacts: &[fitment_core::SeatContact],
-    expect: &Value,
+    (expect, occurrences): (&Value, &[Vec<u64>]),
     names: &Names,
 ) -> bool {
     type Toucher = (Vec<u64>, u64, f64, Vec<String>);
@@ -849,6 +849,30 @@ fn touchers_match(
     if union != listed || listed_count != listed.len() {
         return false;
     }
+    // Every occurrence of the socket has its touchers.
+    if expect["by"].as_u64().is_some_and(|by| by > 0)
+        && occurrences.iter().any(|o| !per.contains_key(o))
+    {
+        return false;
+    }
+    // Each listed toucher says what its sources say.
+    let agrees = contacts.iter().flat_map(|c| c.by.iter()).all(|t| {
+        let mut flags: Vec<String> = t
+            .flags
+            .iter()
+            .filter_map(|f| serde_json::to_value(f).ok()?.as_str().map(str::to_owned))
+            .collect();
+        flags.sort();
+        per.values().flatten().any(|s| {
+            s.0 == t.neighbour
+                && s.1 == t.face
+                && (s.2 - t.gap_mm).abs() <= POINT_TOL
+                && s.3 == flags
+        })
+    });
+    if !agrees {
+        return false;
+    }
     per.values().all(|touchers| {
         if expect["by"].as_u64() != u64::try_from(touchers.len()).ok() {
             return false;
@@ -882,13 +906,13 @@ fn seat_one(
         &[fitment_core::Ring],
     ),
     expect: &Value,
-    names: &Names,
+    (names, occurrences): (&Names, &[Vec<u64>]),
 ) -> bool {
     let n = normal.to_array();
     let (Some(e), Some(p)) = (point(&expect["normal"]), point(&expect["point"])) else {
         return false;
     };
-    if !touchers_match(requirement, contacts, expect, names) {
+    if !touchers_match(requirement, contacts, (expect, occurrences), names) {
         return false;
     }
     let mut basis: Vec<String> = contacts
@@ -918,7 +942,12 @@ fn seat_one(
             .all(|(f, w)| close(f[0], &w[0]) && close(f[1], &w[1]))
 }
 
-fn planar_one(requirement: &fitment_core::Requirement, expect: &Value, names: &Names) -> bool {
+fn planar_one(
+    requirement: &fitment_core::Requirement,
+    expect: &Value,
+    names: &Names,
+    occurrences: &[Vec<u64>],
+) -> bool {
     use fitment_core::Requires;
     match &requirement.requires {
         Requires::Seat {
@@ -931,7 +960,7 @@ fn planar_one(requirement: &fitment_core::Requirement, expect: &Value, names: &N
             requirement,
             (normal, *offset_mm, contacts, rings),
             expect,
-            names,
+            (names, occurrences),
         ),
         Requires::Grip {
             length_mm, holes, ..
@@ -1035,7 +1064,10 @@ fn planar_matches(socket: &fitment_core::Socket, expect: &Value, names: &Names) 
             return Some(format!("{} {key}, expected {}", found.len(), left.len()));
         }
         for requirement in found {
-            match left.iter().position(|w| planar_one(requirement, w, names)) {
+            match left
+                .iter()
+                .position(|w| planar_one(requirement, w, names, &socket.occurrences))
+            {
                 Some(i) => {
                     left.swap_remove(i);
                 }

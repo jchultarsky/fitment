@@ -387,8 +387,21 @@ fn review_records_a_decision_and_socket_carries_it_over() {
         .assert()
         .success()
         .stderr(contains("1 decisions carried over, 0 stale"));
+    // Another file's document is not carried over, nor replaced.
+    let other = dir.join("s02.stp");
+    std::fs::copy(unit_assembly("s02_cbore.stp"), &other).unwrap();
+    fitment()
+        .args(["socket", "--part", "BLOCK"])
+        .arg(&other)
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .code(2)
+        .stderr(contains("the socket of another file"));
     // A document edited by hand is refused.
-    let text = std::fs::read_to_string(&out).unwrap().replace("\"contact_mm\": 0.01", "\"contact_mm\": 0.02");
+    let text = std::fs::read_to_string(&out)
+        .unwrap()
+        .replace("\"contact_mm\": 0.01", "\"contact_mm\": 0.02");
     std::fs::write(&out, text).unwrap();
     fitment()
         .arg("review")

@@ -162,27 +162,39 @@ pub(crate) fn reaches_interior(s: &[P2], r: &[P2], tau: f64, pairs: &mut u64) ->
     if s.iter().any(|p| deep(*p, r)) || (s.len() >= 3 && r.iter().any(|p| deep(*p, s))) {
         return true;
     }
+    // Each edge of `s`, cut wherever it meets an edge of `r` or passes a
+    // vertex of it: it reaches the interior if one piece's middle lies
+    // deep inside. Exact however close it runs to a corner.
     for (i, a) in s.iter().enumerate() {
         let b = s[(i + 1) % s.len()];
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let length = dx * dx + dy * dy;
+        let mut cuts = vec![0.0, 1.0];
         for (j, c) in r.iter().enumerate() {
             *pairs += 1;
             let d = r[(j + 1) % r.len()];
-            // Each end beyond τ on its side of the other segment's line: a
-            // crossing by rounding alone is none.
-            let side = |p: P2, q: P2, x: P2| {
-                let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
-                let length = (dx * dx + dy * dy).sqrt();
-                if length > 0.0 {
-                    orient(p, q, x) / length
-                } else {
-                    0.0
+            let (ex, ey) = (d[0] - c[0], d[1] - c[1]);
+            let denominator = dx * ey - dy * ex;
+            if denominator != 0.0 {
+                let t = ((c[0] - a[0]) * ey - (c[1] - a[1]) * ex) / denominator;
+                if t > 0.0 && t < 1.0 {
+                    cuts.push(t);
                 }
-            };
-            let (o1, o2) = (side(*a, b, *c), side(*a, b, d));
-            let (o3, o4) = (side(*c, d, *a), side(*c, d, b));
-            if o1 * o2 < 0.0 && o3 * o4 < 0.0 && [o1, o2, o3, o4].iter().all(|o| o.abs() > tau) {
-                return true;
             }
+            if length > 0.0 {
+                let t = ((c[0] - a[0]) * dx + (c[1] - a[1]) * dy) / length;
+                if t > 0.0 && t < 1.0 {
+                    cuts.push(t);
+                }
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        let middle = |t: f64| [a[0] + dx * t, a[1] + dy * t];
+        if cuts
+            .windows(2)
+            .any(|w| deep(middle(f64::midpoint(w[0], w[1])), r))
+        {
+            return true;
         }
     }
     false

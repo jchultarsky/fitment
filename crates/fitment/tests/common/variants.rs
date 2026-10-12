@@ -7,7 +7,7 @@
 use serde_json::{Map, Value};
 
 /// The fields that name features, faces or occurrences of one file.
-const DROPPED: [&str; 18] = [
+const DROPPED: [&str; 16] = [
     "instance",
     "id",
     "hole",
@@ -24,8 +24,6 @@ const DROPPED: [&str; 18] = [
     "edge",
     "bound",
     "across",
-    "sources",
-    "seats",
 ];
 
 type M = [[f64; 4]; 3];
@@ -101,10 +99,32 @@ fn line(map: &mut Map<String, Value>) -> Option<(f64, f64)> {
     Some((along, sign))
 }
 
-/// Every axis-bearing object put on its line, its stations moved with it.
+/// Every axis-bearing object put on its line, its stations moved with it,
+/// and its sources' spans too.
 pub fn canonical(value: &mut Value) {
     match value {
         Value::Object(map) => {
+            if let Some((along, sign)) = map.get("requires").and_then(|r| {
+                let mut copy = r.as_object()?.clone();
+                line(&mut copy)
+            }) {
+                for source in map
+                    .get_mut("sources")
+                    .and_then(Value::as_array_mut)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(span) = source.get_mut("span_mm").and_then(Value::as_array_mut) {
+                        let mut ends: Vec<f64> = span
+                            .iter()
+                            .filter_map(Value::as_f64)
+                            .map(|s| along + sign * s)
+                            .collect();
+                        ends.sort_by(f64::total_cmp);
+                        *span = ends.into_iter().map(Value::from).collect();
+                    }
+                }
+            }
             for item in map.values_mut() {
                 canonical(item);
             }
@@ -155,7 +175,8 @@ pub fn stripped(value: &mut Value) {
             for key in DROPPED {
                 map.remove(key);
             }
-            for key in ["by", "holes"] {
+            // A grip's seats and holes are ids: their count only.
+            for key in ["seats", "holes"] {
                 if let Some(list) = map.get(key).and_then(Value::as_array) {
                     let count = list.len();
                     map.insert(key.to_owned(), Value::from(count));
@@ -173,7 +194,9 @@ pub fn stripped(value: &mut Value) {
 /// A sort key: the value with its numbers rounded to a micrometre.
 pub fn key(value: &Value) -> String {
     match value {
-        Value::Number(n) => format!("{:.4}", n.as_f64().unwrap_or(f64::NAN) + 0.0),
+        // Whole tenths of a micrometre: -1e-14 and 0 are one key.
+        #[allow(clippy::cast_possible_truncation)]
+        Value::Number(n) => format!("{}", (n.as_f64().unwrap_or(f64::NAN) * 1e4).round() as i64),
         Value::Array(items) => format!("[{}]", items.iter().map(key).collect::<Vec<_>>().join(",")),
         Value::Object(map) => format!(
             "{{{}}}",
@@ -186,15 +209,44 @@ pub fn key(value: &Value) -> String {
     }
 }
 
-/// Lists sorted by `key`, recursively.
+/// Lists of objects sorted by `key`, recursively; a coordinate triple or
+/// any other list of plain values keeps its order.
 pub fn sorted(value: &mut Value) {
     match value {
         Value::Object(map) => map.values_mut().for_each(sorted),
         Value::Array(items) => {
             items.iter_mut().for_each(sorted);
-            items.sort_by_key(key);
+            if items.iter().all(Value::is_object) {
+                items.sort_by_key(key);
+            }
         }
         _ => {}
+    }
+}
+
+/// What the part's box bounds left out of a requirement: its stations,
+/// its openings and `open_at_unknown_end` (U3, U1 and I7, in the frame the
+/// part is modelled in).
+pub fn unbounded(requirement: &mut Value) {
+    if let Some(requires) = requirement
+        .get_mut("requires")
+        .and_then(Value::as_object_mut)
+    {
+        requires.remove("open");
+        requires.remove("from_mm");
+        requires.remove("to_mm");
+        requires.remove("spans");
+    }
+    if let Some(flags) = requirement.get_mut("flags").and_then(Value::as_array_mut) {
+        flags.retain(|f| f != "open_at_unknown_end");
+    }
+    if let Some(sources) = requirement.get_mut("sources").and_then(Value::as_array_mut) {
+        for source in sources.iter_mut().filter_map(Value::as_object_mut) {
+            source.remove("span_mm");
+            if let Some(flags) = source.get_mut("flags").and_then(Value::as_array_mut) {
+                flags.retain(|f| f != "open_at_unknown_end");
+            }
+        }
     }
 }
 
@@ -226,4 +278,31 @@ pub fn differ(a: &Value, b: &Value, tol: f64, at: &str) -> Option<String> {
         }
         _ => (a != b).then(|| format!("{at}: {a} against {b}")),
     }
+}
+
+/// `_rot`: each occurrence placed by `m` ∘ its counterpart's placement.
+pub fn placed_by(
+    m: &M,
+    base: &fitment_core::Extracted,
+    variant: &fitment_core::Extracted,
+    at: &str,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for (x, y) in base.occurrences.iter().zip(&variant.occurrences) {
+        let (r, t) = (x.transform.rotation(), x.transform.translation());
+        let (r2, t2) = (y.transform.rotation(), y.transform.translation());
+        for i in 0..3 {
+            for j in 0..3 {
+                let want: f64 = (0..3).map(|k| m[i][k] * r[k][j]).sum();
+                if (want - r2[i][j]).abs() > 1e-9 {
+                    failures.push(format!("{at}: a rotation is not VARIANT's"));
+                }
+            }
+            let want: f64 = (0..3).map(|k| m[i][k] * t[k]).sum::<f64>() + m[i][3];
+            if (want - t2[i]).abs() > 1e-9 {
+                failures.push(format!("{at}: a translation is not VARIANT's"));
+            }
+        }
+    }
+    failures
 }

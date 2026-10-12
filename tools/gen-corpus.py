@@ -567,9 +567,9 @@ RULES.update({
     "P7": {"tests": ["crates/fitment-core/src/geom.rs::a_reflection_or_shear_is_not_a_rigid_transform"]},
     "P3": {},
     "P4": {}, "P5": {}, "P6": {},
-    "P8": {"deferred": "M3 PR 5 builds s22, with the frames"},
+    "P8": {"deferred": "M3 PR 6 builds s22 with the exports' frames; `_tgt` covers a target modelled in a frame of its own"},
     "Z1": {"tests": [f"{M3_CORE}/assemblies.rs::a_placement_floor_is_the_largest_its_path_states"]},
-    "Z2": {"deferred": "M3 PR 5's read-back checks each requirement's floor against its sources"},
+    "Z2": {"tests": [f"crates/fitment-core/src/socket/mod.rs::each_structural_rule_refuses_an_edit_with_its_digest_recomputed"]},
     "Z3": {}, "Z4": {}, "Z5": {},
     "Z6": {},
     "Z7": {"deferred": "holds by construction: the socket rules read M2's features and never change its constants"},
@@ -580,7 +580,7 @@ RULES.update({
     "B1": {}, "B2": {}, "B3": {}, "B5": {}, "B6": {}, "B7": {}, "B8": {},
     "B4": {"deferred": "M3 PR 7 adds a shaft through a hole's wall"},
     "I1": {}, "I2": {}, "I3": {},
-    "I4": {"deferred": "M3 PR 5 records max_extra_mm; the seat at a floor is C1's (s03's dowels)"},
+    "I4": {},
     "I5": {}, "I6": {}, "I7": {},
     "J1": {}, "J2": {}, "J3": {},
     "U1": {},
@@ -590,10 +590,10 @@ RULES.update({
     "U7": {"deferred": "M3 PR 7 adds a skew pin"},
     "A1": {},
     "A2": {},
-    "A3": {"deferred": "M3 PR 5's read-back checks the anchor partition"},
+    "A3": {"tests": [f"crates/fitment-core/src/socket/mod.rs::each_structural_rule_refuses_an_edit_with_its_digest_recomputed"]},
     "Y1": {}, "Y3": {},
-    "Y2": {"deferred": "M3 PR 5's read-back checks the sources"},
-    "Y4": {"deferred": "M3 PR 5's read-back checks the witness"},
+    "Y2": {"tests": [f"crates/fitment-core/src/socket/mod.rs::each_structural_rule_refuses_an_edit_with_its_digest_recomputed"]},
+    "Y4": {"deferred": "M4 runs the original as a candidate; M3 checks each socket's count of unverifiable requirements"},
     "V1": {"deferred": "M7 checks the candidate's copies against each other"},
     "V2": {},
     "H1": {}, "H2": {"deferred": "M3 PR 7 adds a flange over holes off its axis; C1 reads its face"},
@@ -1814,7 +1814,7 @@ def build_assemblies(w: Writer, which):
                            seats=[e_seat((0, 0, 0), (0, 0, -1))])],
     }
     a.case("s02_cbore", s02, "a counterbored block screwed to a base", ["T3", "P2", "B1", "B3", "B5", "B6", "B7", "I1",
-                                                                       "I2", "I3", "Y1", "H1"], True, c02,
+                                                                       "I2", "I3", "I4", "Y1", "H1"], True, c02,
            asm_expect(s02, select=[{"part": "BLOCK", "result": "BLOCK", "occurrences": 1, "matched_by": "product_id"}],
                       sockets=sockets02))
 
@@ -1850,7 +1850,7 @@ def build_assemblies(w: Writer, which):
         if d in (6.0, 6.015):
             sock["requirements"][0]["spans"] = e_axial("shaft", (0, 0, 0), Z, [(0, 16, 6, None, "line_to_line", True)])["spans"]
     a.case("s03_dowels", s03, "a plate on four dowels: press, clearance and two line-to-line fits", ["T3", "P2", "B2",
-                                                                                                    "B3", "Z3", "Z4", "X6", "C2"], True,
+                                                                                                    "B3", "Z3", "Z4", "X6", "C2", "I4"], True,
            {"plate": [80, 40, 10], "holes": list(zip(xs, holes03)), "dowel": "dia 6 x 16 from z -8",
             "base": "100 x 60 x 10, dia 6 blind 8 deep"},
            asm_expect(s03, select=[{"part": "DOWEL", "result": "DOWEL", "occurrences": 4, "matched_by": "product_id"}],
@@ -2037,7 +2037,7 @@ def build_assemblies(w: Writer, which):
                              seats=[e_seat((0, 0, 0), Z)])],
     }
     a.case("s19_boss", s19, "a dia 12 boss in a dia 12.1 blind bore, 3 mm short of its floor",
-           ["I1", "I3", "B1", "B5"], False, {"cover": "40 x 40 x 5, boss dia 12 x 5", "housing": "bore dia 12.1 x 8"},
+           ["I1", "I3", "I4", "B1", "B5"], False, {"cover": "40 x 40 x 5, boss dia 12 x 5", "housing": "bore dia 12.1 x 8"},
            asm_expect(s19, sockets=sockets19))
 
     # s21: two blocks with dia 10 holes on one axis, 150 mm apart, the second turned 180 deg about x; nothing
