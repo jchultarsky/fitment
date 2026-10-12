@@ -314,8 +314,15 @@ impl Topo {
         } else {
             (end, start)
         };
+        let (first, last) = if edge_use.forward {
+            (edge.start, edge.end)
+        } else {
+            (edge.end, edge.start)
+        };
         Some(Travel {
             edge: edge_use.edge,
+            first,
+            last,
             curve: &edge.curve,
             along: edge_use.forward == edge.same_sense,
             closed: edge.is_closed(),
@@ -330,6 +337,9 @@ impl Topo {
 pub(crate) struct Travel<'t> {
     /// The edge, an index into [`Topo::edges`].
     pub(crate) edge: usize,
+    /// The vertices it runs from and to, indices into [`Topo::vertices`].
+    pub(crate) first: usize,
+    pub(crate) last: usize,
     pub(crate) curve: &'t Curve,
     /// True if the loop runs along the curve's own direction.
     pub(crate) along: bool,

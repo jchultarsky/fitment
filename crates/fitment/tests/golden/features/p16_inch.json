@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 3,
+  "extractor_version": 4,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -794,16 +794,25 @@
           "point_mm": [
             19.9999999999962,
             19.9999999999962,
-            16.000000000012196
+            8.499999999991399
           ],
           "direction": [
             0.0,
             0.0,
-            -1.0
+            1.0
           ]
         },
         "radius_mm": 5.5000000000034,
-        "spread_mm": 0.0
+        "spread_mm": 0.0,
+        "class": {
+          "kind": "full"
+        },
+        "stations_mm": [
+          0.0,
+          6.4999999999994
+        ],
+        "wall_openings": 0,
+        "near_misses": []
       },
       {
         "id": "cylinder-212",
@@ -818,16 +827,25 @@
           "point_mm": [
             19.9999999999962,
             19.9999999999962,
-            16.000000000012196
+            0.0
           ],
           "direction": [
             0.0,
             0.0,
-            -1.0
+            1.0
           ]
         },
         "radius_mm": 3.3000000000121994,
-        "spread_mm": 0.0
+        "spread_mm": 0.0,
+        "class": {
+          "kind": "full"
+        },
+        "stations_mm": [
+          0.0,
+          8.499999999991399
+        ],
+        "wall_openings": 0,
+        "near_misses": []
       }
     ],
     "cones": [],

@@ -1,6 +1,6 @@
 //! Cylinders (`docs/research/m2-features.md`, section 8): faces grouped by
-//! rules G1 and G2, with their sense (S1). Whether a group is full or
-//! partial (F) arrives with M2's PR 5.
+//! rules G1 and G2, with their sense (S1), and whether they wrap around
+//! their axis (F, in `full.rs`).
 
 use serde::{Deserialize, Serialize};
 
@@ -59,11 +59,100 @@ pub struct Cylinder {
     pub surface: u64,
     /// Hole wall or shaft wall.
     pub sense: Sense,
-    /// The reference surface's axis, as stated.
+    /// The reference surface's axis line, with the canonical sign (the
+    /// largest component positive), through the lowest station: or the
+    /// start of the seam's span, or the surface's stated location.
     pub axis: Axis,
     /// The reference surface's radius.
     pub radius_mm: f64,
     /// The largest distance of a member's radius or axis point from the
     /// reference's.
     pub spread_mm: f64,
+    /// Whether the faces wrap around the axis.
+    pub class: CylinderClass,
+    /// The stations, where end circles bound the faces, as distances along
+    /// the axis from its point, ascending.
+    pub stations_mm: Vec<f64>,
+    /// How many openings cross the wall between the stations, such as a
+    /// cross hole. Counted on full cylinders only.
+    pub wall_openings: u32,
+    /// The cylinders that share an edge with this one and lie on its
+    /// surface within the stated uncertainty, but not within 1e-6 mm.
+    pub near_misses: Vec<FeatureId>,
+}
+
+/// Whether a cylinder's faces wrap all the way around its axis (rule F,
+/// section 8.3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[non_exhaustive]
+pub enum CylinderClass {
+    /// Every station is a full circle and the wall stays between the
+    /// lowest and the highest: both ends are known.
+    #[non_exhaustive]
+    Full {},
+    /// Every station is a full circle, but the wall runs past the stations
+    /// at one end, where it ends on curves no rule reads.
+    #[non_exhaustive]
+    FullOneEndIrregular {
+        /// The end the wall runs past.
+        irregular: End,
+    },
+    /// No end circle, but a seam proves the faces wrap around the axis
+    /// where it runs. Both ends are irregular; only the seam's span is
+    /// known.
+    #[non_exhaustive]
+    FullBySeam {
+        /// The seam's span along the axis, from the axis point.
+        proven_extent_mm: [f64; 2],
+    },
+    /// The faces do not wrap around the axis: an axial line bounds them,
+    /// or a station is not a full circle.
+    #[non_exhaustive]
+    Partial {
+        /// The largest angle one station's arcs cover, or `None` with no
+        /// end circle.
+        #[serde(deserialize_with = "Option::deserialize")]
+        sweep_rad: Option<f64>,
+    },
+    /// No rule decides.
+    #[non_exhaustive]
+    Undecided {
+        /// Why.
+        reason: UndecidedReason,
+    },
+}
+
+impl CylinderClass {
+    /// True if the faces are known to wrap around the axis: full, with one
+    /// end irregular, or by a seam.
+    pub fn is_full(&self) -> bool {
+        matches!(
+            self,
+            Self::Full {} | Self::FullOneEndIrregular { .. } | Self::FullBySeam { .. }
+        )
+    }
+}
+
+/// One end of a cylinder along its axis direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+// An axis has two ends.
+#[allow(clippy::exhaustive_enums)]
+pub enum End {
+    /// The end at the lowest station.
+    Start,
+    /// The end at the highest station.
+    Finish,
+}
+
+/// Why a cylinder is [`CylinderClass::Undecided`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum UndecidedReason {
+    /// No end circle and no seam: curves no rule reads bound it.
+    NoEndCircle,
+    /// Every station is full, but the wall runs past them at both ends.
+    IrregularAtBothEnds,
 }

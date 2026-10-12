@@ -31,11 +31,12 @@ mod tolerance;
 mod verdict;
 
 pub use features::{
-    Axis, Cone, Cylinder, DefinitionRef, Extraction, FEATURES_FORMAT, FEATURES_FORMAT_VERSION,
-    FaceCounts, FeatureId, FeatureIdError, FeatureKind, FeaturesDocument, FileHeader, FormatError,
-    Frame, Note, NoteCode, OtherFace, OtherItem, OtherReason, Outline, OutlineLoop, OutlineProblem,
-    Part, Plane, PlaneFace, ProductRef, Refused, Segment, Sense, SolidInfo, SolidUnits,
-    StatedUncertainty, StatedUnit, Status, Torus, read_part,
+    Axis, Cone, Cylinder, CylinderClass, DefinitionRef, End, Extraction, FEATURES_FORMAT,
+    FEATURES_FORMAT_VERSION, FaceCounts, FeatureId, FeatureIdError, FeatureKind, FeaturesDocument,
+    FileHeader, FormatError, Frame, Note, NoteCode, OtherFace, OtherItem, OtherReason, Outline,
+    OutlineLoop, OutlineProblem, Part, Plane, PlaneFace, ProductRef, Refused, Segment, Sense,
+    SolidInfo, SolidUnits, StatedUncertainty, StatedUnit, Status, Torus, UndecidedReason,
+    read_part,
 };
 pub use fit::{FitStatus, Interference, NO_FIT_VERIFIER};
 pub use gate::{Refusal, RefusalCode};
@@ -47,4 +48,4 @@ pub use verdict::{Check, RejectReason, RequirementId, Verdict, VerdictKind, deci
 /// whenever the output for any input could change: a rule, a constant, an
 /// order, a field. A features document records it, and the catalog
 /// re-reads every file whose document has another (milestone M5).
-pub const EXTRACTOR_VERSION: u32 = 3;
+pub const EXTRACTOR_VERSION: u32 = 4;

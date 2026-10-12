@@ -214,7 +214,7 @@ pub(crate) fn connected(
 
 /// The root of `i`'s set, halving the path on the way so that long chains
 /// cannot make grouping quadratic.
-fn find(root: &mut [usize], mut i: usize) -> usize {
+pub(crate) fn find(root: &mut [usize], mut i: usize) -> usize {
     loop {
         let Some(&parent) = root.get(i) else {
             return i;
@@ -266,6 +266,13 @@ fn sense(topo: &Topo, i: usize) -> Option<bool> {
 
 /// Rule G1: faces `a` and `b` lie on one cylinder with one sense.
 pub(crate) fn same_cylinder(topo: &Topo, a: usize, b: usize) -> bool {
+    sense(topo, a) == sense(topo, b) && one_cylinder(topo, a, b, IDENTITY_MM)
+}
+
+/// Faces `a` and `b` lie on one cylinder within `tolerance` mm, whatever
+/// their senses: radii, each axis point off the other's line, and the axes'
+/// angle at the faces' lever arm.
+pub(crate) fn one_cylinder(topo: &Topo, a: usize, b: usize, tolerance: f64) -> bool {
     let surfaces = (
         topo.faces.get(a).map(|f| &f.surface),
         topo.faces.get(b).map(|f| &f.surface),
@@ -287,11 +294,10 @@ pub(crate) fn same_cylinder(topo: &Topo, a: usize, b: usize) -> bool {
     else {
         return false;
     };
-    sense(topo, a) == sense(topo, b)
-        && (r1 - r2).abs() <= IDENTITY_MM
-        && radial(*p1, *p2, *z2).0 <= IDENTITY_MM
-        && radial(*p2, *p1, *z1).0 <= IDENTITY_MM
-        && axes_agree(*z1, *z2, lever(topo, a, b, *z1))
+    (r1 - r2).abs() <= tolerance
+        && radial(*p1, *p2, *z2).0 <= tolerance
+        && radial(*p2, *p1, *z1).0 <= tolerance
+        && length(cross(*z1, *z2)) * lever(topo, a, b, *z1) <= tolerance
 }
 
 /// A cone's apex: `location − (radius / tan α) z`.

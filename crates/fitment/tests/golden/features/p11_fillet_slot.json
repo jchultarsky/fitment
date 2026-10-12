@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 3,
+  "extractor_version": 4,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -1396,12 +1396,22 @@
           ],
           "direction": [
             0.0,
-            -1.0,
+            1.0,
             0.0
           ]
         },
         "radius_mm": 3.0,
-        "spread_mm": 0.0
+        "spread_mm": 0.0,
+        "class": {
+          "kind": "partial",
+          "sweep_rad": 1.5707963267948966
+        },
+        "stations_mm": [
+          0.0,
+          40.0
+        ],
+        "wall_openings": 0,
+        "near_misses": []
       },
       {
         "id": "cylinder-378",
@@ -1416,16 +1426,25 @@
           "point_mm": [
             35.0,
             30.0,
-            11.0
+            0.0
           ],
           "direction": [
             0.0,
             0.0,
-            -1.0
+            1.0
           ]
         },
         "radius_mm": 3.3,
-        "spread_mm": 0.0
+        "spread_mm": 0.0,
+        "class": {
+          "kind": "full"
+        },
+        "stations_mm": [
+          0.0,
+          10.0
+        ],
+        "wall_openings": 0,
+        "near_misses": []
       },
       {
         "id": "cylinder-417",
@@ -1440,7 +1459,7 @@
           "point_mm": [
             25.0,
             10.0,
-            -1.0
+            0.0
           ],
           "direction": [
             0.0,
@@ -1449,7 +1468,17 @@
           ]
         },
         "radius_mm": 3.0,
-        "spread_mm": 0.0
+        "spread_mm": 0.0,
+        "class": {
+          "kind": "partial",
+          "sweep_rad": 3.141592653589793
+        },
+        "stations_mm": [
+          0.0,
+          10.0
+        ],
+        "wall_openings": 0,
+        "near_misses": []
       },
       {
         "id": "cylinder-434",
@@ -1465,7 +1494,7 @@
           "point_mm": [
             45.0,
             10.0,
-            -1.0
+            0.0
           ],
           "direction": [
             0.0,
@@ -1474,7 +1503,17 @@
           ]
         },
         "radius_mm": 3.0,
-        "spread_mm": 0.0
+        "spread_mm": 0.0,
+        "class": {
+          "kind": "partial",
+          "sweep_rad": 3.141592653589793
+        },
+        "stations_mm": [
+          0.0,
+          10.0
+        ],
+        "wall_openings": 0,
+        "near_misses": []
       }
     ],
     "cones": [],

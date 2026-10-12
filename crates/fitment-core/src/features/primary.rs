@@ -2,7 +2,8 @@
 //! cylinder, cone, torus or other face (`docs/research/m2-features.md`,
 //! section 6).
 
-use super::cylinder::{Axis, Cylinder, Sense};
+use super::cylinder::{Axis, Cylinder, CylinderClass, Sense};
+use super::full;
 use super::group::{self, PlaneGroup};
 use super::other::{Cone, OtherFace, OtherReason, Torus};
 use super::outline;
@@ -106,7 +107,7 @@ pub(crate) fn read(topo: &Topo, solid: FeatureId, uncertainty: f64) -> Result<Pr
         })
         .collect::<Result<_, _>>()?;
 
-    let mut notes = Vec::new();
+    let (near, mut notes) = cylinder_pairs(topo, &owner, uncertainty)?;
     let mut read_planes = Vec::new();
     for group in &planes {
         read_planes.push(plane(topo, solid, group, &owner, uncertainty, &mut notes)?);
@@ -117,7 +118,7 @@ pub(crate) fn read(topo: &Topo, solid: FeatureId, uncertainty: f64) -> Result<Pr
         planes: read_planes,
         cylinders: cylinders
             .iter()
-            .map(|g| cylinder(topo, solid, g))
+            .map(|g| cylinder(topo, solid, g, &near))
             .collect::<Result<_, _>>()?,
         cones: cones
             .iter()
@@ -133,6 +134,63 @@ pub(crate) fn read(topo: &Topo, solid: FeatureId, uncertainty: f64) -> Result<Pr
             .collect::<Result<_, _>>()?,
         notes,
     })
+}
+
+/// Pairs of feature ids.
+type Pairs = Vec<(FeatureId, FeatureId)>;
+
+/// Check 27 and the near-miss notes, over every edge between faces of two
+/// cylinder features: on one cylinder within ε with opposite senses is a
+/// wall of no thickness, a contradiction; with one sense, within the stated
+/// uncertainty but not ε, a near miss. Returns the near misses as pairs of
+/// feature ids, both ways round, and their notes.
+fn cylinder_pairs(
+    topo: &Topo,
+    owner: &[FeatureId],
+    uncertainty: f64,
+) -> Result<(Pairs, Vec<Note>), Refusal> {
+    let mut near = Vec::new();
+    let mut notes = Vec::new();
+    for edge in &topo.edges {
+        let [a, b] = edge.faces[..] else {
+            continue;
+        };
+        let (Some(&ia), Some(&ib)) = (owner.get(a), owner.get(b)) else {
+            continue;
+        };
+        if ia == ib || ia.kind() != FeatureKind::Cylinder || ib.kind() != FeatureKind::Cylinder {
+            continue;
+        }
+        let senses = (
+            topo.faces.get(a).map(|f| f.sense),
+            topo.faces.get(b).map(|f| f.sense),
+        );
+        if senses.0 != senses.1 {
+            if group::one_cylinder(topo, a, b, group::IDENTITY_MM) {
+                return Err(Refusal::new(
+                    RefusalCode::Contradiction,
+                    Some(edge.instance),
+                    format!(
+                        "the faces of {ia} and {ib} meet at edge #{} on one cylinder with opposite senses: a wall of no thickness",
+                        edge.instance
+                    ),
+                ));
+            }
+        } else if group::one_cylinder(topo, a, b, uncertainty) {
+            near.extend([(ia, ib), (ib, ia)]);
+            notes.push(Note {
+                code: NoteCode::NearMiss,
+                instance: edge.instance,
+                message: format!(
+                    "{ia} and {ib} meet at edge #{} on one cylinder within the stated uncertainty, {uncertainty} mm, but not within 1e-6 mm",
+                    edge.instance
+                ),
+            });
+        }
+    }
+    near.sort_unstable();
+    near.dedup();
+    Ok((near, notes))
 }
 
 fn face_counts(topo: &Topo) -> FaceCounts {
@@ -258,7 +316,12 @@ fn plane(
     })
 }
 
-fn cylinder(topo: &Topo, solid: FeatureId, group: &[usize]) -> Result<Cylinder, Refusal> {
+fn cylinder(
+    topo: &Topo,
+    solid: FeatureId,
+    group: &[usize],
+    near: &[(FeatureId, FeatureId)],
+) -> Result<Cylinder, Refusal> {
     let (faces, reference) = members(topo, group)?;
     let Some(face) = topo.faces.get(reference) else {
         return Err(internal(topo.instance, "a cylinder's face is missing"));
@@ -288,19 +351,52 @@ fn cylinder(topo: &Topo, solid: FeatureId, group: &[usize]) -> Result<Cylinder, 
                 .max(radial(*p, *location, *z).0);
         }
     }
+    let id = FeatureId::new(FeatureKind::Cylinder, faces.first().copied().unwrap_or(0));
+    let read = full::classify(topo, group, (*location, *z, *radius)).map_err(|at| {
+        Refusal::new(
+            RefusalCode::Contradiction,
+            Some(at.0),
+            format!(
+                "the end arcs of {id} through edge #{} chain around its axis more than once",
+                at.0
+            ),
+        )
+    })?;
+    let mut class = read.class;
+    match &mut class {
+        CylinderClass::FullBySeam { proven_extent_mm } => {
+            *proven_extent_mm = [0.0, num(proven_extent_mm[1], *instance)?];
+        }
+        CylinderClass::Partial {
+            sweep_rad: Some(sweep),
+        } => *sweep = num(*sweep, *instance)?,
+        _ => {}
+    }
     Ok(Cylinder {
-        id: FeatureId::new(FeatureKind::Cylinder, faces.first().copied().unwrap_or(0)),
+        id,
         solid,
         shell: shell(topo, reference),
         faces,
         surface: *instance,
         sense: Sense::of(face.sense),
         axis: Axis {
-            point_mm: point(*location, *instance)?,
-            direction: direction(*z, *instance)?,
+            point_mm: point(read.point, *instance)?,
+            direction: direction(read.z, *instance)?,
         },
         radius_mm: num(*radius, *instance)?,
         spread_mm: num(spread, *instance)?,
+        class,
+        stations_mm: read
+            .stations
+            .iter()
+            .map(|&s| num(s, *instance))
+            .collect::<Result<_, _>>()?,
+        wall_openings: read.wall_openings,
+        near_misses: near
+            .iter()
+            .filter(|(a, _)| *a == id)
+            .map(|&(_, b)| b)
+            .collect(),
     })
 }
 
@@ -420,4 +516,81 @@ fn other(topo: &Topo, solid: FeatureId, index: usize) -> Result<OtherFace, Refus
         entity,
         reason: OtherReason::NoRule,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::topo::{Curve, Edge, Face, Vertex};
+
+    /// Two faces on one cylinder of radius 3 about the z axis, sharing one
+    /// line edge, with the given senses.
+    fn two_faces(senses: [bool; 2]) -> Topo {
+        let face = |instance: u64, sense: bool| Face {
+            instance,
+            shell: 0,
+            surface: Surface::Cylinder {
+                instance: instance + 100,
+                location: [0.0; 3],
+                z: [0.0, 0.0, 1.0],
+                radius: 3.0,
+            },
+            sense,
+            same_sense: sense,
+            bounds: Vec::new(),
+        };
+        Topo {
+            instance: 1,
+            shells: vec![2],
+            faces: vec![face(10, senses[0]), face(20, senses[1])],
+            edges: vec![Edge {
+                instance: 30,
+                start: 0,
+                end: 1,
+                curve: Curve::Line {
+                    instance: 31,
+                    point: [3.0, 0.0, 0.0],
+                    dir: [0.0, 0.0, 1.0],
+                },
+                same_sense: true,
+                faces: vec![0, 1],
+            }],
+            vertices: vec![
+                Vertex {
+                    instance: 40,
+                    point: [3.0, 0.0, 0.0],
+                },
+                Vertex {
+                    instance: 41,
+                    point: [3.0, 0.0, 5.0],
+                },
+            ],
+        }
+    }
+
+    fn owners() -> Vec<FeatureId> {
+        vec![
+            FeatureId::new(FeatureKind::Cylinder, 10),
+            FeatureId::new(FeatureKind::Cylinder, 20),
+        ]
+    }
+
+    #[test]
+    fn faces_on_one_cylinder_with_opposite_senses_are_a_contradiction() {
+        // Check 27: a wall of no thickness.
+        let refusal = cylinder_pairs(&two_faces([true, false]), &owners(), 1e-7).unwrap_err();
+        assert_eq!(refusal.code, RefusalCode::Contradiction);
+        assert_eq!(refusal.instance, Some(30));
+    }
+
+    #[test]
+    fn faces_on_one_cylinder_with_one_sense_are_one_group() {
+        let topo = two_faces([true, true]);
+        let groups = group::connected(
+            &topo,
+            |s| matches!(s, Surface::Cylinder { .. }),
+            group::same_cylinder,
+        );
+        assert_eq!(groups, [vec![0, 1]]);
+    }
 }

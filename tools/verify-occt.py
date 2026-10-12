@@ -61,6 +61,13 @@ each was transferred from:
     stated, Open CASCADE along the stated curves, and moving each vertex by
     up to d changes a loop's area by at most d times its perimeter. Faces
     that need the slack are tallied apart;
+  - each cylinder's faces are cylinders in Open CASCADE with its radius,
+    on its axis line, with its sense (a point just outside the wall is
+    material for a hole); one fitment calls full (full, one end irregular,
+    or by seam) covers 360 degrees by the faces' parameter ranges, and a
+    full one spans its stations along the axis. A cylinder Open CASCADE
+    covers 360 degrees but fitment does not call full is a false negative,
+    tallied apart, as are partial sweeps that differ from the faces' cover;
   - the solid is valid with positive volume: the only check on a shell
     written inside out (design, R11).
 
@@ -199,6 +206,22 @@ def union_degrees(intervals):
     return total + (hi - lo if hi is not None else 0.0)
 
 
+def on_face(face, bounds):
+    """A (u, v) inside the face: the middle of its parameter bounds if that
+    is on it, else the first point of a grid over them that is. A face with
+    a cutout may not cover the middle of its bounds."""
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.gp import gp_Pnt2d
+
+    umin, umax, vmin, vmax = bounds
+    grid = [(0.5, 0.5)] + [(i / 8, j / 8) for i in range(1, 8) for j in range(1, 8)]
+    for a, b in grid:
+        u, v = umin + a * (umax - umin), vmin + b * (vmax - vmin)
+        if BRepClass_FaceClassifier(face, gp_Pnt2d(u, v), 1e-9).State() == TopAbs_IN:
+            return u, v
+    return (umin + umax) / 2, (vmin + vmax) / 2
+
+
 class Solid:
     """What Open CASCADE reads in one solid."""
 
@@ -250,7 +273,7 @@ class Solid:
         c = surface.Cylinder()
         loc, d, radius = xyz(c.Location()), norm(xyz(c.Axis().Direction())), c.Radius()
         umin, umax, vmin, vmax = BRepTools.UVBounds_s(face)
-        mid = surface.Value((umin + umax) / 2, (vmin + vmax) / 2)
+        mid = surface.Value(*on_face(face, (umin, umax, vmin, vmax)))
         foot = add(loc, d, dot(sub(xyz(mid), loc), d))
         radial = norm(sub(xyz(mid), foot))
         # Material just outside the wall means the wall bounds a hole.
@@ -688,6 +711,8 @@ def check_features(path, binary, tally):
     if stray:
         problems.append(f"{path}: planar faces in none of fitment's planes: {stray[:5]} ({len(stray)})")
     offset = part["solids"][0]["max_vertex_offset_mm"]
+    if solids:
+        problems += check_cylinders(path, part, solids[0], faces, tally)
     for plane in part["planes"]:
         n = plane["normal"]
         problems += check_plane(path, plane)
@@ -720,6 +745,60 @@ def check_features(path, binary, tally):
             else:
                 problems.append(f"{where}: area {face['area_mm2']}, Open CASCADE {area}, "
                                 f"beyond {exact + slack:.3g} mm2")
+    return problems
+
+
+VERTEX_SIDE = 1e-3  # mm: how far past the stations a full wall's vertices may lie (F4)
+FULL_CLASSES = ("full", "full_one_end_irregular", "full_by_seam")
+
+
+def check_cylinders(path, part, solid, faces, tally):
+    """fitment's cylinders against Open CASCADE's cylindrical faces."""
+    problems = []
+    for cylinder in part["cylinders"]:
+        where = f"{path}: {cylinder['id']}"
+        members = []
+        for id_ in cylinder["faces"]:
+            if id_ not in faces:
+                continue  # reported as not bound
+            surface = BRepAdaptor_Surface(faces[id_], True)
+            if surface.GetType() != Kind.GeomAbs_Cylinder:
+                problems.append(f"{where}: face #{id_} is a {surface.GetType()} in Open CASCADE")
+                continue
+            members.append(solid.cylinder(faces[id_], surface))
+        if not members:
+            continue
+        tally["cylinders"] += 1
+        point, axis = cylinder["axis"]["point_mm"], cylinder["axis"]["direction"]
+        hole = cylinder["sense"] == "hole"
+        for member in members:
+            if abs(member["r"] - cylinder["radius_mm"]) > LINEAR or not same_line(point, axis, member["loc"],
+                                                                               member["d"]):
+                problems.append(f"{where}: radius {cylinder['radius_mm']} on the axis through {point} along "
+                                f"{axis}; Open CASCADE {member['r']} through {member['loc']} along {member['d']}")
+            if member["concave"] != hole:
+                problems.append(f"{where}: sense {cylinder['sense']}, but Open CASCADE finds material "
+                                f"{'outside' if member['concave'] else 'inside'} the wall")
+        cover = Solid.sweep(members)
+        kind = cylinder["class"]["kind"]
+        if kind in FULL_CLASSES and cover < 360 - SWEEP_DEG:
+            problems.append(f"{where}: {kind}, but its faces cover {cover:.9f} degrees")
+        elif kind not in FULL_CLASSES and cover >= 360 - SWEEP_DEG:
+            tally["cylinders full only in Open CASCADE"] += 1
+        if kind == "partial" and cylinder["class"]["sweep_rad"] is not None:
+            if abs(math.degrees(cylinder["class"]["sweep_rad"]) - cover) > SWEEP_DEG:
+                tally["partial sweeps not the faces' cover"] += 1
+        if kind == "full":
+            spans = []
+            for member in members:
+                sign = 1.0 if dot(member["d"], axis) > 0 else -1.0
+                base = dot(sub(member["loc"], point), axis)
+                spans += [base + sign * s for s in member["span"]]
+            stations = cylinder["stations_mm"]
+            if (abs(min(spans) - stations[0]) > VERTEX_SIDE + LINEAR
+                    or abs(max(spans) - stations[-1]) > VERTEX_SIDE + LINEAR):
+                problems.append(f"{where}: stations {stations[0]} to {stations[-1]}, but Open CASCADE's "
+                                f"faces span {min(spans)} to {max(spans)}")
     return problems
 
 
@@ -773,7 +852,8 @@ def features_main(paths):
     if not binary.is_file():
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
     tally = {"accepted": 0, "refused": 0, "plane faces": 0, "areas": 0, "areas within the vertex offsets": 0,
-             "unknown outlines": 0}
+             "unknown outlines": 0, "cylinders": 0, "cylinders full only in Open CASCADE": 0,
+             "partial sweeps not the faces' cover": 0}
     problems = []
     for path in [p for arg in paths for p in feature_inputs(Path(arg))]:
         try:
