@@ -1,0 +1,572 @@
+//! The relations between one target occurrence and every neighbour
+//! (`docs/research/m3-socket.md`, section 7): B, I and J between axial
+//! elements, B8's unread occupants, J3's blocks, and the unknowns U4, U5
+//! and U7.
+// a, b, p, t, n, e and the like are the design's own names for targets,
+// neighbours, pairs and stations.
+#![allow(clippy::many_single_char_names)]
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::axial::{self, Element, EndKind, Pair, Side};
+use super::block;
+use super::geo::{Motion, V, add, dot, norm, perpendiculars, scale, sub};
+use super::model::{Fit, Flag};
+use super::{CONTACT_MM, MAX_RELATIONS, NEAR_MM, PARALLEL_SINE_REL};
+use crate::features::extent::FaceBox;
+use crate::features::{Extent, FeatureId, Part};
+
+/// A neighbour occurrence, moved into the target's frame.
+pub(crate) struct Neighbour<'a> {
+    /// Its path, by usage `#id`s.
+    pub(crate) path: Vec<u64>,
+    pub(crate) part: &'a Part,
+    pub(crate) faces: &'a [FaceBox],
+    /// From its frame into the target's.
+    pub(crate) motion: Motion,
+    pub(crate) elements: Vec<Element>,
+    /// The largest of its uncertainties and the target occurrence's (Z2).
+    pub(crate) floor: f64,
+    /// Another occurrence of the target (N2).
+    pub(crate) selected: bool,
+    /// Its extent, in the target's frame, may come within reach of the
+    /// target's (N3); always true when either has none.
+    pub(crate) near: bool,
+}
+
+/// One relation, before it is combined into a requirement.
+#[derive(Debug, Clone)]
+pub(crate) struct Relation {
+    /// The target element it concerns.
+    pub(crate) target: usize,
+    pub(crate) rule: &'static str,
+    /// The neighbour, an index into the neighbours given.
+    pub(crate) neighbour: usize,
+    pub(crate) feature: Option<FeatureId>,
+    pub(crate) faces: Vec<u64>,
+    pub(crate) e_max: Option<f64>,
+    pub(crate) sine: Option<f64>,
+    pub(crate) margin: Option<f64>,
+    pub(crate) gap: Option<f64>,
+    /// The stations it covers on the target element's axis.
+    pub(crate) span: Option<(f64, f64)>,
+    /// What it asks there; `None` for provenance only.
+    pub(crate) fit: Option<Fit>,
+    /// The clear diameter (B) or the largest allowed (I).
+    pub(crate) clear: Option<f64>,
+    /// J's pin: only where no B relation occupies the hole.
+    pub(crate) unoccupied_only: bool,
+    pub(crate) open_start: bool,
+    pub(crate) open_finish: bool,
+    pub(crate) flags: BTreeSet<Flag>,
+    pub(crate) floor: f64,
+}
+
+impl Relation {
+    fn new(target: usize, rule: &'static str, neighbour: usize, floor: f64) -> Self {
+        Self {
+            target,
+            rule,
+            neighbour,
+            feature: None,
+            faces: Vec::new(),
+            e_max: None,
+            sine: None,
+            margin: None,
+            gap: None,
+            span: None,
+            fit: None,
+            clear: None,
+            unoccupied_only: false,
+            open_start: false,
+            open_finish: false,
+            flags: BTreeSet::new(),
+            floor,
+        }
+    }
+}
+
+/// What the rules found for one target occurrence.
+#[derive(Debug, Default)]
+pub(crate) struct Found {
+    pub(crate) relations: Vec<Relation>,
+    /// Target features neighbour material crosses at an angle (U7), with
+    /// the faces.
+    pub(crate) skew: BTreeMap<FeatureId, BTreeSet<u64>>,
+    /// Target holes whose only partner beyond a gap is blocked (J3).
+    pub(crate) blocked: BTreeSet<FeatureId>,
+}
+
+/// Check 39's count was spent.
+#[derive(Debug)]
+pub(crate) struct TooMany;
+
+fn finite(x: f64) -> Option<f64> {
+    x.is_finite().then_some(x)
+}
+
+/// The fit of a margin (B1 to B4, I1, I2).
+fn fit_of(margin: f64, e_max: f64, tau: f64, flags: &mut BTreeSet<Flag>) -> Fit {
+    if margin > tau {
+        if e_max > tau {
+            flags.insert(Flag::Offset);
+        }
+        Fit::Clearance
+    } else if margin >= -tau {
+        flags.insert(Flag::ThreadNotConfirmed);
+        Fit::LineToLine
+    } else if e_max <= tau {
+        flags.insert(Flag::ThreadNotConfirmed);
+        Fit::Interference
+    } else {
+        flags.insert(Flag::Conflict);
+        Fit::Interference
+    }
+}
+
+/// The span a relation covers on `a`, a touch giving one station.
+fn span(a: &Element, p: &Pair, tau: f64) -> (f64, f64) {
+    if p.to >= p.from {
+        (p.from, p.to)
+    } else if p.from <= a.lo + tau {
+        (a.lo, a.lo)
+    } else {
+        (a.hi, a.hi)
+    }
+}
+
+/// True if the relation exists only through a side whose extent is not
+/// known (U3).
+fn through_unknown(a: &Element, b: &Element, p: &Pair) -> bool {
+    let along = dot(a.dir, b.dir) > 0.0;
+    let (lo_unknown, hi_unknown) = if along {
+        (b.lo_unknown, b.hi_unknown)
+    } else {
+        (b.hi_unknown, b.lo_unknown)
+    };
+    b.undecided
+        || a.undecided
+        || !p.e_max.is_finite()
+        || (p.lo > a.lo && lo_unknown)
+        || (p.hi < a.hi && hi_unknown)
+}
+
+struct Search<'s, 'a> {
+    targets: &'s [Element],
+    neighbours: &'s [Neighbour<'a>],
+    pairs: u64,
+    found: Found,
+    /// The nearest hole beyond each open rim: (target element, start?) to
+    /// (gap, neighbour, element, pair).
+    nearest: BTreeMap<(usize, bool), (f64, usize, usize, Pair)>,
+}
+
+/// Every relation between the target's `targets` (in its own frame) and
+/// `neighbours`, and the unknowns; `TooMany` past check 39's count.
+pub(crate) fn relate(
+    targets: &[Element],
+    neighbours: &[Neighbour<'_>],
+    planes: &[(Motion, &Part)],
+) -> Result<Found, TooMany> {
+    let mut search = Search {
+        targets,
+        neighbours,
+        pairs: 0,
+        found: Found::default(),
+        nearest: BTreeMap::new(),
+    };
+    for (n, neighbour) in neighbours.iter().enumerate() {
+        for (t, a) in targets.iter().enumerate() {
+            for (e, b) in neighbour.elements.iter().enumerate() {
+                search.count()?;
+                search.axial(t, a, n, e, b);
+            }
+        }
+    }
+    search.continuations(planes)?;
+    for (n, neighbour) in neighbours.iter().enumerate() {
+        if neighbour.near {
+            search.occupants(n)?;
+        }
+    }
+    Ok(search.found)
+}
+
+impl Search<'_, '_> {
+    fn count(&mut self) -> Result<(), TooMany> {
+        self.pairs += 1;
+        if self.pairs > MAX_RELATIONS {
+            Err(TooMany)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn axial(&mut self, t: usize, a: &Element, n: usize, e: usize, b: &Element) {
+        let Some(neighbour) = self.neighbours.get(n) else {
+            return;
+        };
+        let tau = CONTACT_MM.max(neighbour.floor);
+        match (a.side, b.side) {
+            (Side::Hole, Side::Hole) => self.continuation(t, a, n, e, b, tau),
+            (_, Side::Shaft) if !neighbour.near => {}
+            (Side::Hole, Side::Shaft) => self.occupied(t, a, n, b, tau),
+            (Side::Shaft, Side::Hole) if neighbour.near => self.held(t, a, n, b, tau),
+            (Side::Shaft, Side::Shaft) => self.abutting(t, a, n, b, tau),
+            (Side::Shaft, Side::Hole) => {}
+        }
+    }
+
+    /// U7: neighbour material at an angle whose cross-section may meet the
+    /// target's.
+    fn skew(&mut self, a: &Element, b: &Element, tau: f64) {
+        if b.side == Side::Shaft && axial::segment_distance(a, b) < a.radius + b.radius + tau {
+            self.found
+                .skew
+                .entry(a.feature)
+                .or_default()
+                .extend(b.wall.iter().copied());
+        }
+    }
+
+    fn relation(&self, t: usize, rule: &'static str, n: usize, b: &Element, p: &Pair) -> Relation {
+        let floor = self.neighbours.get(n).map_or(0.0, |x| x.floor);
+        let mut relation = Relation::new(t, rule, n, floor);
+        relation.feature = Some(b.feature);
+        relation.faces.clone_from(&b.wall);
+        relation.e_max = finite(p.e_max);
+        relation.sine = Some(p.sine);
+        if self.neighbours.get(n).is_some_and(|x| x.selected) {
+            relation.flags.insert(Flag::SelfPaired);
+        }
+        relation
+    }
+
+    /// B1 to B7: a neighbour shaft in a target hole.
+    fn occupied(&mut self, t: usize, a: &Element, n: usize, b: &Element, tau: f64) {
+        let Some(p) = axial::pair(a, b, PARALLEL_SINE_REL, 1.0) else {
+            self.skew(a, b, tau);
+            return;
+        };
+        if p.e_min >= a.radius + b.radius / p.cosine + tau || p.length <= -tau {
+            return;
+        }
+        let reach = p.e_max + b.radius / p.cosine;
+        let margin = a.radius - reach;
+        // A wider cylinder that only touches the rim does not enter: a head
+        // bearing there (H1), not an occupant.
+        if p.length.abs() <= tau && margin < -tau {
+            return;
+        }
+        let mut relation = self.relation(t, "B", n, b, &p);
+        let fit = fit_of(margin, p.e_max, tau, &mut relation.flags);
+        relation.rule = match fit {
+            Fit::Clearance => "B1",
+            Fit::LineToLine => "B2",
+            _ if relation.flags.contains(&Flag::Conflict) => "B4",
+            _ => "B3",
+        };
+        relation.margin = finite(margin);
+        relation.fit = Some(fit);
+        relation.clear = finite(2.0 * reach);
+        relation.span = Some(span(a, &p, tau));
+        if through_unknown(a, b, &p) {
+            relation.flags.insert(Flag::ExtentUnknown);
+        }
+        // B6: the shaft continues past a rim.
+        let last = a.segment + 1 == a.segments;
+        relation.open_start = a.segment == 0 && p.lo < a.lo - tau;
+        relation.open_finish = last && p.hi > a.hi + tau;
+        for (open, end) in [
+            (relation.open_start, a.start),
+            (relation.open_finish, a.finish),
+        ] {
+            match (open, end) {
+                (true, EndKind::Closed) => {
+                    relation.flags.insert(Flag::Conflict);
+                }
+                (true, EndKind::Unknown) => {
+                    relation.flags.insert(Flag::OpenAtUnknownEnd);
+                }
+                _ => {}
+            }
+        }
+        self.found.relations.push(relation);
+    }
+
+    /// I1 to I3: a target shaft in a neighbour hole.
+    fn held(&mut self, t: usize, a: &Element, n: usize, b: &Element, tau: f64) {
+        let Some(p) = axial::pair(a, b, PARALLEL_SINE_REL, -1.0) else {
+            return;
+        };
+        if p.e_min >= a.radius + b.radius / p.cosine + tau || p.length <= -tau {
+            return;
+        }
+        let room = b.radius - p.e_max;
+        let margin = room - a.radius;
+        // A shaft wider than the hole that only touches its rim does not
+        // enter it: its end bears there.
+        if p.length.abs() <= tau && margin < -tau {
+            return;
+        }
+        let mut relation = self.relation(t, "I", n, b, &p);
+        let fit = fit_of(margin, p.e_max, tau, &mut relation.flags);
+        relation.rule = if fit == Fit::Clearance { "I1" } else { "I2" };
+        relation.margin = finite(margin);
+        relation.fit = Some(fit);
+        relation.clear = finite(2.0 * room).filter(|_| fit == Fit::Clearance);
+        relation.span = Some(span(a, &p, tau));
+        if through_unknown(a, b, &p) {
+            relation.flags.insert(Flag::ExtentUnknown);
+        }
+        self.found.relations.push(relation);
+    }
+
+    /// I5, I6: coaxial shafts; only those end to end ask anything.
+    fn abutting(&mut self, t: usize, a: &Element, n: usize, b: &Element, tau: f64) {
+        let Some(p) = axial::pair(a, b, PARALLEL_SINE_REL, 0.0) else {
+            self.skew(a, b, tau);
+            return;
+        };
+        if p.e_max <= tau && p.length.abs() <= tau {
+            let mut relation = self.relation(t, "I6", n, b, &p);
+            relation.flags.insert(Flag::Abutting);
+            self.found.relations.push(relation);
+        }
+    }
+
+    /// J1, J2 candidates: the nearest neighbour hole beyond each open rim.
+    fn continuation(&mut self, t: usize, a: &Element, n: usize, e: usize, b: &Element, tau: f64) {
+        let Some(p) = axial::pair(a, b, PARALLEL_SINE_REL, 0.0) else {
+            return;
+        };
+        if p.e_min >= a.radius + b.radius / p.cosine + tau {
+            return;
+        }
+        let rims = [
+            (
+                true,
+                a.segment == 0 && a.start == EndKind::Open,
+                a.start_rim,
+            ),
+            (
+                false,
+                a.segment + 1 == a.segments && a.finish == EndKind::Open,
+                a.finish_rim,
+            ),
+        ];
+        for (start, applies, rim) in rims {
+            let (true, Some(rim)) = (applies, rim) else {
+                continue;
+            };
+            let gap = if start {
+                (p.hi <= rim + tau).then_some(rim - p.hi)
+            } else {
+                (p.lo >= rim - tau).then_some(p.lo - rim)
+            };
+            let Some(gap) = gap.filter(|g| g.is_finite()) else {
+                continue;
+            };
+            let slot = self.nearest.entry((t, start)).or_insert((gap, n, e, p));
+            if gap < slot.0 {
+                *slot = (gap, n, e, p);
+            }
+        }
+    }
+
+    /// J1 to J3, from the nearest holes found.
+    fn continuations(&mut self, planes: &[(Motion, &Part)]) -> Result<(), TooMany> {
+        let nearest = std::mem::take(&mut self.nearest);
+        for ((t, start), (gap, n, e, p)) in nearest {
+            let (Some(a), Some(neighbour)) = (self.targets.get(t), self.neighbours.get(n)) else {
+                continue;
+            };
+            let Some(b) = neighbour.elements.get(e) else {
+                continue;
+            };
+            let tau = CONTACT_MM.max(neighbour.floor);
+            let rim = if start { a.start_rim } else { a.finish_rim }.unwrap_or(0.0);
+            if gap > tau {
+                let (from, to) = if start {
+                    (rim - gap, rim)
+                } else {
+                    (rim, rim + gap)
+                };
+                let radius = a.radius.min(b.radius) + p.e_max + tau;
+                if self.blocked(a, from, to, radius, tau, planes)? {
+                    self.found.blocked.insert(a.feature);
+                    continue;
+                }
+            }
+            let mut relation = self.relation(t, if gap > tau { "J2" } else { "J1" }, n, b, &p);
+            relation.gap = finite(gap);
+            relation.fit = Some(Fit::NotRead);
+            relation.unoccupied_only = true;
+            relation.open_start = start;
+            relation.open_finish = !start;
+            self.found.relations.push(relation);
+        }
+        Ok(())
+    }
+
+    /// J3: a plane face with a known outline lies across `a`'s axis
+    /// strictly between `from` and `to`, with a disc of `radius` about the
+    /// crossing inside its outline (grown for a tilted face).
+    fn blocked(
+        &mut self,
+        a: &Element,
+        from: f64,
+        to: f64,
+        radius: f64,
+        tau: f64,
+        planes: &[(Motion, &Part)],
+    ) -> Result<bool, TooMany> {
+        for (motion, part) in planes {
+            let back = motion.inverse();
+            for plane in &part.planes {
+                let normal = motion.dir(plane.normal.to_array());
+                let cosine = dot(normal, a.dir).abs();
+                if cosine < 1e-9 {
+                    continue;
+                }
+                for face in &plane.faces {
+                    self.count()?;
+                    let anchor = motion.point(scale(plane.normal.to_array(), face.offset_mm));
+                    let s = dot(sub(anchor, a.point), normal) / dot(a.dir, normal);
+                    if !(s > from + tau && s < to - tau) {
+                        continue;
+                    }
+                    let crossing = back.point(add(a.point, scale(a.dir, s)));
+                    if block::disc_inside(
+                        &face.outline,
+                        crossing,
+                        plane.normal.to_array(),
+                        radius / cosine + tau,
+                    ) {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// B8: neighbour faces that may lie in a target hole's open core and
+    /// that no B relation of the same neighbour reads.
+    fn occupants(&mut self, n: usize) -> Result<(), TooMany> {
+        let Some(neighbour) = self.neighbours.get(n) else {
+            return Ok(());
+        };
+        let tau = CONTACT_MM.max(neighbour.floor);
+        for (t, a) in self.targets.iter().enumerate() {
+            if a.side != Side::Hole || a.hi - a.lo <= 2.0 * tau || a.radius <= tau {
+                continue;
+            }
+            let read: BTreeSet<u64> = self
+                .found
+                .relations
+                .iter()
+                .filter(|r| r.target == t && r.neighbour == n && r.rule.starts_with('B'))
+                .filter_map(|r| r.feature)
+                .flat_map(|f| {
+                    neighbour
+                        .elements
+                        .iter()
+                        .filter(move |e| e.feature == f)
+                        .flat_map(|e| e.faces.iter().copied())
+                })
+                .collect();
+            let mut faces = Vec::new();
+            for face in neighbour.faces {
+                self.count()?;
+                if !read.contains(&face.face) && meets_core(a, face, &neighbour.motion, tau) {
+                    faces.push(face.face);
+                }
+            }
+            if faces.is_empty() {
+                continue;
+            }
+            faces.sort_unstable();
+            let mut relation = Relation::new(t, "B8", n, neighbour.floor);
+            relation.faces = faces;
+            relation.fit = Some(Fit::NotRead);
+            relation.span = Some((a.lo, a.hi));
+            relation.flags.insert(Flag::OccupantUnread);
+            if neighbour.selected {
+                relation.flags.insert(Flag::SelfPaired);
+            }
+            self.found.relations.push(relation);
+        }
+        Ok(())
+    }
+}
+
+/// True if the face's box, moved into the target's frame, may meet the
+/// open core of hole element `a`: radius `r − τ`, stations shrunk by `τ`.
+/// A face with no box may meet anything.
+fn meets_core(a: &Element, face: &FaceBox, motion: &Motion, tau: f64) -> bool {
+    let Some((low, high)) = face.bounds else {
+        return true;
+    };
+    let (u, w) = perpendiculars(a.dir);
+    let mut s_range = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut u_range = s_range;
+    let mut w_range = s_range;
+    for i in 0..8 {
+        let corner: V = [
+            if i & 1 == 0 { low[0] } else { high[0] },
+            if i & 2 == 0 { low[1] } else { high[1] },
+            if i & 4 == 0 { low[2] } else { high[2] },
+        ];
+        let d = sub(motion.point(corner), a.point);
+        let widen = |r: (f64, f64), x: f64| (r.0.min(x), r.1.max(x));
+        s_range = widen(s_range, dot(d, a.dir));
+        u_range = widen(u_range, dot(d, u));
+        w_range = widen(w_range, dot(d, w));
+    }
+    if s_range.1 <= a.lo + tau || s_range.0 >= a.hi - tau {
+        return false;
+    }
+    // The distance from the axis to the box's footprint across it: no
+    // more than to the hull of the moved box, so "may meet" errs toward
+    // meeting.
+    let nearest = |r: (f64, f64)| {
+        if r.0 > 0.0 {
+            r.0
+        } else if r.1 < 0.0 {
+            -r.1
+        } else {
+            0.0
+        }
+    };
+    norm([nearest(u_range), nearest(w_range), 0.0]) < a.radius - tau
+}
+
+/// True if two boxes, the second grown by `by`, meet.
+pub(crate) fn boxes_meet(a: &Extent, b: (V, V), by: f64) -> bool {
+    let (al, ah) = (a.min_mm.to_array(), a.max_mm.to_array());
+    (0..3).all(|i| al[i] <= b.1[i] + by && b.0[i] - by <= ah[i])
+}
+
+/// `extent` moved by `motion`, as the box of its moved corners.
+pub(crate) fn moved_box(extent: &Extent, motion: &Motion) -> (V, V) {
+    let (low, high) = (extent.min_mm.to_array(), extent.max_mm.to_array());
+    let mut out = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for i in 0..8 {
+        let p = motion.point([
+            if i & 1 == 0 { low[0] } else { high[0] },
+            if i & 2 == 0 { low[1] } else { high[1] },
+            if i & 4 == 0 { low[2] } else { high[2] },
+        ]);
+        for ((low, high), x) in out.0.iter_mut().zip(out.1.iter_mut()).zip(p) {
+            *low = low.min(x);
+            *high = high.max(x);
+        }
+    }
+    out
+}
+
+/// The reach of the bounded rules: `NEAR_MM` plus the floor (N3).
+pub(crate) fn reach(floor: f64) -> f64 {
+    NEAR_MM + floor
+}

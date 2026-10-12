@@ -124,6 +124,7 @@ fn components(
             Ok(read) => {
                 frames.insert(listed_index, (read.frames, read.reach_mm));
                 listed.read = Some(ComponentRead::Accepted(Box::new(read.part)));
+                listed.faces = read.faces;
             }
             Err(found) => {
                 let found = gate::finish(found);
@@ -414,6 +415,7 @@ fn listing(
                 },
                 occurrences: Vec::new(),
                 read: None,
+                faces: Vec::new(),
             })
         })
         .collect();

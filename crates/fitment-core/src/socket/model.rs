@@ -1,0 +1,431 @@
+//! The `fitment.socket` document's types (`docs/research/m3-socket.md`,
+//! sections 8.4 and 9.3). Built only by [`super::SocketDocument::extract`]
+//! or read back by [`super::SocketDocument::from_json`].
+
+use serde::{Deserialize, Serialize};
+
+use crate::assembly::{AssemblyNote, MatchedBy};
+use crate::features::{Axis, DefinitionRef, Extent, FeatureId, Frame};
+use crate::geom::Rigid;
+
+/// How a span of a bore or shaft fits what occupies it (B1 to B4, I1, I2,
+/// J1, B8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+// The fits the rules can state; a new one is a new rule version.
+#[allow(clippy::exhaustive_enums)]
+pub enum Fit {
+    /// A neighbour passes with room (B1, I1).
+    Clearance,
+    /// No fastener was read where one may be (J1, J2, B8): pinned.
+    NotRead,
+    /// Diameters equal within the tolerance (B2): pinned.
+    LineToLine,
+    /// The neighbour is larger (B3) or runs through the wall (B4): pinned.
+    Interference,
+}
+
+/// A flag a requirement or relation carries (section 8.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Flag {
+    /// The neighbour is another occurrence of the target (N2).
+    #[serde(rename = "self")]
+    SelfPaired,
+    /// A thread or press fit is inferred, never confirmed (B2, B3).
+    ThreadNotConfirmed,
+    /// The neighbour is off the target's axis by more than the tolerance.
+    Offset,
+    /// The neighbour runs through the target's wall (B4).
+    Conflict,
+    /// The relation exists only through a side whose extent is unknown (U3).
+    ExtentUnknown,
+    /// The target's cylinder is undecided (U2): unverifiable.
+    TargetUndecided,
+    /// Material that is no read shaft may lie in the hole (B8).
+    OccupantUnread,
+    /// The target shaft abuts a coaxial neighbour shaft end to end (I6).
+    Abutting,
+    /// An opening is required where the target's end is unknown (U8):
+    /// unverifiable.
+    OpenAtUnknownEnd,
+}
+
+/// One span of a bore: an interval of the hole's stations and what
+/// occupies it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct BoreSpan {
+    /// Where it starts, along the axis from its point, in mm.
+    pub from_mm: f64,
+    /// Where it ends.
+    pub to_mm: f64,
+    /// The original hole's diameter there.
+    pub hole_diameter_mm: f64,
+    /// A diameter about the axis that what occupies the span is sure to
+    /// pass: the least a candidate's hole may have; `None` if no shaft was
+    /// read.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub clear_diameter_mm: Option<f64>,
+    /// The strictest fit of the relations over the span.
+    pub fit: Fit,
+    /// True if the diameter is pinned to the original's.
+    pub pinned: bool,
+}
+
+/// One span of a shaft requirement.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct ShaftSpan {
+    /// Where it starts, along the axis from its point, in mm.
+    pub from_mm: f64,
+    /// Where it ends.
+    pub to_mm: f64,
+    /// The original shaft's diameter there.
+    pub shaft_diameter_mm: f64,
+    /// The largest diameter the neighbour's hole passes; `None` if pinned.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub clear_diameter_mm: Option<f64>,
+    /// The strictest fit.
+    pub fit: Fit,
+    /// True if the diameter is pinned to the original's.
+    pub pinned: bool,
+}
+
+/// Which ends of a hole must be open (B6, J1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Open {
+    /// The end at the lowest station.
+    pub start: bool,
+    /// The end at the highest station.
+    pub finish: bool,
+}
+
+/// Whether a bore's depth is known (U8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Depth {
+    /// Both ends of the original hole are known.
+    Known,
+    /// An end is unknown or irregular: no depth is required.
+    UnknownEnd,
+}
+
+/// Why an `unresolved` requirement exists (section 8.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Cause {
+    /// A face of the target no rule reads (U5).
+    TargetUnreadFace,
+    /// A neighbour definition with faces no rule reads (U4).
+    NeighbourUnread,
+    /// Neighbour material crosses the target's axis at an angle (U7).
+    Skew,
+}
+
+/// What a requirement asks of a candidate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[non_exhaustive]
+pub enum Requires {
+    /// A hole on this axis with these spans (B, J, B8).
+    #[non_exhaustive]
+    Bore {
+        /// The target hole, or undecided cylinder.
+        hole: FeatureId,
+        /// Its axis, in the target's frame.
+        axis: Axis,
+        /// The spans that something occupies or that must be pinned.
+        spans: Vec<BoreSpan>,
+        /// The ends that must be open.
+        open: Open,
+        /// Whether its depth is known.
+        depth: Depth,
+    },
+    /// A shaft on this axis (I).
+    #[non_exhaustive]
+    Shaft {
+        /// The target shaft.
+        shaft: FeatureId,
+        /// Its axis.
+        axis: Axis,
+        /// The spans a neighbour's hole holds.
+        spans: Vec<ShaftSpan>,
+        /// How much longer the shaft may be before it reaches a blind
+        /// hole's floor (I4), for information.
+        #[serde(deserialize_with = "Option::deserialize")]
+        max_extra_mm: Option<f64>,
+    },
+    /// Something no rule reads: never verified, fails until removed in
+    /// review.
+    #[non_exhaustive]
+    Unresolved {
+        /// The target feature it concerns, if one.
+        #[serde(deserialize_with = "Option::deserialize")]
+        feature: Option<FeatureId>,
+        /// The neighbour definition it concerns, if one.
+        #[serde(deserialize_with = "Option::deserialize")]
+        definition: Option<u64>,
+        /// Why, with the faces at issue.
+        causes: Vec<CauseFaces>,
+    },
+}
+
+/// One cause of an `unresolved` requirement.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct CauseFaces {
+    /// Why.
+    pub cause: Cause,
+    /// The faces at issue, sorted.
+    pub faces: Vec<u64>,
+}
+
+/// One relation a requirement was derived from (Y2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct SourceRef {
+    /// The rule, such as `B1`.
+    pub rule: String,
+    /// The target occurrence, by usage `#id`s.
+    pub occurrence: Vec<u64>,
+    /// The neighbour occurrence.
+    pub neighbour: Vec<u64>,
+    /// The neighbour feature, if one.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub feature: Option<FeatureId>,
+    /// The neighbour faces it reads, sorted.
+    pub faces: Vec<u64>,
+    /// The largest offset of the neighbour's axis from the target's over
+    /// the relation, in mm.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub e_max_mm: Option<f64>,
+    /// The sine of the angle between the axes.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub sine: Option<f64>,
+    /// The radial margin (B, I), in mm.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub margin_mm: Option<f64>,
+    /// The axial gap (J), in mm.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub gap_mm: Option<f64>,
+    /// The stations it covers on the target's axis.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub span_mm: Option<[f64; 2]>,
+    /// The floor of the two occurrences (Z2).
+    pub floor_mm: f64,
+    /// Its flags, sorted.
+    pub flags: Vec<Flag>,
+}
+
+/// One requirement.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Requirement {
+    /// `<kind>:<anchor>[+<anchor>]` (section 9.2).
+    pub id: String,
+    /// What it asks.
+    pub requires: Requires,
+    /// The largest floor of its relations, in mm.
+    pub floor_mm: f64,
+    /// Its flags, sorted.
+    pub flags: Vec<Flag>,
+    /// Its relations.
+    pub sources: Vec<SourceRef>,
+}
+
+/// Why a target feature is left out (A1, A2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum LeftOutReason {
+    /// Nothing is on its axis.
+    NothingOnAxis,
+    /// A coaxial hole beyond a gap, with material between (J3).
+    BlockedGap,
+}
+
+/// A target hole, shaft or undecided cylinder no requirement anchors.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct LeftOut {
+    /// The feature.
+    pub feature: FeatureId,
+    /// Why.
+    pub reason: LeftOutReason,
+    /// Its axis.
+    pub axis: Axis,
+    /// Its largest diameter.
+    pub diameter_mm: f64,
+    /// Where its wall starts and ends, along the axis from its point.
+    pub from_mm: f64,
+    /// Where it ends.
+    pub to_mm: f64,
+}
+
+/// The requirements of one or more occurrences of the target.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Socket {
+    /// `socket-<n>`, by smallest occurrence path.
+    pub id: String,
+    /// The occurrences it covers, by usage `#id`s.
+    pub occurrences: Vec<Vec<u64>>,
+    /// Its requirements, in id order (section 9.2).
+    pub requirements: Vec<Requirement>,
+    /// What it leaves out.
+    pub left_out: Vec<LeftOut>,
+}
+
+/// The part chosen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Target {
+    /// Its definition.
+    pub definition: DefinitionRef,
+    /// The frame every value is stated in.
+    pub frame: Frame,
+    /// Its solid.
+    pub solid: FeatureId,
+    /// Its largest stated uncertainty, in mm.
+    pub part_uncertainty_mm: f64,
+    /// Its solid's largest vertex offset, in mm.
+    pub vertex_offset_mm: f64,
+    /// Its features' `complete`.
+    pub complete: bool,
+    /// Its sound box, if it has one (V2).
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub extent: Option<Extent>,
+    /// Every hole, shaft and undecided cylinder: each anchors requirements
+    /// or is left out, in every socket (A3).
+    pub anchors: Vec<FeatureId>,
+}
+
+/// An occurrence: the target's or a neighbour's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct PlacedRef {
+    /// Its path, by usage `#id`s.
+    pub path: Vec<u64>,
+    /// The usages' ids, for people.
+    pub label: Vec<Option<String>>,
+    /// Its definition.
+    pub definition: DefinitionRef,
+    /// Its frame to the root's.
+    pub transform: Rigid,
+    /// Its part's uncertainty, in mm.
+    pub part_uncertainty_mm: f64,
+    /// Its part's vertex offset, in mm.
+    pub vertex_offset_mm: f64,
+    /// Its placement path's uncertainty, in mm.
+    pub placement_uncertainty_mm: f64,
+    /// The socket that covers it, for a target occurrence.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub socket: Option<String>,
+}
+
+/// What M7 checks the candidate's body against (V1, V2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Envelope {
+    /// Always `others_and_copies`.
+    pub check_set: String,
+    /// The target's extent, if it has one.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub extent: Option<Extent>,
+}
+
+/// What extraction derived; the digest covers it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Extracted {
+    /// The part chosen.
+    pub target: Target,
+    /// Its occurrences chosen, by path.
+    pub occurrences: Vec<PlacedRef>,
+    /// The neighbours a source cites, by path.
+    pub neighbours: Vec<PlacedRef>,
+    /// The sockets, by smallest occurrence path.
+    pub sockets: Vec<Socket>,
+    /// The envelope.
+    pub envelope: Envelope,
+}
+
+/// How the part was chosen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct SelectionRecord {
+    /// `--part` as given.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub part: Option<String>,
+    /// `--occurrence` as given.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub occurrence: Option<String>,
+    /// How the part was matched.
+    pub matched_by: MatchedBy,
+}
+
+/// The socket rules' constants, written into every document (Z3 to Z6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct SocketConstants {
+    /// The least contact tolerance, in mm (Z3).
+    pub contact_mm: f64,
+    /// The near band and the reach of bounded rules, in mm (Z6).
+    pub near_mm: f64,
+    /// The largest sine compared as parallel (Z5).
+    pub parallel_sine_rel: f64,
+    /// The most candidate pairs examined (check 39).
+    pub max_relations: u64,
+}
+
+/// One review decision (section 9.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct ReviewEntry {
+    /// The socket.
+    pub socket: String,
+    /// The requirement.
+    pub requirement: String,
+    /// The decision.
+    pub status: ReviewStatus,
+    /// Why, required for a removal.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub note: Option<String>,
+}
+
+/// A review decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+// Review keeps or removes; there is no third decision (R18).
+#[allow(clippy::exhaustive_enums)]
+pub enum ReviewStatus {
+    /// Not reviewed: matched like `kept`.
+    Unreviewed,
+    /// Reviewed and kept.
+    Kept,
+    /// Removed from matching, with a note.
+    Removed,
+}
+
+/// The notes a document carries: the assembly's.
+pub type Notes = Vec<AssemblyNote>;

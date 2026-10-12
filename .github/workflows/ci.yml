@@ -71,6 +71,7 @@ jobs:
       - run: cargo build --release -p fitment --locked
       - run: tools/verify-occt.py features corpus/out
       - run: tools/verify-occt.py features --expect fixtures/manifest.json fixtures
+      - run: tools/verify-occt.py socket corpus/out
       - run: cargo test -p fitment --test corpus --test fixtures --locked
         env:
           FITMENT_REQUIRE_CORPUS: "1"

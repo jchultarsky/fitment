@@ -113,6 +113,9 @@ pub enum RefusalCode {
     /// A component's solid is the solid of another definition too: each
     /// would be read in full, once per definition (check 36).
     SolidShared,
+    /// More candidate pairs than fitment examines for one socket (check
+    /// 39).
+    TooManyRelations,
 }
 
 impl RefusalCode {
@@ -156,6 +159,7 @@ impl RefusalCode {
             Self::ComponentRefused => "component_refused",
             Self::SolidFrameUnplaced => "solid_frame_unplaced",
             Self::SolidShared => "solid_shared",
+            Self::TooManyRelations => "too_many_relations",
         }
     }
 }
@@ -753,6 +757,7 @@ mod tests {
             ComponentRefused,
             SolidFrameUnplaced,
             SolidShared,
+            TooManyRelations,
         ];
         assert!(
             all.windows(2).all(|pair| pair[0] < pair[1]),

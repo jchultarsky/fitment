@@ -7,6 +7,7 @@
 
     tools/verify-occt.py manifest DIR
     tools/verify-occt.py features [--expect MANIFEST] PATH...
+    tools/verify-occt.py socket DIR
 
 Reads every case of DIR/manifest.json (written by tools/gen-corpus.py) with
 Open CASCADE 8.0.1, the kernel the M7 fit verifier pins (decision 8), and
@@ -678,7 +679,8 @@ def xcaf_leaves(path):
                     walk(ref, loc.Multiplied(tool.GetLocation_s(comp)))
         else:
             t = loc.Transformation()
-            out.append((name_of(label), [[t.Value(i, j) for j in range(1, 5)] for i in range(1, 4)]))
+            out.append((name_of(label), [[t.Value(i, j) for j in range(1, 5)] for i in range(1, 4)],
+                        tool.GetShape_s(label).Moved(loc)))
 
     free = Sequence_TDF_Label()
     tool.GetFreeShapes(free)
@@ -700,7 +702,7 @@ def check_assembly(directory, case):
         # What Open CASCADE can show of a refusal: two roots are two free
         # shapes. A placement edit it may read another way is not judged.
         if "several_roots" in expect["listing"]["refusals"]:
-            roots = {tuple(row[3] for row in m) for _, m in leaves}
+            roots = {tuple(row[3] for row in m) for _, m, _ in leaves}
             if len(leaves) < 2 or len(roots) < 2:
                 return [f"{name}: refused for two roots, but Open CASCADE reads {len(leaves)} leaves"]
         return []
@@ -711,7 +713,7 @@ def check_assembly(directory, case):
     if len(wanted) != len(leaves):
         problems.append(f"{name}: Open CASCADE reads {len(leaves)} leaf occurrences, the construction "
                         f"{len(wanted)}")
-    left = list(leaves)
+    left = [(n, m) for n, m, _ in leaves]
     for product, m in wanted:
         at = next((k for k, (n, found) in enumerate(left) if n == product and all(
             abs(found[i][j] - m[i][j]) <= PLACEMENT_TOL for i in range(3) for j in range(4))), None)
@@ -1275,7 +1277,92 @@ def quiet():
         messenger.RemovePrinter(printers.Value(i))
 
 
+# ------------------------------------------------------------------ sockets
+
+
+def apply(m, p):
+    """A 3x4 transform applied to point p."""
+    return [sum(m[i][j] * p[j] for j in range(3)) + m[i][3] for i in range(3)]
+
+
+def socket_problems(directory, case, binary, tally):
+    """What Open CASCADE sees that one case's sockets miss: every point of a
+    left-out hole's axis, over its wall, must be air in every other solid
+    of the assembly (A1). A neighbour fitment cannot read, such as a
+    B-spline bolt, is a solid like any other here, so this is the check
+    that sees one."""
+    problems = []
+    path = directory / case["file"]
+    leaves = xcaf_leaves(path)
+    if leaves is None:
+        return [f"{case['id']}: Open CASCADE cannot read it"]
+    for target in case["expect"].get("sockets", {}):
+        run = subprocess.run([str(binary), "socket", str(path), "--part", target], capture_output=True)
+        if run.returncode != 0:
+            problems.append(f"{case['id']}: fitment socket --part {target} exited {run.returncode}")
+            continue
+        document = json.loads(run.stdout)
+        extracted = document["extracted"]
+        by_socket = {o["socket"]: o for o in extracted["occurrences"]}
+        for socket in extracted["sockets"]:
+            occurrence = by_socket[socket["id"]]
+            t = occurrence["transform"]
+            m = [row + [t["translation_mm"][i]] for i, row in enumerate(t["rotation"])]
+            # Every other solid: leaves not at this occurrence's placement.
+            others = [shape for name, found, shape in leaves
+                      if not all(abs(found[i][j] - m[i][j]) <= 1e-6 for i in range(3) for j in range(4))]
+            for left in socket["left_out"]:
+                tally["left out holes"] += 1
+                p, d = left["axis"]["point_mm"], left["axis"]["direction"]
+                a, b = left["from_mm"], left["to_mm"]
+                for k in range(1, 10):
+                    s = a + (b - a) * k / 10
+                    point = apply(m, [p[i] + s * d[i] for i in range(3)])
+                    for shape in others:
+                        classifier = BRepClass3d_SolidClassifier(shape, gp_Pnt(*point), 1e-7)
+                        if classifier.State() == TopAbs_IN:
+                            problems.append(f"{case['id']} {target} {socket['id']}: {left['feature']} is left out, "
+                                            f"but Open CASCADE finds material on its axis at {point}")
+                            break
+                    else:
+                        continue
+                    break
+    return problems
+
+
+def socket_main(argv):
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="verify-occt.py socket")
+    parser.add_argument("directory", metavar="DIR", help="a generated corpus")
+    args = parser.parse_args(argv)
+    directory = Path(args.directory)
+    binary = Path(os.environ.get("FITMENT", Path(__file__).resolve().parent.parent / "target/release/fitment"))
+    if not binary.is_file():
+        sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    tally = {"cases": 0, "left out holes": 0}
+    problems = []
+    for case in manifest["cases"]:
+        if case.get("kind") != "assembly" or "sockets" not in case["expect"]:
+            continue
+        tally["cases"] += 1
+        found = socket_problems(directory, case, binary, tally)
+        problems += found
+        print(f"{'ok  ' if not found else 'FAIL'} {case['id']}")
+    for problem in problems:
+        print(problem, file=sys.stderr)
+    if tally["cases"] == 0 or tally["left out holes"] == 0:
+        problems.append("no socket case or no left-out hole was checked")
+        print(problems[-1], file=sys.stderr)
+    print(", ".join(f"{v} {k}" for k, v in tally.items()) + f"; {len(problems)} disagreements with Open CASCADE")
+    sys.exit(1 if problems else 0)
+
+
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "socket":
+        quiet()
+        socket_main(sys.argv[2:])
     if len(sys.argv) >= 3 and sys.argv[1] == "features":
         quiet()
         features_main(sys.argv[2:])
