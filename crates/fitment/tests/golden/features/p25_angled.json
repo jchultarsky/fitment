@@ -517,8 +517,8 @@
         "axis": {
           "point_mm": [
             20.0,
-            24.90747728811673,
-            1.5000000000033111
+            11.726497308104,
+            24.330127018922
           ],
           "direction": [
             0.0,
@@ -529,11 +529,8 @@
         "radius_mm": 3.0,
         "spread_mm": 0.0,
         "class": {
-          "kind": "full_by_seam",
-          "proven_extent_mm": [
-            0.0,
-            23.094010767585274
-          ]
+          "kind": "undecided",
+          "reason": "no_end_circle"
         },
         "stations_mm": [],
         "wall_openings": 0,

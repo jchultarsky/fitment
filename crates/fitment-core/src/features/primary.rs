@@ -118,7 +118,7 @@ pub(crate) fn read(topo: &Topo, solid: FeatureId, uncertainty: f64) -> Result<Pr
         planes: read_planes,
         cylinders: cylinders
             .iter()
-            .map(|g| cylinder(topo, solid, g, &near))
+            .map(|g| cylinder(topo, solid, g, &owner, &near))
             .collect::<Result<_, _>>()?,
         cones: cones
             .iter()
@@ -320,6 +320,7 @@ fn cylinder(
     topo: &Topo,
     solid: FeatureId,
     group: &[usize],
+    owner: &[FeatureId],
     near: &[(FeatureId, FeatureId)],
 ) -> Result<Cylinder, Refusal> {
     let (faces, reference) = members(topo, group)?;
@@ -352,7 +353,19 @@ fn cylinder(
         }
     }
     let id = FeatureId::new(FeatureKind::Cylinder, faces.first().copied().unwrap_or(0));
-    let read = full::classify(topo, group, (*location, *z, *radius)).map_err(|at| {
+    let read = full::classify(
+        topo,
+        &full::Group {
+            id,
+            faces: group,
+            owner,
+            origin: *location,
+            axis: *z,
+            radius: *radius,
+            shaft: face.sense,
+        },
+    )
+    .map_err(|at| {
         Refusal::new(
             RefusalCode::Contradiction,
             Some(at.0),
@@ -363,15 +376,15 @@ fn cylinder(
         )
     })?;
     let mut class = read.class;
-    match &mut class {
-        CylinderClass::FullBySeam { proven_extent_mm } => {
-            *proven_extent_mm = [0.0, num(proven_extent_mm[1], *instance)?];
-        }
-        CylinderClass::Partial {
-            sweep_rad: Some(sweep),
-        } => *sweep = num(*sweep, *instance)?,
-        _ => {}
+    if let CylinderClass::Partial {
+        sweep_rad: Some(sweep),
+    } = &mut class
+    {
+        *sweep = num(*sweep, *instance)?;
     }
+    // `near` is sorted: this cylinder's pairs are one run of it.
+    let start = near.partition_point(|(a, _)| *a < id);
+    let end = near.partition_point(|(a, _)| *a <= id);
     Ok(Cylinder {
         id,
         solid,
@@ -393,8 +406,9 @@ fn cylinder(
             .collect::<Result<_, _>>()?,
         wall_openings: read.wall_openings,
         near_misses: near
+            .get(start..end)
+            .unwrap_or_default()
             .iter()
-            .filter(|(a, _)| *a == id)
             .map(|&(_, b)| b)
             .collect(),
     })
@@ -538,6 +552,7 @@ mod tests {
             sense,
             same_sense: sense,
             bounds: Vec::new(),
+            extent: 5.0,
         };
         Topo {
             instance: 1,

@@ -27,7 +27,7 @@ Two adversarial reviewers then attacked the merged design: one for soundness, on
 - **B-spline faces do not refuse a part.** They become "other" faces, which never become features, and anything that depends on them is `unknown`. Refusing them would refuse 24% of otherwise valid parts and buy no safety, because an unread face can only cause a missed match.
 - **Every face of the solid lands in exactly one primary feature.** The primary features are planes, cylinders, cones, tori and other faces. Holes and shafts are compound features built on top of them. The JSON states the face counts, so a test can prove nothing was dropped.
 - **Planes** have an outward normal, an offset and an exact outline: loops of line segments and circular arcs, never sampled. A face whose outline has a B-spline or ellipse edge keeps its plane, but its outline is `unknown`.
-- **Cylinders** group edge-connected faces with the same sense on one stated cylinder. `face_sense` false is a hole wall and true is a shaft wall. A cylinder is full only when stated circles close 2π around it, or an axial seam proves it. Partial cylinders (fillets, slot ends) are never holes. On the 55 fixtures:
+- **Cylinders** group edge-connected faces with the same sense on one stated cylinder. `face_sense` false is a hole wall and true is a shaft wall. A cylinder is full only when stated circles close 2π around it. (An axial seam was to prove it too; review of PR 5 withdrew that rule, F3.) Partial cylinders (fillets, slot ends) are never holes. On the 55 fixtures:
   - 9,344 full cylinders: 7,626 holes, 1,573 shafts and 145 in voids;
   - 43,664 partial cylinders;
   - 889 undecided cylinders, reported with a reason.
@@ -53,7 +53,7 @@ Each has a recommended default. The rest of the document assumes the defaults.
 | R5 | A solid with voids | Accept. Void faces never form holes or shafts. | Keeps 22 parts. A void's cylinder is a cavity, not a hole. |
 | R6 | A part with undecided cylinders or unknown hole ends | Accept with `complete: false` | 16 of 55 files have undecided cylinders, but only 1 of the 24 accepted files does (`nist_ftc_07_asme1_rd.stp`, 7). Refusing would quarantine every file whose circles are written as B-splines. |
 | R7 | Grouping tolerance: a fixed 1e-6 mm, or each context's stated uncertainty (up to 0.672 mm)? | Fixed 1e-6 mm. The uncertainty is carried as the matcher's floor. | The fixed value already joins 98.3% of adjacent faces bit for bit. Widening it gains 19 full cylinders, all shafts and no holes, and merges surfaces 0.5 mm apart. |
-| R8 | Angled holes whose ends are ellipses, and holes ending in a cross bore | A hole with axis and diameter proven by its seam, `Irregular` ends, length `null` | stepq reports ellipses and the B-spline edges of a cross bore as `Curve::Other`. Reading ellipses is a possible stepq 0.7 addition (section 19). |
+| R8 | Angled holes whose ends are ellipses, and holes ending in a cross bore | An `undecided` cylinder with its axis and diameter, `Irregular` ends, length `null`. A seam was to prove such a hole full (F3), but without the curves on the surface a slit looks the same, so review of PR 5 withdrew it | stepq reports ellipses and the B-spline edges of a cross bore as `Curve::Other`. Reading ellipses is a possible stepq 0.7 addition (section 19). |
 | R9 | Commit the unit set without pcurves, within the 300 KB cap | Yes | The 20 parts measured so far total 224,380 bytes. The pcurve variants run in CI from the generated corpus. |
 | R11 | A whole shell written inside out, consistently: every face's sense and loops reversed together | Not detected at M2; a residual risk. The oracle checks that every accepted fixture and corpus solid has positive volume in Open CASCADE | A per-face check cannot see it, and a naive global test flags 21 valid fixture shells. A sound global test needs more work (section 19). |
 | R10 | D2's "three real sample files" | The fixtures stand in now. Three vendor parts (a screw, a bracket, a bearing) are fetched with the D10 work at M5. | No fixture is a vendor catalog part. |
@@ -405,7 +405,7 @@ The rules:
   - The union of the arcs' angular intervals must also cover 2π, with gaps no wider than ε/r. The sum alone would accept two arcs over the same half circle in opposite directions.
   - A chain that sums to 4π is check 29.
   - 18,821 stations are full by this rule, and the union test agrees on every one.
-- **F3. Seam proof.** A seam proves a face wraps 2π around the axis, but only where the seam runs. F3 applies only when all of these hold:
+- **F3. Seam proof (withdrawn in review of PR 5).** A seam was to prove a face wraps 2π around the axis where the seam runs. It does not: a seam used twice by one loop shows only that the face lies on both sides of the seam's line. A slit along the axis, on the cylinder, is used the same way, and a 0.6 rad strip with such a slit read as full; on p25 the claimed extent overran the real wrap by 3.5 mm. Telling a seam from a slit needs the curves on the surface (pcurves), which stepq does not read. As first written, F3 applied when all of these held:
   - the edge's curve (`basis()`) is a line along the axis, on the cylinder (the lever-arm test of section 5.2);
   - both of its uses are in one loop of one face of the group, in opposite directions;
   - the group's boundary has no axial line and no station that is not full.
@@ -415,7 +415,8 @@ The rules:
   - **Partial:** any axial line on the boundary, or any station not full. The largest station sweep is recorded.
   - **Full:** every station full, at least one station, and V within `[s_lo − ε_v, s_hi + ε_v]`. Vertices of V strictly inside the range are **wall openings**, such as a cross hole entering the wall. Their count is reported, and 164 full groups in the fixtures have them.
   - **Full, one end irregular:** every station full, and V extends beyond exactly one side. That end is `Irregular`.
-  - **Full by seam:** no station at all, and F3 holds. Both ends are `Irregular`, V is not tested, and only `proven_extent_mm` is known.
+  - **Full by seam** (withdrawn with F3): a group with no station is `undecided`, `no_end_circle`.
+  - **One station** (added in review of PR 5): the wall runs past it on the side its arcs face (counterclockwise about z for a shaft means the wall lies above, as in check 25), so that end is irregular even when a closed curve's one vertex touches the station. With two or more stations, the lowest must face up and the highest down, or the group is `undecided`, `ends_disagree`.
   - **Undecided:** everything else, with a reason such as "coverage not stated: bounded by B-spline".
 - **F5. Unread curves are never interpreted.** A B-spline that happens to be a circle is still `Other`. The AS1 export from CAS.CADE writes every circle as a rational B-spline, so all 14 of its cylinders are undecided, while four other exports of the same model give 11 holes and 3 shafts each.
 
@@ -425,7 +426,6 @@ Results on the fixtures:
 | --- | --- |
 | Full (both ends) | 9,199 |
 | Full, one end irregular | 145 |
-| Full by seam | not measured (F3 is new) |
 | Partial: 21,269 concave, 22,395 convex | 43,664 |
 | Undecided | 889 |
 
@@ -451,10 +451,10 @@ Partial cylinders by their largest swept angle:
 - `id`, `solid`, `shell`, `faces`, `surface` (the reference face's surface `#id`), `sense` (`hole` or `shaft`);
 - `axis`: a point on L and the direction z, with the sign chosen as in section 9.4;
 - `radius_mm` and `spread_mm`, the largest G1 deviation of a member from the reference;
-- `class`: `full`, `full_by_seam` (with `proven_extent_mm`), `partial` (with `sweep_rad`, or `null` with no end circle) or `undecided` (with a reason);
+- `class`: `full`, `full_one_end_irregular` (with `irregular`), `partial` (with `sweep_rad`, or `null` with no end circle) or `undecided` (with a reason);
 - `stations_mm`: the stations, as distances along the axis;
 - `wall_openings`: a count;
-- `near_misses`: the near-miss notes on this group, if any.
+- `near_misses`: the ids of the cylinders it nearly joins; each shared edge also gets a `near_miss` note.
 
 ### 8.5 The fixtures, by exporter
 
@@ -607,7 +607,7 @@ Every cylinder group ends in exactly one class: hole segment, shaft segment, voi
 `part.complete` is true iff no cylinder is undecided and no end or stack is unknown or irregular. It is information, not a refusal (R6).
 
 - **M3:** a target hole with an unknown end or `null` depth gives no depth requirement, and the socket says so. An undecided or partial cylinder on the target with a neighbour on its axis is a requirement the socket cannot express, so socket extraction refuses or flags it (Soundness rule 3).
-- **M4:** a candidate's undecided, partial or unknown features never satisfy a requirement. They can cost only false negatives. A `full_by_seam` hole may satisfy a requirement on axis and diameter only, never one that needs length, depth or engagement: its proven extent may be a fraction of its real length.
+- **M4:** a candidate's undecided, partial or unknown features never satisfy a requirement. They can cost only false negatives. An `undecided` cylinder, such as an angled hole whose ends are ellipses, may at most locate an axis and diameter for review; it never satisfies a requirement.
 
 ### 9.7 Shafts and bosses
 
@@ -906,7 +906,7 @@ fitment features <FILE> [--format json|table]
 | p22_coaxial_blind | two Ø6×4 blind holes on one axis from opposite faces; a second pair 0.02 mm off axis | 4 blind holes, no through hole | U | 13,579 |
 | p23_thin_floor | Ø6 to depth 9.995 in a 10 mm plate | blind, depth 9.995 | G | 8,611 |
 | p24_radius_step | Ø10.02×8 over Ø10.00 through | through stack along +z from z = 0: Ø10.00 0–12, Ø10.02 12–20, joined by a 0.01 mm annulus | G | 10,027 |
-| p25_angled | Ø6 through, tilted 30° | cylinder class `full_by_seam`, axis and Ø6 exact, `proven_extent_mm` the seam's span; hole kind `unknown`, both ends irregular, length `null` (R8) | U | 8,556 |
+| p25_angled | Ø6 through, tilted 30° | cylinder class `undecided` (`no_end_circle`), axis and Ø6 exact; hole kind `unknown`, both ends irregular, length `null` (R8). It was `full_by_seam` until review of PR 5 withdrew F3 | U | 8,556 |
 | p26_all_bspline | p01 converted to NURBS | accepted: 0 planes, 0 holes, 7 other faces (R1) | U | 12,254 |
 | p27_freeform | a profile with a spline top, a Ø6.6 hole away from it | accepted: the hole is read, the spline face is other | G | 9,037 |
 | p28_void | 20 mm cube with a Ø8 spherical void | accepted: the sphere is an other face in shell 1, no hole (R5) | G | 7,338 |
@@ -938,7 +938,7 @@ fitment features <FILE> [--format json|table]
 
 Every positive part is also generated with pcurves (`_pc`, the way Open CASCADE writes by default) and in the rotated frame (`_rot`), in CI only.
 
-Hand-written STEP snippets inside the Rust tests cover what generated files cannot reach: the contradiction checks (27 to 29), a non-mutual step (W6), a partial cylinder with a bridged loop that must not be full (F3), truncated input, and the gate checks listed in section 13.1.
+Hand-written STEP snippets inside the Rust tests cover what generated files cannot reach: the contradiction checks (27 to 29), a non-mutual step (W6), a slit cylinder strip that must not be full (once F3's case; now any group with no end circle is undecided), truncated input, and the gate checks listed in section 13.1.
 
 **Split cylinders, honestly.** Every tool available writes through Open CASCADE, so there is no independent second exporter. Three sources stand in:
 
@@ -1054,11 +1054,11 @@ Each PR comes with its tests. `EXTRACTOR_VERSION` goes up with every PR that cha
    - the planes of every corpus part checked against the construction, and each accepted fixture's plane count pinned;
    - `verify-occt.py features` for planes, in CI on the corpus and the fixtures.
 5. **Cylinders:** full or partial F, the near-miss notes, contradictions 27 and 29, and the oracle's cylinder checks. Grouping G and sense S arrived in PR 4. As built:
-   - `class` is `full`, `full_one_end_irregular` (with `irregular`: `start` or `finish`, the end at the lowest or highest station), `full_by_seam` (with `proven_extent_mm`), `partial` (with `sweep_rad`, the widest station's cover) or `undecided` (with `reason`: `no_end_circle` or `irregular_at_both_ends`);
-   - a cylinder's axis has the canonical sign of section 9.4 and its point at the lowest station (else at the seam's start, else the stated location), so `stations_mm` starts at 0;
+   - `class` is `full`, `full_one_end_irregular` (with `irregular`: `start` or `finish`, the end at the lowest or highest station), `partial` (with `sweep_rad`, the widest station's cover) or `undecided` (with `reason`: `no_end_circle`, `irregular_at_both_ends` or `ends_disagree`). F3 and `full_by_seam` were withdrawn in review (section 8.3);
+   - a cylinder's axis has the canonical sign of section 9.4 and its point at the lowest station (else the stated location), so `stations_mm` starts at 0;
    - `near_misses` lists the other cylinders' ids, and each shared edge gets a `near_miss` note;
    - wall openings are counted as connected chains of "other" boundary edges with a vertex strictly between the stations;
-   - every corpus part's cylinders match the construction one to one (`tests/support/expect.rs`, shared by the core and CLI tests), and the oracle checks every cylinder's radius, axis line, sense, 360° cover where fitment says full, and extent where both ends are known: 1,728 cylinders over the corpus and the 24 accepted fixtures, 0 disagreements. 21 fixture cylinders cover 360° in Open CASCADE but are not full in fitment, all false negatives by rule: 14 are faces with an end circle and axial lines in one loop (F4 makes any axial line partial), 7 are bounded by B-splines (`undecided`). Its probe first sat at the middle of a face's parameter bounds, which a face with a cutout does not cover; it now finds a point on the face;
+   - every corpus part's cylinders match the construction one to one (`tests/support/expect.rs`, shared by the core and CLI tests), and the oracle checks every cylinder's radius, axis line, sense, 360° cover where fitment says full, and extent where both ends are known: 1,728 cylinders over the corpus and the 24 accepted fixtures, 0 disagreements. A full cylinder must go all the way around just inside each station, by points classified against its faces; its stations must be the circles among its edges; its faces must run past the stations on exactly the side it calls irregular; a partial sweep must lie within the faces' parameter bounds. The first version measured cover from parameter bounds, a bounding box that a face with a cutout fills: it called 14 partial cylinders full and could not have caught a false `full` on a slotted bore (review of PR 5). Mutations of fitment's output (a partial called full, the irregular end swapped, a sweep 0.1 rad wider, a station 0.5 µm off) are all caught;
    - on the fixtures, the census of section 8.5 holds: NIST ctc_01 has 10 full holes in each of its three exports, and ftc_10 has 42 (14 with one irregular end).
 6. **Holes and shafts:** the end walk W, stacks K, lengths E, cones and tori in walks, `complete`, and the oracle's through/blind and depth checks.
 7. **Hardening.**
@@ -1072,7 +1072,7 @@ Each PR comes with its tests. `EXTRACTOR_VERSION` goes up with every PR that cha
 
 - **Matching method, step 1:**
   - "The extent along the axis comes from the vertices of the bounding edges" becomes "from the centres of the stated end circles".
-  - "Only a full circle is a hole. The arcs at each end must sum to 360°" gains "or an axial seam proves the face wraps around, over the seam's span".
+  - "Only a full circle is a hole. The arcs at each end must sum to 360°" stands as written: the seam proof proposed here was withdrawn in review of PR 5.
   - "`same_sense = .F.` marks a hole and `.T.` a shaft" becomes "`face_sense` (`same_sense` composed with the shell's orientation) false marks a hole and true a shaft; the gate checks it against the loops".
   - "Faces ... with the same axis line and radius are one cylinder" becomes "edge-connected faces with the same sense on one stated cylinder are one cylinder; coaxial cylinders that do not touch stay separate".
   - "A plane is kept with its outward normal and its outline from the loop vertices" becomes "...its outline from the loop vertices and each edge's line or circle, exactly".

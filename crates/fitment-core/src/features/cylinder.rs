@@ -60,8 +60,8 @@ pub struct Cylinder {
     /// Hole wall or shaft wall.
     pub sense: Sense,
     /// The reference surface's axis line, with the canonical sign (the
-    /// largest component positive), through the lowest station: or the
-    /// start of the seam's span, or the surface's stated location.
+    /// largest component positive), through the lowest station, or the
+    /// surface's stated location if there is none.
     pub axis: Axis,
     /// The reference surface's radius.
     pub radius_mm: f64,
@@ -98,14 +98,6 @@ pub enum CylinderClass {
         /// The end the wall runs past.
         irregular: End,
     },
-    /// No end circle, but a seam proves the faces wrap around the axis
-    /// where it runs. Both ends are irregular; only the seam's span is
-    /// known.
-    #[non_exhaustive]
-    FullBySeam {
-        /// The seam's span along the axis, from the axis point.
-        proven_extent_mm: [f64; 2],
-    },
     /// The faces do not wrap around the axis: an axial line bounds them,
     /// or a station is not a full circle.
     #[non_exhaustive]
@@ -124,13 +116,10 @@ pub enum CylinderClass {
 }
 
 impl CylinderClass {
-    /// True if the faces are known to wrap around the axis: full, with one
-    /// end irregular, or by a seam.
+    /// True if the faces are known to wrap around the axis: full, or with
+    /// one end irregular.
     pub fn is_full(&self) -> bool {
-        matches!(
-            self,
-            Self::Full {} | Self::FullOneEndIrregular { .. } | Self::FullBySeam { .. }
-        )
+        matches!(self, Self::Full {} | Self::FullOneEndIrregular { .. })
     }
 }
 
@@ -151,8 +140,12 @@ pub enum End {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum UndecidedReason {
-    /// No end circle and no seam: curves no rule reads bound it.
+    /// No end circle: curves no rule reads, or a seam, which proves
+    /// nothing without the curves on the surface (review of PR 5).
     NoEndCircle,
     /// Every station is full, but the wall runs past them at both ends.
     IrregularAtBothEnds,
+    /// The lowest station's arcs say the wall lies below it, or the
+    /// highest's that it lies above.
+    EndsDisagree,
 }

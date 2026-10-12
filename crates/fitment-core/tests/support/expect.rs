@@ -10,7 +10,8 @@
 //! - every face in exactly one primary feature;
 //! - cylinders one to one: each hole or shaft segment a full cylinder of
 //!   its diameter on its axis line, over its extent where the hole is
-//!   known, with one or two irregular ends where the manifest says so;
+//!   known; with one irregular end, on the side the manifest names, or
+//!   undecided with two, where it says so;
 //!   each partial cylinder with its sweep; and no other cylinder.
 
 use serde_json::Value;
@@ -62,7 +63,8 @@ fn same_line(p: &[f64], d: &[f64], q: &[f64], e: &[f64]) -> bool {
         .map(|(o, dd)| (o - along * dd) * (o - along * dd))
         .sum::<f64>()
         .sqrt();
-    apart(d, e, true) <= DIRECTION.max(1e-8) && perpendicular <= LENGTH_MM
+    // Axis points in the manifest are rounded to 9 decimals as well.
+    apart(d, e, true) <= 1e-8 && perpendicular <= LENGTH_MM
 }
 
 /// Every disagreement between `part` and the manifest's `expect`.
@@ -154,6 +156,8 @@ struct Wanted {
     class: &'static str,
     /// For a partial cylinder, its sweep in degrees.
     sweep_deg: Option<f64>,
+    /// For one irregular end: true if it is the first along `direction`.
+    irregular_first: Option<bool>,
 }
 
 fn wanted(expect: &Value) -> Vec<Wanted> {
@@ -162,12 +166,8 @@ fn wanted(expect: &Value) -> Vec<Wanted> {
         for (i, stack) in expect[key].as_array().into_iter().flatten().enumerate() {
             let label = format!("{} {i}", &key[..key.len() - 1]);
             if stack["kind"] == "unknown" {
-                let irregular = stack["ends"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|e| *e == "irregular")
-                    .count();
+                let ends: Vec<&Value> = stack["ends"].as_array().into_iter().flatten().collect();
+                let irregular = ends.iter().filter(|e| **e == "irregular").count();
                 out.push(Wanted {
                     label,
                     diameter: stack["diameter"].as_f64().unwrap_or(f64::NAN),
@@ -175,8 +175,10 @@ fn wanted(expect: &Value) -> Vec<Wanted> {
                     direction: numbers(&stack["axis_direction"]),
                     hole,
                     extent: None,
-                    class: ["full", "full_one_end_irregular", "full_by_seam"][irregular.min(2)],
+                    class: ["full", "full_one_end_irregular", "undecided"][irregular.min(2)],
                     sweep_deg: None,
+                    irregular_first: (irregular == 1)
+                        .then(|| ends.first().is_some_and(|e| *e == "irregular")),
                 });
                 continue;
             }
@@ -194,6 +196,7 @@ fn wanted(expect: &Value) -> Vec<Wanted> {
                     )),
                     class: "full",
                     sweep_deg: None,
+                    irregular_first: None,
                 });
             }
         }
@@ -213,6 +216,7 @@ fn wanted(expect: &Value) -> Vec<Wanted> {
             extent: None,
             class: "partial",
             sweep_deg: partial["sweep_deg"].as_f64(),
+            irregular_first: None,
         });
     }
     out
@@ -228,6 +232,15 @@ fn matches(cylinder: &Value, want: &Wanted) -> bool {
         || !same_line(&want.point, &want.direction, &point, &direction)
     {
         return false;
+    }
+    if let Some(first) = want.irregular_first {
+        // The manifest's ends run along its direction, fitment's along its
+        // canonical one.
+        let along = dot(&direction, &want.direction) > 0.0;
+        let start = if along { first } else { !first };
+        if class["irregular"] != if start { "start" } else { "finish" } {
+            return false;
+        }
     }
     if let Some(sweep) = want.sweep_deg {
         let found = class["sweep_rad"].as_f64().map(f64::to_degrees);

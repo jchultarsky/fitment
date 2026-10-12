@@ -202,6 +202,10 @@ pub(crate) struct Face {
     /// The face's own `same_sense`, as written.
     pub(crate) same_sense: bool,
     pub(crate) bounds: Vec<Bound>,
+    /// How far its vertices spread along its surface's axis, for a
+    /// cylinder, cone or torus, else 0: the lever arm of section 5.2. Set
+    /// once by [`Topo::measure`], so grouping never recomputes it.
+    pub(crate) extent: f64,
 }
 
 /// The solid.
@@ -216,6 +220,35 @@ pub(crate) struct Topo {
 }
 
 impl Topo {
+    /// Sets every face's [`Face::extent`].
+    pub(crate) fn measure(mut self) -> Self {
+        let extents: Vec<f64> = self
+            .faces
+            .iter()
+            .map(|face| {
+                let axis = match &face.surface {
+                    Surface::Cylinder { z, .. }
+                    | Surface::Cone { z, .. }
+                    | Surface::Torus { z, .. } => *z,
+                    _ => return 0.0,
+                };
+                let stations: Vec<f64> = self
+                    .face_vertices(face)
+                    .into_iter()
+                    .filter_map(|v| self.vertices.get(v))
+                    .map(|v| dot(v.point, axis))
+                    .collect();
+                let low = stations.iter().copied().fold(f64::INFINITY, f64::min);
+                let high = stations.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                if high >= low { high - low } else { 0.0 }
+            })
+            .collect();
+        for (face, extent) in self.faces.iter_mut().zip(extents) {
+            face.extent = extent;
+        }
+        self
+    }
+
     /// The solid moved by `rigid` (`p ↦ R·p + t`), as when a mapped item
     /// places it in the part's frame. Directions are renormalized; a
     /// proper rotation keeps every face's sense.

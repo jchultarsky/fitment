@@ -63,11 +63,16 @@ each was transferred from:
     that need the slack are tallied apart;
   - each cylinder's faces are cylinders in Open CASCADE with its radius,
     on its axis line, with its sense (a point just outside the wall is
-    material for a hole); one fitment calls full (full, one end irregular,
-    or by seam) covers 360 degrees by the faces' parameter ranges, and a
-    full one spans its stations along the axis. A cylinder Open CASCADE
-    covers 360 degrees but fitment does not call full is a false negative,
-    tallied apart, as are partial sweeps that differ from the faces' cover;
+    material for a hole);
+  - one fitment calls full (or full with one end irregular) goes all the
+    way around just inside each station and past it on an irregular side,
+    by points classified against the faces (parameter bounds are a bounding
+    box: a face with a cutout fills them);
+  - its stations are the circles on the cylinder among the faces' edges;
+    its faces run past the stations on exactly the side it calls
+    irregular; a partial sweep is within the faces' parameter bounds. A cylinder whose faces go all the
+    way around between its stations but fitment does not call full is a
+    false negative, tallied apart;
   - the solid is valid with positive volume: the only check on a shell
     written inside out (design, R11).
 
@@ -288,7 +293,7 @@ class Solid:
             stations += [dot(sub(xyz(curve.Value(a + (b - a) * k / 64)), loc), d) for k in range(65)]
         return {"loc": loc, "d": d, "r": radius, "concave": concave, "u": (umin, umax),
                 "span": (min(stations), max(stations)), "edges": edges,
-                "x": xyz(c.XAxis().Direction()), "y": xyz(c.YAxis().Direction())}
+                "x": xyz(c.XAxis().Direction()), "y": xyz(c.YAxis().Direction()), "face": face}
 
     def groups(self):
         """Cylinder faces grouped as fitment's rule G2 groups them: on one
@@ -749,7 +754,81 @@ def check_features(path, binary, tally):
 
 
 VERTEX_SIDE = 1e-3  # mm: how far past the stations a full wall's vertices may lie (F4)
-FULL_CLASSES = ("full", "full_one_end_irregular", "full_by_seam")
+FULL_CLASSES = ("full", "full_one_end_irregular")
+
+
+def perpendicular(z):
+    """A unit vector perpendicular to unit z."""
+    least = min(range(3), key=lambda i: abs(z[i]))
+    e = tuple(1.0 if i == least else 0.0 for i in range(3))
+    return norm(add(e, z, -dot(e, z)))
+
+
+def cover_at(members, point, axis, radius, station, samples=360):
+    """The angle, in degrees, of the circle at `station` along the axis that
+    lies on the faces: points classified against each face, not the faces'
+    parameter bounds, which a face with a cutout fills."""
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_ON
+
+    x = perpendicular(axis)
+    y = cross(axis, x)
+    centre = add(point, axis, station)
+    covered = 0
+    for k in range(samples):
+        angle = 2 * math.pi * k / samples
+        p = add(add(centre, x, radius * math.cos(angle)), y, radius * math.sin(angle))
+        for m in members:
+            off = sub(p, m["loc"])
+            u = math.atan2(dot(off, m["y"]), dot(off, m["x"]))
+            while u < m["u"][0] - 1e-9:
+                u += 2 * math.pi
+            while u > m["u"][0] + 2 * math.pi:
+                u -= 2 * math.pi
+            state = BRepClass_FaceClassifier(m["face"], gp_Pnt2d(u, dot(off, m["d"])), 1e-7).State()
+            if state in (TopAbs_IN, TopAbs_ON):
+                covered += 1
+                break
+    return 360.0 * covered / samples
+
+
+def circle_stations(members, point, axis, radius):
+    """The stations, along the axis from its point, of the faces' edges that
+    are circles on the cylinder."""
+    from OCP.GeomAbs import GeomAbs_CurveType
+
+    found = set()
+    for m in members:
+        for e in m["edges"]:
+            curve = BRepAdaptor_Curve(as_edge(e))
+            if curve.GetType() != GeomAbs_CurveType.GeomAbs_Circle:
+                continue
+            circle = curve.Circle()
+            centre, n = xyz(circle.Location()), xyz(circle.Axis().Direction())
+            if (abs(circle.Radius() - radius) <= LINEAR and math.hypot(*cross(n, axis)) * radius <= LINEAR
+                    and same_line(point, axis, centre, axis)):
+                found.add(round(dot(sub(centre, point), axis), 9))
+    return sorted(found)
+
+
+def levels(cylinder):
+    """Where a full cylinder's wall must go all the way around: just inside
+    each station, toward each neighbouring station, and just past it on an
+    irregular side."""
+    kind, stations = cylinder["class"]["kind"], cylinder["stations_mm"]
+    out = []
+    for i, s in enumerate(stations):
+        before = stations[i - 1] if i > 0 else None
+        after = stations[i + 1] if i + 1 < len(stations) else None
+        if before is not None:
+            out.append(s - min(0.01, (s - before) / 4))
+        if after is not None:
+            out.append(s + min(0.01, (after - s) / 4))
+    if kind == "full_one_end_irregular" and stations:
+        side = cylinder["class"]["irregular"]
+        out.append(stations[0] - 0.01 if side == "start" else stations[-1] + 0.01)
+    return out
 
 
 def check_cylinders(path, part, solid, faces, tally):
@@ -769,36 +848,58 @@ def check_cylinders(path, part, solid, faces, tally):
         if not members:
             continue
         tally["cylinders"] += 1
-        point, axis = cylinder["axis"]["point_mm"], cylinder["axis"]["direction"]
+        point, axis, radius = cylinder["axis"]["point_mm"], cylinder["axis"]["direction"], cylinder["radius_mm"]
         hole = cylinder["sense"] == "hole"
         for member in members:
-            if abs(member["r"] - cylinder["radius_mm"]) > LINEAR or not same_line(point, axis, member["loc"],
-                                                                               member["d"]):
-                problems.append(f"{where}: radius {cylinder['radius_mm']} on the axis through {point} along "
+            if abs(member["r"] - radius) > LINEAR or not same_line(point, axis, member["loc"], member["d"]):
+                problems.append(f"{where}: radius {radius} on the axis through {point} along "
                                 f"{axis}; Open CASCADE {member['r']} through {member['loc']} along {member['d']}")
             if member["concave"] != hole:
                 problems.append(f"{where}: sense {cylinder['sense']}, but Open CASCADE finds material "
                                 f"{'outside' if member['concave'] else 'inside'} the wall")
-        cover = Solid.sweep(members)
-        kind = cylinder["class"]["kind"]
-        if kind in FULL_CLASSES and cover < 360 - SWEEP_DEG:
-            problems.append(f"{where}: {kind}, but its faces cover {cover:.9f} degrees")
-        elif kind not in FULL_CLASSES and cover >= 360 - SWEEP_DEG:
+        problems += check_class(where, cylinder, members, tally)
+    return problems
+
+
+def check_class(where, cylinder, members, tally):
+    """A cylinder's class, stations and extent against its faces."""
+    problems = []
+    point, axis, radius = cylinder["axis"]["point_mm"], cylinder["axis"]["direction"], cylinder["radius_mm"]
+    kind, stations = cylinder["class"]["kind"], cylinder["stations_mm"]
+    bounds = Solid.sweep(members)  # from parameter bounds: an upper bound on any cover
+    if kind in FULL_CLASSES:
+        tally["full cylinders"] += 1
+        for level in levels(cylinder):
+            cover = cover_at(members, point, axis, radius, level)
+            if cover < 360:
+                problems.append(f"{where}: {kind}, but at {level:.6g} mm its faces cover {cover:.1f} degrees")
+    elif bounds >= 360 - SWEEP_DEG:
+        middles = [(a + b) / 2 for a, b in zip(stations, stations[1:])] or [None]
+        if middles[0] is not None and all(cover_at(members, point, axis, radius, t) >= 360 for t in middles):
             tally["cylinders full only in Open CASCADE"] += 1
-        if kind == "partial" and cylinder["class"]["sweep_rad"] is not None:
-            if abs(math.degrees(cylinder["class"]["sweep_rad"]) - cover) > SWEEP_DEG:
-                tally["partial sweeps not the faces' cover"] += 1
-        if kind == "full":
-            spans = []
-            for member in members:
-                sign = 1.0 if dot(member["d"], axis) > 0 else -1.0
-                base = dot(sub(member["loc"], point), axis)
-                spans += [base + sign * s for s in member["span"]]
-            stations = cylinder["stations_mm"]
-            if (abs(min(spans) - stations[0]) > VERTEX_SIDE + LINEAR
-                    or abs(max(spans) - stations[-1]) > VERTEX_SIDE + LINEAR):
-                problems.append(f"{where}: stations {stations[0]} to {stations[-1]}, but Open CASCADE's "
-                                f"faces span {min(spans)} to {max(spans)}")
+    if kind == "partial" and cylinder["class"]["sweep_rad"] is not None:
+        if math.degrees(cylinder["class"]["sweep_rad"]) > bounds + SWEEP_DEG:
+            problems.append(f"{where}: sweeps {math.degrees(cylinder['class']['sweep_rad'])} degrees, but its "
+                            f"faces' parameter bounds cover {bounds}")
+    # Stations are the circles on the cylinder, from the edges themselves.
+    circles = circle_stations(members, point, axis, radius)
+    if stations and (not circles or any(min(abs(s - c) for c in circles) > LINEAR for s in stations)
+                     or abs(stations[0] - circles[0]) > LINEAR or abs(stations[-1] - circles[-1]) > LINEAR):
+        problems.append(f"{where}: stations {stations}, but its circles lie at {circles}")
+    if kind in ("full", "full_one_end_irregular") and not stations:
+        problems.append(f"{where}: {kind} with no station")
+    elif kind in ("full", "full_one_end_irregular"):
+        spans = []
+        for member in members:
+            sign = 1.0 if dot(member["d"], axis) > 0 else -1.0
+            base = dot(sub(member["loc"], point), axis)
+            spans += [base + sign * s for s in member["span"]]
+        below = min(spans) < stations[0] - VERTEX_SIDE
+        above = max(spans) > stations[-1] + VERTEX_SIDE
+        irregular = cylinder["class"].get("irregular")
+        if (below, above) != (irregular == "start", irregular == "finish"):
+            problems.append(f"{where}: {kind} {irregular or ''}, but its faces span {min(spans):.6g} to "
+                            f"{max(spans):.6g} past stations {stations[0]:.6g} to {stations[-1]:.6g}")
     return problems
 
 
@@ -852,8 +953,8 @@ def features_main(paths):
     if not binary.is_file():
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
     tally = {"accepted": 0, "refused": 0, "plane faces": 0, "areas": 0, "areas within the vertex offsets": 0,
-             "unknown outlines": 0, "cylinders": 0, "cylinders full only in Open CASCADE": 0,
-             "partial sweeps not the faces' cover": 0}
+             "unknown outlines": 0, "cylinders": 0, "full cylinders": 0,
+             "cylinders full only in Open CASCADE": 0}
     problems = []
     for path in [p for arg in paths for p in feature_inputs(Path(arg))]:
         try:
