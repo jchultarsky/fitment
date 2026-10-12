@@ -16,6 +16,7 @@ categories = ["science", "mathematics"]
 # Every crate this one may depend on is listed in deny/core.toml; CI fails on
 # anything else. Adding one is a soundness change: say why in the PR.
 [dependencies]
+stepq = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

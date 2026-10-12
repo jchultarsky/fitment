@@ -32,6 +32,7 @@ deny = [
   { crate = "cadrum", reason = "D1: no Open CASCADE in the Cargo graph" },
   { crate = "cxx", reason = "D1: no C++ bridge; kernels run out of process" },
   { crate = "cxx-build", reason = "D1: no C++ bridge; kernels run out of process" },
+  { crate = "stepq", wrappers = ["fitment-core"], reason = "STEP reading lives in fitment-core" },
 ]
 # fitment-core's file formats depend on serde_json's exact features:
 # preserve_order changes map order and arbitrary_precision changes how floats
@@ -39,9 +40,6 @@ deny = [
 features = [
   { crate = "serde_json", allow = ["default", "std", "float_roundtrip"], exact = true, reason = "fitment-core's JSON must not change with what else is in the build" },
 ]
-# From M2: stepq may be used only by fitment-core, the one crate that reads
-# STEP. Add to `deny` above:
-#   { crate = "stepq", wrappers = ["fitment-core"], reason = "STEP reading lives in fitment-core" },
 
 [sources]
 unknown-registry = "deny"

@@ -22,9 +22,9 @@ publish = false
 # Internal crates: exact versions, released in lockstep.
 fitment-core = { path = "crates/fitment-core", version = "=0.1.0" }
 
-# From M2. `default-features = false` must be set here: Cargo refuses it on a
-# member that inherits the dependency, and stepq's default feature is its CLI.
-# stepq = { version = "0.6", default-features = false }
+# `default-features = false` must be set here: Cargo refuses it on a member
+# that inherits the dependency, and stepq's default feature is its CLI.
+stepq = { version = "0.6", default-features = false }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
