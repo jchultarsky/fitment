@@ -8,6 +8,7 @@ use stepq::info::Info;
 use stepq::model::{Graph, ProductStructure};
 use stepq::p21::parse;
 
+use super::primary;
 use super::{
     DefinitionRef, FeatureId, FeatureKind, FileHeader, Frame, OtherItem, Part, ProductRef,
     SolidInfo,
@@ -106,6 +107,19 @@ fn part(graph: &Graph<'_>, info: &Info) -> Result<Part, Vec<Refusal>> {
     // Stages 4 to 6: the solid's topology, units and geometry.
     let facts = gate::solid::check(graph, item.item)?;
     let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let solid_id = FeatureId::new(FeatureKind::Solid, item.item);
+    // Features are stated in the part's frame (design, section 5.1): a
+    // solid placed by a mapped item is moved there first.
+    let (shell_count, face_count) = (
+        count(facts.topology.shells.len()),
+        count(facts.topology.faces.len()),
+    );
+    let moved = match &transform {
+        Some(rigid) => facts.topology.moved(rigid),
+        None => facts.topology,
+    };
+    let primary = primary::read(&moved, solid_id, facts.max_uncertainty_mm)
+        .map_err(|refusal| vec![refusal])?;
 
     let mut others: BTreeMap<u64, OtherItem> = BTreeMap::new();
     for other in &shape.other {
@@ -129,17 +143,24 @@ fn part(graph: &Graph<'_>, info: &Info) -> Result<Part, Vec<Refusal>> {
             shape_representation: item.shape_representation,
         },
         solids: vec![SolidInfo {
-            id: FeatureId::new(FeatureKind::Solid, item.item),
+            id: solid_id,
             instance: item.item,
             entity: item.entity.clone(),
             representation: item.representation,
             transform,
-            shells: count(facts.topology.shells().len()),
-            faces: count(facts.topology.faces().len()),
+            shells: shell_count,
+            faces: face_count,
             units: facts.units,
             max_vertex_offset_mm: finite(facts.max_vertex_offset_mm),
         }],
         max_uncertainty_mm: finite(facts.max_uncertainty_mm),
+        face_counts: primary.face_counts,
+        planes: primary.planes,
+        cylinders: primary.cylinders,
+        cones: primary.cones,
+        tori: primary.tori,
+        other_faces: primary.other_faces,
         other_items: others.into_values().collect(),
+        notes: primary.notes,
     })
 }

@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 2,
+  "extractor_version": 3,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -69,6 +69,85 @@
       }
     ],
     "max_uncertainty_mm": 1e-7,
-    "other_items": []
+    "face_counts": {
+      "plane": 0,
+      "cylindrical": 0,
+      "conical": 0,
+      "spherical": 0,
+      "toroidal": 0,
+      "other": 7,
+      "total": 7
+    },
+    "planes": [],
+    "cylinders": [],
+    "cones": [],
+    "tori": [],
+    "other_faces": [
+      {
+        "id": "other-17",
+        "solid": "solid-15",
+        "shell": 0,
+        "face": 17,
+        "surface": 48,
+        "entity": "B_SPLINE_SURFACE_WITH_KNOTS",
+        "reason": "no_rule"
+      },
+      {
+        "id": "other-53",
+        "solid": "solid-15",
+        "shell": 0,
+        "face": 53,
+        "surface": 76,
+        "entity": "B_SPLINE_SURFACE_WITH_KNOTS",
+        "reason": "no_rule"
+      },
+      {
+        "id": "other-81",
+        "solid": "solid-15",
+        "shell": 0,
+        "face": 81,
+        "surface": 112,
+        "entity": "B_SPLINE_SURFACE_WITH_KNOTS",
+        "reason": "no_rule"
+      },
+      {
+        "id": "other-117",
+        "solid": "solid-15",
+        "shell": 0,
+        "face": 117,
+        "surface": 134,
+        "entity": "B_SPLINE_SURFACE_WITH_KNOTS",
+        "reason": "no_rule"
+      },
+      {
+        "id": "other-139",
+        "solid": "solid-15",
+        "shell": 0,
+        "face": 139,
+        "surface": 164,
+        "entity": "B_SPLINE_SURFACE_WITH_KNOTS",
+        "reason": "no_rule"
+      },
+      {
+        "id": "other-169",
+        "solid": "solid-15",
+        "shell": 0,
+        "face": 169,
+        "surface": 176,
+        "entity": "B_SPLINE_SURFACE_WITH_KNOTS",
+        "reason": "no_rule"
+      },
+      {
+        "id": "other-181",
+        "solid": "solid-15",
+        "shell": 0,
+        "face": 181,
+        "surface": 192,
+        "entity": "BOUNDED_SURFACE+B_SPLINE_SURFACE+B_SPLINE_SURFACE_WITH_KNOTS+GEOMETRIC_REPRESENTATION_ITEM+RATIONAL_B_SPLINE_SURFACE+REPRESENTATION_ITEM+SURFACE",
+        "reason": "no_rule"
+      }
+    ],
+    "other_items": [],
+    "notes": []
   }
 }

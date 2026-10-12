@@ -5,7 +5,9 @@
 //!   fitment-core's tests cannot list a directory, so this test does.
 //! - The generated corpus (`tools/gen-corpus.py corpus/out`, or the
 //!   directory `FITMENT_CORPUS` names) is read case by case and each part
-//!   is accepted or refused as its construction says. Without the corpus
+//!   is accepted or refused as its construction says. An accepted part's
+//!   planes, its counts of cones, tori and other faces, and its face
+//!   partition are checked too ([`features`]). Without the corpus
 //!   the test passes with a note, unless `FITMENT_REQUIRE_CORPUS=1`, which
 //!   CI sets: a gate that did not run must not pass green.
 
@@ -14,6 +16,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+
+mod common;
 use serde_json::Value;
 
 /// Decision 6: the committed unit set's budget.
@@ -132,7 +136,68 @@ fn every_corpus_part_is_accepted_or_refused_as_its_construction_says() {
                 document["status"],
                 output.status.code()
             ));
+        } else if status == "accepted" {
+            failures.extend(
+                features(&document["part"], &expect["features"])
+                    .into_iter()
+                    .map(|f| format!("{name}: {f}")),
+            );
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Lengths agree within this, in mm (design, section 13.2).
+const LENGTH_MM: f64 = 1e-6;
+
+/// Unit directions agree within this. The manifest rounds values to 9
+/// decimals, which moves a unit vector by up to 9e-10.
+const DIRECTION: f64 = 2e-9;
+
+fn numbers(value: &Value) -> Vec<f64> {
+    value
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_f64).collect())
+        .unwrap_or_default()
+}
+
+/// What is wrong with an accepted part's features against the
+/// construction's: planes one to one (normal, offset, face count, shell),
+/// the counts of cones, tori and other faces, and that every face is in
+/// exactly one primary feature.
+fn features(part: &Value, expect: &Value) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut planes: Vec<&Value> = part["planes"].as_array().unwrap().iter().collect();
+    for plane in expect["planes"].as_array().unwrap() {
+        let normal = numbers(&plane["normal"]);
+        let found = planes.iter().position(|p| {
+            let off: f64 = numbers(&p["normal"])
+                .iter()
+                .zip(&normal)
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum();
+            off.sqrt() <= DIRECTION
+                && (p["offset_mm"].as_f64().unwrap() - plane["offset"].as_f64().unwrap()).abs()
+                    <= LENGTH_MM
+                && p["faces"].as_array().unwrap().len() as u64 == plane["faces"].as_u64().unwrap()
+                && p["shell"] == plane["shell"]
+        });
+        match found {
+            Some(i) => {
+                planes.remove(i);
+            }
+            None => problems.push(format!("no plane {plane}")),
+        }
+    }
+    for extra in planes {
+        problems.push(format!("a plane the construction has not: {}", extra["id"]));
+    }
+    for key in ["cones", "tori", "other_faces"] {
+        let found = part[key].as_array().unwrap().len() as u64;
+        if Some(found) != expect[key].as_u64() {
+            problems.push(format!("{found} {key}, expected {}", expect[key]));
+        }
+    }
+    problems.extend(common::partition(part));
+    problems
 }

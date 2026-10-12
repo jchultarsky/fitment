@@ -9,6 +9,7 @@
 //! The files of this module and `features/step.rs` are the only ones that
 //! name stepq.
 
+pub(crate) mod geometry;
 pub(crate) mod solid;
 
 use std::collections::BTreeMap;

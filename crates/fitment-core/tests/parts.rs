@@ -6,11 +6,20 @@
 //! the list is checked against the manifest.
 //!
 //! What is checked grows with the extractor: so far, whether each part is
-//! accepted or refused, and with which reasons. A case refused by a gate
-//! stage not built yet is skipped, and listed so the skip is visible.
+//! accepted or refused, and with which reasons; for an accepted part, its
+//! planes, how many cones, tori and other faces it has, and that every face
+//! is in exactly one primary feature. A case refused by a gate stage not
+//! built yet is skipped, and listed so the skip is visible.
 
-use fitment_core::{FeaturesDocument, Status};
+use fitment_core::{FeaturesDocument, Part, Status};
 use serde_json::Value;
+
+/// Lengths agree within this, in mm (design, section 13.2).
+const LENGTH_MM: f64 = 1e-6;
+
+/// Unit directions agree within this. The manifest rounds values to 9
+/// decimals, which moves a unit vector by up to 9e-10.
+const DIRECTION: f64 = 2e-9;
 
 const MANIFEST: &str = include_str!("data/manifest.json");
 
@@ -114,7 +123,81 @@ fn each_part_is_accepted_or_refused_as_its_construction_says() {
                 "{name}: {:?}",
                 document.refusals()
             );
+            let part = document.part().unwrap();
+            if let Some(features) = expect.get("features") {
+                check_planes(name, part, features);
+                for (key, found) in [
+                    ("cones", part.cones.len()),
+                    ("tori", part.tori.len()),
+                    ("other_faces", part.other_faces.len()),
+                ] {
+                    assert_eq!(Some(found as u64), features[key].as_u64(), "{name}: {key}");
+                }
+            }
+            check_partition(name, part);
         }
     }
     assert_eq!(skipped, NOT_YET, "the cases waiting for a later gate stage");
+}
+
+/// The planes match the manifest's one to one: normal, offset, face count
+/// and shell.
+fn check_planes(name: &str, part: &Part, features: &Value) {
+    let expected = features["planes"].as_array().unwrap();
+    let mut unmatched: Vec<_> = part.planes.iter().collect();
+    for plane in expected {
+        let normal: Vec<f64> = plane["normal"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c.as_f64().unwrap())
+            .collect();
+        let found = unmatched.iter().position(|p| {
+            let n = p.normal.to_array();
+            let off: f64 = n.iter().zip(&normal).map(|(a, b)| (a - b) * (a - b)).sum();
+            off.sqrt() <= DIRECTION
+                && (p.offset_mm - plane["offset"].as_f64().unwrap()).abs() <= LENGTH_MM
+                && p.faces.len() as u64 == plane["faces"].as_u64().unwrap()
+                && u64::from(p.shell) == plane["shell"].as_u64().unwrap()
+        });
+        assert!(found.is_some(), "{name}: no plane {plane}");
+        unmatched.remove(found.unwrap());
+    }
+    assert!(
+        unmatched.is_empty(),
+        "{name}: planes the construction has not: {:?}",
+        unmatched
+            .iter()
+            .map(|p| p.id.to_string())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Every face is in exactly one primary feature, and the features hold
+/// as many faces as the solid has.
+fn check_partition(name: &str, part: &Part) {
+    let mut faces: Vec<u64> = Vec::new();
+    for plane in &part.planes {
+        faces.extend(plane.faces.iter().map(|f| f.face));
+    }
+    for cylinder in &part.cylinders {
+        faces.extend(&cylinder.faces);
+    }
+    for cone in &part.cones {
+        faces.extend(&cone.faces);
+    }
+    for torus in &part.tori {
+        faces.extend(&torus.faces);
+    }
+    faces.extend(part.other_faces.iter().map(|f| f.face));
+    let count = faces.len();
+    faces.sort_unstable();
+    faces.dedup();
+    assert_eq!(faces.len(), count, "{name}: a face is in two features");
+    assert_eq!(
+        count as u64,
+        u64::from(part.face_counts.total),
+        "{name}: the features hold {count} faces"
+    );
+    assert_eq!(part.face_counts.total, part.solids[0].faces, "{name}");
 }

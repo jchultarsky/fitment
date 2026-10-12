@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 2,
+  "extractor_version": 3,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -69,6 +69,1180 @@
       }
     ],
     "max_uncertainty_mm": 1e-7,
-    "other_items": []
+    "face_counts": {
+      "plane": 11,
+      "cylindrical": 0,
+      "conical": 0,
+      "spherical": 0,
+      "toroidal": 0,
+      "other": 0,
+      "total": 11
+    },
+    "planes": [
+      {
+        "id": "plane-17",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          -1.0,
+          0.0,
+          0.0
+        ],
+        "offset_mm": 0.0,
+        "spread_mm": 0.0,
+        "area_mm2": 800.0,
+        "faces": [
+          {
+            "face": 17,
+            "surface": 52,
+            "offset_mm": 0.0,
+            "area_mm2": 800.0,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 18,
+                  "outer": true,
+                  "area_mm2": 800.0,
+                  "segments": [
+                    {
+                      "kind": "line",
+                      "edge": 47,
+                      "from_mm": [
+                        0.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-128"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 39,
+                      "from_mm": [
+                        0.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        40.0,
+                        0.0
+                      ],
+                      "across": "plane-152"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 31,
+                      "from_mm": [
+                        0.0,
+                        40.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "across": "plane-216"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 21,
+                      "from_mm": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-57"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "plane-57",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "offset_mm": 0.0,
+        "spread_mm": 0.0,
+        "area_mm2": 992.0,
+        "faces": [
+          {
+            "face": 57,
+            "surface": 123,
+            "offset_mm": 0.0,
+            "area_mm2": 992.0,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 58,
+                  "outer": true,
+                  "area_mm2": 992.0,
+                  "segments": [
+                    {
+                      "kind": "line",
+                      "edge": 118,
+                      "from_mm": [
+                        60.0,
+                        0.0,
+                        16.0
+                      ],
+                      "to_mm": [
+                        56.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-250"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 110,
+                      "from_mm": [
+                        56.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-128"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 102,
+                      "from_mm": [
+                        40.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        0.0,
+                        10.0
+                      ],
+                      "across": "plane-284"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 94,
+                      "from_mm": [
+                        40.0,
+                        0.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        0.0,
+                        10.0
+                      ],
+                      "across": "plane-301"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 86,
+                      "from_mm": [
+                        20.0,
+                        0.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-318"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 78,
+                      "from_mm": [
+                        20.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-128"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 21,
+                      "from_mm": [
+                        0.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "across": "plane-17"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 71,
+                      "from_mm": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        0.0,
+                        0.0
+                      ],
+                      "across": "plane-216"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 61,
+                      "from_mm": [
+                        60.0,
+                        0.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        0.0,
+                        16.0
+                      ],
+                      "across": "plane-233"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "plane-128",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "offset_mm": 20.0,
+        "spread_mm": 0.0,
+        "area_mm2": 1440.0,
+        "faces": [
+          {
+            "face": 128,
+            "surface": 147,
+            "offset_mm": 20.0,
+            "area_mm2": 800.0,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 129,
+                  "outer": true,
+                  "area_mm2": 800.0,
+                  "segments": [
+                    {
+                      "kind": "line",
+                      "edge": 132,
+                      "from_mm": [
+                        20.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-152"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 47,
+                      "from_mm": [
+                        0.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-17"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 78,
+                      "from_mm": [
+                        0.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-57"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 142,
+                      "from_mm": [
+                        20.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-318"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "face": 267,
+            "surface": 279,
+            "offset_mm": 20.0,
+            "area_mm2": 640.0,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 268,
+                  "outer": true,
+                  "area_mm2": 640.0,
+                  "segments": [
+                    {
+                      "kind": "line",
+                      "edge": 198,
+                      "from_mm": [
+                        56.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-152"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 272,
+                      "from_mm": [
+                        40.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-284"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 110,
+                      "from_mm": [
+                        40.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        56.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-57"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 254,
+                      "from_mm": [
+                        56.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        56.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-250"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "plane-152",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "offset_mm": 40.0,
+        "spread_mm": 0.0,
+        "area_mm2": 992.0,
+        "faces": [
+          {
+            "face": 152,
+            "surface": 211,
+            "offset_mm": 40.0,
+            "area_mm2": 992.0,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 153,
+                  "outer": true,
+                  "area_mm2": 992.0,
+                  "segments": [
+                    {
+                      "kind": "line",
+                      "edge": 156,
+                      "from_mm": [
+                        60.0,
+                        40.0,
+                        16.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        40.0,
+                        0.0
+                      ],
+                      "across": "plane-233"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 166,
+                      "from_mm": [
+                        60.0,
+                        40.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        40.0,
+                        0.0
+                      ],
+                      "across": "plane-216"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 39,
+                      "from_mm": [
+                        0.0,
+                        40.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-17"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 132,
+                      "from_mm": [
+                        0.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-128"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 174,
+                      "from_mm": [
+                        20.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        40.0,
+                        10.0
+                      ],
+                      "across": "plane-318"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 182,
+                      "from_mm": [
+                        20.0,
+                        40.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        40.0,
+                        10.0
+                      ],
+                      "across": "plane-301"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 190,
+                      "from_mm": [
+                        40.0,
+                        40.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-284"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 198,
+                      "from_mm": [
+                        40.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        56.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-128"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 206,
+                      "from_mm": [
+                        56.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        40.0,
+                        16.0
+                      ],
+                      "across": "plane-250"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "plane-216",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "offset_mm": 0.0,
+        "spread_mm": 0.0,
+        "area_mm2": 2400.0,
+        "faces": [
+          {
+            "face": 216,
+            "surface": 228,
+            "offset_mm": 0.0,
+            "area_mm2": 2400.0,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 217,
+                  "outer": true,
+                  "area_mm2": 2400.0,
+                  "segments": [
+                    {
+                      "kind": "line",
+                      "edge": 166,
+                      "from_mm": [
+                        0.0,
+                        40.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        40.0,
+                        0.0
+                      ],
+                      "across": "plane-152"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 222,
+                      "from_mm": [
+                        60.0,
+                        40.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        0.0,
+                        0.0
+                      ],
+                      "across": "plane-233"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 71,
+                      "from_mm": [
+                        60.0,
+                        0.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "across": "plane-57"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 31,
+                      "from_mm": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        0.0,
+                        40.0,
+                        0.0
+                      ],
+                      "across": "plane-17"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "plane-233",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "offset_mm": 60.0,
+        "spread_mm": 0.0,
+        "area_mm2": 640.0,
+        "faces": [
+          {
+            "face": 233,
+            "surface": 245,
+            "offset_mm": 60.0,
+            "area_mm2": 640.0,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 234,
+                  "outer": true,
+                  "area_mm2": 640.0,
+                  "segments": [
+                    {
+                      "kind": "line",
+                      "edge": 61,
+                      "from_mm": [
+                        60.0,
+                        0.0,
+                        16.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        0.0,
+                        0.0
+                      ],
+                      "across": "plane-57"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 222,
+                      "from_mm": [
+                        60.0,
+                        0.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        40.0,
+                        0.0
+                      ],
+                      "across": "plane-216"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 156,
+                      "from_mm": [
+                        60.0,
+                        40.0,
+                        0.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        40.0,
+                        16.0
+                      ],
+                      "across": "plane-152"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 240,
+                      "from_mm": [
+                        60.0,
+                        40.0,
+                        16.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        0.0,
+                        16.0
+                      ],
+                      "across": "plane-250"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "plane-250",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          0.7071067811865475,
+          0.0,
+          0.7071067811865475
+        ],
+        "offset_mm": 53.740115370177605,
+        "spread_mm": 0.0,
+        "area_mm2": 226.2741699796952,
+        "faces": [
+          {
+            "face": 250,
+            "surface": 262,
+            "offset_mm": 53.740115370177605,
+            "area_mm2": 226.2741699796952,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 251,
+                  "outer": true,
+                  "area_mm2": 226.2741699796952,
+                  "segments": [
+                    {
+                      "kind": "line",
+                      "edge": 254,
+                      "from_mm": [
+                        56.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        56.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-128"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 118,
+                      "from_mm": [
+                        56.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        0.0,
+                        16.0
+                      ],
+                      "across": "plane-57"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 240,
+                      "from_mm": [
+                        60.0,
+                        0.0,
+                        16.0
+                      ],
+                      "to_mm": [
+                        60.0,
+                        40.0,
+                        16.0
+                      ],
+                      "across": "plane-233"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 206,
+                      "from_mm": [
+                        60.0,
+                        40.0,
+                        16.0
+                      ],
+                      "to_mm": [
+                        56.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-152"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "plane-284",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          -1.0,
+          0.0,
+          0.0
+        ],
+        "offset_mm": -40.0,
+        "spread_mm": 0.0,
+        "area_mm2": 400.0,
+        "faces": [
+          {
+            "face": 284,
+            "surface": 296,
+            "offset_mm": -40.0,
+            "area_mm2": 400.0,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 285,
+                  "outer": true,
+                  "area_mm2": 400.0,
+                  "segments": [
+                    {
+                      "kind": "line",
+                      "edge": 272,
+                      "from_mm": [
+                        40.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-128"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 190,
+                      "from_mm": [
+                        40.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        40.0,
+                        10.0
+                      ],
+                      "across": "plane-152"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 289,
+                      "from_mm": [
+                        40.0,
+                        40.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        0.0,
+                        10.0
+                      ],
+                      "across": "plane-301"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 102,
+                      "from_mm": [
+                        40.0,
+                        0.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-57"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "plane-301",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "offset_mm": 10.0,
+        "spread_mm": 0.0,
+        "area_mm2": 800.0,
+        "faces": [
+          {
+            "face": 301,
+            "surface": 313,
+            "offset_mm": 10.0,
+            "area_mm2": 800.0,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 302,
+                  "outer": true,
+                  "area_mm2": 800.0,
+                  "segments": [
+                    {
+                      "kind": "line",
+                      "edge": 305,
+                      "from_mm": [
+                        20.0,
+                        40.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        0.0,
+                        10.0
+                      ],
+                      "across": "plane-318"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 94,
+                      "from_mm": [
+                        20.0,
+                        0.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        0.0,
+                        10.0
+                      ],
+                      "across": "plane-57"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 289,
+                      "from_mm": [
+                        40.0,
+                        0.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        40.0,
+                        40.0,
+                        10.0
+                      ],
+                      "across": "plane-284"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 182,
+                      "from_mm": [
+                        40.0,
+                        40.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        40.0,
+                        10.0
+                      ],
+                      "across": "plane-152"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "plane-318",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "offset_mm": 20.0,
+        "spread_mm": 0.0,
+        "area_mm2": 400.0,
+        "faces": [
+          {
+            "face": 318,
+            "surface": 325,
+            "offset_mm": 20.0,
+            "area_mm2": 400.0,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 319,
+                  "outer": true,
+                  "area_mm2": 400.0,
+                  "segments": [
+                    {
+                      "kind": "line",
+                      "edge": 86,
+                      "from_mm": [
+                        20.0,
+                        0.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        0.0,
+                        10.0
+                      ],
+                      "across": "plane-57"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 305,
+                      "from_mm": [
+                        20.0,
+                        0.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        40.0,
+                        10.0
+                      ],
+                      "across": "plane-301"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 174,
+                      "from_mm": [
+                        20.0,
+                        40.0,
+                        10.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        40.0,
+                        20.0
+                      ],
+                      "across": "plane-152"
+                    },
+                    {
+                      "kind": "line",
+                      "edge": 142,
+                      "from_mm": [
+                        20.0,
+                        40.0,
+                        20.0
+                      ],
+                      "to_mm": [
+                        20.0,
+                        0.0,
+                        20.0
+                      ],
+                      "across": "plane-128"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "cylinders": [],
+    "cones": [],
+    "tori": [],
+    "other_faces": [],
+    "other_items": [],
+    "notes": []
   }
 }
