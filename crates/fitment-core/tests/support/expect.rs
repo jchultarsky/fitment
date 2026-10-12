@@ -180,6 +180,83 @@ fn stacks(part: &Value, expect: &Value, key: &str) -> Vec<String> {
     problems
 }
 
+/// Shaft ends follow from the kind and lengths the manifest states: a
+/// root at 0, free ends at 0 and at the length or protrusion.
+fn shaft_ends_agree(s: &Value, want: &Value) -> bool {
+    let ends: Vec<&Value> = s["ends"].as_array().into_iter().flatten().collect();
+    let far = want
+        .get("protrusion")
+        .or_else(|| want.get("length"))
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::NAN);
+    let first = if want["kind"] == "root_free" {
+        "root"
+    } else {
+        "free_end"
+    };
+    matches!(ends[..], [a, b]
+        if a["kind"] == first && b["kind"] == "free_end"
+            && close(&a["rim_mm"], 0.0) && close(&b["rim_mm"], far))
+}
+
+/// What is wrong with fitment's unknown stack `s` against the manifest's
+/// `want`: its diameter, axis line, ends in axis order, and where it is
+/// entered.
+fn unknown_problem(s: &Value, want: &Value, point: &[f64], direction: &[f64]) -> Option<String> {
+    let bad = |what: &str| Some(format!("{}: {what}", s["id"]));
+    let first = &s["segments"][0];
+    let diameter = first["diameter_mm"].as_f64().unwrap_or(f64::NAN);
+    if (diameter - want["diameter"].as_f64().unwrap_or(f64::NAN)).abs() > LENGTH_MM
+        || !same_line(
+            &numbers(&want["axis_line_point"]),
+            &numbers(&want["axis_direction"]),
+            point,
+            direction,
+        )
+    {
+        return bad("diameter or axis line");
+    }
+    let mut wanted: Vec<&str> = want["ends"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if dot(direction, &numbers(&want["axis_direction"])) < 0.0 {
+        wanted.reverse();
+    }
+    let found: Vec<&str> = s["ends"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e["kind"].as_str())
+        .collect();
+    if found != wanted {
+        return Some(format!("{}: ends {found:?}, wanted {wanted:?}", s["id"]));
+    }
+    // The manifest's point is where the hole is entered: the opening's
+    // rim lies there.
+    let entry = numbers(&want["axis_line_point"]);
+    for end in s["ends"].as_array().into_iter().flatten() {
+        if end["kind"] == "opening" {
+            let rim = end["rim_mm"].as_f64().unwrap_or(f64::NAN);
+            let at: Vec<f64> = point
+                .iter()
+                .zip(direction)
+                .map(|(p, d)| p + rim * d)
+                .collect();
+            if at
+                .iter()
+                .zip(&entry)
+                .any(|(a, b)| (a - b).abs() > LENGTH_MM)
+            {
+                return bad("opening not at the entry");
+            }
+        }
+    }
+    None
+}
+
 /// What is wrong with fitment's stack `s` against the manifest's `want`.
 fn stack_problem(s: &Value, want: &Value) -> Option<String> {
     let bad = |what: &str| Some(format!("{}: {what}", s["id"]));
@@ -189,35 +266,7 @@ fn stack_problem(s: &Value, want: &Value) -> Option<String> {
     let point = numbers(&s["axis"]["point_mm"]);
     let direction = numbers(&s["axis"]["direction"]);
     if want["kind"] == "unknown" {
-        let first = &s["segments"][0];
-        let diameter = first["diameter_mm"].as_f64().unwrap_or(f64::NAN);
-        if (diameter - want["diameter"].as_f64().unwrap_or(f64::NAN)).abs() > LENGTH_MM
-            || !same_line(
-                &numbers(&want["axis_line_point"]),
-                &numbers(&want["axis_direction"]),
-                &point,
-                &direction,
-            )
-        {
-            return bad("diameter or axis line");
-        }
-        let mut wanted: Vec<&str> = want["ends"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect();
-        if dot(&direction, &numbers(&want["axis_direction"])) < 0.0 {
-            wanted.reverse();
-        }
-        let found: Vec<&str> = s["ends"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e["kind"].as_str())
-            .collect();
-        return (found != wanted)
-            .then(|| format!("{}: ends {found:?}, wanted {wanted:?}", s["id"]));
+        return unknown_problem(s, want, &point, &direction);
     }
     if apart(&direction, &numbers(&want["axis_direction"]), false) > DIRECTION
         || point
@@ -263,6 +312,9 @@ fn stack_problem(s: &Value, want: &Value) -> Option<String> {
                 return bad(field);
             }
         }
+    }
+    if want.get("ends").is_none() && !shaft_ends_agree(s, want) {
+        return bad("shaft ends");
     }
     if let Some(ends) = want["ends"].as_array() {
         for (end, w) in s["ends"].as_array().into_iter().flatten().zip(ends) {

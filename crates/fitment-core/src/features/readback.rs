@@ -9,7 +9,7 @@ use std::f64::consts::TAU;
 
 use super::cylinder::{Cylinder, CylinderClass, Sense, UndecidedReason};
 use super::outline::{Outline, OutlineLoop, Segment};
-use super::stack::{HoleKind, ShaftKind};
+use super::stack::{Hole, HoleKind, Shaft, ShaftKind, StackEnd, StackSegment};
 use super::{FeatureId, FeatureKind, Part, SolidInfo};
 use crate::geom::{Dir3, Point3};
 
@@ -151,86 +151,228 @@ fn cylinders(part: &Part, ids: &BTreeSet<FeatureId>) -> Checked {
     Ok(())
 }
 
+/// One hole or shaft, as the read-back rules see it.
+struct StackView<'a> {
+    id: FeatureId,
+    kind: FeatureKind,
+    sense: Sense,
+    segments: &'a [StackSegment],
+    ends: &'a [StackEnd],
+    transitions: &'a [FeatureId],
+    /// Its kind as K2 names it from its ends' classes (1 open, 2 closed).
+    named: (u8, u8),
+    /// Its lengths are the ones its kind has.
+    lengths: bool,
+}
+
+fn hole_view(h: &Hole) -> StackView<'_> {
+    let lengths = match h.kind {
+        HoleKind::Through => h.length_mm.is_some() && h.depth_mm.is_none(),
+        HoleKind::Blind => h.depth_mm.is_some() && h.length_mm.is_none(),
+        _ => h.length_mm.is_none() && h.depth_mm.is_none(),
+    };
+    let named = match h.kind {
+        HoleKind::Through => (1, 1),
+        HoleKind::Blind => (2, 1),
+        HoleKind::Enclosed => (2, 2),
+        _ => (0, 0),
+    };
+    StackView {
+        id: h.id,
+        kind: FeatureKind::Hole,
+        sense: Sense::Hole,
+        segments: &h.segments,
+        ends: &h.ends,
+        transitions: &h.transitions,
+        named,
+        lengths,
+    }
+}
+
+fn shaft_view(s: &Shaft) -> StackView<'_> {
+    let lengths = match s.kind {
+        ShaftKind::RootFree => s.protrusion_mm.is_some() && s.length_mm.is_none(),
+        ShaftKind::FreeFree | ShaftKind::RootRoot => {
+            s.length_mm.is_some() && s.protrusion_mm.is_none()
+        }
+        _ => s.length_mm.is_none() && s.protrusion_mm.is_none(),
+    };
+    let named = match s.kind {
+        ShaftKind::FreeFree => (1, 1),
+        ShaftKind::RootFree => (2, 1),
+        ShaftKind::RootRoot => (2, 2),
+        _ => (0, 0),
+    };
+    StackView {
+        id: s.id,
+        kind: FeatureKind::Shaft,
+        sense: Sense::Shaft,
+        segments: &s.segments,
+        ends: &s.ends,
+        transitions: &s.transitions,
+        named,
+        lengths,
+    }
+}
+
+/// An end's class, anchor and named features (see [`end_view`]).
+type EndView = (u8, Option<f64>, Vec<(FeatureId, Option<FeatureKind>)>);
+
+/// An end's class toward its stack's kind (K2): 1 open, 2 closed, 0
+/// neither; `None` if a stack of `sense` cannot have it. Also its anchor
+/// station, and the features it names with the kinds they must have.
+fn end_view(end: &StackEnd, sense: Sense) -> Option<EndView> {
+    let hole = sense == Sense::Hole;
+    Some(match end {
+        StackEnd::Opening {
+            rim_mm,
+            opens_into,
+            countersink,
+            ..
+        } if hole => {
+            let mut named = vec![(*opens_into, None)];
+            named.extend(
+                countersink
+                    .iter()
+                    .map(|c| (c.cone, Some(FeatureKind::Cone))),
+            );
+            (1, Some(*rim_mm), named)
+        }
+        StackEnd::Bottom {
+            at_mm, closed_by, ..
+        } if hole => (2, Some(*at_mm), vec![(*closed_by, None)]),
+        StackEnd::FreeEnd {
+            rim_mm, opens_into, ..
+        } if !hole => (1, Some(*rim_mm), vec![(*opens_into, None)]),
+        StackEnd::Root {
+            rim_mm, rises_from, ..
+        } if !hole => (2, Some(*rim_mm), vec![(*rises_from, None)]),
+        StackEnd::Irregular { .. } | StackEnd::Unknown { .. } => (0, None, Vec::new()),
+        _ => return None,
+    })
+}
+
+/// A stack's segments: each a cylinder of the part of the stack's sense
+/// and diameter whose length its stations give, none in two stacks.
+/// Returns the smallest face `#id` among them.
+fn stack_segments(
+    view: &StackView<'_>,
+    cylinders: &BTreeMap<FeatureId, &Cylinder>,
+    used: &mut BTreeSet<FeatureId>,
+) -> Result<Option<u64>, String> {
+    let id = view.id;
+    let mut smallest: Option<u64> = None;
+    for segment in view.segments {
+        let Some(cylinder) = cylinders.get(&segment.cylinder) else {
+            return Err(format!(
+                "'{id}' names '{}', which is no cylinder of the part",
+                segment.cylinder
+            ));
+        };
+        let span = cylinder
+            .stations_mm
+            .last()
+            .zip(cylinder.stations_mm.first())
+            .map(|(a, b)| a - b);
+        let length_agrees = match (segment.from_mm, segment.to_mm, span) {
+            (Some(from), Some(to), Some(span)) => {
+                (to - from - span).abs() <= SUM_REL * span.abs().max(1.0)
+            }
+            _ => true,
+        };
+        if cylinder.sense != view.sense
+            || !used.insert(segment.cylinder)
+            || (segment.diameter_mm - 2.0 * cylinder.radius_mm).abs() > 0.0
+            || !length_agrees
+        {
+            return Err(format!(
+                "'{id}' holds '{}' with another sense, diameter or length, or a second time",
+                segment.cylinder
+            ));
+        }
+        let first = cylinder.faces.first().copied();
+        smallest = match (smallest, first) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+    Ok(smallest)
+}
+
 /// Holes and shafts keep what the stacks write: sorted ids named after
 /// their smallest face; segments in order, each a cylinder of the part of
-/// the right sense, none in two stacks; two ends; transitions the part
-/// has; and the lengths its kind has, and no others.
+/// the right sense and diameter whose length its stations give, none in two
+/// stacks; two ends a stack of its sense can have, naming features the part
+/// has, of the kind its kind says, the start end at 0, a blind hole and a
+/// rooted shaft starting at their closed end; transitions the part has;
+/// and the lengths its kind has, and no others.
 fn stacks(part: &Part, ids: &BTreeSet<FeatureId>) -> Checked {
     let cylinders: BTreeMap<FeatureId, &Cylinder> =
         part.cylinders.iter().map(|c| (c.id, c)).collect();
     let mut used = BTreeSet::new();
-    let holes = part.holes.iter().map(|h| {
-        let lengths = match h.kind {
-            HoleKind::Through => h.length_mm.is_some() && h.depth_mm.is_none(),
-            HoleKind::Blind => h.depth_mm.is_some() && h.length_mm.is_none(),
-            _ => h.length_mm.is_none() && h.depth_mm.is_none(),
-        };
-        (
-            h.id,
-            FeatureKind::Hole,
-            Sense::Hole,
-            &h.segments,
-            &h.ends,
-            &h.transitions,
-            lengths,
-        )
-    });
-    let shafts = part.shafts.iter().map(|s| {
-        let lengths = match s.kind {
-            ShaftKind::RootFree => s.protrusion_mm.is_some() && s.length_mm.is_none(),
-            ShaftKind::FreeFree | ShaftKind::RootRoot => {
-                s.length_mm.is_some() && s.protrusion_mm.is_none()
-            }
-            _ => s.length_mm.is_none() && s.protrusion_mm.is_none(),
-        };
-        (
-            s.id,
-            FeatureKind::Shaft,
-            Sense::Shaft,
-            &s.segments,
-            &s.ends,
-            &s.transitions,
-            lengths,
-        )
-    });
     let mut last: Option<FeatureId> = None;
-    for (id, kind, sense, segments, ends, transitions, lengths) in holes.chain(shafts) {
-        if last.is_some_and(|l| l.kind() == kind && l >= id) {
-            return Err(format!("the {} features are not sorted by id", kind.name()));
+    let views = part
+        .holes
+        .iter()
+        .map(hole_view)
+        .chain(part.shafts.iter().map(shaft_view));
+    for view in views {
+        let id = view.id;
+        if last.is_some_and(|l| l.kind() == view.kind && l >= id) {
+            return Err(format!(
+                "the {} features are not sorted by id",
+                view.kind.name()
+            ));
         }
         last = Some(id);
-        let mut smallest: Option<u64> = None;
-        for segment in segments {
-            let Some(cylinder) = cylinders.get(&segment.cylinder) else {
-                return Err(format!(
-                    "'{id}' names '{}', which is no cylinder of the part",
-                    segment.cylinder
-                ));
-            };
-            if cylinder.sense != sense || !used.insert(segment.cylinder) {
-                return Err(format!(
-                    "'{id}' holds '{}', of the other sense or already in a stack",
-                    segment.cylinder
-                ));
-            }
-            let first = cylinder.faces.first().copied();
-            smallest = match (smallest, first) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
-        }
-        let ordered = segments.windows(2).all(|w| w[0].from_mm <= w[1].from_mm);
-        let named = id.kind() == kind && smallest == Some(id.instance());
+        let smallest = stack_segments(&view, &cylinders, &mut used)?;
+        let key = |s: &StackSegment| s.from_mm.or(s.to_mm).unwrap_or(f64::INFINITY);
+        let ordered = view.segments.windows(2).all(|w| key(&w[0]) <= key(&w[1]));
+        let named = id.kind() == view.kind && smallest == Some(id.instance());
+        let [start, finish] = view.ends else {
+            return Err(format!("'{id}' has {} ends, not two", view.ends.len()));
+        };
+        let (Some(a), Some(b)) = (end_view(start, view.sense), end_view(finish, view.sense)) else {
+            return Err(format!(
+                "'{id}' has an end a {} cannot have",
+                view.kind.name()
+            ));
+        };
+        let refs =
+            a.2.iter()
+                .chain(&b.2)
+                .all(|(f, kind)| ids.contains(f) && kind.is_none_or(|k| f.kind() == k));
+        // K2: the kind its ends name; the closed end first when one is.
+        let kind_agrees = if view.named == (0, 0) {
+            !matches!((a.0, b.0), (1 | 2, 1 | 2))
+        } else {
+            (a.0, b.0) == view.named || (view.named.0 == view.named.1 && (b.0, a.0) == view.named)
+        };
+        let at_zero = a.1.is_none_or(|t| t == 0.0);
         if !(ordered
             && named
-            && lengths
-            && ends.len() == 2
-            && transitions.iter().all(|t| ids.contains(t)))
+            && view.lengths
+            && refs
+            && kind_agrees
+            && at_zero
+            && view.transitions.iter().all(|t| ids.contains(t)))
         {
             return Err(format!(
                 "'{id}' breaks a rule of its segments, name, ends, transitions or lengths"
             ));
         }
+    }
+    let complete = part
+        .cylinders
+        .iter()
+        .all(|c| !matches!(c.class, CylinderClass::Undecided { .. }))
+        && part.holes.iter().all(|h| h.kind != HoleKind::Unknown)
+        && part.shafts.iter().all(|s| s.kind != ShaftKind::Unknown);
+    if part.complete != complete {
+        return Err(format!(
+            "complete is {}, but the features say {complete}",
+            part.complete
+        ));
     }
     Ok(())
 }

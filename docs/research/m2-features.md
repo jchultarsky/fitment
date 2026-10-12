@@ -520,7 +520,7 @@ For a full group, each full end station starts a walk outward. The direction is 
 | Coaxial cylinder of the opposite sense | Stop: terminal `post` (a boss, or a bore through a boss) |
 | Sphere, non-coaxial surface, unread surface | Stop: terminal `face` if the walk has crossed only planes. `Unknown` if it is the first face, or if a cone or torus was crossed before it, since no plane then confirms what lies beyond |
 
-  A cone closes at its apex when one of its vertices is within ε_v of the apex, when it has a vertex loop, or when its whole boundary is the current circles. The last case occurs in NIST ftc_07, a drill point bounded by one closed circle.
+  A cone closes at its apex when one of its vertices is within ε_v of the apex, when it has a vertex loop, or when its whole boundary is the current circles. The last case occurs in NIST ftc_07, a drill point bounded by one closed circle. As built in PR 6, after review: the cone closes when nothing but the current circles bounds it (a vertex loop at the apex is not an edge), its apex lies ahead along u, and no plane was crossed first; a dimple in a flat floor is then `unknown`, not a point, and the tip length is measured to the apex, not taken as r / tan α from the wall.
 - **W5. The end, from W3 and W4:**
 
 | Group | Beyond | Terminal | End |
@@ -538,7 +538,7 @@ For a full group, each full end station starts a walk outward. The direction is 
   For example, a hole with material beyond that ends on a general face is `unknown`. The probe met that 16 times.
 - **W6. Steps must be mutual.** A step from G to H counts only if H's walk from its facing end returns G. 56 steps in the fixtures are not mutual and stay `unknown`.
 - **W7. Bound.** A walk crosses at most 8 transition faces and visits each group at most once.
-- **W7b. No turning back** (added in PR 6). Each perpendicular plane a walk meets must not lie back along the axis from one it met before; otherwise the end is `unknown`, `turns_back`. A cone or torus may lead back (a round down to a boss's wall), but a plane behind an earlier one is the face around a pocket, not where the end is.
+- **W7b. No turning back** (added in PR 6). The end is `unknown`, `turns_back`, when a perpendicular plane the walk meets lies back along the axis from the walk's start or from a plane it met before (a pocket's floor, then the face around the pocket), or when the first face beyond is a cone or torus whose far circle lies back along the axis (a conical washer's face from its bore: W3 would read its widening as air or material by the cone's own axis, and once read a through bore as blind). A cone or torus after a plane may lead back: a round down to a boss's wall after its top (C3) meets no plane behind.
 - **W8. Rim.** The rim is the station of the last perpendicular plane the walk crossed or stopped at: the plane the hole opens onto, or the shaft rises from. If the walk met no perpendicular plane, the rim is the last circle crossed:
   - a plain hole: the face it opens onto, at its own end circle;
   - a countersink: the face the cone opens onto, at the cone's outer circle;
@@ -722,15 +722,15 @@ This is a 60 × 40 × 10 mm plate generated with Open CASCADE 8.0.1. It has two 
       { "id": "hole-490", "solid": "solid-15", "kind": "through", "axis": { "point_mm": [15.0, 20.0, 0.0], "direction": [0.0, 0.0, 1.0] },
         "segments": [ { "cylinder": "cylinder-490", "diameter_mm": 6.6, "from_mm": 0.0, "to_mm": 10.0 } ],
         "transitions": [],
-        "ends": [ { "kind": "opening", "at_mm": 0.0, "rim_mm": 0.0, "opens_into": "plane-404" },
-                  { "kind": "opening", "at_mm": 10.0, "rim_mm": 10.0, "opens_into": "plane-213" } ],
+        "ends": [ { "kind": "opening", "at_mm": 0.0, "rim_mm": 0.0, "opens_into": "plane-404", "countersink": null },
+                  { "kind": "opening", "at_mm": 10.0, "rim_mm": 10.0, "opens_into": "plane-213", "countersink": null } ],
         "length_mm": 10.0, "depth_mm": null, "wall_openings": 0 },
       { "id": "hole-517", "…": "as hole-490, at (45, 20)" },
       { "id": "hole-544", "solid": "solid-15", "kind": "blind", "axis": { "point_mm": [30.0, 30.0, 4.0], "direction": [0.0, 0.0, 1.0] },
         "segments": [ { "cylinder": "cylinder-544", "diameter_mm": 5.0, "from_mm": 0.0, "to_mm": 6.0 } ],
         "transitions": [],
         "ends": [ { "kind": "bottom", "bottom": { "kind": "flat" }, "at_mm": 0.0, "closed_by": "plane-599" },
-                  { "kind": "opening", "at_mm": 6.0, "rim_mm": 6.0, "opens_into": "plane-213" } ],
+                  { "kind": "opening", "at_mm": 6.0, "rim_mm": 6.0, "opens_into": "plane-213", "countersink": null } ],
         "length_mm": null, "depth_mm": 6.0, "wall_openings": 0 }
     ],
     "shafts": [], "other_items": [], "notes": []
@@ -1067,7 +1067,9 @@ Each PR comes with its tests. `EXTRACTOR_VERSION` goes up with every PR that cha
    - **W4's apex** is a narrowing cone bounded by the current circles alone (a vertex loop at the apex is not an edge); any other edge leaves the end unknown (L1);
    - **planes met must not turn back** along the axis (reason `turns_back`, added in PR 6). A gear hub rising from a pocket's floor walked across the floor, up the pocket's chamfered wall and onto the face around the pocket, which W8 then took as the root: the oracle caught the root 1.5 mm off. A round that turns back to a boss's wall after its top (C3) meets no plane, so p30 reads as before;
    - every corpus part's holes and shafts match the construction one to one: kind, axis point and direction, segments, ends with their rims, bottoms (angle, tip length, floor, post) and countersinks, and lengths; a hole whose both ends are irregular reads as no stack, since its cylinder is undecided;
-   - the oracle runs the manifest mode's two-sided tests on fitment's own holes and shafts: 479 holes and 18 shafts over the corpus and the 24 accepted fixtures, 0 disagreements. On real parts its probes first misfired: 1 mm beside an opening left a 6 mm part, and a root's fillet or a hollow free end hid the plane at the rim. They now scale to the wall and try several distances and eight directions;
+   - the oracle runs the manifest mode's two-sided tests on fitment's own holes and shafts: 434 through and blind holes and 18 shafts probed over the corpus and the 24 accepted fixtures, 0 disagreements. On real parts its probes first misfired: 1 mm beside an opening left a 6 mm part, and a root's fillet or a hollow free end hid the plane at the rim. They now scale to the wall and try eight directions, within the wall's width unless the walk crossed a round, fillet or countersink; review of PR 6 showed that probing further out everywhere let a bore through a boss pass on the plate around it. It also checks each shaft's ends against its kind and length, and that an opening past its wall's end without a reported countersink does not widen; every mutation the review tried (through and blind swapped, rims and lengths moved, countersinks dropped, shaft ends swapped) is caught;
+   - a segment's `from_mm` or `to_mm` is `null` on an irregular side, where its wall runs past its end circle;
+   - `from_json` checks that every id an end, segment or transition names exists with the right kind, segment diameters and lengths agree with their cylinders, end kinds fit the stack's sense and kind, the start end is at 0, and `complete` is recomputed;
    - on the fixtures: 250 through, 146 blind and 32 unknown holes; each model's exports give the same holes (ctc_01: 8 through and 2 blind in all three), and the counts by kind are pinned;
    - check 28 refuses an annulus whose side contradicts its radii; a constructed solid tests it, since a file that reaches it fails check 25 first.
 7. **Hardening.**

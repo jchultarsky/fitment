@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use super::group::{self, IDENTITY_MM, LEVER_MIN_MM};
-use super::topo::{Curve, P, Surface, Topo, cross, dot, length, radial, scale, sub};
+use super::topo::{Curve, Loop, P, Surface, Topo, cross, dot, length, radial, scale, sub};
 use super::{FeatureId, FeatureKind};
 
 /// The most transition faces one walk crosses (W7).
@@ -42,8 +42,9 @@ pub(crate) enum Terminal {
     /// A face that is not crossed: a plane with other edges, or a face no
     /// rule reads after planes only.
     Face(FeatureId),
-    /// A cone that closes at its apex, with its semi-angle.
-    Apex(FeatureId, f64),
+    /// A cone that closes at its apex, with its semi-angle and the apex's
+    /// station.
+    Apex(FeatureId, f64, f64),
     /// A coaxial cylinder of the opposite sense, with its radius.
     Post(FeatureId, f64),
     /// A coaxial cylinder of the same sense, after a transition.
@@ -86,8 +87,9 @@ pub(crate) struct Contradiction(pub(crate) u64);
 enum Beyond {
     /// A plane perpendicular to the axis, with its outward unit normal.
     Plane(P),
-    /// A coaxial cone: its widening direction and semi-angle.
-    Cone(P, f64),
+    /// A coaxial cone: its widening direction, semi-angle, and its apex's
+    /// station along the wall's axis.
+    Cone(P, f64, f64),
     /// A coaxial torus.
     Torus,
     /// A coaxial cylinder, with its sense and radius.
@@ -131,7 +133,7 @@ impl Part<'_> {
                 if radial(apex, origin, z).0 <= IDENTITY_MM
                     && length(cross(*w, z)) * lever <= IDENTITY_MM
                 {
-                    Beyond::Cone(*w, *semi_angle)
+                    Beyond::Cone(*w, *semi_angle, dot(sub(apex, origin), z))
                 } else {
                     Beyond::Other
                 }
@@ -171,24 +173,33 @@ impl Part<'_> {
     }
 
     /// The boundary of `faces` other than the `current` edges: its coaxial
-    /// circles (far circles), and how many other edges it has.
+    /// circles (far circles), and whether it has any other edge. The scan
+    /// stops at the first other edge, after which every rule stops the
+    /// walk: a face many holes open onto is not read once per hole (found
+    /// in review of PR 6: 10,000 holes in one plate took 4 s).
     fn boundary(&self, faces: &[usize], current: &[usize], axis: (P, P)) -> Boundary {
         let (origin, z) = axis;
         let mut boundary = Boundary {
             far: Vec::new(),
             others: 0,
         };
-        for &index in faces {
-            let Some(face) = self.topo.faces.get(index) else {
+        let uses = faces
+            .iter()
+            .filter_map(|&i| self.topo.faces.get(i))
+            .flat_map(|face| face.bounds.iter())
+            .filter_map(|bound| match &bound.lp {
+                Loop::Edges(uses) => Some(uses.iter()),
+                Loop::Vertex(_) => None,
+            })
+            .flatten();
+        for edge_use in uses {
+            let Some(edge) = self.topo.edges.get(edge_use.edge) else {
                 continue;
             };
-            for travel in self.topo.travels(face).iter().flatten() {
-                let Some(edge) = self.topo.edges.get(travel.edge) else {
-                    continue;
-                };
-                if edge.faces.iter().all(|f| faces.contains(f)) || current.contains(&travel.edge) {
-                    continue;
-                }
+            if edge.faces.iter().all(|f| faces.contains(f)) || current.contains(&edge_use.edge) {
+                continue;
+            }
+            {
                 match &edge.curve {
                     Curve::Circle {
                         centre,
@@ -200,9 +211,12 @@ impl Part<'_> {
                     {
                         boundary
                             .far
-                            .push((travel.edge, dot(sub(*centre, origin), z), *radius));
+                            .push((edge_use.edge, dot(sub(*centre, origin), z), *radius));
                     }
-                    _ => boundary.others += 1,
+                    _ => {
+                        boundary.others += 1;
+                        break;
+                    }
                 }
             }
         }
@@ -291,11 +305,9 @@ fn plane(
     // is not where a shaft on the floor rises from (found in PR 6 on a gear
     // hub). A round that turns back to a boss's wall after its top is fine:
     // it meets no plane.
-    if state
-        .found
-        .plane
-        .is_some_and(|last| (state.station - last) * dot(wall.z, u) < -IDENTITY_MM)
-    {
+    let along = dot(wall.z, u);
+    let behind = |at: f64| (state.station - at) * along < -IDENTITY_MM;
+    if state.found.plane.is_some_and(behind) || behind(state.found.at) {
         return Ok(Flow::Stop(Err(UnknownReason::TurnsBack)));
     }
     // Air beyond when the outward normal points along u; every plane must
@@ -336,19 +348,27 @@ fn far_edges(edges: &Boundary) -> Vec<usize> {
 fn cone(
     state: &mut State,
     wall: &Wall,
-    (h, w, semi, u): (FeatureId, P, f64, P),
+    (h, w, semi, apex, u): (FeatureId, P, f64, f64, P),
     edges: &Boundary,
 ) -> Flow {
+    let along = dot(wall.z, u);
     let widens = dot(w, u) > 0.0;
-    let says = widens != wall.shaft;
-    let air = *state.air.get_or_insert(says);
-    state.curved = true;
     // A narrowing cone closes at its apex when nothing but the current
-    // circles bounds it (a vertex loop at the apex is not an edge). Any
-    // other edge, such as a cross bore through the point (L1), leaves the
-    // end unknown.
+    // circles bounds it (a vertex loop at the apex is not an edge), the apex
+    // lies ahead, and no plane was crossed first: a dimple in a flat floor
+    // is not a drill point (review of PR 6). Any other edge, such as a cross
+    // bore through the point (L1), leaves the end unknown.
     if !widens && edges.far.is_empty() && edges.others == 0 {
-        return Flow::Stop(Ok((air, Terminal::Apex(h, semi))));
+        let says = widens != wall.shaft;
+        let air = *state.air.get_or_insert(says);
+        state.curved = true;
+        if (apex - state.station) * along <= IDENTITY_MM {
+            return Flow::Stop(Err(UnknownReason::TurnsBack));
+        }
+        if state.found.plane.is_some() {
+            return Flow::Stop(Err(UnknownReason::Combination));
+        }
+        return Flow::Stop(Ok((air, Terminal::Apex(h, semi, apex))));
     }
     let Some((at, far)) = (edges.others == 0)
         .then(|| one_circle(&edges.far))
@@ -356,6 +376,15 @@ fn cone(
     else {
         return Flow::Stop(Err(UnknownReason::Transition));
     };
+    // W3 reads a first cone by which way it runs; one whose far circle lies
+    // back along the axis turns back, as a conical washer's face does from
+    // its bore, and says nothing (review of PR 6).
+    if state.air.is_none() && (at - state.station) * along < -IDENTITY_MM {
+        return Flow::Stop(Err(UnknownReason::TurnsBack));
+    }
+    let says = widens != wall.shaft;
+    state.air.get_or_insert(says);
+    state.curved = true;
     state.found.transitions.push((h, state.station));
     state.found.cones.push(Crossed {
         id: h,
@@ -367,13 +396,16 @@ fn cone(
 }
 
 /// A coaxial torus (W3, W4).
-fn torus(state: &mut State, wall: &Wall, h: FeatureId, edges: &Boundary) -> Flow {
+fn torus(state: &mut State, wall: &Wall, (h, u): (FeatureId, P), edges: &Boundary) -> Flow {
     let Some((at, far)) = (edges.others == 0)
         .then(|| one_circle(&edges.far))
         .flatten()
     else {
         return Flow::Stop(Err(UnknownReason::Transition));
     };
+    if state.air.is_none() && (at - state.station) * dot(wall.z, u) < -IDENTITY_MM {
+        return Flow::Stop(Err(UnknownReason::TurnsBack));
+    }
     state.air.get_or_insert((far > state.radius) != wall.shaft);
     state.curved = true;
     state.found.transitions.push((h, state.station));
@@ -437,8 +469,10 @@ pub(crate) fn walk(
         let instance = part.topo.faces.get(first).map_or(0, |f| f.instance);
         let flow = match part.kind(first, axis) {
             Beyond::Plane(n) => plane(&mut state, wall, (h, n, u_vec), &edges, instance)?,
-            Beyond::Cone(w, semi) => cone(&mut state, wall, (h, w, semi, u_vec), &edges),
-            Beyond::Torus => torus(&mut state, wall, h, &edges),
+            Beyond::Cone(w, semi, apex) => {
+                cone(&mut state, wall, (h, w, semi, apex, u_vec), &edges)
+            }
+            Beyond::Torus => torus(&mut state, wall, (h, u_vec), &edges),
             Beyond::Cylinder(sense, r) => stop(&mut state, wall, h, Some((sense, r))),
             Beyond::Other => stop(&mut state, wall, h, None),
         };
@@ -580,6 +614,36 @@ mod tests {
             ))
         );
         assert_eq!(found.rim, 5.0);
+    }
+
+    #[test]
+    fn a_shaft_widening_into_air_through_an_annulus_is_a_contradiction() {
+        // Check 28, the shaft's side: a shaft narrows into air and widens
+        // into material, so widening with air beyond contradicts it.
+        let topo = annulus(1.0);
+        let owner = [
+            FeatureId::new(FeatureKind::Cylinder, 100),
+            FeatureId::new(FeatureKind::Plane, 200),
+            FeatureId::new(FeatureKind::Cylinder, 300),
+        ];
+        let faces: BTreeMap<FeatureId, Vec<usize>> =
+            [(owner[0], vec![0]), (owner[2], vec![2])].into();
+        let part = Part {
+            topo: &topo,
+            owner: &owner,
+            faces: &faces,
+        };
+        let wall = Wall {
+            id: owner[0],
+            radius: 3.0,
+            shaft: true,
+            point: [0.0, 0.0, -5.0],
+            z: [0.0, 0.0, 1.0],
+        };
+        assert!(matches!(
+            walk(&part, &wall, (5.0, &[0]), 1.0),
+            Err(Contradiction(200))
+        ));
     }
 
     #[test]
