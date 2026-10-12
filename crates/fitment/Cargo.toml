@@ -24,11 +24,14 @@ path = "src/main.rs"
 [dependencies]
 fitment-core = { workspace = true }
 clap = { workspace = true }
+# The table view names values as the document does; both already build for
+# fitment-core.
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
-serde_json = { workspace = true }
 
 [lints]
 workspace = true

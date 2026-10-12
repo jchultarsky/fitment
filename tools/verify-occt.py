@@ -6,7 +6,7 @@
 """Check fitment's test parts, and fitment itself, with Open CASCADE.
 
     tools/verify-occt.py manifest DIR
-    tools/verify-occt.py features PATH...
+    tools/verify-occt.py features [--expect MANIFEST] PATH...
 
 Reads every case of DIR/manifest.json (written by tools/gen-corpus.py) with
 Open CASCADE 8.0.1, the kernel the M7 fit verifier pins (decision 8), and
@@ -81,6 +81,10 @@ each was transferred from:
     free ends;
   - the solid is valid with positive volume: the only check on a shell
     written inside out (design, R11).
+
+With --expect, the run's tallies must equal the `oracle` entry of that
+JSON file (fixtures/manifest.json pins the fixtures'): a fixture that
+stops being checked, or a check that stops running, then fails.
 
 Exits 1 on any disagreement, after listing every one.
 """
@@ -1104,6 +1108,10 @@ def feature_inputs(path):
 
 
 def features_main(paths):
+    pinned = None
+    if paths[:1] == ["--expect"] and len(paths) >= 3:
+        pinned = json.loads(Path(paths[1]).read_text(encoding="utf-8")).get("oracle")
+        paths = paths[2:]
     binary = Path(os.environ.get("FITMENT", Path(__file__).resolve().parent.parent / "target/release/fitment"))
     if not binary.is_file():
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
@@ -1120,6 +1128,11 @@ def features_main(paths):
         print(f"{'ok  ' if not found else 'FAIL'} {path}")
     for problem in problems:
         print(problem, file=sys.stderr)
+    if pinned is not None and pinned != tally:
+        changed = {k: (pinned.get(k), tally.get(k)) for k in sorted(set(pinned) | set(tally))
+                   if pinned.get(k) != tally.get(k)}
+        problems.append(f"the tallies differ from the pinned ones (pinned, now): {changed}")
+        print(problems[-1], file=sys.stderr)
     print(", ".join(f"{v} {k}" for k, v in tally.items()) + f"; {len(problems)} disagreements with Open CASCADE")
     sys.exit(1 if problems else 0)
 

@@ -121,6 +121,8 @@ class Motion:
 IDENTITY = Motion((0, 0, 1), 0.0, (0, 0, 0))
 # The frame motion of p14 and p14s: no axis of the result is axis-aligned.
 TILT = Motion((1, 2, 3), 37.0, (200.0, -40.0, 17.0))
+# The motion of every positive part's `_rot` variant: a second skew frame.
+VARIANT = Motion((2, -1, 1), 23.0, (-35.0, 12.0, 60.0))
 # The mapped item of p29: a quarter turn about z, then a shift.
 MAPPED = Motion((0, 0, 1), 90.0, (100.0, -50.0, 25.0))
 
@@ -428,11 +430,12 @@ class Writer:
         self.cases = []
         out.mkdir(parents=True, exist_ok=True)
 
-    def shape(self, shape, name, unit="MM", roots=None):
+    def shape(self, shape, name, unit="MM", roots=None, pcurves=False):
         """Writes `shape` (or several `roots`, each its own product) without
-        pcurves and with assembly mode off, so a compound is one product."""
+        pcurves unless asked, and with assembly mode off, so a compound is one
+        product."""
         writer = STEPControl_Writer()
-        Interface_Static.SetIVal_s("write.surfacecurve.mode", 0)
+        Interface_Static.SetIVal_s("write.surfacecurve.mode", 1 if pcurves else 0)
         Interface_Static.SetIVal_s("write.step.assembly", 0)
         Interface_Static.SetCVal_s("xstep.cascade.unit", "MM")
         Interface_Static.SetCVal_s("write.step.unit", unit)
@@ -575,6 +578,20 @@ def build(w: Writer, unit_only: bool):
             w.shape(shape, name, unit=unit)
             expect = features if isinstance(features, dict) else accepted(features)
             w.case(name, tests, rules, unit_set, construction, expect)
+        if unit_only:
+            return
+        # Every positive part again, in the corpus only: written with
+        # pcurves, as Open CASCADE writes by default, and in a second skew
+        # frame, where nothing is axis-aligned.
+        w.shape(shape, f"{name}_pc", unit=unit, pcurves=True)
+        w.case(f"{name}_pc", f"{name} written with pcurves", rules, False, {"variant_of": name}, expect)
+        if not isinstance(features, dict):
+            moved = BRepBuilderAPI_Transform(shape, VARIANT.trsf(), True).Shape()
+            w.shape(moved, f"{name}_rot", unit=unit)
+            w.case(f"{name}_rot", f"{name} moved into a second skew frame", rules, False,
+                   {"variant_of": name, "motion": {"axis": VARIANT.axis, "angle_deg": VARIANT.angle,
+                                                   "shift": VARIANT.shift}},
+                   accepted(features.moved(VARIANT)))
 
     # p01: the simplest through hole, and the base of every text edit.
     h01 = Hole((20, 15, 8), DOWN, [(6.6, 8)], through=8)
