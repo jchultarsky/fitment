@@ -1202,7 +1202,8 @@ def step_files(path):
     if manifest.is_file():
         listed = json.loads(manifest.read_text(encoding="utf-8"))
         if "cases" in listed:
-            return [path / case["file"] for case in listed["cases"]]
+            # Assemblies are not parts: `manifest` mode checks them.
+            return [path / case["file"] for case in listed["cases"] if case.get("kind") != "assembly"]
         return [path / fixture["path"] for fixture in listed["fixtures"]]
     return sorted(p for p in path.rglob("*") if p.suffix.lower() in (".stp", ".step")
                   and "ocp" not in p.relative_to(path).parts)
