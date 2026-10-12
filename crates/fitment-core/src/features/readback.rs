@@ -60,7 +60,7 @@ pub(super) fn check(part: &Part, solid: &SolidInfo) -> Checked {
     }
     for cone in &part.cones {
         if let Some([low, high]) = cone.radii_mm {
-            if !(0.0 <= low && low <= high && high.is_finite()) {
+            if !(0.0 <= low && !low.is_sign_negative() && low <= high && high.is_finite()) {
                 return Err(format!("cone '{}' has radii out of order", cone.id));
             }
         }

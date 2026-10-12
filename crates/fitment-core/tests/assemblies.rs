@@ -545,7 +545,7 @@ fn a_parts_document_whose_tree_is_broken_is_not_read() {
 
 #[test]
 fn a_placement_far_out_of_range_is_refused() {
-    // s01 with the first bolt's assembly-side frame moved 2,000 km along x.
+    // s01 with the first bolt's assembly-side frame moved 2 km along x.
     let (_, bytes) = ASSEMBLIES[0];
     let text = String::from_utf8_lossy(bytes).replace(
         "#24 = CARTESIAN_POINT('',(-30.,-15.,8.));",
@@ -572,4 +572,197 @@ fn every_occurrence_carries_its_floors() {
             DefinitionKind::Assembly => assert_eq!(occurrence.part_uncertainty_mm, 0.0),
         }
     }
+}
+
+#[test]
+fn a_translation_of_1e17_mm_is_refused_without_panic() {
+    // The design's snippet for check 38; the grid of coincident
+    // occurrences once overflowed on it (review of M3 PR 2).
+    let (_, bytes) = ASSEMBLIES[0];
+    let text = String::from_utf8_lossy(bytes).replace(
+        "#24 = CARTESIAN_POINT('',(-30.,-15.,8.));",
+        "#24 = CARTESIAN_POINT('',(1.E+17,-15.,8.));",
+    );
+    let read = read_assembly(text.as_bytes());
+    assert_eq!(codes(read.gate_refusals()), [RefusalCode::OutOfRange]);
+}
+
+#[test]
+fn a_solid_two_definitions_share_is_refused_unread() {
+    // s02 with the screw's representation holding the base's solid: each
+    // definition would read it in full.
+    let (_, bytes) = ASSEMBLIES[1];
+    let text = String::from_utf8_lossy(bytes).replace(
+        "#507 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#508),#606);",
+        "#507 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#41),#606);",
+    );
+    assert_ne!(text.as_bytes(), bytes, "the edit applies");
+    let read = read_assembly(text.as_bytes());
+    let refused: Vec<&str> = read
+        .gate_refusals()
+        .iter()
+        .filter(|r| r.code == RefusalCode::ComponentRefused)
+        .map(|r| r.message.as_str())
+        .collect();
+    assert_eq!(refused.len(), 2, "{refused:?}");
+    assert!(
+        refused.iter().all(|m| m.contains("solid_shared")),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn a_parts_document_with_impossible_floors_is_not_read() {
+    let (_, bytes) = ASSEMBLIES[3];
+    let text = PartsDocument::read(bytes).to_json();
+    let json: Value = serde_json::from_str(&text).unwrap();
+    let index = |id: &str| {
+        json["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|p| p["definition"]["product"]["id"] == id)
+            .unwrap()
+    };
+    let (bolt, lb) = (index("BOLT"), index("LB_ASSEM"));
+    let refuses = |edit: &dyn Fn(&mut Value), why: &str| {
+        let mut changed = json.clone();
+        edit(&mut changed);
+        assert!(
+            PartsDocument::from_json(&changed.to_string()).is_err(),
+            "{why}: read"
+        );
+    };
+    refuses(
+        &|j| j["parts"][bolt]["occurrences"][0]["placement_uncertainty_mm"] = Value::from(-0.0),
+        "a floor of -0.0",
+    );
+    refuses(
+        &|j| j["parts"][bolt]["occurrences"][1]["part_uncertainty_mm"] = Value::from(0.5),
+        "one occurrence's part floor unlike the others'",
+    );
+    refuses(
+        &|j| j["parts"][lb]["occurrences"][0]["part_uncertainty_mm"] = Value::from(0.5),
+        "a part floor on an assembly",
+    );
+    refuses(
+        &|j| {
+            j["parts"][bolt]["component"] = serde_json::json!({
+                "gate": {"status": "refused", "refusals": [{"code": "no_solid", "instance": null, "message": "x"}]},
+                "holes": null, "shafts": null, "complete": null
+            });
+        },
+        "a refused component under an accepted gate",
+    );
+}
+
+#[test]
+fn check_38_counts_the_part_s_reach_beside_the_translation() {
+    // The bolt reaches 25 mm below its frame. 20 mm short of the range,
+    // its translation is in range and the bolt is not; 100 mm short, both
+    // are.
+    let (_, bytes) = ASSEMBLIES[0];
+    let moved = |x: &str| {
+        String::from_utf8_lossy(bytes).replace(
+            "#24 = CARTESIAN_POINT('',(-30.,-15.,8.));",
+            &format!("#24 = CARTESIAN_POINT('',({x},-15.,8.));"),
+        )
+    };
+    let near = read_assembly(moved("999980.").as_bytes());
+    assert_eq!(codes(near.gate_refusals()), [RefusalCode::OutOfRange]);
+    let inside = read_assembly(moved("999900.").as_bytes());
+    assert_eq!(inside.gate_refusals(), &[]);
+}
+
+/// `text` with definition `index`'s representation in a context of its own
+/// stating `uncertainty` mm, or none.
+fn with_context(text: &str, index: usize, uncertainty: Option<f64>) -> String {
+    let b = 100 * (index as u64 + 1);
+    let (u, c) = (9000 + 10 * index as u64, 9001 + 10 * index as u64);
+    let stated = match uncertainty {
+        Some(value) => format!(
+            "#{u}=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE({value:?}),#1,'distance_accuracy_value','');\n\
+             #{c}=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#{u}))\
+             GLOBAL_UNIT_ASSIGNED_CONTEXT((#1))REPRESENTATION_CONTEXT('',''));\n"
+        ),
+        None => format!(
+            "#{c}=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#1))\
+             REPRESENTATION_CONTEXT('',''));\n"
+        ),
+    };
+    let rep = format!("#{}=SHAPE_REPRESENTATION('',(#{}),#2);", b + 5, b + 6);
+    assert!(text.contains(&rep), "{rep}");
+    text.replace(
+        &rep,
+        &format!("#{}=SHAPE_REPRESENTATION('',(#{}),#{c});", b + 5, b + 6),
+    )
+    .replace(
+        "ENDSEC;END-ISO-10303-21;",
+        &format!("{stated}ENDSEC;END-ISO-10303-21;"),
+    )
+}
+
+#[test]
+fn a_placement_floor_is_the_largest_its_path_states() {
+    // ROOT (1e-7) holds SUB (1e-3), which holds LEAF; ROOT also holds SUB2,
+    // whose context states none, which holds LEAF2.
+    let mut text = snippet(
+        &["ROOT", "SUB", "LEAF", "SUB2", "LEAF2"],
+        &[(0, 1, "a"), (1, 2, "b"), (0, 3, "c"), (3, 4, "d")],
+        "",
+        &[],
+    );
+    text = with_context(&text, 0, Some(1e-7));
+    text = with_context(&text, 1, Some(1e-3));
+    text = with_context(&text, 2, Some(1e-5));
+    text = with_context(&text, 3, None);
+    let read = read_assembly(text.as_bytes());
+    let listing = read.listing().unwrap();
+    let floor = |id: &str| {
+        let selected = listing.select(Some(id), None).unwrap();
+        listing.occurrences()[selected.occurrences[0]].placement_uncertainty_mm
+    };
+    assert_eq!(
+        floor("LEAF"),
+        1e-3,
+        "the sub-assembly's, the largest on the path"
+    );
+    assert_eq!(floor("LEAF2"), 1e-7, "the root's, as SUB2 states none");
+    assert!(
+        read.notes().iter().any(|n| n.code
+            == fitment_core::AssemblyNoteCode::AssemblyUncertaintyMissing
+            && n.instance == Some(405)),
+        "{:?}",
+        read.notes()
+    );
+}
+
+#[test]
+fn two_occurrences_at_one_place_but_turned_apart_are_not_coincident() {
+    let both = snippet(&["ROOT", "A"], &[(0, 1, "u1"), (0, 1, "u2")], "", &[]);
+    let coincident = |text: &str| {
+        read_assembly(text.as_bytes())
+            .notes()
+            .iter()
+            .filter(|n| n.code == fitment_core::AssemblyNoteCode::CoincidentOccurrences)
+            .count()
+    };
+    assert_eq!(coincident(&both), 1, "both at the identity");
+    // The second usage's assembly-side frame turned a quarter about z.
+    let turned = both
+        .replace(
+            "#100014=ITEM_DEFINED_TRANSFORMATION('','',#206,#106);",
+            "#100014=ITEM_DEFINED_TRANSFORMATION('','',#206,#9100);",
+        )
+        .replace(
+            "#105=SHAPE_REPRESENTATION('',(#106),#2);",
+            "#105=SHAPE_REPRESENTATION('',(#106,#9100),#2);",
+        )
+        .replace(
+            "ENDSEC;END-ISO-10303-21;",
+            "#9100=AXIS2_PLACEMENT_3D('',#3,#9101,#9102);#9101=DIRECTION('',(0.,0.,1.));\
+             #9102=DIRECTION('',(0.,1.,0.));\nENDSEC;END-ISO-10303-21;",
+        );
+    assert_ne!(turned, both);
+    assert_eq!(coincident(&turned), 0);
 }
