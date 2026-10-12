@@ -1749,7 +1749,12 @@ def differences(generated: Path, committed: Path):
                 found.append(f"{name}: differs")
             continue
         if NUMBER.sub("#", x) != NUMBER.sub("#", y):
-            found.append(f"{name}: differs in more than its numbers")
+            # The first line that differs, so a difference on another
+            # platform can be seen in its CI log.
+            pairs = zip(x.splitlines(), y.splitlines())
+            first = next(((u, v) for u, v in pairs if NUMBER.sub("#", u) != NUMBER.sub("#", v)), ("", ""))
+            found.append(f"{name}: differs in more than its numbers: generated {first[0][:200]!r}, "
+                         f"committed {first[1][:200]!r}")
             continue
         for u, v in zip(NUMBER.findall(x), NUMBER.findall(y)):
             if abs(float(u) - float(v)) > SAME_NUMBER:
