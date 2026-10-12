@@ -110,9 +110,9 @@ The checks run in stages. A stage that refuses skips the later stages, which nee
 | Structure | 5 | No assembly usage | `assembly` | 19 files |
 | | 6 | At least one product definition | `no_definition` | 0 |
 | | 7 | At most one product definition (R4) | `several_definitions` | 1 file |
-| Shape | 8 | `is_complete()`. One refusal per link not followed, with stepq's reason | `shape_incomplete` | 0 of 1,660 definitions |
+| Shape | 8 | `is_complete()`. One refusal per link not followed, with stepq's reason. A failure ends the stage, since what the shape holds beyond those links is unknown | `shape_incomplete` | 0 of 1,660 definitions |
 | | 9 | At least one solid | `no_solid` | 1 file (tessellated only); 364 leaves, 340 of them empty definitions in the OCP enclosure |
-| | 10 | At most one distinct solid item (R3). stepq lists an item once per shape representation that reaches it, so items are compared by `#id` | `several_solids` | 27 leaves |
+| | 10 | At most one placed solid (R3). stepq lists a solid once for each path that reaches it. Paths that place it the same way are one solid; a mapped item that places the same `#id` elsewhere is another copy, so placements, not `#id`s, are counted (found in review of PR 1) | `several_solids` | 27 leaves |
 | | 11 | Every other item is a `geometric_curve_set` or `geometric_set` of points and curves only (R2) | `unread_shape_item` | 11 files (10 with surface models; 1 tessellated only, also `no_solid`), 63 leaves: 85 surface models and 1 tessellated solid |
 | | 12 | `ShapeItem::transform` succeeds for the solid | `solid_placement_unreadable` | 0. No fixture places a solid through a mapped item; a generated case covers it (section 13) |
 | Topology | 13 | Not `TopologyError::Unsupported` | `topology_unsupported` | 0 |
@@ -639,7 +639,8 @@ Core refuses to read a document with another `format` or `format_version`. It re
 `part` holds:
 
 - `definition`: the `#id`, and the product's `#id`, id and name;
-- `frame` and `solids`: each solid's `#id`, entity, transform, shells, face count, units and `max_vertex_offset_mm`;
+- `frame`: the shape representation features are stated in; with several listings of the one solid, the smallest `#id`;
+- `solids`: each solid's `#id`, entity, the `representation` that lists it, transform, shells, face count, units and `max_vertex_offset_mm`;
 - `max_uncertainty_mm`, `complete`, `face_counts`;
 - the primary features: `planes`, `cylinders`, `cones`, `tori`, `other_faces`;
 - the compound features: `holes`, `shafts`;
@@ -776,6 +777,10 @@ pub const EXTRACTOR_VERSION: u32 = 1;
 /// Every way the input can fail is a refusal with reasons; nothing panics.
 pub fn read_part(step: &[u8]) -> Result<Part, Refused>;
 
+// As built in PR 1, after review: a FeaturesDocument comes only from `read` or
+// `from_json`, its fields are private with accessors, and the file's header lives in
+// the document, not in Part, so no caller can build a document `from_json` would reject.
+
 #[non_exhaustive]
 pub struct Part {
     pub definition: DefinitionRef,
@@ -795,11 +800,10 @@ pub struct Part {
     pub notes: Vec<Note>,
 }
 
-#[non_exhaustive]
-pub struct FeaturesDocument { /* section 10.1 */ }
+pub struct FeaturesDocument { /* section 10.1; private fields */ }
 impl FeaturesDocument {
-    pub fn accepted(part: Part) -> Self;
-    pub fn refused(refused: Refused) -> Self;
+    pub fn read(step: &[u8]) -> Self;             // the document for a file, accepted or refused
+    pub fn status(&self) -> Status;               // and format(), header(), refusals(), part(), ...
     pub fn to_json(&self) -> String;              // pretty, ends with "\n"
     pub fn from_json(text: &str) -> Result<Self, FormatError>;
     pub fn is_current(&self) -> bool;

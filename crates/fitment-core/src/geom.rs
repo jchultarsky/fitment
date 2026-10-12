@@ -187,7 +187,9 @@ impl Rigid {
 
     /// A transform, or `None` if a value is not finite, or the rotation is
     /// not orthonormal with determinant +1 within
-    /// [`ORTHONORMAL_SLACK`](Self::ORTHONORMAL_SLACK).
+    /// [`ORTHONORMAL_SLACK`](Self::ORTHONORMAL_SLACK). Both `R·Rᵀ` and
+    /// `Rᵀ·R` are checked, so a skewed matrix that passes one fails the
+    /// other.
     pub fn new(rotation: [[f64; 3]; 3], translation: [f64; 3]) -> Option<Self> {
         let rotation = [
             finite3(rotation[0])?,
@@ -195,11 +197,18 @@ impl Rigid {
             finite3(rotation[2])?,
         ];
         let translation = finite3(translation)?;
-        for (i, row) in rotation.iter().enumerate() {
-            for (j, other) in rotation.iter().enumerate() {
-                let expected = if i == j { 1.0 } else { 0.0 };
-                if (dot(*row, *other) - expected).abs() > Self::ORTHONORMAL_SLACK {
-                    return None;
+        let columns = [
+            [rotation[0][0], rotation[1][0], rotation[2][0]],
+            [rotation[0][1], rotation[1][1], rotation[2][1]],
+            [rotation[0][2], rotation[1][2], rotation[2][2]],
+        ];
+        for vectors in [&rotation, &columns] {
+            for (i, a) in vectors.iter().enumerate() {
+                for (j, b) in vectors.iter().enumerate() {
+                    let expected = if i == j { 1.0 } else { 0.0 };
+                    if (dot(*a, *b) - expected).abs() > Self::ORTHONORMAL_SLACK {
+                        return None;
+                    }
                 }
             }
         }
@@ -271,7 +280,7 @@ impl Rigid {
             moved[1] + outer.translation[1],
             moved[2] + outer.translation[2],
         ];
-        Self::new(rotation, translation)
+        Self::finite(rotation, translation)
     }
 
     /// The transform that undoes this one, `(Rᵀ, −Rᵀ·t)`, or `None` if it
@@ -284,7 +293,21 @@ impl Rigid {
             [r[0][2], r[1][2], r[2][2]],
         ];
         let moved = transposed.map(|row| dot(row, self.translation));
-        Self::new(transposed, [-moved[0], -moved[1], -moved[2]])
+        Self::finite(transposed, [-moved[0], -moved[1], -moved[2]])
+    }
+
+    /// The result of composing or inverting transforms [`new`](Self::new)
+    /// accepted: only finiteness is checked again, so that rounding can
+    /// never make a valid composition fail the orthonormality slack.
+    fn finite(rotation: [[f64; 3]; 3], translation: [f64; 3]) -> Option<Self> {
+        Some(Self {
+            rotation: [
+                finite3(rotation[0])?,
+                finite3(rotation[1])?,
+                finite3(rotation[2])?,
+            ],
+            translation: finite3(translation)?,
+        })
     }
 }
 
@@ -361,6 +384,19 @@ mod tests {
         assert_eq!(turn.then(&back).unwrap(), Rigid::IDENTITY);
         let twice = turn.then(&turn).unwrap();
         assert_eq!(twice.apply_point(p).unwrap().to_array(), [9.0, 10.0, 0.0]);
+    }
+
+    #[test]
+    fn composing_accepted_transforms_never_fails_on_rounding() {
+        // Inside the slack, but composing it with itself 40 times would
+        // drift past it if each step were checked again.
+        let s = 1.0 + 3.2e-10;
+        let near = Rigid::new([[s, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [1.0; 3]).unwrap();
+        let mut composed = near;
+        for _ in 0..40 {
+            composed = composed.then(&near).unwrap();
+        }
+        assert!(composed.inverse().is_some());
     }
 
     #[test]

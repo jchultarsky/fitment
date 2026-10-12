@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use stepq::geometry::Rigid;
 use stepq::info::Info;
 use stepq::model::{DefinitionShape, Graph, NotFollowedReason, ProductStructure, ShapeItem};
 
@@ -129,6 +130,7 @@ pub struct Refusal {
     /// What failed.
     pub code: RefusalCode,
     /// The innermost `#id` at fault, if there is one.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub instance: Option<u64>,
     /// For people: what failed, then any detail stepq gave. It may change
     /// between versions; the code does not.
@@ -181,6 +183,8 @@ pub(crate) fn finish(mut refusals: Vec<Refusal>) -> Vec<Refusal> {
             }
         }
     }
+    // The summary has no instance, so it sorts first within its code.
+    kept.sort();
     kept
 }
 
@@ -223,12 +227,32 @@ pub(crate) fn schema_family(schemas: &[String]) -> Option<&'static str> {
 /// [`Graph::build`], so dangling references are counted, not fatal.
 pub(crate) fn file(graph: &Graph<'_>, info: &Info) -> Vec<Refusal> {
     let mut refusals = Vec::new();
-    for &(node, missing) in graph.unresolved() {
-        let from = graph.instance(node).id;
+    // Only the first few become messages: a crafted file can hold millions
+    // of dangling references, and the pairs are cheap where strings are not.
+    let mut dangling: Vec<(u64, u64)> = graph
+        .unresolved()
+        .iter()
+        .map(|&(node, missing)| (graph.instance(node).id, missing))
+        .collect();
+    dangling.sort_unstable();
+    dangling.dedup();
+    let listed = if dangling.len() > LISTED_PER_CODE {
+        LISTED_PER_CODE - 1
+    } else {
+        dangling.len()
+    };
+    for &(from, missing) in dangling.iter().take(listed) {
         refusals.push(Refusal::new(
             RefusalCode::DanglingReference,
             Some(from),
             format!("#{from} refers to #{missing}, which is not defined"),
+        ));
+    }
+    if dangling.len() > listed {
+        refusals.push(Refusal::new(
+            RefusalCode::DanglingReference,
+            None,
+            format!("and {} more", dangling.len() - listed),
         ));
     }
     if info.sections != 1 {
@@ -505,10 +529,64 @@ fn not_followed(shape: &DefinitionShape) -> Vec<Refusal> {
 /// The one solid a part's shape holds, and the map into the part's frame.
 pub(crate) struct ShapeSolid<'s> {
     pub(crate) item: &'s ShapeItem,
-    pub(crate) transform: Option<stepq::geometry::Rigid>,
+    /// `None` if no mapped item places the solid.
+    pub(crate) transform: Option<Rigid>,
+}
+
+/// Every placement of every solid in the shape: stepq lists a solid once
+/// for each path that reaches it. Paths that place it the same way are one
+/// placement; a mapped item that places it elsewhere is another copy of
+/// the solid, so placements, not `#id`s, are what a part may have one of.
+/// Listings are ordered by solid, then shape representation, so the first
+/// one of a placement decides the frame the same way for every file.
+fn placements<'s>(
+    graph: &Graph<'_>,
+    shape: &'s DefinitionShape,
+) -> Result<Vec<ShapeSolid<'s>>, Vec<Refusal>> {
+    let mut listings: Vec<&ShapeItem> = shape.solids.iter().collect();
+    listings.sort_by_key(|item| (item.item, item.shape_representation, item.representation));
+    let mut placed: Vec<ShapeSolid<'s>> = Vec::new();
+    let mut refusals = Vec::new();
+    for item in listings {
+        let transform = if item.is_transformed() {
+            match item.transform(graph) {
+                Ok(transform) => Some(transform),
+                Err(error) => {
+                    refusals.push(Refusal::new(
+                        RefusalCode::SolidPlacementUnreadable,
+                        Some(item.item),
+                        format!(
+                            "the map placing solid #{} cannot be read: {error}",
+                            item.item
+                        ),
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        let same = |other: &ShapeSolid<'_>| {
+            other.item.item == item.item
+                && other.transform.unwrap_or(Rigid::IDENTITY)
+                    == transform.unwrap_or(Rigid::IDENTITY)
+        };
+        if !placed.iter().any(same) {
+            placed.push(ShapeSolid { item, transform });
+        }
+    }
+    if refusals.is_empty() {
+        Ok(placed)
+    } else {
+        Err(refusals)
+    }
 }
 
 /// Stage 3: the part's shape. Returns the solid if the stage passes.
+///
+/// An incomplete shape (check 8) ends the stage: what it holds beyond the
+/// links not followed is unknown, so the other checks would judge part of
+/// it.
 pub(crate) fn shape<'s>(
     graph: &Graph<'_>,
     shape: &'s DefinitionShape,
@@ -516,28 +594,31 @@ pub(crate) fn shape<'s>(
     if !shape.is_complete() {
         return Err(not_followed(shape));
     }
+    let mut placed = placements(graph, shape)?;
     let mut refusals = Vec::new();
-    // stepq lists an item once per shape representation that reaches it.
-    let mut solids: BTreeMap<u64, &ShapeItem> = BTreeMap::new();
-    for item in &shape.solids {
-        solids.entry(item.item).or_insert(item);
-    }
-    if solids.is_empty() {
+    if placed.is_empty() {
         refusals.push(Refusal::new(
             RefusalCode::NoSolid,
             None,
             "the part's shape holds no manifold_solid_brep or brep_with_voids",
         ));
-    } else if solids.len() > 1 {
-        let listed: Vec<String> = solids.keys().take(8).map(|id| format!("#{id}")).collect();
+    } else if placed.len() > 1 {
+        let listed: Vec<String> = placed
+            .iter()
+            .take(8)
+            .map(|solid| match &solid.transform {
+                Some(_) => format!("#{} (placed by a mapped item)", solid.item.item),
+                None => format!("#{}", solid.item.item),
+            })
+            .collect();
         refusals.push(Refusal::new(
             RefusalCode::SeveralSolids,
-            solids.keys().nth(1).copied(),
+            placed.get(1).map(|solid| solid.item.item),
             format!(
                 "the part's shape holds {} solids ({}{}); a canonical part holds one",
-                solids.len(),
+                placed.len(),
                 listed.join(", "),
-                if solids.len() > 8 { ", ..." } else { "" }
+                if placed.len() > 8 { ", ..." } else { "" }
             ),
         ));
     }
@@ -545,31 +626,14 @@ pub(crate) fn shape<'s>(
     if !refusals.is_empty() {
         return Err(refusals);
     }
-    let Some((_, &item)) = solids.first_key_value() else {
-        return Err(vec![Refusal::new(
+    match placed.pop() {
+        Some(solid) => Ok(solid),
+        None => Err(vec![Refusal::new(
             RefusalCode::Internal,
             None,
             "the gate passed a shape with no solid",
-        )]);
-    };
-    let transform = if item.is_transformed() {
-        match item.transform(graph) {
-            Ok(transform) => Some(transform),
-            Err(error) => {
-                return Err(vec![Refusal::new(
-                    RefusalCode::SolidPlacementUnreadable,
-                    Some(item.item),
-                    format!(
-                        "the map placing solid #{} cannot be read: {error}",
-                        item.item
-                    ),
-                )]);
-            }
-        }
-    } else {
-        None
-    };
-    Ok(ShapeSolid { item, transform })
+        )]),
+    }
 }
 
 #[cfg(test)]
@@ -593,22 +657,6 @@ mod tests {
     }
 
     #[test]
-    fn codes_are_their_serde_names() {
-        for code in [
-            RefusalCode::Unparseable,
-            RefusalCode::SeveralDataSections,
-            RefusalCode::SolidPlacementUnreadable,
-            RefusalCode::FaceOrientation,
-            RefusalCode::Internal,
-        ] {
-            assert_eq!(
-                serde_json::to_string(&code).unwrap(),
-                format!("\"{}\"", code.name())
-            );
-        }
-    }
-
-    #[test]
     fn refusals_are_sorted_and_capped() {
         let many: Vec<Refusal> = (0..40u64)
             .rev()
@@ -618,7 +666,56 @@ mod tests {
         let kept = finish(many);
         assert_eq!(kept[0].code, RefusalCode::Unparseable);
         assert_eq!(kept.len(), 1 + LISTED_PER_CODE);
-        assert_eq!(kept[1].instance, Some(0));
-        assert_eq!(kept.last().unwrap().message, "and 9 more");
+        // The summary has no instance, so it sorts first within its code,
+        // and the list stays sorted: a document can be read back.
+        assert_eq!(kept[1].instance, None);
+        assert_eq!(kept[1].message, "and 9 more");
+        assert_eq!(kept[2].instance, Some(0));
+        assert!(kept.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    #[test]
+    fn every_code_name_is_its_serde_name() {
+        use RefusalCode::*;
+        let all = [
+            Unparseable,
+            DanglingReference,
+            SeveralDataSections,
+            SchemaUnrecognized,
+            Assembly,
+            NoDefinition,
+            SeveralDefinitions,
+            ShapeIncomplete,
+            NoSolid,
+            SeveralSolids,
+            UnreadShapeItem,
+            SolidPlacementUnreadable,
+            TopologyUnsupported,
+            TopologyMalformed,
+            SolidNotClosed,
+            ShellDisconnected,
+            UnitsUnreadable,
+            LengthUnitUnreadable,
+            AngleUnitUnreadable,
+            UncertaintyUnreadable,
+            UncertaintyMissing,
+            GeometryUnreadable,
+            VertexOffSurface,
+            VertexOffCurve,
+            FaceOrientation,
+            OutOfRange,
+            Contradiction,
+            Internal,
+        ];
+        assert!(
+            all.windows(2).all(|pair| pair[0] < pair[1]),
+            "in check order"
+        );
+        for code in all {
+            assert_eq!(
+                serde_json::to_string(&code).unwrap(),
+                format!("\"{}\"", code.name())
+            );
+        }
     }
 }

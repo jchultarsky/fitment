@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{Part, Refused};
+use super::{FeatureKind, Part};
 use crate::EXTRACTOR_VERSION;
 use crate::gate::Refusal;
 
@@ -59,20 +59,28 @@ impl Extraction {
 }
 
 /// What a file's header states. Recorded for every document, never gated.
+///
+/// Every key is written, with `null` for a value the file does not state,
+/// and reading a document requires every key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct FileHeader {
     /// The schema family the first `FILE_SCHEMA` names: `ap203`, `ap214`
     /// or `ap242`, or `None` if it is none of them.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub schema: Option<String>,
-    /// Every `FILE_SCHEMA` identifier, as written.
+    /// The `FILE_SCHEMA` identifiers, as stepq reads them: blank ones are
+    /// left out.
     pub schema_identifiers: Vec<String>,
     /// `FILE_NAME.originating_system`.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub originating_system: Option<String>,
     /// `FILE_NAME.preprocessor_version`.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub preprocessor_version: Option<String>,
     /// `FILE_DESCRIPTION.implementation_level`.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub implementation_level: Option<String>,
 }
 
@@ -82,37 +90,33 @@ pub struct FileHeader {
 // A document is accepted or refused; there is no third outcome.
 #[allow(clippy::exhaustive_enums)]
 pub enum Status {
-    /// The file is a canonical part; `part` holds it.
+    /// The file is a canonical part; [`FeaturesDocument::part`] holds it.
     Accepted,
-    /// The file is not a canonical part; `refusals` says why.
+    /// The file is not a canonical part; [`FeaturesDocument::refusals`]
+    /// says why.
     Refused,
 }
 
-/// A features document.
+/// A features document: a part, or the reasons a file was refused.
 ///
-/// Its fields serialize in this order, with every key written (absent
-/// values as `null`), so that the same input gives the same bytes on every
-/// operating system.
+/// A document comes only from [`read`](Self::read) or
+/// [`from_json`](Self::from_json), and its fields are read through
+/// methods, so every document this crate writes follows the rules
+/// `from_json` checks. Its JSON keys are in a fixed order, every one is
+/// written (absent values as `null`), and the same input gives the same
+/// bytes on every operating system.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[non_exhaustive]
+// The fields are private; the methods below read them.
+#[allow(clippy::exhaustive_structs)]
 pub struct FeaturesDocument {
-    /// Always [`FEATURES_FORMAT`].
-    pub format: String,
-    /// The layout version, [`FEATURES_FORMAT_VERSION`].
-    pub format_version: u32,
-    /// The [`EXTRACTOR_VERSION`] that wrote the document.
-    pub extractor_version: u32,
-    /// The constants it extracted with.
-    pub extraction: Extraction,
-    /// The file's header facts; `None` if the file could not be parsed.
-    pub header: Option<FileHeader>,
-    /// Accepted or refused.
-    pub status: Status,
-    /// Why the file was refused, sorted; empty when accepted.
-    pub refusals: Vec<Refusal>,
-    /// The part; `None` when refused, so that a refused file is never
-    /// mistaken for a read one.
-    pub part: Option<Part>,
+    format: String,
+    format_version: u32,
+    extractor_version: u32,
+    extraction: Extraction,
+    header: Option<FileHeader>,
+    status: Status,
+    refusals: Vec<Refusal>,
+    part: Option<Part>,
 }
 
 /// Why a features document could not be read back.
@@ -147,12 +151,15 @@ pub enum FormatError {
 }
 
 impl FeaturesDocument {
-    fn envelope(
-        header: Option<FileHeader>,
-        status: Status,
-        refusals: Vec<Refusal>,
-        part: Option<Part>,
-    ) -> Self {
+    /// Reads one part from a STEP file: the document for it, or for the
+    /// reasons it was refused. Bytes in, values out: no I/O, and nothing
+    /// panics.
+    pub fn read(step: &[u8]) -> Self {
+        let (header, result) = super::step::read(step);
+        let (status, refusals, part) = match result {
+            Ok(part) => (Status::Accepted, Vec::new(), Some(part)),
+            Err(refusals) => (Status::Refused, refusals, None),
+        };
         Self {
             format: FEATURES_FORMAT.to_owned(),
             format_version: FEATURES_FORMAT_VERSION,
@@ -165,24 +172,46 @@ impl FeaturesDocument {
         }
     }
 
-    /// The document for a part that was read.
-    pub fn accepted(part: Part) -> Self {
-        Self::envelope(
-            Some(part.header.clone()),
-            Status::Accepted,
-            Vec::new(),
-            Some(part),
-        )
+    /// Always [`FEATURES_FORMAT`].
+    pub fn format(&self) -> &str {
+        &self.format
     }
 
-    /// The document for a refused file.
-    pub fn refused(refused: Refused) -> Self {
-        Self::envelope(
-            refused.header.map(|header| *header),
-            Status::Refused,
-            refused.refusals,
-            None,
-        )
+    /// The layout version, [`FEATURES_FORMAT_VERSION`].
+    pub fn format_version(&self) -> u32 {
+        self.format_version
+    }
+
+    /// The [`EXTRACTOR_VERSION`] that wrote the document.
+    pub fn extractor_version(&self) -> u32 {
+        self.extractor_version
+    }
+
+    /// The constants it extracted with.
+    pub fn extraction(&self) -> &Extraction {
+        &self.extraction
+    }
+
+    /// The file's header facts; `None` if the file could not be parsed.
+    pub fn header(&self) -> Option<&FileHeader> {
+        self.header.as_ref()
+    }
+
+    /// Accepted or refused.
+    pub fn status(&self) -> Status {
+        self.status
+    }
+
+    /// Why the file was refused, sorted by code, then instance, then
+    /// message; empty when accepted.
+    pub fn refusals(&self) -> &[Refusal] {
+        &self.refusals
+    }
+
+    /// The part; `None` when refused, so that a refused file is never
+    /// mistaken for a read one.
+    pub fn part(&self) -> Option<&Part> {
+        self.part.as_ref()
     }
 
     /// The document as pretty JSON, ending with a newline.
@@ -213,30 +242,25 @@ impl FeaturesDocument {
                 found: raw.format_version,
             });
         }
-        let mut sorted = raw.refusals.clone();
-        sorted.sort();
-        if sorted != raw.refusals {
-            return Err(FormatError::Invalid("refusals are not sorted".to_owned()));
+        let invalid = |message: &str| Err(FormatError::Invalid(message.to_owned()));
+        if !raw.refusals.windows(2).all(|pair| pair[0] < pair[1]) {
+            return invalid("refusals are not sorted, or repeat");
         }
-        let part = match (raw.status, raw.part, raw.refusals.is_empty()) {
-            (Status::Accepted, Some(mut part), true) => {
-                part.header = raw.header.clone().ok_or_else(|| {
-                    FormatError::Invalid("an accepted document has no header".to_owned())
-                })?;
-                Some(part)
+        match (raw.status, &raw.part, raw.refusals.is_empty()) {
+            (Status::Accepted, Some(part), true) => {
+                if raw.header.is_none() {
+                    return invalid("an accepted document has no header");
+                }
+                check_part(part)?;
             }
-            (Status::Refused, None, false) => None,
+            (Status::Refused, None, false) => {}
             (Status::Accepted, _, _) => {
-                return Err(FormatError::Invalid(
-                    "an accepted document must hold a part and no refusals".to_owned(),
-                ));
+                return invalid("an accepted document must hold a part and no refusals");
             }
             (Status::Refused, _, _) => {
-                return Err(FormatError::Invalid(
-                    "a refused document must hold refusals and no part".to_owned(),
-                ));
+                return invalid("a refused document must hold refusals and no part");
             }
-        };
+        }
         Ok(Self {
             format: raw.format,
             format_version: raw.format_version,
@@ -245,7 +269,7 @@ impl FeaturesDocument {
             header: raw.header,
             status: raw.status,
             refusals: raw.refusals,
-            part,
+            part: raw.part,
         })
     }
 
@@ -257,7 +281,30 @@ impl FeaturesDocument {
     }
 }
 
-/// The document as read, before its rules are checked.
+/// The rules a part read back must keep, beyond its shape.
+fn check_part(part: &Part) -> Result<(), FormatError> {
+    let invalid = |message: String| Err(FormatError::Invalid(message));
+    let [solid] = part.solids.as_slice() else {
+        return invalid(format!("a part has one solid, not {}", part.solids.len()));
+    };
+    if solid.id.kind() != FeatureKind::Solid || solid.id.instance() != solid.instance {
+        return invalid(format!(
+            "solid #{} has the id '{}', not 'solid-{}'",
+            solid.instance, solid.id, solid.instance
+        ));
+    }
+    if !part
+        .other_items
+        .windows(2)
+        .all(|pair| pair[0].instance < pair[1].instance)
+    {
+        return invalid("other items are not sorted by #id, or repeat".to_owned());
+    }
+    Ok(())
+}
+
+/// The document as read, before its rules are checked. Every key is
+/// required, `null` ones included.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawDocument {
@@ -265,8 +312,10 @@ struct RawDocument {
     format_version: u32,
     extractor_version: u32,
     extraction: Extraction,
+    #[serde(deserialize_with = "Option::deserialize")]
     header: Option<FileHeader>,
     status: Status,
     refusals: Vec<Refusal>,
+    #[serde(deserialize_with = "Option::deserialize")]
     part: Option<Part>,
 }
