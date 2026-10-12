@@ -18,6 +18,7 @@ mod primary;
 mod readback;
 mod stack;
 mod step;
+pub(crate) use step::header_of;
 pub(crate) mod topo;
 mod walk;
 

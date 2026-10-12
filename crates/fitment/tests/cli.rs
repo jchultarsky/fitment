@@ -123,3 +123,59 @@ fn text_from_the_file_cannot_add_lines_to_stderr() {
     assert!(!stderr.contains(['\u{2028}', '\u{202e}']), "{stderr:?}");
     assert!(stderr.contains("\\n"), "{stderr}");
 }
+
+fn unit_assembly(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fitment-core/tests/assemblies")
+        .join(name)
+}
+
+#[test]
+fn parts_lists_an_assembly_as_a_table_and_exits_0() {
+    fitment()
+        .arg("parts")
+        .arg(unit_assembly("s08x_nested.stp"))
+        .assert()
+        .success()
+        .stdout(
+            contains("BRACKET")
+                .and(contains("LB_ASSEM"))
+                .and(contains("assembly gate: accepted")),
+        )
+        .stderr("");
+}
+
+#[test]
+fn parts_prints_a_document_that_reads_back() {
+    let output = fitment()
+        .args(["parts", "--format", "json"])
+        .arg(unit_assembly("s01_bolted.stp"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains(r#""format": "fitment.parts""#), "{text}");
+    fitment_core::PartsDocument::from_json(&text).unwrap();
+}
+
+#[test]
+fn parts_of_a_part_file_lists_it_and_says_it_is_no_assembly() {
+    fitment()
+        .arg("parts")
+        .arg(unit_part("p01_through.stp"))
+        .assert()
+        .success()
+        .stdout(contains("p01_through").and(contains("not_an_assembly")));
+}
+
+#[test]
+fn parts_of_what_is_not_step_exits_3() {
+    let dir = std::env::temp_dir().join(format!("fitment-cli-parts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("not.stp");
+    std::fs::write(&file, "hello").unwrap();
+    let output = fitment().arg("parts").arg(&file).output().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("refused: unparseable"));
+}

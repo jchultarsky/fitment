@@ -1,0 +1,396 @@
+//! Reading assemblies (`docs/research/m3-socket.md`, sections 3 to 6).
+//!
+//! `tests/assemblies` holds the assemblies `tools/gen-corpus.py
+//! --assembly-set` writes and the manifest with their answers, which come
+//! from the construction alone. What no generated assembly can reach is
+//! written here as small STEP snippets: a cycle, a diamond past the
+//! occurrence limit, roots, material in an assembly's own shape, and paths
+//! that read two ways.
+
+use std::fmt::Write as _;
+
+use fitment_core::{
+    DefinitionKind, MatchedBy, PartsDocument, PathForm, RefusalCode, SelectError, read_assembly,
+};
+use serde_json::Value;
+
+#[path = "support/assembly.rs"]
+mod assembly;
+
+const MANIFEST: &str = include_str!("assemblies/manifest.json");
+
+macro_rules! assemblies {
+    ($($name:literal),* $(,)?) => {
+        &[$(($name, include_bytes!(concat!("assemblies/", $name, ".stp")) as &[u8])),*]
+    };
+}
+
+const ASSEMBLIES: &[(&str, &[u8])] =
+    assemblies!["s01_bolted", "s02_cbore", "s03_dowels", "s08x_nested"];
+
+#[test]
+fn every_committed_assembly_reads_as_its_construction_says() {
+    let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
+    let cases = manifest["cases"].as_array().unwrap();
+    let listed: Vec<&str> = cases.iter().map(|c| c["id"].as_str().unwrap()).collect();
+    let included: Vec<&str> = ASSEMBLIES.iter().map(|(name, _)| *name).collect();
+    assert_eq!(listed, included, "the manifest and the files included here");
+    let mut failures = Vec::new();
+    for (case, (name, bytes)) in cases.iter().zip(ASSEMBLIES) {
+        assert_eq!(case["kind"], "assembly");
+        failures.extend(
+            assembly::check(case, bytes)
+                .into_iter()
+                .map(|f| format!("{name}: {f}")),
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A small assembly in STEP: definitions `names` (product id and name the
+/// same), each with a shape representation holding one frame, and usages
+/// `(parent, child, id)`, each placed at the identity by an
+/// `item_defined_transformation`. `extra` is added to the data section,
+/// and `extra_items[i]` to definition i's representation.
+fn snippet(
+    names: &[&str],
+    usages: &[(usize, usize, &str)],
+    extra: &str,
+    extra_items: &[(usize, u64)],
+) -> String {
+    let mut text = String::from(
+        "ISO-10303-21;HEADER;FILE_DESCRIPTION((''),'2;1');FILE_NAME('','',(''),(''),'','','');\
+         FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));ENDSEC;DATA;\n\
+         #1=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));\n\
+         #2=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#1))\
+         REPRESENTATION_CONTEXT('',''));\n\
+         #3=CARTESIAN_POINT('',(0.,0.,0.));\n\
+         #4=APPLICATION_CONTEXT('');\n",
+    );
+    for (i, name) in names.iter().enumerate() {
+        let b = 100 * (i as u64 + 1);
+        let items: Vec<String> = std::iter::once(format!("#{}", b + 6))
+            .chain(
+                extra_items
+                    .iter()
+                    .filter(|(d, _)| *d == i)
+                    .map(|(_, item)| format!("#{item}")),
+            )
+            .collect();
+        let _ = write!(
+            text,
+            "#{b}=PRODUCT('{name}','{name}','',());\n\
+             #{}=PRODUCT_DEFINITION_FORMATION('','',#{b});\n\
+             #{}=PRODUCT_DEFINITION('','',#{},$);\n\
+             #{}=PRODUCT_DEFINITION_SHAPE('','',#{});\n\
+             #{}=SHAPE_DEFINITION_REPRESENTATION(#{},#{});\n\
+             #{}=SHAPE_REPRESENTATION('',({}),#2);\n\
+             #{}=AXIS2_PLACEMENT_3D('',#3,$,$);\n",
+            b + 1,
+            b + 2,
+            b + 1,
+            b + 3,
+            b + 2,
+            b + 4,
+            b + 3,
+            b + 5,
+            b + 5,
+            items.join(","),
+            b + 6,
+        );
+    }
+    for (j, (parent, child, id)) in usages.iter().enumerate() {
+        let u = 100_000 + 10 * j as u64;
+        let (p, c) = (100 * (*parent as u64 + 1), 100 * (*child as u64 + 1));
+        let _ = write!(
+            text,
+            "#{u}=NEXT_ASSEMBLY_USAGE_OCCURRENCE('{id}','','',#{},#{},$);\n\
+             #{}=PRODUCT_DEFINITION_SHAPE('','',#{u});\n\
+             #{}=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#{},#{});\n\
+             #{}=(REPRESENTATION_RELATIONSHIP('','',#{},#{})\
+             REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#{})SHAPE_REPRESENTATION_RELATIONSHIP());\n\
+             #{}=ITEM_DEFINED_TRANSFORMATION('','',#{},#{});\n",
+            p + 2,
+            c + 2,
+            u + 1,
+            u + 2,
+            u + 3,
+            u + 1,
+            u + 3,
+            c + 5,
+            p + 5,
+            u + 4,
+            u + 4,
+            c + 6,
+            p + 6,
+        );
+    }
+    text.push_str(extra);
+    text.push_str("ENDSEC;END-ISO-10303-21;\n");
+    text
+}
+
+fn codes(refusals: &[fitment_core::Refusal]) -> Vec<RefusalCode> {
+    let mut codes: Vec<RefusalCode> = refusals.iter().map(|r| r.code).collect();
+    codes.dedup();
+    codes
+}
+
+#[test]
+fn a_snippet_assembly_reads() {
+    let text = snippet(
+        &["ROOT", "A", "B"],
+        &[(0, 1, "u1"), (1, 2, "u2"), (1, 2, "u3")],
+        "",
+        &[],
+    );
+    let read = read_assembly(text.as_bytes());
+    assert_eq!(read.refusals(), &[], "{:?}", read.refusals());
+    assert_eq!(read.gate_refusals(), &[]);
+    let listing = read.listing().unwrap();
+    let quantities: Vec<(String, usize)> = listing
+        .definitions()
+        .iter()
+        .map(|d| {
+            (
+                d.definition.product.as_ref().unwrap().id.clone().unwrap(),
+                d.occurrences.len(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        quantities,
+        [
+            ("ROOT".to_owned(), 1),
+            ("A".to_owned(), 1),
+            ("B".to_owned(), 2)
+        ]
+    );
+    let b = listing.select(Some("B"), None).unwrap();
+    assert_eq!(b.occurrences.len(), 2);
+    let paths: Vec<String> = b
+        .occurrences
+        .iter()
+        .map(|&i| listing.occurrences()[i].path.display(PathForm::UsageId))
+        .collect();
+    assert_eq!(paths, ["u1/u2", "u1/u3"]);
+    // Both written forms of a path read, and mixed.
+    for path in ["u1/u3", "#100000/#100020", "u1/#100020"] {
+        let one = listing.select(Some("B"), Some(path)).unwrap();
+        assert_eq!(one.occurrences, [b.occurrences[1]], "{path}");
+    }
+}
+
+#[test]
+fn a_part_file_lists_one_part_and_is_not_an_assembly() {
+    let text = snippet(&["ONLY"], &[], "", &[]);
+    let read = read_assembly(text.as_bytes());
+    let listing = read.listing().unwrap();
+    assert_eq!(listing.definitions().len(), 1);
+    assert_eq!(listing.definitions()[0].kind, DefinitionKind::Part);
+    assert_eq!(listing.occurrences().len(), 1);
+    assert_eq!(listing.occurrences()[0].path.usages(), &[]);
+    assert_eq!(codes(read.gate_refusals()), [RefusalCode::NotAnAssembly]);
+    let document = PartsDocument::from_json(&PartsDocument::read(text.as_bytes()).to_json());
+    assert!(document.is_ok(), "{document:?}");
+}
+
+#[test]
+fn an_assembly_needs_exactly_one_root() {
+    // A cycle with nothing above it: no root.
+    let none = snippet(&["A", "B"], &[(0, 1, "u1"), (1, 0, "u2")], "", &[]);
+    let read = read_assembly(none.as_bytes());
+    assert!(read.listing().is_none());
+    assert_eq!(codes(read.refusals()), [RefusalCode::NoRoot]);
+    // An orphan beside the assembly: two roots.
+    let two = snippet(&["ROOT", "A", "ORPHAN"], &[(0, 1, "u1")], "", &[]);
+    let read = read_assembly(two.as_bytes());
+    assert!(read.listing().is_none());
+    assert_eq!(codes(read.refusals()), [RefusalCode::SeveralRoots]);
+    assert_eq!(codes(read.gate_refusals()), [RefusalCode::SeveralRoots]);
+}
+
+#[test]
+fn a_cycle_is_an_unreadable_placement() {
+    let text = snippet(
+        &["ROOT", "A", "B"],
+        &[(0, 1, "u1"), (1, 2, "u2"), (2, 1, "u3")],
+        "",
+        &[],
+    );
+    let read = read_assembly(text.as_bytes());
+    assert!(read.listing().is_none());
+    assert_eq!(codes(read.refusals()), [RefusalCode::PlacementUnreadable]);
+    let refusal = &read.refusals()[0];
+    assert_eq!(
+        refusal.instance,
+        Some(100_020),
+        "the usage that closes the cycle"
+    );
+    assert!(
+        refusal.message.starts_with("cycle: "),
+        "{}",
+        refusal.message
+    );
+}
+
+#[test]
+fn an_unplaced_usage_is_reported_once() {
+    // Two levels below an unplaced usage: one refusal, for that usage.
+    let mut text = snippet(
+        &["ROOT", "A", "B"],
+        &[(0, 1, "u1"), (1, 2, "u2"), (1, 2, "u3")],
+        "",
+        &[],
+    );
+    text = text.replace(
+        "#100002=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#100003,#100001);\n",
+        "",
+    );
+    let read = read_assembly(text.as_bytes());
+    assert_eq!(codes(read.refusals()), [RefusalCode::PlacementUnreadable]);
+    assert_eq!(read.refusals().len(), 1, "{:?}", read.refusals());
+    assert_eq!(read.refusals()[0].instance, Some(100_000));
+    assert!(read.refusals()[0].message.starts_with("unplaced: "));
+}
+
+#[test]
+fn a_diamond_past_the_occurrence_limit_is_refused() {
+    // 21 definitions, each using the next twice: 2^20 leaf occurrences
+    // from 40 usages.
+    let names: Vec<String> = (0..21).map(|k| format!("D{k}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let ids: Vec<String> = (0..40).map(|k| format!("u{k}")).collect();
+    let usages: Vec<(usize, usize, &str)> = (0..40)
+        .map(|k| (k / 2, k / 2 + 1, ids[k].as_str()))
+        .collect();
+    let text = snippet(&names, &usages, "", &[]);
+    let read = read_assembly(text.as_bytes());
+    assert!(read.listing().is_none());
+    assert_eq!(codes(read.refusals()), [RefusalCode::TooManyOccurrences]);
+}
+
+#[test]
+fn material_in_an_assembly_s_own_shape_is_refused() {
+    let text = snippet(
+        &["ROOT", "A"],
+        &[(0, 1, "u1")],
+        "#900=OPEN_SHELL('',());\n#901=SHELL_BASED_SURFACE_MODEL('',(#900));\n",
+        &[(0, 901)],
+    );
+    let read = read_assembly(text.as_bytes());
+    // The parts list stands; the socket gate refuses.
+    assert!(read.listing().is_some());
+    assert_eq!(
+        codes(read.gate_refusals()),
+        [RefusalCode::AssemblyShapeItem]
+    );
+    assert_eq!(read.gate_refusals()[0].instance, Some(901));
+    // The same item in the part's own shape is the part's affair (check
+    // 36, M3 PR 2), not the assembly's.
+    let in_part = snippet(
+        &["ROOT", "A"],
+        &[(0, 1, "u1")],
+        "#900=OPEN_SHELL('',());\n#901=SHELL_BASED_SURFACE_MODEL('',(#900));\n",
+        &[(1, 901)],
+    );
+    assert_eq!(read_assembly(in_part.as_bytes()).gate_refusals(), &[]);
+}
+
+#[test]
+fn a_definition_instance_selects_unless_an_id_reads_the_same() {
+    let text = snippet(&["ROOT", "A", "B"], &[(0, 1, "u1"), (0, 2, "u2")], "", &[]);
+    let read = read_assembly(text.as_bytes());
+    let listing = read.listing().unwrap();
+    let a = listing.select(Some("#202"), None).unwrap();
+    assert_eq!(a.matched_by, MatchedBy::DefinitionInstance);
+    assert_eq!(listing.definitions()[a.definition].definition.instance, 202);
+    assert!(matches!(
+        listing.select(Some("#102"), None),
+        Err(SelectError::PartIsAssembly { .. })
+    ));
+    // B's product id is literally "#202", A's definition's #id: ambiguous.
+    // A definition whose own product id is its #id is not.
+    let text = snippet(
+        &["ROOT", "A", "#202"],
+        &[(0, 1, "u1"), (0, 2, "u2")],
+        "",
+        &[],
+    );
+    let read = read_assembly(text.as_bytes());
+    let listing = read.listing().unwrap();
+    let error = listing.select(Some("#202"), None).unwrap_err();
+    assert_eq!(error.code(), "part_ambiguous");
+    assert_eq!(error.candidates().len(), 2);
+    let text = snippet(
+        &["ROOT", "A", "#302"],
+        &[(0, 1, "u1"), (0, 2, "u2")],
+        "",
+        &[],
+    );
+    let read = read_assembly(text.as_bytes());
+    let listing = read.listing().unwrap();
+    let b = listing.select(Some("#302"), None).unwrap();
+    assert_eq!(listing.definitions()[b.definition].definition.instance, 302);
+}
+
+#[test]
+fn a_path_segment_that_names_two_usages_is_refused() {
+    // Two sibling usages share the id "a": paths are written by instance,
+    // and "a" is refused rather than guessed.
+    let text = snippet(&["ROOT", "A"], &[(0, 1, "a"), (0, 1, "a")], "", &[]);
+    let read = read_assembly(text.as_bytes());
+    let listing = read.listing().unwrap();
+    assert_eq!(listing.path_form(), PathForm::Instance);
+    assert_eq!(
+        listing.select(Some("A"), Some("a")).unwrap_err().code(),
+        "occurrence_ambiguous"
+    );
+    assert_eq!(
+        listing
+            .select(Some("A"), Some("#100010"))
+            .unwrap()
+            .occurrences
+            .len(),
+        1
+    );
+    // A usage whose id is "#100010" while another's instance is 100010.
+    let text = snippet(&["ROOT", "A"], &[(0, 1, "#100010"), (0, 1, "b")], "", &[]);
+    let read = read_assembly(text.as_bytes());
+    let listing = read.listing().unwrap();
+    assert_eq!(
+        listing.path_form(),
+        PathForm::Instance,
+        "an id may not begin with #"
+    );
+    assert_eq!(
+        listing.select(None, Some("#100010")).unwrap_err().code(),
+        "occurrence_ambiguous"
+    );
+}
+
+#[test]
+fn reading_is_deterministic_and_the_document_reads_back() {
+    for (name, bytes) in ASSEMBLIES {
+        let text = PartsDocument::read(bytes).to_json();
+        assert_eq!(text, PartsDocument::read(bytes).to_json(), "{name}");
+        let back = PartsDocument::from_json(&text).unwrap();
+        assert_eq!(back.to_json(), text, "{name}");
+    }
+}
+
+#[test]
+fn a_parts_document_that_breaks_its_rules_is_not_read() {
+    let (_, bytes) = ASSEMBLIES[0];
+    let text = PartsDocument::read(bytes).to_json();
+    let mut json: Value = serde_json::from_str(&text).unwrap();
+    json["parts"][0]["quantity"] = Value::from(7);
+    let error = PartsDocument::from_json(&json.to_string()).unwrap_err();
+    assert!(error.to_string().contains("quantity"), "{error}");
+    let mut json: Value = serde_json::from_str(&text).unwrap();
+    json["source"]["sha256"] = Value::from("abc");
+    assert!(PartsDocument::from_json(&json.to_string()).is_err());
+    let mut json: Value = serde_json::from_str(&text).unwrap();
+    json["parts"].as_array_mut().unwrap().reverse();
+    assert!(PartsDocument::from_json(&json.to_string()).is_err());
+}

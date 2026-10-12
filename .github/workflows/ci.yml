@@ -93,6 +93,7 @@ jobs:
       # The same files, but for the last digit of a number: Open CASCADE's
       # trigonometry rounds by the platform's maths library.
       - run: tools/gen-corpus.py --unit-set "$RUNNER_TEMP/unit" --check crates/fitment-core/tests/data
+      - run: tools/gen-corpus.py --assembly-set "$RUNNER_TEMP/assemblies" --check crates/fitment-core/tests/assemblies
 
   test:
     name: test (${{ matrix.os }})

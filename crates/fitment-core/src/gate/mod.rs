@@ -9,6 +9,7 @@
 //! The files of this module and `features/step.rs` are the only ones that
 //! name stepq.
 
+pub(crate) mod assembly;
 pub(crate) mod geometry;
 pub(crate) mod solid;
 
@@ -88,6 +89,21 @@ pub enum RefusalCode {
     /// Extraction found its own invariant broken: a fitment bug, not a
     /// property of the input.
     Internal,
+    /// The file has no assembly usage: `socket` reads an assembly (check 31).
+    NotAnAssembly,
+    /// No definition is a root of the product structure (check 32).
+    NoRoot,
+    /// More than one definition is a root: two unrelated frames, or an
+    /// orphan (check 32).
+    SeveralRoots,
+    /// A usage, or an occurrence composed from usages, cannot be placed
+    /// (check 33).
+    PlacementUnreadable,
+    /// More occurrences than fitment reads under one root (check 34).
+    TooManyOccurrences,
+    /// An assembly's own shape holds more than curve and point sets, or
+    /// cannot be read whole (check 35).
+    AssemblyShapeItem,
 }
 
 impl RefusalCode {
@@ -122,6 +138,12 @@ impl RefusalCode {
             Self::OutOfRange => "out_of_range",
             Self::Contradiction => "contradiction",
             Self::Internal => "internal",
+            Self::NotAnAssembly => "not_an_assembly",
+            Self::NoRoot => "no_root",
+            Self::SeveralRoots => "several_roots",
+            Self::PlacementUnreadable => "placement_unreadable",
+            Self::TooManyOccurrences => "too_many_occurrences",
+            Self::AssemblyShapeItem => "assembly_shape_item",
         }
     }
 }
@@ -474,7 +496,7 @@ fn set_problem(graph: &Graph<'_>, set: u64) -> Option<SetProblem> {
 
 /// Check 11: every item of the shape other than the solid is a curve or
 /// point set.
-fn other_items(graph: &Graph<'_>, shape: &DefinitionShape) -> Vec<Refusal> {
+pub(crate) fn other_items(graph: &Graph<'_>, shape: &DefinitionShape) -> Vec<Refusal> {
     let mut others: BTreeMap<u64, &ShapeItem> = BTreeMap::new();
     for item in &shape.other {
         others.entry(item.item).or_insert(item);
@@ -507,7 +529,7 @@ fn other_items(graph: &Graph<'_>, shape: &DefinitionShape) -> Vec<Refusal> {
 }
 
 /// Check 8: one refusal per link not followed.
-fn not_followed(shape: &DefinitionShape) -> Vec<Refusal> {
+pub(crate) fn not_followed(shape: &DefinitionShape) -> Vec<Refusal> {
     shape
         .not_followed
         .iter()
@@ -710,6 +732,12 @@ mod tests {
             OutOfRange,
             Contradiction,
             Internal,
+            NotAnAssembly,
+            NoRoot,
+            SeveralRoots,
+            PlacementUnreadable,
+            TooManyOccurrences,
+            AssemblyShapeItem,
         ];
         assert!(
             all.windows(2).all(|pair| pair[0] < pair[1]),

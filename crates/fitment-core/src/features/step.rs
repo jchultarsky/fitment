@@ -17,7 +17,7 @@ use crate::gate::{self, Refusal, RefusalCode};
 use crate::geom::Rigid;
 
 /// The header facts a document records, accepted or refused.
-fn header_of(info: &Info) -> FileHeader {
+pub(crate) fn header_of(info: &Info) -> FileHeader {
     let header = &info.header;
     FileHeader {
         schema: gate::schema_family(&header.schemas).map(str::to_owned),
