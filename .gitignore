@@ -23,7 +23,7 @@ __pycache__/
 # Fetched fixtures (tools/fetch-fixtures.sh, from M2): only the index is tracked
 /fixtures/*
 !/fixtures/README.md
-!/fixtures/manifest.toml
+!/fixtures/manifest.json
 
 # cargo-fuzz (separate workspace, from M3)
 /fuzz/target

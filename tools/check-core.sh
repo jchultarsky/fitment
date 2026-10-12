@@ -30,10 +30,10 @@ check "contains async code" \
 check "declares a static item (global state)" \
   grep -rnE "(^|[^'[:alnum:]_])static[[:space:]]+(mut[[:space:]]+)?[A-Z_]" "$src"
 
-# stepq stays a private dependency, named in two files only, so a stepq
+# stepq stays a private dependency, named only in the gate and the adapter, so a stepq
 # release is a change in one place and its types never reach the public API.
-check "names stepq outside gate.rs and features/step.rs" \
-  sh -c "grep -rlE '(^|[^[:alnum:]_])stepq::|use[[:space:]]+stepq' '$src' | grep -vxE '$src/(gate|features/step)\.rs' | grep ."
+check "names stepq outside gate/ and features/step.rs" \
+  sh -c "grep -rlE '(^|[^[:alnum:]_])stepq::|use[[:space:]]+stepq' '$src' | grep -vxE '$src/(gate/[a-z_]+|features/step)\.rs' | grep ."
 
 # tests/data holds STEP files that must never ship. The listing runs on its
 # own first, so that a failing `cargo package` fails the script (set -e)

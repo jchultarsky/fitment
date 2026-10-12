@@ -27,6 +27,11 @@ fn header_of(info: &Info) -> FileHeader {
     }
 }
 
+/// `x`, finite and never `-0.0` (stepq's values are finite already).
+fn finite(x: f64) -> f64 {
+    crate::geom::finite(x).unwrap_or(f64::MAX)
+}
+
 /// Copies stepq's transform into fitment's, which checks it again.
 fn rigid(transform: &stepq::geometry::Rigid) -> Option<Rigid> {
     Rigid::new(transform.rotation, transform.translation)
@@ -98,6 +103,10 @@ fn part(graph: &Graph<'_>, info: &Info) -> Result<Part, Vec<Refusal>> {
         },
     };
 
+    // Stages 4 to 6: the solid's topology, units and geometry.
+    let facts = gate::solid::check(graph, item.item)?;
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+
     let mut others: BTreeMap<u64, OtherItem> = BTreeMap::new();
     for other in &shape.other {
         others.entry(other.item).or_insert_with(|| OtherItem {
@@ -125,7 +134,12 @@ fn part(graph: &Graph<'_>, info: &Info) -> Result<Part, Vec<Refusal>> {
             entity: item.entity.clone(),
             representation: item.representation,
             transform,
+            shells: count(facts.topology.shells().len()),
+            faces: count(facts.topology.faces().len()),
+            units: facts.units,
+            max_vertex_offset_mm: finite(facts.max_vertex_offset_mm),
         }],
+        max_uncertainty_mm: finite(facts.max_uncertainty_mm),
         other_items: others.into_values().collect(),
     })
 }

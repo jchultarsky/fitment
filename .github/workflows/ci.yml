@@ -49,14 +49,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # setup-uv publishes no moving major tag, so pin the release.
       - uses: astral-sh/setup-uv@v10.1.0
+      - name: Cache fixtures
+        uses: actions/cache@v6
+        with:
+          path: fixtures
+          key: fixtures-${{ hashFiles('tools/fetch-fixtures.sh') }}
+      - run: tools/fetch-fixtures.sh core
       # Every test part, with answers from the construction alone.
       - run: tools/gen-corpus.py corpus/out
       # Open CASCADE 8.0.1, a kernel the generator does not use, reads every
       # part as its construction says: this catches generator bugs.
       - run: tools/verify-occt.py manifest corpus/out
-      - run: cargo test -p fitment --test corpus --locked
+      - run: cargo test -p fitment --test corpus --test fixtures --locked
         env:
           FITMENT_REQUIRE_CORPUS: "1"
+          FITMENT_REQUIRE_FIXTURES: "1"
       - uses: actions/upload-artifact@v7
         with:
           name: corpus

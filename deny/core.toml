@@ -25,6 +25,8 @@ allow = [
   { crate = "fitment-core", reason = "the crate under check" },
   # STEP reading, without its CLI (see `features` below)
   { crate = "stepq", reason = "reads STEP files: structure, placements, geometry, units, PMI" },
+  # trigonometry, the same on every platform
+  { crate = "libm", reason = "bit-identical trigonometry on every OS (clippy bans f64's)" },
   # errors
   { crate = "thiserror", reason = "error types" },
   { crate = "thiserror-impl", reason = "thiserror's derive" },

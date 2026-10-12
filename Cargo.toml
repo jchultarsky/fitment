@@ -27,6 +27,9 @@ fitment-core = { path = "crates/fitment-core", version = "=0.1.0" }
 stepq = { version = "0.6", default-features = false }
 
 thiserror = "2"
+# Correctly rounded transcendental functions, the same on every platform: a
+# value at a tolerance edge must not judge differently on two systems.
+libm = "0.2"
 serde = { version = "1", features = ["derive"] }
 # float_roundtrip: socket files must parse back to the exact f64 that was
 # written, or a value at the tolerance edge can move by one ULP.

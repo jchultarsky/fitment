@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 1,
+  "extractor_version": 2,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -22,29 +22,13 @@
     "preprocessor_version": "Open CASCADE STEP processor 7.9",
     "implementation_level": "2;1"
   },
-  "status": "accepted",
-  "refusals": [],
-  "part": {
-    "definition": {
-      "instance": 5,
-      "product": {
-        "instance": 7,
-        "id": "r05_no_length_unit",
-        "name": "r05_no_length_unit"
-      }
-    },
-    "frame": {
-      "shape_representation": 10
-    },
-    "solids": [
-      {
-        "id": "solid-15",
-        "instance": 15,
-        "entity": "MANIFOLD_SOLID_BREP",
-        "representation": 10,
-        "transform": null
-      }
-    ],
-    "other_items": []
-  }
+  "status": "refused",
+  "refusals": [
+    {
+      "code": "length_unit_unreadable",
+      "instance": 204,
+      "message": "context #204 has no readable length unit: context #204 assigns no length unit"
+    }
+  ],
+  "part": null
 }

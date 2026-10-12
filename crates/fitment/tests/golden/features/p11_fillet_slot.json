@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 1,
+  "extractor_version": 2,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -42,9 +42,33 @@
         "instance": 15,
         "entity": "MANIFOLD_SOLID_BREP",
         "representation": 10,
-        "transform": null
+        "transform": null,
+        "shells": 1,
+        "faces": 15,
+        "units": {
+          "context": 480,
+          "length": {
+            "instance": 481,
+            "name": "millimetre",
+            "factor": 1.0
+          },
+          "plane_angle": {
+            "instance": 482,
+            "name": "radian",
+            "factor": 1.0
+          },
+          "uncertainty": [
+            {
+              "instance": 484,
+              "name": "distance_accuracy_value",
+              "value_mm": 1e-7
+            }
+          ]
+        },
+        "max_vertex_offset_mm": 8.881784197001252e-16
       }
     ],
+    "max_uncertainty_mm": 1e-7,
     "other_items": []
   }
 }
