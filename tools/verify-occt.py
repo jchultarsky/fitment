@@ -3,9 +3,10 @@
 # requires-python = ">=3.11,<3.14"
 # dependencies = ["cadquery-ocp-novtk==8.0.1.1.0"]
 # ///
-"""Check fitment's test parts with Open CASCADE, the oracle.
+"""Check fitment's test parts, and fitment itself, with Open CASCADE.
 
     tools/verify-occt.py manifest DIR
+    tools/verify-occt.py features PATH...
 
 Reads every case of DIR/manifest.json (written by tools/gen-corpus.py) with
 Open CASCADE 8.0.1, the kernel the M7 fit verifier pins (decision 8), and
@@ -43,6 +44,26 @@ Not checked here, so fitment's own tests are the only check:
     and whether a hole is stated as `unknown` rather than known: those are
     the rules' answers, and the oracle checks only geometry.
 
+`features` checks fitment against Open CASCADE instead. PATH is a STEP
+file, or a directory: a generated corpus (its manifest's cases), the
+fixture tree (its manifest's files), or any other tree (every .stp and
+.step file outside ocp/). Each file is read by
+the built fitment (target/release/fitment, or $FITMENT) and, if accepted,
+by Open CASCADE, whose faces are bound to their #ids through the entity
+each was transferred from:
+
+  - every face fitment lists is bound, and every planar face Open CASCADE
+    reads is in one of fitment's planes;
+  - each planar face's outward normal, and its offset along it, agree;
+  - each planar face's area agrees with BRepGProp within 1e-9 relative,
+    where fitment's outline is known, plus its perimeter times the solid's
+    max_vertex_offset_mm: fitment measures loops through the vertices as
+    stated, Open CASCADE along the stated curves, and moving each vertex by
+    up to d changes a loop's area by at most d times its perimeter. Faces
+    that need the slack are tallied apart;
+  - the solid is valid with positive volume: the only check on a shell
+    written inside out (design, R11).
+
 Exits 1 on any disagreement, after listing every one.
 """
 
@@ -50,7 +71,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -566,15 +589,191 @@ def check_case(directory, case):
     return problems
 
 
-def main():
-    if len(sys.argv) != 3 or sys.argv[1] != "manifest":
-        sys.exit(__doc__)
-    directory = Path(sys.argv[2])
-    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+# ---------------------------------------------------------------- features
+
+AREA_REL = 1e-9  # planar face areas, relative
+
+
+def file_ranks(path):
+    """Each instance's entity number (its 1-based position in the file) by
+    #id, as stepq's oracle reads it."""
+    text = path.read_text(encoding="latin-1")
+    data = text[text.find("DATA;"):]
+    ranks = {}
+    for match in re.finditer(r"^\s*#(\d+)\s*=", data, re.M):
+        ranks[int(match.group(1))] = len(ranks) + 1
+    return ranks
+
+
+def bound_faces(path):
+    """Open CASCADE's solids, and each face as placed in the file's root
+    shape, by the #id of the entity it was transferred from. Faces that
+    bind to no entity are counted."""
+    from OCP.TopAbs import TopAbs_FORWARD
+    from OCP.TopLoc import TopLoc_Location
+
+    reader = STEPControl_Reader()
+    if reader.ReadFile(str(path)) != IFSelect_RetDone:
+        raise OSError(f"Open CASCADE cannot read {path}")
+    model = reader.StepModel()
+    # Number() returns 0 through these bindings, so entities are told apart
+    # by identity; the list keeps each binding alive.
+    entities = [model.Value(rank) for rank in range(1, model.NbEntities() + 1)]
+    by_rank = {id(entity): rank for rank, entity in enumerate(entities, 1)}
+    ids = {rank: id_ for id_, rank in file_ranks(path).items()}
+    reader.TransferRoots()
+    transfers = reader.WS().TransferReader()
+    solids, faces, unbound = [], {}, 0
+    for i in range(1, reader.NbShapes() + 1):
+        for found in explore(reader.Shape(i), TopAbs_SOLID):
+            solids.append(Solid(as_solid(found)))
+            for shape in explore(found, TopAbs_FACE):
+                face = as_face(shape)
+                key = face.Located(TopLoc_Location()).Oriented(TopAbs_FORWARD)
+                entity = transfers.EntityFromShapeResult(key, 1)
+                id_ = None if entity is None else ids.get(by_rank.get(id(entity)))
+                if id_ is None:
+                    unbound += 1
+                else:
+                    faces[id_] = face
+    return solids, faces, unbound
+
+
+def plane_facts(face):
+    """A planar face's outward normal, the location its plane states, and
+    its area; None for a face on another surface."""
+    surface = BRepAdaptor_Surface(face)
+    if surface.GetType() != Kind.GeomAbs_Plane:
+        return None
+    position = surface.Plane().Position()
+    normal = xyz(position.Direction())
+    if face.Orientation() == TopAbs_REVERSED:
+        normal = tuple(-c for c in normal)
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, props)
+    return normal, xyz(position.Location()), props.Mass()
+
+
+def check_features(path, binary, tally):
+    """fitment's planes of one file against Open CASCADE's faces."""
+    run = subprocess.run([str(binary), "features", str(path)], capture_output=True)
+    if run.returncode not in (0, 3):
+        return [f"{path}: fitment exited {run.returncode}: {run.stderr.decode(errors='replace').strip()}"]
+    document = json.loads(run.stdout)
+    if document["status"] != "accepted":
+        tally["refused"] += 1
+        return []
+    tally["accepted"] += 1
+    part, problems = document["part"], []
+    solids, faces, unbound = bound_faces(path)
+    if len(solids) != 1 or not solids[0].valid or solids[0].volume <= 0:
+        problems.append(f"{path}: Open CASCADE reads {len(solids)} solids; the first is "
+                        f"{'valid' if solids and solids[0].valid else 'not valid'}, volume "
+                        f"{solids[0].volume if solids else None}")
+    listed = [f["face"] for p in part["planes"] for f in p["faces"]]
+    listed += [face for key in ("cylinders", "cones", "tori") for g in part[key] for face in g["faces"]]
+    listed += [o["face"] for o in part["other_faces"]]
+    missing = sorted(set(listed) - set(faces))
+    if missing or unbound:
+        problems.append(f"{path}: faces fitment lists that Open CASCADE did not bind: {missing[:5]}"
+                        f" ({len(missing)}); {unbound} of its faces bound to no entity")
+    planar = {id_ for id_, face in faces.items() if plane_facts(face) is not None}
+    stray = sorted(planar - {f["face"] for p in part["planes"] for f in p["faces"]})
+    if stray:
+        problems.append(f"{path}: planar faces in none of fitment's planes: {stray[:5]} ({len(stray)})")
+    offset = part["solids"][0]["max_vertex_offset_mm"]
+    for plane in part["planes"]:
+        n = plane["normal"]
+        for face in plane["faces"]:
+            facts = faces.get(face["face"]) and plane_facts(faces[face["face"]])
+            if facts is None:
+                continue
+            normal, location, area = facts
+            tally["plane faces"] += 1
+            where = f"{path}: face #{face['face']} ({plane['id']})"
+            if math.hypot(*cross(normal, n)) > ANGULAR or dot(normal, n) <= 0:
+                problems.append(f"{where}: normal {n}, Open CASCADE {normal}")
+                continue
+            if abs(dot(n, location) - face["offset_mm"]) > LINEAR:
+                problems.append(f"{where}: offset {face['offset_mm']}, Open CASCADE {dot(n, location)}")
+            if face["area_mm2"] is None:
+                tally["unknown outlines"] += 1
+                continue
+            error = abs(face["area_mm2"] - area)
+            exact = AREA_REL * max(area, 1.0)
+            slack = perimeter(face["outline"]) * offset
+            if error <= exact:
+                tally["areas"] += 1
+            elif error <= exact + slack:
+                tally["areas within the vertex offsets"] += 1
+            else:
+                problems.append(f"{where}: area {face['area_mm2']}, Open CASCADE {area}, "
+                                f"beyond {exact + slack:.3g} mm2")
+    return problems
+
+
+def perimeter(outline):
+    """The length of a known outline's loops, in mm."""
+    total = 0.0
+    for loop in outline["loops"]:
+        for segment in loop["segments"]:
+            if segment["kind"] == "arc":
+                total += segment["radius_mm"] * abs(segment["sweep_rad"])
+            else:
+                total += math.dist(segment["from_mm"], segment["to_mm"])
+    return total
+
+
+def feature_inputs(path):
+    """The STEP files a features PATH names."""
+    if path.is_file():
+        return [path]
+    manifest = path / "manifest.json"
+    if manifest.is_file():
+        listed = json.loads(manifest.read_text(encoding="utf-8"))
+        if "cases" in listed:
+            return [path / case["file"] for case in listed["cases"]]
+        return [path / fixture["path"] for fixture in listed["fixtures"]]
+    return sorted(p for p in path.rglob("*") if p.suffix.lower() in (".stp", ".step")
+                  and "ocp" not in p.relative_to(path).parts)
+
+
+def features_main(paths):
+    binary = Path(os.environ.get("FITMENT", Path(__file__).resolve().parent.parent / "target/release/fitment"))
+    if not binary.is_file():
+        sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
+    tally = {"accepted": 0, "refused": 0, "plane faces": 0, "areas": 0, "areas within the vertex offsets": 0,
+             "unknown outlines": 0}
+    problems = []
+    for path in [p for arg in paths for p in feature_inputs(Path(arg))]:
+        try:
+            found = check_features(path, binary, tally)
+        except OSError as error:
+            found = [str(error)]
+        problems += found
+        print(f"{'ok  ' if not found else 'FAIL'} {path}")
+    for problem in problems:
+        print(problem, file=sys.stderr)
+    print(", ".join(f"{v} {k}" for k, v in tally.items()) + f"; {len(problems)} disagreements with Open CASCADE")
+    sys.exit(1 if problems else 0)
+
+
+def quiet():
     messenger = Message.DefaultMessenger_s()
     printers = messenger.Printers()
     for i in range(printers.Length(), 0, -1):
         messenger.RemovePrinter(printers.Value(i))
+
+
+def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "features":
+        quiet()
+        features_main(sys.argv[2:])
+    if len(sys.argv) != 3 or sys.argv[1] != "manifest":
+        sys.exit(__doc__)
+    directory = Path(sys.argv[2])
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    quiet()
     problems = []
     for case in manifest["cases"]:
         found = check_case(directory, case)

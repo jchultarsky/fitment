@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 2,
+  "extractor_version": 3,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -69,6 +69,157 @@
       }
     ],
     "max_uncertainty_mm": 1e-7,
-    "other_items": []
+    "face_counts": {
+      "plane": 2,
+      "cylindrical": 1,
+      "conical": 0,
+      "spherical": 0,
+      "toroidal": 0,
+      "other": 0,
+      "total": 3
+    },
+    "planes": [
+      {
+        "id": "plane-50",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "offset_mm": 20.0,
+        "spread_mm": 0.0,
+        "area_mm2": 28.274333882308138,
+        "faces": [
+          {
+            "face": 50,
+            "surface": 54,
+            "offset_mm": 20.0,
+            "area_mm2": 28.274333882308138,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 51,
+                  "outer": true,
+                  "area_mm2": 28.274333882308138,
+                  "segments": [
+                    {
+                      "kind": "arc",
+                      "edge": 21,
+                      "from_mm": [
+                        3.0,
+                        -7.347880794884e-16,
+                        20.0
+                      ],
+                      "to_mm": [
+                        3.0,
+                        -7.347880794884e-16,
+                        20.0
+                      ],
+                      "center_mm": [
+                        0.0,
+                        0.0,
+                        20.0
+                      ],
+                      "radius_mm": 3.0,
+                      "sweep_rad": 6.283185307179586,
+                      "across": "cylinder-17"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "plane-59",
+        "solid": "solid-15",
+        "shell": 0,
+        "normal": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "offset_mm": 0.0,
+        "spread_mm": 0.0,
+        "area_mm2": 28.274333882308138,
+        "faces": [
+          {
+            "face": 59,
+            "surface": 63,
+            "offset_mm": 0.0,
+            "area_mm2": 28.274333882308138,
+            "outline": {
+              "status": "known",
+              "loops": [
+                {
+                  "bound": 60,
+                  "outer": true,
+                  "area_mm2": 28.274333882308138,
+                  "segments": [
+                    {
+                      "kind": "arc",
+                      "edge": 38,
+                      "from_mm": [
+                        3.0,
+                        -7.347880794884e-16,
+                        0.0
+                      ],
+                      "to_mm": [
+                        3.0,
+                        -7.347880794884e-16,
+                        0.0
+                      ],
+                      "center_mm": [
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      "radius_mm": 3.0,
+                      "sweep_rad": 6.283185307179586,
+                      "across": "cylinder-17"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "cylinders": [
+      {
+        "id": "cylinder-17",
+        "solid": "solid-15",
+        "shell": 0,
+        "faces": [
+          17
+        ],
+        "surface": 45,
+        "sense": "shaft",
+        "axis": {
+          "point_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "radius_mm": 3.0,
+        "spread_mm": 0.0
+      }
+    ],
+    "cones": [],
+    "tori": [],
+    "other_faces": [],
+    "other_items": [],
+    "notes": []
   }
 }

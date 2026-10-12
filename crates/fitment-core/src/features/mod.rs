@@ -7,8 +7,15 @@
 //! request, and each one that changes output raises
 //! [`EXTRACTOR_VERSION`](crate::EXTRACTOR_VERSION).
 
+mod cylinder;
 mod document;
+mod group;
+mod other;
+mod outline;
+mod plane;
+mod primary;
 mod step;
+pub(crate) mod topo;
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -18,6 +25,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::gate::Refusal;
 use crate::geom::Rigid;
+
+pub use cylinder::{Axis, Cylinder, Sense};
+pub use other::{Cone, OtherFace, OtherReason, Torus};
+pub use outline::{Outline, OutlineLoop, OutlineProblem, Segment};
+pub use plane::{Plane, PlaneFace};
 
 pub use document::{
     Extraction, FEATURES_FORMAT, FEATURES_FORMAT_VERSION, FeaturesDocument, FileHeader,
@@ -83,9 +95,69 @@ pub struct Part {
     /// The largest length uncertainty the solids' contexts state, in mm:
     /// the matcher's tolerance floor.
     pub max_uncertainty_mm: f64,
+    /// How many faces of each surface kind the solids have.
+    pub face_counts: FaceCounts,
+    /// The planes, by id. With the other primary features they hold every
+    /// face exactly once.
+    pub planes: Vec<Plane>,
+    /// The cylinders, by id.
+    pub cylinders: Vec<Cylinder>,
+    /// The cones, by id.
+    pub cones: Vec<Cone>,
+    /// The tori, by id.
+    pub tori: Vec<Torus>,
+    /// The faces no rule reads, by id.
+    pub other_faces: Vec<OtherFace>,
     /// Items of the part's shape that are not solids: curve and point
     /// sets, sorted by `#id`.
     pub other_items: Vec<OtherItem>,
+    /// What reading the part noticed that is not wrong, by `#id`, then
+    /// code.
+    pub notes: Vec<Note>,
+}
+
+/// How many faces of each surface kind a part has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FaceCounts {
+    /// Faces on planes.
+    pub plane: u32,
+    /// Faces on cylinders.
+    pub cylindrical: u32,
+    /// Faces on cones.
+    pub conical: u32,
+    /// Faces on spheres.
+    pub spherical: u32,
+    /// Faces on tori.
+    pub toroidal: u32,
+    /// Faces on surfaces stepq does not read.
+    pub other: u32,
+    /// All faces.
+    pub total: u32,
+}
+
+/// Something reading the part noticed that is not wrong.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Note {
+    /// What kind of note.
+    pub code: NoteCode,
+    /// The `#id` it is about.
+    pub instance: u64,
+    /// The details.
+    pub message: String,
+}
+
+/// What kind of [`Note`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum NoteCode {
+    /// A planar face's `face_outer_bound` is not its loop with positive
+    /// area, which fitment takes as the outer one (section 5.3).
+    StatedOuterBoundDiffers,
 }
 
 /// The product definition a part was read from.

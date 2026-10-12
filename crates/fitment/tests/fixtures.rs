@@ -3,7 +3,9 @@
 //! `tools/fetch-fixtures.sh core` downloads them into `fixtures/`; they are
 //! never committed. `fixtures/manifest.json` pins what fitment's gate makes
 //! of each one. Each file must give exactly its pinned result and exit
-//! code, and never a panic or an `internal` refusal, and every STEP file
+//! code, and never a panic or an `internal` refusal; an accepted one must
+//! have its pinned number of planes and every face in exactly one primary
+//! feature (design, section 6). Every STEP file
 //! fetched outside the manual `ocp` set must be pinned. Without the files
 //! the test passes with a note, unless `FITMENT_REQUIRE_FIXTURES=1`, which
 //! CI sets.
@@ -14,6 +16,8 @@ use std::path::Path;
 
 use assert_cmd::Command;
 use serde_json::Value;
+
+mod common;
 
 #[test]
 fn every_fixture_gives_its_pinned_gate_result() {
@@ -75,6 +79,18 @@ fn every_fixture_gives_its_pinned_gate_result() {
             .as_array()
             .map(|r| r.iter().map(|c| c.as_str().unwrap()).collect())
             .unwrap_or_default();
+        if document["status"] == "accepted" {
+            let planes = document["part"]["planes"].as_array().map(Vec::len);
+            if planes.map(|n| n as u64) != fixture["planes"].as_u64() {
+                failures.push(format!(
+                    "{path}: {planes:?} planes, pinned {}",
+                    fixture["planes"]
+                ));
+            }
+            if let Some(problem) = common::partition(&document["part"]) {
+                failures.push(format!("{path}: {problem}"));
+            }
+        }
         if document["status"] != fixture["features"]
             || reasons != pinned
             || reasons.contains(&"internal")

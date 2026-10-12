@@ -69,7 +69,7 @@ Each has a recommended default. The rest of the document assumes the defaults.
 5. **Build holes and shafts** from full cylinders by the end walk (section 9).
 6. **Check the face partition**, convert to `geom` types, normalise `-0.0`, and return the `Part`.
 
-stepq types appear only in `features/step.rs` and `gate.rs`. Everything public is fitment's own types (section 11).
+stepq types appear only in `features/step.rs` and the files of `gate/`. Everything public is fitment's own types (section 11).
 
 ## 4. The canonical gate (D2)
 
@@ -335,11 +335,13 @@ A polygon through sample points lies inside an arc on one side and outside it on
   - an arc: `½ ((c − o) × (b − a)) · n + ½ r² θ`.
   These are exact for lines and circular arcs (Green's theorem). The area agreed with Open CASCADE's `BRepGProp` to 4.5e-13 mm² on 14 generated faces, including fillet arcs and a counterbore floor.
 - **Points stay as stated.** Vertices are not projected onto the plane. The gate already bounds their distance from it.
+- **As built in PR 4:** every loop of a face is measured from the face's first vertex rather than the plane's location, which changes no exact value and loses no digits on a plane placed far from its face. Against Open CASCADE's `BRepGProp`, 1,737 of 1,761 known planar faces in the corpus and the 24 accepted fixtures agree within 1e-9 relative. The other 24, in six NIST files, differ by up to 3% on faces under 1 mm²: a vertex stated up to 0.0037 mm off its edge's line, within the file's uncertainty, moves the area measured through the vertices but not the one integrated along the curves. Moving each vertex by d changes a loop's area by at most d times its perimeter, and every difference is within that bound for d = `max_vertex_offset_mm`; the oracle allows it and tallies those faces apart.
 
-The outline becomes `unknown`, with a problem code, when:
+The outline becomes `unknown`, with a problem code and the `#id` at fault, when:
 
 - an edge's curve is neither a line nor a circle (`curve_not_read`);
-- a circle's axis is not parallel to the normal (`circle_not_parallel`);
+- a circle's axis is not parallel to the normal, or its centre is off the plane, by more than ε at its radius (`circle_not_parallel`);
+- a loop is a single vertex (`vertex_loop`; added in PR 4);
 - an arc's two distinct vertices are within u of each other, so its sweep is ambiguous (`ambiguous_arc`);
 - not exactly one loop has positive area (`loop_orientation`).
 
@@ -765,7 +767,7 @@ crates/fitment-core/src/
     document.rs     FeaturesDocument: envelope, to_json, from_json
 ```
 
-- **stepq stays inside two files.** `features/step.rs` copies what the rules need into a crate-private `Topo`: faces with their surfaces in fitment's types, bounds, oriented edges, edge uses with `forward`, `face_sense`, seams, shells and vertices, each with its `#id`. No other module sees a stepq value. A CI grep checks that `stepq` appears in no file but `features/step.rs` and `gate.rs`, including in `use` lines, so a re-export cannot slip through. stepq stays a private dependency, so stepq 0.7 is a one-crate change.
+- **stepq stays inside `gate/` and `features/step.rs`.** As built in PR 4: gate stage 6 copies the solid that passed stages 4 and 5 into a crate-private `Topo` (`features/topo.rs`): faces with their surfaces in fitment's types, `face_sense` and `same_sense`, bounds with their loops already in traversal order (section 5.3), edges with their curves (`basis()`) and the faces that use them, shells and vertices, each with its `#id`. Checks 22 (the rest), 26, 23, 24 and 25 then run on the copy (`gate/geometry.rs`), so the gate's orientation check and the plane outlines measure loops with one implementation (`Travel::area`). No module outside `gate/` and `features/step.rs` sees a stepq value. A CI grep checks that `stepq` appears in no other file, including in `use` lines, so a re-export cannot slip through. stepq stays a private dependency, so stepq 0.7 is a one-crate change.
 - **No panics.** stepq's `face_sense`, `uses` and `neighbours` panic on an out-of-range index, so `step.rs` calls them only with indices stepq returned for the same solid. An invariant that "cannot fail" returns `internal`.
 - **Dependencies.** stepq 0.6 is added by fitment #4 (M2, step 1): at workspace level with `default-features = false`, allowlisted in `deny/core.toml` with its `default` and `cli` features banned, and wrapped to `fitment-core` in `deny.toml`. `libm` 0.2 (rust-version 1.63) is added the same way in PR 4, where trigonometry is first used, at workspace level and in `deny/core.toml`, with the reason "bit-identical trigonometry on every OS".
 - **Packaging:** `include = ["src/**", "README.md", "LICENSE"]`, so `tests/data/*.stp` never ships (it would today).
@@ -963,7 +965,7 @@ As built in PR 2 (`manifest` mode), after review:
 - **Not checked, so fitment's own tests are the only check:** a flipped `same_sense` and a vertex moved off its face (Open CASCADE repairs orientation as it reads), and the rules' own labels: `irregular` and `unknown` ends, and whether a hole is stated as `unknown`.
 - **Mutation score:** the review's 54 changed answers, 51 caught (the three left are those labels); its 7 deliberately wrong parts, all caught.
 
-The `features` mode below, fitment against Open CASCADE, arrives with PR 4.
+The `features` mode below, fitment against Open CASCADE, arrived with PR 4 for planes; the cylinder and hole checks come with PRs 5 and 6.
 
 - **`verify-occt.py manifest`: Open CASCADE against construction.** It catches generator bugs, and it caught one while this was designed: an angled-hole part whose tool left an extra plane, so Open CASCADE read 7 planes where the manifest said 6.
   - Positive cases: one valid solid with positive volume; full concave groups match the expected hole segments; convex groups match the shafts; partial groups match within 0.5°; planes match; axis-line hits give through or blind and the depths.
@@ -1038,13 +1040,15 @@ Each PR comes with its tests. `EXTRACTOR_VERSION` goes up with every PR that cha
    - topology, units, geometry, vertex and face-orientation checks, and `libm` (moved here from PR 4: the planar orientation check sums arc sweeps);
    - `fetch-fixtures.sh` and the pinned gate census;
    - the fixture test.
-4. **Planes and the partition.**
-   - `libm`, at workspace level and in `deny/core.toml`;
-   - grouping, outlines, areas;
-   - cylinders, cones and tori held as unclassified groups for now;
-   - the partition check;
-   - `verify-occt.py features` for planes.
-5. **Cylinders:** grouping G, sense S, full or partial F, near misses, and the oracle's cylinder checks.
+4. **Planes and the partition.** As built:
+   - the `Topo` copy, with the gate's checks 22 to 26 moved onto it (section 11.1);
+   - grouping, outlines, areas, and the `stated_outer_bound_differs` note;
+   - cylinders, cones and tori grouped (G1, G2 and section 8.6) with their sense, axis and radii, but not yet classified; other faces;
+   - features stated in the part's frame: a solid placed by a mapped item is moved before it is read (p29 caught this);
+   - the partition check, in `read_part`, in `from_json`, and on every unit part, corpus part and fixture;
+   - the planes of every corpus part checked against the construction, and each accepted fixture's plane count pinned;
+   - `verify-occt.py features` for planes, in CI on the corpus and the fixtures.
+5. **Cylinders:** full or partial F, the near-miss notes, contradictions 27 and 29, and the oracle's cylinder checks. Grouping G and sense S arrived in PR 4.
 6. **Holes and shafts:** the end walk W, stacks K, lengths E, cones and tori in walks, `complete`, and the oracle's through/blind and depth checks.
 7. **Hardening.**
    - the `_pc` and `_rot` variants;

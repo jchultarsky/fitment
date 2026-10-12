@@ -65,6 +65,10 @@ jobs:
       # Open CASCADE 8.0.1, a kernel the generator does not use, reads every
       # part as its construction says: this catches generator bugs.
       - run: tools/verify-occt.py manifest corpus/out
+      # fitment against Open CASCADE: every planar face's normal, offset and
+      # area, on the corpus and the fixtures.
+      - run: cargo build --release -p fitment --locked
+      - run: tools/verify-occt.py features corpus/out fixtures
       - run: cargo test -p fitment --test corpus --test fixtures --locked
         env:
           FITMENT_REQUIRE_CORPUS: "1"

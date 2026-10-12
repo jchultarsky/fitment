@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{FeatureKind, Part, SolidInfo};
+use super::{FeatureId, FeatureKind, Part, SolidInfo};
 use crate::EXTRACTOR_VERSION;
 use crate::gate::Refusal;
 
@@ -46,15 +46,15 @@ pub struct Extraction {
 impl Extraction {
     /// The constants this version extracts with.
     pub const CURRENT: Self = Self {
-        identity_mm: crate::gate::solid::IDENTITY_MM,
+        identity_mm: crate::gate::geometry::IDENTITY_MM,
         parallel_sine: 1e-9,
         vertex_side_mm: 1e-3,
         lever_min_mm: 1.0,
         sweep_rad: 1e-9,
         walk_max: 8,
-        gate_slack_mm: crate::gate::solid::GATE_SLACK_MM,
-        gate_slack_rel: crate::gate::solid::GATE_SLACK_REL,
-        range_mm: crate::gate::solid::RANGE_MM,
+        gate_slack_mm: crate::gate::geometry::GATE_SLACK_MM,
+        gate_slack_rel: crate::gate::geometry::GATE_SLACK_REL,
+        range_mm: crate::gate::geometry::RANGE_MM,
     };
 }
 
@@ -294,6 +294,7 @@ fn check_part(part: &Part) -> Result<(), FormatError> {
         ));
     }
     check_solid(solid)?;
+    check_partition(part, solid)?;
     let largest = solid
         .units
         .uncertainty
@@ -312,6 +313,75 @@ fn check_part(part: &Part) -> Result<(), FormatError> {
         .all(|pair| pair[0].instance < pair[1].instance)
     {
         return invalid("other items are not sorted by #id, or repeat".to_owned());
+    }
+    Ok(())
+}
+
+/// A feature's id and its faces' `#id`s.
+type Faces = (FeatureId, Vec<u64>);
+
+/// The primary features read back must hold every face of the solid
+/// exactly once; each list is sorted by id, each id names its kind and its
+/// smallest face, and each feature's faces are sorted.
+fn check_partition(part: &Part, solid: &SolidInfo) -> Result<(), FormatError> {
+    let lists: [(FeatureKind, Vec<Faces>); 5] = [
+        (
+            FeatureKind::Plane,
+            part.planes
+                .iter()
+                .map(|p| (p.id, p.faces.iter().map(|f| f.face).collect()))
+                .collect(),
+        ),
+        (
+            FeatureKind::Cylinder,
+            part.cylinders
+                .iter()
+                .map(|c| (c.id, c.faces.clone()))
+                .collect(),
+        ),
+        (
+            FeatureKind::Cone,
+            part.cones.iter().map(|c| (c.id, c.faces.clone())).collect(),
+        ),
+        (
+            FeatureKind::Torus,
+            part.tori.iter().map(|t| (t.id, t.faces.clone())).collect(),
+        ),
+        (
+            FeatureKind::Other,
+            part.other_faces
+                .iter()
+                .map(|o| (o.id, vec![o.face]))
+                .collect(),
+        ),
+    ];
+    let invalid = |message: String| Err(FormatError::Invalid(message));
+    let mut all = Vec::new();
+    for (kind, features) in &lists {
+        if !features.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+            return invalid(format!("the {} features are not sorted by id", kind.name()));
+        }
+        for (id, faces) in features {
+            let sorted = faces.windows(2).all(|pair| pair[0] < pair[1]);
+            if id.kind() != *kind || faces.first() != Some(&id.instance()) || !sorted {
+                return invalid(format!(
+                    "feature '{id}' is not a {} named after its smallest face, with its faces sorted",
+                    kind.name()
+                ));
+            }
+            all.extend(faces.iter().copied());
+        }
+    }
+    let count = all.len();
+    all.sort_unstable();
+    all.dedup();
+    let total = part.face_counts.total;
+    if all.len() != count || u32::try_from(count).ok() != Some(total) || total != solid.faces {
+        return invalid(format!(
+            "the primary features hold {count} faces, {} distinct, of the solid's {}",
+            all.len(),
+            solid.faces
+        ));
     }
     Ok(())
 }
