@@ -619,6 +619,21 @@ fn plane_cylinder(
     else {
         return Ok(true);
     };
+    // Wholly inside it, short of it by more than τ: a face's distance to
+    // the axis is convex, so its outline's corners bound it (a spacer's end
+    // inside a tube).
+    if let Surface::Plane {
+        outer: Some(outer), ..
+    } = &plane.surface
+    {
+        let inside = outer
+            .iter()
+            .map(|q| norm(across(sub(*q, *point), *dir)))
+            .fold(f64::NEG_INFINITY, f64::max);
+        if inside < radius - tau {
+            return Ok(false);
+        }
+    }
     let (lo, hi) = spans(cylinder, *point, *dir);
     if !(lo.is_finite() && hi.is_finite()) {
         return Ok(true);

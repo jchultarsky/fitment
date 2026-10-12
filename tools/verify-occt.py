@@ -707,6 +707,13 @@ def check_assembly(directory, case):
                 return [f"{name}: refused for two roots, but Open CASCADE reads {len(leaves)} leaves"]
         return []
     problems = []
+    wanted = sum(len(ms) for ms in expect["occurrences"].values())
+    if case.get("construction", {}).get("xcaf_reads_otherwise"):
+        # A layout XCAF places another way (s10's mapped item): its leaves
+        # are counted, and the construction is checked by corpus.rs.
+        if wanted != len(leaves):
+            problems.append(f"{name}: Open CASCADE reads {len(leaves)} leaf occurrences, the construction {wanted}")
+        return problems
     # XCAF names a leaf by its PRODUCT.name; the manifest keys it by id.
     names = {p["id"]: p["name"] for p in expect["listing"]["parts"]}
     wanted = [(names.get(product, product), m) for product, ms in expect["occurrences"].items() for m in ms]
@@ -1314,13 +1321,13 @@ def span_problems(where, kind, axis, span, m, others, tally):
     """What Open CASCADE sees that one span misstates: a clearance span's
     gap (between the clear diameter and the hole's, or the shaft's and its
     limit) is air in every other solid, and an interference span's
-    occupant (or holder) is material just inside the target's surface."""
+    occupant (or holder) is material past the target's surface."""
     tally[f"{kind} spans"] += 1
     mid = (span["from_mm"] + span["to_mm"]) / 2
     own = span["hole_diameter_mm" if kind == "bore" else "shaft_diameter_mm"]
     clear = span["clear_diameter_mm"]
     if span["to_mm"] - span["from_mm"] <= 0.01:
-        return [f"{where}: a span of no length, {span['from_mm']}..{span['to_mm']}"]
+        return []  # a touch (B5): nothing to probe
     if span["fit"] == "clearance" and clear is not None and abs(clear - own) > 0.05:
         radius = (clear + own) / 4
         for point in ring(m, axis, mid, radius):
@@ -1328,7 +1335,13 @@ def span_problems(where, kind, axis, span, m, others, tally):
                 return [f"{where}: {span['fit']} with clear diameter {clear}, but Open CASCADE finds material "
                         f"at radius {radius:.4f} at {point}"]
     if span["fit"] == "interference":
-        radius = own / 2 - 0.001 if kind == "bore" else own / 2 + 0.001
+        # Midway to the clear diameter, where the overlap is (an occupant
+        # may be a ring, air just inside the target's surface); without
+        # one, just inside the surface.
+        if clear is not None and abs(clear - own) > 0.002:
+            radius = (clear + own) / 4
+        else:
+            radius = own / 2 - 0.001 if kind == "bore" else own / 2 + 0.001
         if not any(inside_any(point, others) for point in ring(m, axis, mid, radius)):
             return [f"{where}: interference, but Open CASCADE finds no other solid at radius {radius:.4f}"]
     return []
@@ -1415,6 +1428,14 @@ def seat_problems(where, socket, m, target, others, tally):
             gaps = [dot(n, sub(gp, f[2])) for f in faces for g, gn, gp, gb in theirs
                     if dot(gn, n) <= -COS_LIMIT and abs(dot(n, sub(gp, f[2]))) <= NEAR
                     and f[3].Distance(gb) <= NEAR + 1e-6 and common_area(f[0], g, n, dot(n, sub(gp, f[2]))) > 1e-6]
+            unknown = all("unknown_outline" in b["flags"] for c in q["contacts"] for b in c["by"]) and \
+                any(b for c in q["contacts"] for b in c["by"])
+            if not gaps and unknown:
+                # Outlines fitment could not read: it cannot rule out a touch
+                # by an opposed face on the band's planes, nor can this.
+                gaps = [dot(n, sub(gp, f[2])) for f in faces for g, gn, gp, gb in theirs
+                        if dot(gn, n) <= -COS_LIMIT and abs(dot(n, sub(gp, f[2]))) <= NEAR]
+                tally["seats of unknown outline"] = tally.get("seats of unknown outline", 0) + 1
             if not gaps:
                 problems.append(f"{where} {requirement['id']}: no opposed face shares area with it within {NEAR} mm")
                 continue
@@ -1492,6 +1513,25 @@ def r_(v):
     return [round(x, 6) for x in v]
 
 
+def fits_extent(shape, extent, m):
+    """True if `shape`'s box is `extent`, placed by `m`, to 0.01 mm."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    if extent is None:
+        return False
+    box = Bnd_Box()
+    BRepBndLib.AddOptimal_s(shape, box, False, False)
+    lo = [math.inf] * 3
+    hi = [-math.inf] * 3
+    for k in range(8):
+        corner = [extent["max_mm" if k >> i & 1 else "min_mm"][i] for i in range(3)]
+        p = apply(m, corner)
+        lo = [min(lo[i], p[i]) for i in range(3)]
+        hi = [max(hi[i], p[i]) for i in range(3)]
+    found = list(xyz(box.CornerMin())) + list(xyz(box.CornerMax()))
+    return all(abs(a - b) <= 0.01 for a, b in zip(lo + hi, found))
+
+
 def socket_problems(directory, case, binary, tally):
     """What Open CASCADE sees that one case's sockets miss: every point of a
     left-out hole's axis, over its wall, must be air in every other solid
@@ -1518,8 +1558,19 @@ def socket_problems(directory, case, binary, tally):
             # Every other solid: every leaf but this occurrence itself, which
             # is the target's product at this placement.
             name = occurrence["definition"]["product"]["name"]
-            mine = [i for i, (n, found, _) in enumerate(leaves)
-                    if n == name and all(abs(found[i][j] - m[i][j]) <= 1e-6 for i in range(3) for j in range(4))]
+            placed = [i for i, (_, found, _) in enumerate(leaves)
+                      if all(abs(found[r][c] - m[r][c]) <= 1e-6 for r in range(3) for c in range(4))]
+            mine = [i for i in placed if leaves[i][0] == name]
+            if len(mine) != 1:
+                # No usable name (an export without product names, or one
+                # name for every part): the leaf whose box is the target's
+                # extent, placed.
+                mine = [i for i in placed if fits_extent(leaves[i][2], extracted["target"]["extent"], m)]
+            if len(mine) != 1 and len(placed) > 1 and extracted["target"]["extent"] is None:
+                # Parts placed alike, unnamed, and no extent to tell them
+                # apart (the moon buggy's mapped items): counted, not probed.
+                tally["unmatched occurrences"] = tally.get("unmatched occurrences", 0) + 1
+                continue
             if len(mine) != 1:
                 problems.append(f"{case['id']} {target}: {len(mine)} leaves at occurrence {occurrence['path']}")
                 continue
@@ -1554,18 +1605,29 @@ def socket_main(argv):
     import argparse
 
     parser = argparse.ArgumentParser(prog="verify-occt.py socket")
-    parser.add_argument("directory", metavar="DIR", help="a generated corpus")
+    parser.add_argument("directory", metavar="DIR", help="a generated corpus, or the fixtures with --expect")
+    parser.add_argument("--expect", metavar="MANIFEST",
+                        help="the fixtures' manifest: its pinned socket targets, and its `socket_oracle` tallies")
     args = parser.parse_args(argv)
     directory = Path(args.directory)
     binary = Path(os.environ.get("FITMENT", Path(__file__).resolve().parent.parent / "target/release/fitment"))
     if not binary.is_file():
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
-    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    pinned = None
+    if args.expect is not None:
+        # Fixtures: each pinned target, as a case of its own file.
+        expect = json.loads(Path(args.expect).read_text(encoding="utf-8"))
+        pinned = expect.get("socket_oracle", {})
+        cases = [{"id": f["path"], "file": f["path"], "kind": "assembly", "expect": {"sockets": f["sockets"]}}
+                 for f in expect["fixtures"] if "sockets" in f]
+    else:
+        cases = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))["cases"]
     tally = {"cases": 0, "others": 0, "bore spans": 0, "shaft spans": 0, "left out holes": 0, "seats": 0,
              "conical seats": 0, "grips": 0, "seat pairs": 0, "faces off every seat": 0}
     problems = []
-    for case in manifest["cases"]:
-        if case.get("kind") != "assembly" or "sockets" not in case["expect"]:
+    for case in cases:
+        if case.get("kind") != "assembly" or "sockets" not in case["expect"] \
+                or case.get("construction", {}).get("xcaf_reads_otherwise"):
             continue
         tally["cases"] += 1
         found = socket_problems(directory, case, binary, tally)
@@ -1573,7 +1635,13 @@ def socket_main(argv):
         print(f"{'ok  ' if not found else 'FAIL'} {case['id']}")
     for problem in problems:
         print(problem, file=sys.stderr)
-    if any(v == 0 for v in tally.values()):
+    if pinned is not None:
+        if pinned != tally:
+            changed = {k: (pinned.get(k), tally.get(k)) for k in sorted(set(pinned) | set(tally))
+                       if pinned.get(k) != tally.get(k)}
+            problems.append(f"the tallies differ from the pinned `socket_oracle` ones (pinned, now): {changed}")
+            print(problems[-1], file=sys.stderr)
+    elif any(v == 0 for v in tally.values()):
         problems.append("a socket check examined nothing: " + ", ".join(f"{v} {k}" for k, v in tally.items()))
         print(problems[-1], file=sys.stderr)
     print(", ".join(f"{v} {k}" for k, v in tally.items()) + f"; {len(problems)} disagreements with Open CASCADE")

@@ -310,6 +310,20 @@ impl Search<'_, '_> {
         }
         let reach = p.e_max + b.radius / p.cosine;
         let margin = a.radius - reach;
+        // A ring around the hole's part, clear of it: a bearing round a
+        // spacer, seen from the spacer.
+        if margin < -tau {
+            if let (Some(neighbour), Some(q)) = (
+                self.neighbours.get(n),
+                axial::pair(b, a, PARALLEL_SINE_REL, 0.0),
+            ) {
+                if hollow(&neighbour.elements, b, self.targets, &q, tau) {
+                    // Read, and clear of the hole: not for B8.
+                    self.read.entry((t, n)).or_default().insert(b.feature);
+                    return;
+                }
+            }
+        }
         // A wider cylinder that only touches the rim does not enter: a head
         // bearing there (H1), not an occupant.
         if p.length.abs() <= tau && margin < -tau {
@@ -402,6 +416,15 @@ impl Search<'_, '_> {
             relation.flags.insert(Flag::PartialNeighbour);
             self.found.relations.push(relation);
             return;
+        }
+        // A ring around the hole's part, clear of it: a bearing round a
+        // spacer, seen from the bearing.
+        if margin < -tau {
+            if let Some(neighbour) = self.neighbours.get(n) {
+                if hollow(self.targets, a, &neighbour.elements, &p, tau) {
+                    return;
+                }
+            }
         }
         // A shaft wider than the hole that only touches its rim does not
         // enter it: its end bears there.
@@ -784,6 +807,35 @@ fn to_floor(a: &Element, b: &Element, p: &Pair, tau: f64) -> Option<f64> {
         return Some((a.lo - p.lo).max(0.0));
     }
     None
+}
+
+/// True if `shaft`'s part is a ring clear of the part holding the hole
+/// it was paired with, over `p`'s overlap on `shaft`'s axis: `ring` has a
+/// bore coaxial with `shaft`, and `core` (the hole's part) an outside
+/// coaxial with it no wider than that bore. The ring's material lies
+/// outside its bore and the core's inside its outside, so they meet at
+/// most, whatever the hole: a spacer inside a bearing's bore. A core
+/// with no such outside (a hex nut) proves nothing.
+fn hollow(ring: &[Element], shaft: &Element, core: &[Element], p: &Pair, tau: f64) -> bool {
+    let (from, to) = (p.from.min(p.to), p.from.max(p.to));
+    let covering = |e: &&Element, side: Side| {
+        e.side == side
+            && e.partial.is_none()
+            && axial::pair(shaft, e, PARALLEL_SINE_REL, 0.0)
+                .is_some_and(|q| q.e_max <= tau && q.lo <= from + tau && q.hi >= to - tau)
+    };
+    // The outermost, should the core have walls within walls.
+    let Some(outside) = core
+        .iter()
+        .filter(|e| covering(e, Side::Shaft))
+        .map(|e| e.radius)
+        .reduce(f64::max)
+    else {
+        return false;
+    };
+    ring.iter()
+        .filter(|e| covering(e, Side::Hole))
+        .any(|e| outside <= e.radius + tau)
 }
 
 /// U3: what is known of an element, before an unknown side runs on.

@@ -64,6 +64,33 @@ struct Piece {
     pinned: bool,
 }
 
+/// Element `t`'s stations: an unbounded side (an undecided cylinder with
+/// nothing to bound it) ends where its relations' spans do. A span as
+/// unbounded as the element (B8's over an undecided cylinder with no
+/// extent) bounds nothing; with nothing to bound it, none.
+fn extent(element: &Element, normal: &[&&Relation], t: usize) -> Option<(f64, f64)> {
+    let ends = normal
+        .iter()
+        .filter(|r| r.target == t)
+        .filter_map(|r| r.span)
+        .flat_map(|(a, b)| [a, b])
+        .filter(|x| x.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| {
+            (lo.min(x), hi.max(x))
+        });
+    let lo = if element.lo.is_finite() {
+        element.lo
+    } else {
+        ends.0
+    };
+    let hi = if element.hi.is_finite() {
+        element.hi
+    } else {
+        ends.1
+    };
+    (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+}
+
 /// The spans of one stack: on each segment, the maximal intervals over
 /// which the same relations hold. `smallest` takes the smallest clear
 /// diameter (a shaft's allowed largest) instead of the largest (a bore's
@@ -79,28 +106,9 @@ fn spans(segments: &[(usize, &Element)], relations: &[&Relation], smallest: bool
         .collect();
     let mut pieces: Vec<Piece> = Vec::new();
     for &(t, element) in segments {
-        // An unbounded side (an undecided cylinder with nothing to bound
-        // it) ends where its relations do.
-        let ends = normal
-            .iter()
-            .filter(|r| r.target == t)
-            .filter_map(|r| r.span)
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (a, b)| {
-                (lo.min(a), hi.max(b))
-            });
-        let lo = if element.lo.is_finite() {
-            element.lo
-        } else {
-            ends.0
-        };
-        let hi = if element.hi.is_finite() {
-            element.hi
-        } else {
-            ends.1
-        };
-        if !(lo.is_finite() && hi.is_finite()) {
+        let Some((lo, hi)) = extent(element, &normal, t) else {
             continue;
-        }
+        };
         // X7: the cylinder's own ends cut too, for a zone it stands for is
         // never pinned.
         let mut cuts: Vec<f64> = vec![lo, hi];
