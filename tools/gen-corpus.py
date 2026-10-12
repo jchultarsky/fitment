@@ -428,6 +428,117 @@ def circle_at(z, radius):
 DOWN = (0, 0, -1)
 UP = (0, 0, 1)
 
+# ------------------------------------------------------------- coverage
+
+CORE = "crates/fitment-core/tests"
+SRC = "crates/fitment-core/src/features"
+
+# Every rule and gate check the design (docs/research/m2-features.md)
+# defines, and what covers it beyond the cases that cite it in their
+# `rules`: Rust tests, named as file::function, for what no generated part
+# can reach, or the reason it is deferred. crates/fitment/tests/corpus.rs
+# fails if an id has no case, no test and no reason, if a test it names is
+# not there, or if a case cites an id missing here.
+RULES = {
+    "4.2#1": {"tests": [f"{CORE}/features.rs::a_file_that_is_not_step_is_unparseable"]},
+    "4.2#2": {"tests": [f"{CORE}/features.rs::a_dangling_reference_is_refused_with_its_instance"]},
+    "4.2#3": {"tests": [f"{CORE}/features.rs::every_check_in_stage_1_runs"]},
+    "4.2#4": {"tests": [f"{CORE}/features.rs::every_check_in_stage_1_runs",
+                        f"{CORE}/features.rs::only_geometric_validation_may_follow_the_schema"]},
+    "4.2#5": {"tests": [f"{CORE}/features.rs::an_assembly_is_refused"]},
+    "4.2#6": {"tests": [f"{CORE}/features.rs::a_file_with_no_product_definition_is_refused"]},
+    "4.2#7": {"tests": [f"{CORE}/features.rs::two_product_definitions_without_an_assembly_are_refused"]},
+    "4.2#8": {"tests": [f"{CORE}/features.rs::an_incomplete_shape_is_refused_and_ends_the_stage"]},
+    "4.2#9": {"tests": [f"{CORE}/features.rs::a_definition_with_no_shape_has_no_solid"]},
+    "4.2#10": {"tests": [f"{CORE}/features.rs::two_solids_in_one_product_are_refused"]},
+    "4.2#11": {"tests": [f"{CORE}/features.rs::a_set_holding_a_surface_is_refused",
+                         f"{CORE}/features.rs::a_surface_model_beside_the_solid_is_refused"]},
+    "4.2#12": {"tests": [f"{CORE}/features.rs::stage_3_refuses_a_placement_that_is_not_rigid"]},
+    "4.2#13": {"tests": [f"{CORE}/features.rs::stage_4_refuses_a_solid_whose_topology_cannot_be_read"]},
+    "4.2#14": {"tests": [f"{CORE}/features.rs::stage_4_refuses_a_solid_whose_topology_cannot_be_read"]},
+    "4.2#15": {"tests": [f"{CORE}/features.rs::stage_4_refuses_a_shell_with_a_face_missing",
+                         f"{CORE}/features.rs::stage_4_refuses_a_shell_split_across_two_shells"]},
+    "4.2#16": {"tests": [f"{CORE}/features.rs::stage_4_refuses_a_shell_in_two_pieces"]},
+    "4.2#17": {"tests": [f"{CORE}/features.rs::stage_5_refuses_a_solid_whose_context_cannot_be_read"]},
+    "4.2#18": {},
+    "4.2#19": {"tests": [f"{CORE}/features.rs::stage_5_refuses_missing_units"]},
+    "4.2#20": {"tests": [f"{CORE}/features.rs::stage_5_refuses_missing_units"]},
+    "4.2#21": {"tests": [f"{CORE}/features.rs::stage_5_refuses_missing_units"]},
+    "4.2#22": {"tests": [f"{CORE}/features.rs::stage_6_refuses_unreadable_and_out_of_range_geometry",
+                         f"{CORE}/features.rs::stage_6_refuses_a_face_or_edge_whose_geometry_is_not_geometry"]},
+    "4.2#23": {},
+    "4.2#24": {},
+    "4.2#25": {"tests": [f"{CORE}/features.rs::stage_6_refuses_a_plane_face_whose_sense_is_flipped",
+                         f"{CORE}/features.rs::stage_6_refuses_a_flipped_plane_face_with_an_arc_standing_across_it"]},
+    "4.2#26": {"tests": [f"{CORE}/features.rs::stage_6_refuses_unreadable_and_out_of_range_geometry",
+                         f"{CORE}/planes.rs::a_mapped_item_that_carries_the_solid_out_of_range_is_refused"]},
+    "4.2#27": {"tests": [f"{SRC}/primary.rs::faces_on_one_cylinder_with_opposite_senses_are_a_contradiction"]},
+    "4.2#28": {"tests": [f"{SRC}/walk.rs::an_annulus_whose_side_contradicts_its_radii_is_a_contradiction",
+                         f"{SRC}/walk.rs::a_shaft_widening_into_air_through_an_annulus_is_a_contradiction"]},
+    "4.2#29": {"tests": [f"{SRC}/full.rs::a_chain_of_arcs_around_the_circle_twice_is_a_contradiction"]},
+    "4.2#30": {"deferred": "internal is a fitment bug, not a property of input: the unit, corpus and fixture "
+                           "tests assert that no file produces it"},
+    "4.3": {},
+    "5.1": {},
+    "5.2.near_miss": {"tests": [f"{CORE}/cylinders.rs::halves_apart_by_less_than_the_uncertainty_are_a_near_miss"]},
+    "5.3": {"tests": [f"{CORE}/planes.rs::a_stated_outer_bound_that_is_not_the_outer_loop_is_a_note"]},
+    "5.4": {"tests": [f"{CORE}/features.rs::reading_is_deterministic"]},
+    "6": {"tests": [f"{CORE}/planes.rs::every_face_is_in_exactly_one_primary_feature",
+                    f"{CORE}/planes.rs::a_document_whose_features_break_the_partition_is_not_read"]},
+    "7.1": {},
+    "7.2": {"tests": [f"{CORE}/planes.rs::a_step_hidden_by_a_far_plane_location_is_two_planes"]},
+    "7.3": {"tests": [f"{CORE}/planes.rs::a_plane_face_with_a_hole_has_its_exact_area_and_loops",
+                      f"{CORE}/planes.rs::an_edge_on_an_unread_curve_leaves_the_outline_unknown",
+                      f"{CORE}/planes.rs::a_circle_tilted_off_its_plane_leaves_the_outline_unknown"]},
+    "G1": {}, "G2": {}, "G3": {}, "G4": {}, "G5": {},
+    "S1": {}, "S3": {},
+    "S2": {"tests": [f"{SRC}/primary.rs::faces_on_one_cylinder_with_opposite_senses_are_a_contradiction"]},
+    "F2": {"tests": [f"{SRC}/full.rs::two_arcs_around_the_circle_once_are_a_full_station",
+                     f"{SRC}/full.rs::a_chain_that_sweeps_nothing_is_not_full"]},
+    "F3": {"deferred": "withdrawn in review of PR 5: a seam is used twice by one loop as a slit is, and "
+                       "without the curves on the surface it proves no wrap"},
+    "F4.partial": {}, "F4.one_irregular": {}, "F4.wall_openings": {},
+    "F4.seam": {"tests": [f"{CORE}/cylinders.rs::a_slit_used_twice_by_one_loop_proves_no_wrap"]},
+    "F4.one_station": {"tests": [
+        f"{CORE}/cylinders.rs::a_wall_past_its_one_station_is_irregular_there_however_its_curve_ends"]},
+    "F5": {},
+    "8.6": {}, "8.7": {},
+    "W1": {}, "W3.cone": {}, "W3.torus": {}, "W3.plane_agreement": {},
+    "W4.annulus": {"tests": [
+        f"{SRC}/walk.rs::a_hole_widening_through_an_annulus_into_air_steps_to_the_wider_bore"]},
+    "W4.apex": {"tests": [f"{CORE}/holes.rs::a_point_of_two_cones_measures_its_tip_to_the_apex",
+                          f"{CORE}/holes.rs::a_dimple_in_a_flat_floor_is_no_drill_point"]},
+    "W4.cone": {}, "W4.disk": {}, "W4.face": {}, "W4.post": {}, "W4.sphere": {}, "W4.torus": {},
+    "W5.opening": {}, "W5.bottom.flat": {}, "W5.bottom.cone_then_flat": {}, "W5.bottom.point": {},
+    "W5.bottom.annular": {}, "W5.free_end": {}, "W5.root": {}, "W5.unknown": {},
+    "W6": {},
+    "W7": {"deferred": "no part crosses eight transitions: the bound only stops a hostile walk, and every "
+                       "walk is bounded by the loop count, which a unit test would only restate"},
+    "W7b": {"tests": [f"{CORE}/holes.rs::a_face_running_back_along_the_axis_says_nothing_about_the_end"]},
+    "W8": {},
+    "K1": {}, "K2.through": {}, "K2.blind": {},
+    "K2.enclosed": {"deferred": "a hole closed at both ends is a void, whose cylinders never join a hole (S3); "
+                                "no outer-shell part has one"},
+    "K2.unknown": {"tests": [f"{CORE}/holes.rs::a_face_running_back_along_the_axis_says_nothing_about_the_end"]},
+    "K3.counterbore": {}, "K3.countersink": {}, "K3.step_drill": {}, "K3.edge_round": {},
+    "E1": {"tests": [f"{CORE}/cylinders.rs::a_through_hole_is_full_between_its_two_end_circles"]},
+    "E2": {}, "E3": {}, "E4": {},
+    "9.4": {}, "9.7": {}, "13.2": {},
+}
+
+
+def coverage(cases):
+    """The `rule_ids` entry of the corpus manifest: every rule in RULES with
+    the cases that cite it, its tests and any reason it is deferred."""
+    cited = {}
+    for case in cases:
+        for rule in case["rules"]:
+            if rule not in RULES:
+                raise RuntimeError(f"{case['id']} cites {rule}, which RULES does not list")
+            cited.setdefault(rule, []).append(case["id"])
+    return {rule: {"cases": sorted(cited.get(rule, [])), **entry} for rule, entry in sorted(RULES.items())}
+
+
 # ----------------------------------------------------------------- output
 
 
@@ -1108,6 +1219,8 @@ def main():
         for path in args.out.glob("*.stp"):
             if path.name not in keep:
                 path.unlink()
+    if not args.unit_set:
+        rule_ids = coverage(w.cases)
     manifest = {
         "format": "fitment.test-parts",
         "format_version": 1,
@@ -1116,6 +1229,11 @@ def main():
         "tolerance": {"linear_mm": 1e-6, "angular_rad": 1e-9},
         "cases": sorted(w.cases, key=lambda c: c["id"]),
     }
+    if not args.unit_set:
+        # The full corpus only: the committed unit set stays within its
+        # budget, and CI checks coverage on the corpus.
+        manifest = {**{k: v for k, v in manifest.items() if k != "cases"}, "rule_ids": rule_ids,
+                    "cases": manifest["cases"]}
     # One case per line keeps the committed manifest small and its diffs
     # readable.
     head = json.dumps({k: v for k, v in manifest.items() if k != "cases"}, indent=1)

@@ -5,10 +5,10 @@ tests catalog parts against the *socket* an assembly requires of a part
 (holes on given axes, diameter limits, seating planes) and returns a
 verdict with its evidence.
 
-> **Status: milestone M2.** The verdict types exist, and
-> [`read_part`] reads one part from a STEP file through the first stages
-> of the canonical gate. Features, sockets and matching arrive in
-> milestones M2 to M4; see the
+> **Status: milestone M2 done.** [`read_part`] reads one part from a
+> STEP file through the canonical gate and returns its planes, cylinders,
+> cones, tori, holes and shafts; [`FeaturesDocument`] is its JSON form.
+> Sockets and matching arrive in milestones M3 and M4; see the
 > [plan](https://github.com/jchultarsky/fitment/blob/main/docs/PLAN.md).
 
 ## Verdicts

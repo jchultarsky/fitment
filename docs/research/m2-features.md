@@ -1079,7 +1079,7 @@ Each PR comes with its tests. `EXTRACTOR_VERSION` goes up with every PR that cha
    - `docs/ARCHITECTURE.md` (crate graph, format and extractor versions, determinism rules).
 
    As built: 41 of the 43 positive parts of the corpus are written again with pcurves (`_pc`; the text edits p20 and p29 are not), and 39 are moved by a second skew motion (`_rot`; nor are p32 and p33, whose answers are patched by hand), for 132 cases; fitment and both oracle modes agree on all of them. The motion turns 140°, so 29 of the 54 holes and shafts come out with the other canonical sign (a first 23° turn flipped none that the tests compared; review of PR 7). `verify-occt.py features --expect fixtures/manifest.json` fails when the fixtures' tallies move. `fitment features --format table` prints one line per feature.
-8. **M2 exit.** PLAN.md is updated (section 17), and the README status. The rule-coverage test is turned on.
+8. **M2 exit.** PLAN.md is updated (section 17), and the README status. The rule-coverage test is turned on. As built: `tools/gen-corpus.py` holds a registry (`RULES`) of the 97 rules and gate checks, each covered by the cases that cite it, by named Rust tests for what no generated part can reach, or deferred with a reason (F3, withdrawn; W7, the walk's bound; K2.enclosed, which needs a void; check 30, `internal`). The corpus manifest carries it as `rule_ids`, and `crates/fitment/tests/corpus.rs` fails on a rule with no coverage, a named test that does not exist, or a case citing an unlisted rule. Building it found two gate checks no test reached, 12 (a placement that scales) and 17 (a context that is not one); PR 7's review commit added both.
 
 ## 17. Changes to PLAN.md
 

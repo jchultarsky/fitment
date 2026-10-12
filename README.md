@@ -11,11 +11,12 @@ same axes, diameters within limits, the same seating planes and grip
 length. It is deterministic (rules and arithmetic, no machine learning),
 written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 
-> **Status: early (M0 and M1 done, M2 next).** The workspace and the
-> verdict types exist, and stepq 0.6 reads the geometry fitment needs;
-> nothing in fitment reads a STEP file yet. The design is in
-> [docs/PLAN.md](docs/PLAN.md); the commands below are the intended
-> interface, not a working one.
+> **Status: M2 done, M3 next.** `fitment features` reads one part from a
+> STEP file: it refuses a file that is not a canonical part, with reasons,
+> and otherwise prints its planes, cylinders, holes and shafts. Sockets
+> and matching are not built yet. The design is in
+> [docs/PLAN.md](docs/PLAN.md), and the code is mapped in
+> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## How it works
 
@@ -53,11 +54,34 @@ code does not recognize is a rejection; a value at the edge of the
 tolerance rejects; and every verdict states what was and was not checked.
 The full rules are in [docs/PLAN.md](docs/PLAN.md#soundness-rules).
 
+## Reading a part
+
+`fitment features` prints a part's features as `features.v1` JSON (the
+default), or one line per feature for people:
+
+```console
+$ fitment features --format table p05_cbore.stp
+schema    ap214   Open CASCADE 7.9
+part      #5 'p05_cbore'   frame #10
+solid-15    MANIFOLD_SOLID_BREP
+faces     9 (7 planar, 2 cylindrical, 0 conical, 0 toroidal, 0 other)   complete true
+plane-88        normal (0, 0, 1) offset 15   area 1504.9668   1 face(s)
+plane-237       normal (0, 0, 1) offset 8.5   area 60.8212   1 face(s)
+...
+cylinder-187    hole Ø11 full   axis (0, 0, 1) through (20, 20, 8.5)
+cylinder-212    hole Ø6.6 full   axis (0, 0, 1) through (20, 20, 0)
+hole-187        through Ø6.6/Ø11 length 15   opening@0 → opening@15
+```
+
+It exits 0 for a part, 3 for a file it refuses (the reasons go to stderr
+and into the JSON), and 1 on an error. Where a rule cannot decide, such as
+a hole ending on a curve stepq does not read, the feature says `unknown`
+rather than guessing.
+
 ## Planned interface
 
 ```console
 $ fitment parts assembly.stp                      # list parts and quantities
-$ fitment features bracket.stp                    # holes, shafts, planes as JSON
 $ fitment socket assembly.stp --part BRK-100      # reviewable socket file
 $ fitment match socket.json candidates/*.stp      # verdicts with evidence
 ```

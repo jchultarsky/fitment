@@ -1,25 +1,24 @@
 # fitment (Part Substitution Finder): Project Plan
 
-As of 2026-10-11 · Julian Chultarsky
+As of 2026-10-12 · Julian Chultarsky
 Living copy of this plan: https://claude.ai/code/artifact/b5f9353c-62ad-4f43-868d-9b7b5eebbb27
 
-Given an assembly and one part in it that is no longer available, the system suggests catalog parts whose interfaces match. It is named `fitment`, will be published as open source, and is deterministic, written in Rust and built on stepq. The workspace (`fitment-core`, `fitment`) and the verdict types exist, and stepq 0.6.0 reads the geometry fitment needs; nothing in fitment reads a STEP file yet. A throwaway spike confirmed that holes, placements and a socket can be read with stepq's current public API.
+Given an assembly and one part in it that is no longer available, the system suggests catalog parts whose interfaces match. It is named `fitment`, will be published as open source, and is deterministic, written in Rust and built on stepq. fitment reads the features of one part from a STEP file (M2): `fitment features part.stp` gates the file as canonical or refuses it with reasons, and prints its planes, cylinders, holes and shafts as `features.v1` JSON. Sockets and matching are next. A throwaway spike confirmed that holes, placements and a socket can be read with stepq's public API.
 
 ## Resume here
 
-M0 was completed on 9 Oct 2026 and M1 on 11 Oct 2026: stepq 0.6.0 is on crates.io with all six read additions (see Changes to stepq). Work continues at M2, in this repository. Open it in Code mode, with ../stepq added, and paste:
+M0 was completed on 9 Oct 2026, M1 on 11 Oct 2026 and M2 on 12 Oct 2026: `fitment features` reads one part, as designed in [research/m2-features.md](research/m2-features.md) and mapped in [ARCHITECTURE.md](ARCHITECTURE.md). Work continues at M3, in this repository. Open it in Code mode, with ../stepq added, and paste:
 
 ```text
-Read docs/PLAN.md, sections "How it works", "Soundness rules" and "Milestones", and
-docs/research/workspace-layout.md. We are at fitment's milestone M2: the features of
-one part, and `fitment features part.stp` printing them as JSON.
-1. Depend on stepq 0.6 from crates.io in fitment-core only (the commented lines in
-   Cargo.toml and deny.toml); no [patch] is needed.
-2. Propose the feature types, the extraction rules and the generated test parts,
-   then stop for my review.
-3. Implement them one PR at a time, each with tests, stopping for review after each.
-Done when holes, shafts, depths and planes are correct on generated parts with known
-features, and non-canonical input is refused with a reason.
+Read docs/PLAN.md, sections "How it works", "Soundness rules", "Matching method"
+(step 2) and "Milestones", and docs/ARCHITECTURE.md. We are at fitment's milestone
+M3: socket extraction from an assembly, and the reviewable socket file printed by
+`fitment socket asm.stp --part X`.
+1. Propose the socket types, the extraction rules and the generated test assemblies
+   in docs/research/m3-socket.md, then stop for my review.
+2. Implement them one PR at a time, each with tests and two adversarial reviews.
+Done when generated assemblies and the AS1 fixture give the expected requirements,
+and holes with nothing on their axis are left out.
 ```
 
 The project is named `fitment` and will be published as open source. stepq is at [github.com/jchultarsky/stepq](https://github.com/jchultarsky/stepq); it was at 0.4.1 when this plan was written and is at 0.6.0 since M1.
@@ -158,11 +157,11 @@ The user names a part by its part number, and every occurrence of it is replaced
 A candidate is never compared with the original part. It is tested against the socket, in seven steps.
 
 1. **Features of one part**, read without a kernel:
-    - Faces on a `cylindrical_surface` with the same axis line and radius are one cylinder. `same_sense = .F.` marks a hole and `.T.` a shaft, because a cylinder's surface normal points away from its axis and a face normal points out of the material.
+    - Edge-connected faces with the same sense on one stated `cylindrical_surface` are one cylinder; coaxial cylinders that do not touch stay separate. `face_sense` (`same_sense` composed with the shell's orientation) false marks a hole and true a shaft, because a cylinder's surface normal points away from its axis and a face normal points out of the material; the gate checks it against the loops.
     - Only a full circle is a hole. The arcs at each end must sum to 360°; a partial concave cylinder is a fillet or a slot end.
-    - The extent along the axis comes from the vertices of the bounding edges. It gives the depth, and what closes the end gives through or blind.
+    - The extent along the axis comes from the centres of the stated end circles. It gives the depth, and what closes the end gives through or blind.
     - Two coaxial radii joined by a flat ring are a counterbore. A coaxial `conical_surface` is a countersink or a drill point.
-    - A plane is kept with its outward normal and its outline from the loop vertices.
+    - A plane is kept with its outward normal and its outline from the loop vertices and each edge's line or circle, exactly.
     - Every other surface is recorded as "other" with its type.
 2. **Socket from the assembly.** Every occurrence is placed in the assembly frame, then the target part is tested against each neighbor:
     - Coaxial and overlapping along the axis, neighbor shaft smaller than the target hole: a clearance fit. The hole must be at least the shaft's diameter and, under the strict policy (D6), no larger than the original.
@@ -213,7 +212,7 @@ What it exposed:
 
 1. Coaxial is not enough. The first version read the bolt head, which sits above the bracket, as an oversized shaft inside the hole. Overlap along the axis must be tested. This is now in the method.
 2. The passing candidate is 6 mm thick against the original's 8 mm. The spike ignores seating planes, so it passed; with the grip-length requirement it must be rejected. The corpus needs a good candidate of the right thickness.
-3. Open CASCADE writes a full cylinder as one face with a seam. Exporters that write two half faces are handled by the grouping step, which this test did not exercise.
+3. Open CASCADE writes a full cylinder as one face with a seam. Exporters that write two half faces are handled by the grouping step, which this test did not exercise. M2 found that most exporters write split faces, and grouping handles them ([m2-features.md](research/m2-features.md), section 8.1, G4).
 
 Not covered: nested assemblies, `mapped_item` placements, unit scale, other exporters, counterbores, blind holes and outline overlap of planes.
 
@@ -227,7 +226,7 @@ M2 to M4 carry all the technical risk, so the catalog and API (M5, M6) do not st
 | --- | --- | --- |
 | M0 | Repository and workspace, this plan in `docs/`, the Vectera audit, decision D1 | The audit is written and D1 is recorded |
 | M1 | stepq 0.6: units, geometry values, placements, topology, solids of a definition, PMI to faces (six PRs; [design](research/m1-stepq-read.md)). Done 11 Oct 2026 | stepq's placements and cylinder axes equal Open CASCADE's on the fixtures; the four documents are updated; stepq 0.6.0 is published |
-| M2 | Matcher crate: features of one part; `features part.stp` prints JSON | Holes, shafts, depths and planes are correct on generated parts with known features; non-canonical input is refused with a reason |
+| M2 | Matcher crate: features of one part; `features part.stp` prints JSON ([design](research/m2-features.md)). Done 12 Oct 2026 | Holes, shafts, depths and planes are correct on generated parts with known features; non-canonical input is refused with a reason |
 | M3 | Socket extraction and the reviewable socket file; `socket asm.stp --part X` | Generated assemblies and the AS1 fixture give the expected requirements; holes with nothing on their axis are left out |
 | M4 | Signature, alignment, verification, evidence; `match`; the corpus and its harness | Zero false positives on the known-bad set; the false-negative rate is reported. A false positive is `Match` on any bad case, or any pass on a bad interface. `InterfaceMatch` on the colliding-body case is correct until M7 |
 | M5 | Catalog: store, index, canonical gate, CRUD, re-index | Ingest, list, get, replace and delete work from the CLI; a match reads only the index |
