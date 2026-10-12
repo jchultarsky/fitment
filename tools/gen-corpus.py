@@ -559,7 +559,9 @@ RULES.update({
     "T3": {}, "T4": {}, "T5": {}, "T6": {"deferred": "M3 PR 3: the socket command's exit code for a selection error"},
     "O1": {}, "O2": {}, "O3": {"tests": [f"{M3_CORE}/assemblies.rs::a_path_segment_that_names_two_usages_is_refused"]},
     "O4": {}, "O5": {}, "O6": {},
-    "P1": {}, "P2": {}, "P7": {}, "P9": {},
+    "P2": {}, "P9": {},
+    "P1": {"deferred": "M3 PR 2 reads each component's Part once"},
+    "P7": {"tests": ["crates/fitment-core/src/geom.rs::a_reflection_or_shear_is_not_a_rigid_transform"]},
     "P3": {"deferred": "M3 PR 2 reads the components and checks their frames"},
     "P4": {"deferred": "M3 PR 3 moves features"}, "P5": {"deferred": "M3 PR 3 moves features"},
     "P6": {"deferred": "M3 PR 3 compares placed axes"},
@@ -1340,8 +1342,11 @@ def write_xcaf(w: Writer, root: Node, name: str, pcurves=False):
     from OCP.TDataStd import TDataStd_Name
     from OCP.TDocStd import TDocStd_Document
     from OCP.TopLoc import TopLoc_Location
-    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ShapeTool
 
+    # cadquery's own export turns XCAF's automatic naming off for the whole
+    # process; set it here so a case does not depend on what ran before.
+    XCAFDoc_ShapeTool.SetAutoNaming_s(False)
     doc = TDocStd_Document(TCollection_ExtendedString("XmlOcaf"))
     tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
     labels = {}
@@ -1382,15 +1387,17 @@ def write_xcaf(w: Writer, root: Node, name: str, pcurves=False):
 
 
 def fix_assembly(path: Path):
-    """A fixed time stamp, and usage ids renumbered from 1 in file order:
-    Open CASCADE numbers them with a counter that runs across the whole
-    process, so a case written alone would differ."""
+    """A fixed time stamp, usage ids renumbered from 1 in file order and
+    their names blanked, and one instance per line: Open CASCADE numbers
+    usage ids with a counter that runs across the whole process and wraps
+    lines by their length, so a case written alone would otherwise differ."""
     Writer.fix_time(path)
-    text = path.read_text(encoding="latin-1")
+    f = Part21(path.read_text(encoding="latin-1"))
     k = iter(range(1, 10 ** 6))
-    text = re.sub(r"(NEXT_ASSEMBLY_USAGE_OCCURRENCE\s*\(\s*')[^']*(')",
-                  lambda m: f"{m.group(1)}{next(k)}{m.group(2)}", text)
-    path.write_text(text, encoding="latin-1", newline="\n")
+    for n in f.find("NEXT_ASSEMBLY_USAGE_OCCURRENCE"):
+        f.inst[n] = re.sub(r"^NEXT_ASSEMBLY_USAGE_OCCURRENCE\('[^']*','[^']*'",
+                           lambda m: f"NEXT_ASSEMBLY_USAGE_OCCURRENCE('{next(k)}',''", f.inst[n])
+    path.write_text(f.text(), encoding="latin-1", newline="\n")
 
 
 def hex_prism(af, z0, h):
@@ -1547,8 +1554,9 @@ def build_assemblies(w: Writer, which):
                {"part": "BOLT", "result": "BOLT", "occurrences": 4, "matched_by": "product_id"},
                {"part": "NOPE", "error": "part_not_found", "suggestions": []},
                {"part": "bolt", "error": "part_not_found", "suggestions": ["BOLT"]},
-               {"part": "s01_bolted", "error": "part_is_assembly"},
-               {"part": "BRACKET", "occurrence_of": "BOLT", "error": "occurrence_mismatch"},
+               {"part": "s01_bolted", "error": "part_is_assembly", "suggestions": ["s01_bolted"]},
+               {"part": "BRACKET", "occurrence_of": "BOLT", "nth": 2, "error": "occurrence_mismatch",
+                "suggestions": ["BRACKET"]},
                {"occurrence_of": "BRACKET", "result": "BRACKET", "occurrences": 1, "matched_by": "occurrence"},
                {"part": "BRACKET", "occurrence": "nowhere", "error": "occurrence_not_found"},
                {"error": "nothing_selected"},
@@ -1586,12 +1594,14 @@ def build_assemblies(w: Writer, which):
     lb = bolted("LB_ASSEM")
     s08x = Node("s08x_nested").add(long_plate, m_tr((50, 0, 0))).add(lb).add(lb, turned)
     a.case("s08x_nested", s08x, "one sub-assembly product used twice: one definition, two paths",
-           ["O1", "O4", "P1", "T1"], True,
+           ["O1", "O3", "O4", "T1"], True,
            {"plate": "220 x 60 x 10 at x 50", "LB_ASSEM": "bracket, 4 bolts, 4 nuts", "second": "turned 180 about z, x + 100"},
            asm_expect(s08x, select=[
                {"part": "BRACKET", "result": "BRACKET", "occurrences": 2, "matched_by": "product_id"},
-               {"part": "LB_ASSEM", "error": "part_is_assembly"},
-               {"part": "BRACKET", "occurrence_of": "BRACKET", "result": "BRACKET", "occurrences": 1,
+               {"part": "LB_ASSEM", "error": "part_is_assembly", "suggestions": ["LB_ASSEM"]},
+               {"part": "BRACKET", "occurrence_of": "BRACKET", "nth": 0, "result": "BRACKET", "occurrences": 1,
+                "matched_by": "product_id"},
+               {"part": "BRACKET", "occurrence_of": "BRACKET", "nth": 1, "result": "BRACKET", "occurrences": 1,
                 "matched_by": "product_id"},
            ]))
 
@@ -1606,7 +1616,7 @@ def build_assemblies(w: Writer, which):
                {"part": "BRACKET", "result": "BRACKET", "occurrences": 2, "matched_by": "product_id"}]))
     s08 = Node("s08_nested").add(long_plate, m_tr((50, 0, 0)))
     s08.add(bolted("LB_A", bracket, bolt, nut)).add(bolted("LB_B", bracket, bolt, nut), turned)
-    a.case("s08_nested", s08, "two sub-assembly products sharing their leaves", ["O1", "P1"], False,
+    a.case("s08_nested", s08, "two sub-assembly products sharing their leaves", ["O1"], False,
            {"from": "s08x, with two sub-assembly products"}, asm_expect(s08, select=[
                {"part": "BRACKET", "result": "BRACKET", "occurrences": 2, "matched_by": "product_id"}]))
 
@@ -1625,7 +1635,8 @@ def build_assemblies(w: Writer, which):
         f.inst[usages[1]] = re.sub(r"\('[^']*'", "('1'", f.inst[usages[1]], count=1)
 
     exp25 = asm_expect(s01, select=[{"part": "BRACKET", "result": "BRACKET", "occurrences": 1,
-                                     "matched_by": "product_id"}])
+                                     "matched_by": "product_id"},
+                                    {"occurrence": "1", "error": "occurrence_ambiguous"}])
     exp25["listing"]["path_form"] = "instance"
     a.case("s25_usage_ids", s01, "s01 with two sibling usages both given the id '1' (a text edit)", ["O2", "O3"], False,
            {"from": "s01"}, exp25, edit=same_id)
@@ -1638,7 +1649,8 @@ def build_assemblies(w: Writer, which):
         for n in f.find("PRODUCT("):
             f.inst[n] = re.sub(r"^PRODUCT\('(BRACKET-[AB])','[^']*'", r"PRODUCT('\1','BRACKET'", f.inst[n])
 
-    exp21 = asm_expect(s21, select=[{"part": "BRACKET", "error": "part_ambiguous", "candidates": 2},
+    exp21 = asm_expect(s21, select=[{"part": "BRACKET", "error": "part_ambiguous",
+                                     "suggestions": ["BRACKET-A", "BRACKET-B"]},
                                     {"part": "BRACKET-A", "result": "BRACKET-A", "occurrences": 1,
                                      "matched_by": "product_id"}])
     for p in exp21["listing"]["parts"]:
@@ -1650,21 +1662,22 @@ def build_assemblies(w: Writer, which):
     r32 = Node("r32_id_ambiguous")
     r32.add(Node("SIDE_A").add(Leaf("BOLT", a_hex_bolt())), m_tr((-30, 0, 0)))
     r32.add(Node("SIDE_B").add(Leaf("BOLT", a_hex_bolt(length=30, d=8))), m_tr((30, 0, 0)))
-    exp32 = asm_expect(r32, select=[{"part": "BOLT", "error": "part_ambiguous", "candidates": 2}])
+    exp32 = asm_expect(r32, select=[{"part": "BOLT", "error": "part_ambiguous", "suggestions": ["BOLT", "BOLT"]}])
     exp32["listing"]["parts"] = sorted([{"id": "BOLT", "name": "BOLT", "kind": "part", "quantity": 1}] * 2 + [
         p for p in exp32["listing"]["parts"] if p["id"] != "BOLT"], key=lambda p: (p["id"], p["kind"]))
     exp32["occurrences"] = {"BOLT": occurrences(r32)["BOLT"]}
     a.case("r32_id_ambiguous", r32, "two different parts, both with PRODUCT.id BOLT, in two sub-assemblies", ["T3"],
            False, {"bolts": "M6 x 25 and M8 x 30"}, exp32)
 
-    refused33 = {"result": "refused", "check": 33, "refusals": ["placement_unreadable"]}
+    def refused33(kind):
+        return {"result": "refused", "check": 33, "refusals": ["placement_unreadable"], "kind": kind}
 
     def unplaced(f: Part21):
         cdsr, _, _ = placement_of(f, usage_of(f, "SCREW"))
         del f.inst[cdsr]
 
     a.case("r24_unplaced", s02, "s02 without the screw usage's context_dependent_shape_representation", ["m3.4.1#33"], False,
-           {"from": "s02"}, asm_expect(s02, listing_result=refused33), edit=unplaced)
+           {"from": "s02"}, asm_expect(s02, listing_result=refused33("unplaced")), edit=unplaced)
 
     def divergent(f: Part21):
         point = f.add("CARTESIAN_POINT('',(10.,0.,0.))")
@@ -1672,7 +1685,7 @@ def build_assemblies(w: Writer, which):
         replace_component_item(f, usage_of(f, "SCREW"), f"AXIS2_PLACEMENT_3D('',#{point},#{z},#{x})")
 
     a.case("r25_divergent", s02, "s02 with the screw's component-side frame moved to (10, 0, 0)", ["m3.4.1#33"], False,
-           {"from": "s02"}, asm_expect(s02, listing_result=refused33), edit=divergent)
+           {"from": "s02"}, asm_expect(s02, listing_result=refused33("divergent")), edit=divergent)
 
     def mirrored(f: Part21):
         o = f.add("CARTESIAN_POINT('',(0.,0.,0.))")
@@ -1682,8 +1695,9 @@ def build_assemblies(w: Writer, which):
         replace_component_item(f, usage_of(f, "SCREW"),
                                f"CARTESIAN_TRANSFORMATION_OPERATOR_3D('','',#{x},#{y},#{o},1.,#{z})")
 
-    a.case("r26_mirrored", s02, "s02 with the screw's component-side frame a mirroring cartesian_transformation_operator_3d",
-           ["m3.4.1#33", "P7"], False, {"from": "s02"}, asm_expect(s02, listing_result=refused33), edit=mirrored)
+    a.case("r26_mirrored", s02, "s02 with the screw's component-side frame a (mirroring) cartesian_transformation_operator_3d, "
+           "which stepq does not read",
+           ["m3.4.1#33"], False, {"from": "s02"}, asm_expect(s02, listing_result=refused33("unsupported")), edit=mirrored)
 
     def quantified(f: Part21):
         usage = usage_of(f, "SCREW")
@@ -1696,7 +1710,7 @@ def build_assemblies(w: Writer, which):
                          f"QUANTIFIED_ASSEMBLY_COMPONENT_USAGE(#{m}))")
 
     a.case("r28_quantified", s02, "s02 with the screw usage quantified, quantity 4", ["m3.4.1#33"], False, {"from": "s02"},
-           asm_expect(s02, listing_result=refused33), edit=quantified)
+           asm_expect(s02, listing_result=refused33("quantified")), edit=quantified)
 
     two = [Node("ROOT_A").add(Leaf("PLATE", a_plate())), Node("ROOT_B").add(bolt, m_tr((0, 0, 8)))]
     path = None

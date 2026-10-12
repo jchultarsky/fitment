@@ -11,10 +11,10 @@ use serde_json::Value;
 /// The assembly gate checks built so far (`m3-socket.md`, 4.1).
 pub const BUILT_CHECK: u64 = 35;
 
-/// How far a transform entry may differ from the construction's: its
+/// How far a transform entry may differ from the construction's (P9): its
 /// values are rounded to 9 decimals, and Open CASCADE writes 12 to 15
-/// significant digits.
-const TRANSFORM_TOL: f64 = 1e-8;
+/// significant digits. The worst measured is 4.5e-10, twelve levels deep.
+const TRANSFORM_TOL: f64 = 1e-9;
 
 fn product_id(listing: &Listing, definition: usize) -> Option<&str> {
     listing
@@ -57,6 +57,20 @@ pub fn check(case: &Value, bytes: &[u8]) -> Vec<String> {
             if read.listing().is_some() || found != wanted {
                 failures.push(format!("listing: refused {found:?}, expected {wanted:?}"));
             }
+            // The kind of failure, which the message states first.
+            if let Some(kind) = listing_expect["kind"].as_str() {
+                let prefix = format!("{kind}: ");
+                if !read
+                    .refusals()
+                    .iter()
+                    .any(|r| r.message.starts_with(&prefix))
+                {
+                    failures.push(format!(
+                        "listing: no refusal of kind {kind}: {:?}",
+                        read.refusals()
+                    ));
+                }
+            }
         }
         return failures;
     }
@@ -76,7 +90,7 @@ pub fn check(case: &Value, bytes: &[u8]) -> Vec<String> {
             failures.push(format!("select {k}: {failure}"));
         }
     }
-    failures.extend(document(bytes));
+    failures.extend(document(bytes, listing));
     failures
 }
 
@@ -217,17 +231,39 @@ fn transforms(listing: &Listing, expect: &Value) -> Vec<String> {
     failures
 }
 
+/// The ids of the candidates an error offers.
+fn candidate_ids(error: &fitment_core::SelectError) -> Vec<String> {
+    error
+        .candidates()
+        .iter()
+        .map(|c| {
+            c.definition
+                .product
+                .as_ref()
+                .and_then(|p| p.id.clone())
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 /// One selection, against what it must choose or the error it must give.
+/// `occurrence_of` names a product, and `nth` (default 0) which of its
+/// occurrences, by path, to give as `--occurrence`.
 fn select(listing: &Listing, try_: &Value) -> Option<String> {
     let part = try_["part"].as_str();
     let occurrence = match (&try_["occurrence"], try_["occurrence_of"].as_str()) {
         (Value::String(text), _) => Some(text.clone()),
         (_, Some(product)) => {
-            let first = listing
+            let nth = usize::try_from(try_["nth"].as_u64().unwrap_or(0)).unwrap_or(usize::MAX);
+            let Some(chosen) = listing
                 .occurrences()
                 .iter()
-                .find(|o| product_id(listing, o.definition) == Some(product))?;
-            Some(first.path.display(listing.path_form()))
+                .filter(|o| product_id(listing, o.definition) == Some(product))
+                .nth(nth)
+            else {
+                return Some(format!("no occurrence {nth} of {product} to give"));
+            };
+            Some(chosen.path.display(listing.path_form()))
         }
         _ => None,
     };
@@ -235,17 +271,30 @@ fn select(listing: &Listing, try_: &Value) -> Option<String> {
     match (result, try_["error"].as_str()) {
         (Ok(selection), None) => {
             let chosen = product_id(listing, selection.definition);
-            let matched_by = serde_json::to_value(selection.matched_by).ok()?;
-            let count = u64::try_from(selection.occurrences.len()).ok()?;
-            (chosen != try_["result"].as_str()
-                || Some(count) != try_["occurrences"].as_u64()
-                || matched_by != try_["matched_by"])
-                .then(|| {
-                    format!(
-                        "chose {chosen:?} ({} occurrences, {matched_by}), expected {try_}",
-                        selection.occurrences.len()
-                    )
-                })
+            let matched_by = serde_json::to_value(selection.matched_by).ok();
+            let count = u64::try_from(selection.occurrences.len()).ok();
+            if chosen != try_["result"].as_str()
+                || count != try_["occurrences"].as_u64()
+                || matched_by.as_ref() != Some(&try_["matched_by"])
+            {
+                return Some(format!(
+                    "chose {chosen:?} ({count:?} occurrences, {matched_by:?}), expected {try_}"
+                ));
+            }
+            // The occurrence named is the one chosen, not just one of the
+            // right part.
+            if let Some(text) = &occurrence {
+                let named: Vec<String> = selection
+                    .occurrences
+                    .iter()
+                    .filter_map(|&i| listing.occurrences().get(i))
+                    .map(|o| o.path.display(listing.path_form()))
+                    .collect();
+                if named != [text.clone()] {
+                    return Some(format!("'{text}' chose {named:?}"));
+                }
+            }
+            None
         }
         (Ok(selection), Some(error)) => Some(format!(
             "chose {:?}, expected {error}",
@@ -256,41 +305,66 @@ fn select(listing: &Listing, try_: &Value) -> Option<String> {
             if found.code() != error {
                 return Some(format!("{}, expected {error}", found.code()));
             }
-            let ids: Vec<String> = found
-                .candidates()
-                .iter()
-                .map(|c| {
-                    c.definition
-                        .product
-                        .as_ref()
-                        .and_then(|p| p.id.clone())
-                        .unwrap_or_default()
-                })
-                .collect();
-            if let Some(wanted) = try_.get("suggestions") {
-                if ids != strings(wanted) {
-                    return Some(format!("suggested {ids:?}, expected {wanted}"));
+            let ids = candidate_ids(&found);
+            match try_.get("suggestions") {
+                Some(wanted) if ids != strings(wanted) => {
+                    Some(format!("offered {ids:?}, expected {wanted}"))
                 }
+                _ => None,
             }
-            if let Some(n) = try_["candidates"].as_u64() {
-                if u64::try_from(ids.len()).ok() != Some(n) {
-                    return Some(format!("{} candidates, expected {n}", ids.len()));
-                }
-            }
-            None
         }
     }
 }
 
-/// The parts document reads back, and the same bytes give the same text.
-fn document(bytes: &[u8]) -> Vec<String> {
-    let text = PartsDocument::read(bytes).to_json();
+/// The parts document reads back, the same bytes give the same text, and
+/// it says what the listing says: every definition's kind and quantity,
+/// and every occurrence's path, labels and transform (O5).
+fn document(bytes: &[u8], listing: &Listing) -> Vec<String> {
+    let document = PartsDocument::read(bytes);
+    let text = document.to_json();
     let mut failures = Vec::new();
     if let Err(error) = PartsDocument::from_json(&text) {
         failures.push(format!("the parts document does not read back: {error}"));
     }
     if PartsDocument::read(bytes).to_json() != text {
         failures.push("the parts document differs between two reads".to_owned());
+    }
+    if document.parts().len() != listing.definitions().len() {
+        failures.push("the parts document lists another number of definitions".to_owned());
+    }
+    for (entry, listed) in document.parts().iter().zip(listing.definitions()) {
+        let instance = listed.definition.instance;
+        if entry.definition != listed.definition || entry.kind != listed.kind {
+            failures.push(format!("the parts document misstates #{instance}"));
+        }
+        let occurrences: Vec<_> = listed
+            .occurrences
+            .iter()
+            .filter_map(|&i| listing.occurrences().get(i))
+            .collect();
+        if usize::try_from(entry.quantity).ok() != Some(occurrences.len())
+            || entry.occurrences.len() != occurrences.len()
+        {
+            failures.push(format!("the parts document miscounts #{instance}"));
+            continue;
+        }
+        for (written, occurrence) in entry.occurrences.iter().zip(occurrences) {
+            let labels: Vec<Option<String>> = occurrence
+                .path
+                .usages()
+                .iter()
+                .map(|u| u.id.clone())
+                .collect();
+            if written.path != occurrence.path.instances()
+                || written.label != labels
+                || written.transform != occurrence.transform
+            {
+                failures.push(format!(
+                    "the parts document misstates an occurrence of #{instance}: {:?}",
+                    written.path
+                ));
+            }
+        }
     }
     failures
 }

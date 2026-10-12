@@ -3,7 +3,7 @@
 //! to 34 are also what a parts list needs: without one root, placed usages
 //! and a bounded number of occurrences, quantities and paths are unknown.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use stepq::model::{Graph, Placements, ProductStructure};
 use stepq::model::{Occurrence, PlacementError};
@@ -15,10 +15,19 @@ use crate::geom::Rigid;
 /// crafted file of a few kilobytes can reach one sub-assembly by 2²⁰ paths.
 pub(crate) const MAX_OCCURRENCES: usize = 100_000;
 
-/// Check 31: `socket` reads an assembly, so a file with no usage refuses.
-/// `parts` lists such a file's one part instead.
-pub(crate) fn assembly(structure: &ProductStructure) -> Vec<Refusal> {
-    if structure.usages().is_empty() {
+/// At most this many usages on all occurrences' paths together (check 34):
+/// a parts list writes every path, so a deep chain above a wide diamond
+/// must not grow it past the file by orders of magnitude.
+pub(crate) const MAX_PATH_SEGMENTS: usize = 2_000_000;
+
+/// At most this many bytes of usage ids on all occurrences' paths together
+/// (check 34), for the same reason: a parts list labels every segment.
+pub(crate) const MAX_LABEL_BYTES: usize = 16 * 1024 * 1024;
+
+/// Check 31: `socket` reads an assembly, so a root that uses nothing
+/// refuses. `parts` lists such a file's one part instead.
+pub(crate) fn assembly(structure: &ProductStructure, root: usize) -> Vec<Refusal> {
+    if structure.children(root).next().is_none() {
         vec![Refusal::new(
             RefusalCode::NotAnAssembly,
             None,
@@ -104,19 +113,149 @@ fn usage_of(error: &PlacementError) -> Option<u64> {
     }
 }
 
+/// Check 32, after the walk: every definition is reached from the root.
+/// Definitions that use each other in a cycle are nobody's root, yet they
+/// may place material at an unknown place.
+pub(crate) fn unreached(structure: &ProductStructure, reached: &BTreeSet<usize>) -> Vec<Refusal> {
+    let definitions = structure.definitions();
+    let missing: Vec<u64> = (0..definitions.len())
+        .filter(|index| !reached.contains(index))
+        .filter_map(|index| definitions.get(index))
+        .map(|definition| definition.instance)
+        .collect();
+    let Some(&first) = missing.first() else {
+        return Vec::new();
+    };
+    let listed: Vec<String> = missing.iter().take(8).map(|id| format!("#{id}")).collect();
+    vec![Refusal::new(
+        RefusalCode::SeveralRoots,
+        Some(first),
+        format!(
+            "{} product definitions are not reached from the root ({}{}): they use each \
+             other, and nothing places them in the assembly",
+            missing.len(),
+            listed.join(", "),
+            if missing.len() > 8 { ", ..." } else { "" }
+        ),
+    )]
+}
+
+/// Check 33, beside stepq: every assembly usage in the file is one stepq
+/// reads. A usage whose parent or child is not a reference is skipped by
+/// the product structure, which would silently lower a quantity.
+pub(crate) fn unread_usages(graph: &Graph<'_>, structure: &ProductStructure) -> Vec<Refusal> {
+    let exchange = graph.exchange();
+    let read: BTreeSet<u64> = structure.usages().iter().map(|u| u.instance).collect();
+    let stated: BTreeSet<u64> = exchange
+        .instances_of("NEXT_ASSEMBLY_USAGE_OCCURRENCE")
+        .chain(exchange.instances_of("QUANTIFIED_ASSEMBLY_COMPONENT_USAGE"))
+        .filter_map(|position| exchange.instances().get(position))
+        .map(|instance| instance.id)
+        .collect();
+    stated
+        .difference(&read)
+        .map(|&id| {
+            Refusal::new(
+                RefusalCode::PlacementUnreadable,
+                Some(id),
+                format!(
+                    "unread: usage #{id} cannot be read as a usage of one definition by another"
+                ),
+            )
+        })
+        .collect()
+}
+
 /// An occurrence under the root whose transform reads and is rigid.
 pub(crate) struct Placed {
     pub(crate) occurrence: Occurrence,
     pub(crate) transform: Rigid,
 }
 
+/// The refusal of check 34, with what was counted.
+fn too_many(what: &str) -> Refusal {
+    Refusal::new(
+        RefusalCode::TooManyOccurrences,
+        None,
+        format!(
+            "the assembly has more than {what} under its root; fitment reads at most that many"
+        ),
+    )
+}
+
+/// Check 34's budget, counted while enumerating: occurrences, the usages
+/// on their paths, and the bytes of those usages' ids.
+#[derive(Default)]
+struct Budget {
+    occurrences: usize,
+    segments: usize,
+    label_bytes: usize,
+}
+
+impl Budget {
+    /// Counts `occurrence`; the refusal if the budget is spent.
+    fn spend(&mut self, occurrence: &Occurrence, structure: &ProductStructure) -> Option<Refusal> {
+        self.occurrences += 1;
+        self.segments = self.segments.saturating_add(occurrence.path.len());
+        self.label_bytes = occurrence
+            .path
+            .iter()
+            .filter_map(|&index| structure.usages().get(index))
+            .filter_map(|usage| usage.id.as_ref())
+            .fold(self.label_bytes, |sum, id| sum.saturating_add(id.len()));
+        if self.occurrences > MAX_OCCURRENCES {
+            Some(too_many(&format!("{MAX_OCCURRENCES} occurrences")))
+        } else if self.segments > MAX_PATH_SEGMENTS {
+            Some(too_many(&format!(
+                "{MAX_PATH_SEGMENTS} usages on its occurrences' paths"
+            )))
+        } else if self.label_bytes > MAX_LABEL_BYTES {
+            Some(too_many(&format!(
+                "{MAX_LABEL_BYTES} bytes of usage ids on its occurrences' paths"
+            )))
+        } else {
+            None
+        }
+    }
+}
+
+/// Records why `occurrence` cannot be placed, once per usage.
+fn unplaced(
+    failing: &mut BTreeMap<u64, String>,
+    occurrence: &Occurrence,
+    structure: &ProductStructure,
+    error: Option<&PlacementError>,
+) {
+    let last = occurrence
+        .path
+        .last()
+        .and_then(|&index| structure.usages().get(index))
+        .map(|usage| usage.instance);
+    let (usage, message) = match error {
+        Some(error) => (
+            usage_of(error).or(last),
+            format!("{}: {error}", kind(error)),
+        ),
+        None => (
+            last,
+            format!(
+                "not_rigid: usage #{}: the composed transform is not finite and rigid",
+                last.unwrap_or(0)
+            ),
+        ),
+    };
+    if let Some(usage) = usage {
+        failing.entry(usage).or_insert(message);
+    }
+}
+
 /// Checks 33 and 34: every usage places, every occurrence under `root`
-/// composes to a rigid transform, and there are at most
-/// [`MAX_OCCURRENCES`]. Returns the occurrences, the root's first, in
-/// stepq's order.
+/// composes to a rigid transform, and the occurrences stay within
+/// [`MAX_OCCURRENCES`], [`MAX_PATH_SEGMENTS`] and [`MAX_LABEL_BYTES`].
+/// Returns the occurrences, the root's first, in stepq's order.
 ///
 /// A usage that cannot be placed is reported once, however many
-/// occurrences lie below it.
+/// occurrences lie below it, and also when check 34 ends the walk.
 pub(crate) fn occurrences(
     placements: &Placements<'_>,
     structure: &ProductStructure,
@@ -132,35 +271,28 @@ pub(crate) fn occurrences(
                 .or_insert_with(|| format!("{}: {error}", kind(&error)));
         }
     }
+    let refusals = |failing: BTreeMap<u64, String>| -> Vec<Refusal> {
+        failing
+            .into_iter()
+            .map(|(usage, message)| {
+                Refusal::new(RefusalCode::PlacementUnreadable, Some(usage), message)
+            })
+            .collect()
+    };
     let mut placed = Vec::new();
     // Every occurrence counts, placed or not: a diamond of unplaced usages
     // must not run on.
-    for (count, occurrence) in placements.occurrences(root).enumerate() {
-        if count >= MAX_OCCURRENCES {
-            return Err(vec![Refusal::new(
-                RefusalCode::TooManyOccurrences,
-                None,
-                format!(
-                    "the assembly has more than {MAX_OCCURRENCES} occurrences under its root; \
-                     fitment reads at most that many"
-                ),
-            )]);
+    let mut budget = Budget::default();
+    for occurrence in placements.occurrences(root) {
+        if let Some(refusal) = budget.spend(&occurrence, structure) {
+            let mut all = refusals(failing);
+            all.push(refusal);
+            return Err(all);
         }
         let transform = match &occurrence.transform {
             Ok(transform) => Rigid::new(transform.rotation, transform.translation),
             Err(error) => {
-                let usage = usage_of(error).or_else(|| {
-                    occurrence
-                        .path
-                        .last()
-                        .and_then(|&index| structure.usages().get(index))
-                        .map(|usage| usage.instance)
-                });
-                if let Some(usage) = usage {
-                    failing
-                        .entry(usage)
-                        .or_insert_with(|| format!("{}: {error}", kind(error)));
-                }
+                unplaced(&mut failing, &occurrence, structure, Some(error));
                 continue;
             }
         };
@@ -169,32 +301,13 @@ pub(crate) fn occurrences(
                 occurrence,
                 transform,
             }),
-            None => {
-                if let Some(usage) = occurrence
-                    .path
-                    .last()
-                    .and_then(|&index| structure.usages().get(index))
-                {
-                    failing.entry(usage.instance).or_insert_with(|| {
-                        format!(
-                            "not_rigid: usage #{}: the composed transform is not finite and \
-                             rigid",
-                            usage.instance
-                        )
-                    });
-                }
-            }
+            None => unplaced(&mut failing, &occurrence, structure, None),
         }
     }
     if failing.is_empty() {
         Ok(placed)
     } else {
-        Err(failing
-            .into_iter()
-            .map(|(usage, message)| {
-                Refusal::new(RefusalCode::PlacementUnreadable, Some(usage), message)
-            })
-            .collect())
+        Err(refusals(failing))
     }
 }
 

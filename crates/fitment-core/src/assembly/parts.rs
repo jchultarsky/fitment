@@ -1,6 +1,8 @@
 //! The `fitment.parts` document: what `fitment parts` prints
 //! (`docs/research/m3-socket.md`, section 10).
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 
 use super::{DefinitionKind, PathForm, read_assembly};
@@ -373,6 +375,73 @@ impl PartsDocument {
         }
         if roots != 1 {
             return Err("exactly one occurrence, the root's, has the empty path".to_owned());
+        }
+        if self.source.header.is_none() {
+            return Err("an accepted document has no header".to_owned());
+        }
+        self.check_tree()
+    }
+
+    /// The occurrences form the tree `read` gives: every path unique and
+    /// within the limits of check 34, every path's parent an assembly's
+    /// occurrence, a part never a parent and an assembly always one, and
+    /// each usage labelled one way, as the path form says.
+    fn check_tree(&self) -> Result<(), String> {
+        use crate::gate::assembly::{MAX_LABEL_BYTES, MAX_OCCURRENCES, MAX_PATH_SEGMENTS};
+        let mut kinds: BTreeMap<&[u64], DefinitionKind> = BTreeMap::new();
+        let mut labels: BTreeMap<u64, &Option<String>> = BTreeMap::new();
+        let (mut segments, mut bytes) = (0usize, 0usize);
+        for part in &self.parts {
+            for occurrence in &part.occurrences {
+                if kinds.insert(&occurrence.path, part.kind).is_some() {
+                    return Err(format!("the path {:?} occurs twice", occurrence.path));
+                }
+                segments = segments.saturating_add(occurrence.path.len());
+                for (&usage, label) in occurrence.path.iter().zip(&occurrence.label) {
+                    bytes = bytes.saturating_add(label.as_ref().map_or(0, String::len));
+                    if *labels.entry(usage).or_insert(label) != label {
+                        return Err(format!("usage #{usage} is labelled two ways"));
+                    }
+                }
+            }
+        }
+        if kinds.len() > MAX_OCCURRENCES || segments > MAX_PATH_SEGMENTS || bytes > MAX_LABEL_BYTES
+        {
+            return Err("more occurrences than check 34 lets a file have".to_owned());
+        }
+        let parents: BTreeSet<&[u64]> = kinds
+            .keys()
+            .filter_map(|path| path.split_last().map(|(_, parent)| parent))
+            .collect();
+        for (path, kind) in &kinds {
+            if let Some((_, parent)) = path.split_last() {
+                if kinds.get(parent) != Some(&DefinitionKind::Assembly) {
+                    return Err(format!(
+                        "the parent of {path:?} is no assembly's occurrence"
+                    ));
+                }
+            }
+            if (*kind == DefinitionKind::Assembly) != parents.contains(path) {
+                return Err(format!("{path:?}: an assembly has components, a part none"));
+            }
+        }
+        for (usage, label) in labels {
+            match (self.path_form, label) {
+                (_, Some(text)) if text.trim().is_empty() => {
+                    return Err(format!("usage #{usage} has a blank label"));
+                }
+                (Some(PathForm::UsageId), None) => {
+                    return Err(format!(
+                        "usage #{usage} has no label, yet paths are written by id"
+                    ));
+                }
+                (Some(PathForm::UsageId), Some(text))
+                    if text.contains('/') || text.starts_with('#') =>
+                {
+                    return Err(format!("usage #{usage}'s label cannot be a path segment"));
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
