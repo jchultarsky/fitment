@@ -439,6 +439,18 @@ fn documents_that_break_their_rules_are_not_read() {
         read(|v| v["part"]["solids"][0]["id"] = "solid-16".into()),
         Err(FormatError::Invalid(_))
     ));
+    // The solid's facts keep what the gate established.
+    let broken: [fn(&mut serde_json::Value); 6] = [
+        |v| v["part"]["solids"][0]["units"]["uncertainty"] = serde_json::json!([]),
+        |v| v["part"]["solids"][0]["units"]["uncertainty"][0]["value_mm"] = (-1.0).into(),
+        |v| v["part"]["solids"][0]["units"]["length"]["factor"] = (-25.4).into(),
+        |v| v["part"]["solids"][0]["shells"] = 0.into(),
+        |v| v["part"]["solids"][0]["max_vertex_offset_mm"] = (-1.0).into(),
+        |v| v["part"]["max_uncertainty_mm"] = (-5.0).into(),
+    ];
+    for edit in broken {
+        assert!(matches!(read(edit), Err(FormatError::Invalid(_))));
+    }
     // Every key is written, so none may be missing, `null` ones included.
     assert!(matches!(
         read(|v| {
@@ -471,9 +483,17 @@ fn refusals_read_back_must_be_sorted() {
 /// p01 with `from` replaced by `to`, once: a hand-written fault in a real
 /// solid, for the gate checks no generated part reaches.
 fn p01_edit(from: &str, to: &str) -> Vec<u8> {
-    let text = std::str::from_utf8(P01_THROUGH).unwrap();
-    assert_eq!(text.matches(from).count(), 1, "{from}");
-    text.replacen(from, to, 1).into_bytes()
+    edit(P01_THROUGH, &[(from, to)])
+}
+
+/// `input` with each `from` replaced by its `to`; each must occur once.
+fn edit(input: &[u8], edits: &[(&str, &str)]) -> Vec<u8> {
+    let mut text = std::str::from_utf8(input).unwrap().to_owned();
+    for (from, to) in edits {
+        assert_eq!(text.matches(from).count(), 1, "{from}");
+        text = text.replacen(from, to, 1);
+    }
+    text.into_bytes()
 }
 
 /// The codes `input` is refused with, each once, in order.
@@ -503,6 +523,51 @@ fn stage_4_refuses_a_shell_with_a_face_missing() {
 }
 
 #[test]
+fn stage_4_refuses_a_shell_split_across_two_shells() {
+    // p01's seven faces, four in the outer shell and three in a void:
+    // every edge is still used twice, but some by two shells.
+    let split = edit(
+        P01_THROUGH,
+        &[
+            (
+                "#15 = MANIFOLD_SOLID_BREP('',#16);",
+                "#15 = BREP_WITH_VOIDS('',#16,(#9001));\
+                 #9000 = CLOSED_SHELL('',(#147,#175,#187));\
+                 #9001 = ORIENTED_CLOSED_SHELL('',*,#9000,.T.);",
+            ),
+            (
+                "#16 = CLOSED_SHELL('',(#17,#57,#88,#123,#147,#175,#187));",
+                "#16 = CLOSED_SHELL('',(#17,#57,#88,#123));",
+            ),
+        ],
+    );
+    assert_eq!(distinct_codes(&split), [RefusalCode::SolidNotClosed]);
+}
+
+#[test]
+fn stage_4_refuses_a_shell_in_two_pieces() {
+    // r03's two cubes, their twelve faces in one shell: each cube is
+    // closed, so only check 16 can see it.
+    let pieces = edit(
+        R03_TWO_SOLIDS,
+        &[
+            (
+                "#10 = SHAPE_REPRESENTATION('',(#11,#15,#165),#315);",
+                "#10 = SHAPE_REPRESENTATION('',(#11,#15),#315);",
+            ),
+            (
+                "#16 = CLOSED_SHELL('',(#17,#57,#97,#119,#141,#153));",
+                "#16 = CLOSED_SHELL('',(#17,#57,#97,#119,#141,#153,#167,#207,#247,#269,#291,#303));",
+            ),
+        ],
+    );
+    let refused = read_part(&pieces).unwrap_err();
+    assert_eq!(refused.refusals().len(), 1);
+    assert_eq!(refused.refusals()[0].code, RefusalCode::ShellDisconnected);
+    assert_eq!(refused.refusals()[0].instance, Some(16));
+}
+
+#[test]
 fn stage_5_refuses_missing_units() {
     let no_angle = p01_edit("((#205,#206,#207))", "((#205,#207))");
     assert_eq!(
@@ -514,6 +579,8 @@ fn stage_5_refuses_missing_units() {
         distinct_codes(&no_uncertainty),
         [RefusalCode::UncertaintyMissing]
     );
+    let zero = p01_edit("LENGTH_MEASURE(1.E-07)", "LENGTH_MEASURE(0.)");
+    assert_eq!(distinct_codes(&zero), [RefusalCode::UncertaintyUnreadable]);
 }
 
 #[test]
@@ -530,6 +597,35 @@ fn stage_6_refuses_unreadable_and_out_of_range_geometry() {
         "#23 = CARTESIAN_POINT('',(2.E+06,0.,0.));",
     );
     assert_eq!(distinct_codes(&far), [RefusalCode::OutOfRange]);
+    // A surface far from its vertices: measured against it, their
+    // distance would be NaN, which no bound refuses.
+    let far_surface = p01_edit(
+        "#201 = CARTESIAN_POINT('',(20.,15.,9.));",
+        "#201 = CARTESIAN_POINT('',(20.,15.,1.E+300));",
+    );
+    let refused = read_part(&far_surface).unwrap_err();
+    assert_eq!(refused.refusals().len(), 1);
+    assert_eq!(refused.refusals()[0].code, RefusalCode::OutOfRange);
+    assert_eq!(refused.refusals()[0].instance, Some(199));
+}
+
+#[test]
+fn stage_6_refuses_a_face_or_edge_whose_geometry_is_not_geometry() {
+    // stepq reads any entity it does not interpret as an unread surface
+    // or curve; a product or a direction is neither.
+    let product = p01_edit(
+        "#187 = ADVANCED_FACE('',(#188),#199,.F.);",
+        "#187 = ADVANCED_FACE('',(#188),#7,.F.);",
+    );
+    assert_eq!(distinct_codes(&product), [RefusalCode::GeometryUnreadable]);
+    let direction = p01_edit(
+        "#21 = EDGE_CURVE('',#22,#24,#26,.T.);",
+        "#21 = EDGE_CURVE('',#22,#24,#29,.T.);",
+    );
+    assert_eq!(
+        distinct_codes(&direction),
+        [RefusalCode::GeometryUnreadable]
+    );
 }
 
 #[test]
@@ -544,4 +640,35 @@ fn stage_6_refuses_a_plane_face_whose_sense_is_flipped() {
     assert_eq!(refused.refusals().len(), 1);
     assert_eq!(refused.refusals()[0].code, RefusalCode::FaceOrientation);
     assert_eq!(refused.refusals()[0].instance, Some(17));
+}
+
+#[test]
+fn stage_6_refuses_a_flipped_plane_face_with_an_arc_standing_across_it() {
+    // The top face's edge at x = 0 becomes a major arc of r = 100 in the
+    // plane x = 0, square to the face. Its area term is the projection
+    // onto the face, so the arc counts as its chord and the flip shows.
+    let flipped = edit(
+        P01_THROUGH,
+        &[
+            (
+                "#47 = EDGE_CURVE('',#24,#40,#48,.T.);",
+                "#47 = EDGE_CURVE('',#24,#40,#48,.F.);",
+            ),
+            (
+                "#48 = LINE('',#49,#50);",
+                "#48 = CIRCLE('',#9000,100.);\
+                 #9000 = AXIS2_PLACEMENT_3D('',#9001,#9002,#9003);\
+                 #9001 = CARTESIAN_POINT('',(0.,15.,106.86859966642594));\
+                 #9002 = DIRECTION('',(1.,0.,0.));\
+                 #9003 = DIRECTION('',(0.,1.,0.));",
+            ),
+            (
+                "#88 = ADVANCED_FACE('',(#89,#107),#118,.T.);",
+                "#88 = ADVANCED_FACE('',(#89,#107),#118,.F.);",
+            ),
+        ],
+    );
+    let refused = read_part(&flipped).unwrap_err();
+    assert_eq!(refused.refusals()[0].code, RefusalCode::FaceOrientation);
+    assert_eq!(refused.refusals()[0].instance, Some(88));
 }

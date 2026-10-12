@@ -6,7 +6,8 @@
 //! establishes, so that one fault does not cascade into many. Within a
 //! stage every check runs, so a file can carry several reasons.
 //!
-//! This file and `features/step.rs` are the only ones that name stepq.
+//! The files of this module and `features/step.rs` are the only ones that
+//! name stepq.
 
 pub(crate) mod solid;
 

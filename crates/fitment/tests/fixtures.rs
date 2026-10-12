@@ -2,10 +2,13 @@
 //!
 //! `tools/fetch-fixtures.sh core` downloads them into `fixtures/`; they are
 //! never committed. `fixtures/manifest.json` pins what fitment's gate makes
-//! of each one. Each file must give exactly its pinned result, and never a
-//! panic or an `internal` refusal. Without the files the test passes with a
-//! note, unless `FITMENT_REQUIRE_FIXTURES=1`, which CI sets.
+//! of each one. Each file must give exactly its pinned result and exit
+//! code, and never a panic or an `internal` refusal, and every STEP file
+//! fetched outside the manual `ocp` set must be pinned. Without the files
+//! the test passes with a note, unless `FITMENT_REQUIRE_FIXTURES=1`, which
+//! CI sets.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -57,6 +60,17 @@ fn every_fixture_gives_its_pinned_gate_result() {
             .map(|refusal| refusal["code"].as_str().unwrap())
             .collect();
         reasons.dedup();
+        let code = if fixture["features"] == "accepted" {
+            0
+        } else {
+            3
+        };
+        if output.status.code() != Some(code) {
+            failures.push(format!(
+                "{path}: exit {:?}, expected {code}",
+                output.status.code()
+            ));
+        }
         let pinned: Vec<&str> = fixture["reasons"]
             .as_array()
             .map(|r| r.iter().map(|c| c.as_str().unwrap()).collect())
@@ -71,5 +85,37 @@ fn every_fixture_gives_its_pinned_gate_result() {
             ));
         }
     }
+    let pinned: BTreeSet<String> = fixtures
+        .iter()
+        .map(|f| f["path"].as_str().unwrap().to_owned())
+        .collect();
+    for path in step_files(&root, &root) {
+        if !path.starts_with("ocp/") && !pinned.contains(&path) {
+            failures.push(format!("{path}: fetched but not pinned"));
+        }
+    }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Every `.stp` and `.step` file under `dir`, as paths relative to `root`
+/// with `/` separators.
+fn step_files(root: &Path, dir: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(step_files(root, &path));
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("stp") || e.eq_ignore_ascii_case("step"))
+        {
+            let relative = path.strip_prefix(root).unwrap();
+            let parts: Vec<_> = relative
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            found.push(parts.join("/"));
+        }
+    }
+    found
 }

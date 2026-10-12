@@ -2,7 +2,11 @@
 //! values (`docs/research/m2-features.md`, section 4.2, checks 13 to 26).
 //!
 //! Each stage runs every check it has, then refuses if any failed, so that
-//! a later stage never judges what an earlier one could not read.
+//! a later stage never judges what an earlier one could not read. Within
+//! two stages the checks are ordered too, for the same reason: check 16
+//! runs only on a solid that passed check 15, and in stage 6 the geometry
+//! must read (22) and lie in range (26) before vertices are measured
+//! against it (23, 24), and those must pass before faces are oriented (25).
 
 use libm::{atan2, cos, tan};
 use stepq::geometry::{Curve, Reader, Surface};
@@ -16,15 +20,15 @@ use crate::features::{SolidUnits, StatedUncertainty, StatedUnit};
 /// Values a vertex may lie off its surface or curve by, beyond the stated
 /// uncertainty: the floor when a file states almost none, and a relative
 /// slack for rounding.
-const GATE_SLACK_MM: f64 = 1e-6;
-const GATE_SLACK_REL: f64 = 1e-6;
+pub(crate) const GATE_SLACK_MM: f64 = 1e-6;
+pub(crate) const GATE_SLACK_REL: f64 = 1e-6;
 
 /// The largest coordinate magnitude read (check 26), in mm.
-const RANGE_MM: f64 = 1e6;
+pub(crate) const RANGE_MM: f64 = 1e6;
 
 /// "The file states the same value twice", for telling whether a circle is
 /// coaxial with its face (check 25).
-const IDENTITY_MM: f64 = 1e-6;
+pub(crate) const IDENTITY_MM: f64 = 1e-6;
 
 /// What stages 4 to 6 establish about the solid.
 pub(crate) struct SolidFacts {
@@ -74,18 +78,28 @@ fn topology(graph: &Graph<'_>, id: u64) -> Result<Solid, Vec<Refusal>> {
     let mut refusals = Vec::new();
     for (index, edge) in solid.edges().iter().enumerate() {
         let uses = solid.uses(index);
-        if !matches!(uses, [a, b] if a.forward != b.forward) {
+        let shell = |face: usize| solid.faces().get(face).map(|f| f.shell);
+        if !matches!(uses, [a, b] if a.forward != b.forward && shell(a.face) == shell(b.face)) {
             refusals.push(Refusal::new(
                 RefusalCode::SolidNotClosed,
                 Some(edge.instance),
                 format!(
-                    "edge #{} is used {} times{}; a closed solid uses each edge twice, in opposite directions",
+                    "edge #{} is used {} times{}; a closed solid uses each edge twice, in opposite directions, within one shell",
                     edge.instance,
                     uses.len(),
-                    if uses.len() == 2 { ", both the same way" } else { "" }
+                    match uses {
+                        [a, b] if a.forward == b.forward => ", both the same way",
+                        [_, _] => ", by two shells",
+                        _ => "",
+                    }
                 ),
             ));
         }
+    }
+    // Check 16 walks faces through their edges' uses, which is linear only
+    // once every edge has two: a solid that fails check 15 stops here.
+    if !refusals.is_empty() {
+        return Err(refusals);
     }
     for shell in solid.shells() {
         let faces = shell.faces.clone();
@@ -344,20 +358,14 @@ fn geometry(graph: &Graph<'_>, solid: &Solid, uncertainty: f64) -> Result<f64, V
     let points: Vec<P> = points.into_iter().flatten().collect();
     let surfaces: Vec<Surface> = surfaces.into_iter().flatten().collect();
     let curves: Vec<Curve> = curves.into_iter().flatten().collect();
-
-    // Check 26.
-    for (vertex, p) in solid.vertices().iter().zip(&points) {
-        if p.iter().any(|c| !c.is_finite() || c.abs() >= RANGE_MM) {
-            refusals.push(Refusal::new(
-                RefusalCode::OutOfRange,
-                Some(vertex.instance),
-                format!(
-                    "vertex #{} lies at {p:?} mm, beyond the {RANGE_MM} mm read",
-                    vertex.instance
-                ),
-            ));
-        }
+    refusals.extend(not_geometry(&surfaces, &curves));
+    if !refusals.is_empty() {
+        return Err(refusals);
     }
+
+    // Check 26, before 23 to 25, which need finite arithmetic on what it
+    // bounds: a surface placed at 1e308 makes a vertex's distance NaN.
+    refusals.extend(out_of_range(solid, &points, &surfaces, &curves));
     if !refusals.is_empty() {
         return Err(refusals);
     }
@@ -377,6 +385,108 @@ fn geometry(graph: &Graph<'_>, solid: &Solid, uncertainty: f64) -> Result<f64, V
     } else {
         Err(refusals)
     }
+}
+
+/// Check 22, the rest: a surface or curve stepq does not read must still be
+/// a surface or curve. stepq reads any other entity as one it does not
+/// interpret, so a face whose geometry is a point would otherwise pass as
+/// an unread surface.
+fn not_geometry(surfaces: &[Surface], curves: &[Curve]) -> Vec<Refusal> {
+    let named = |entity: &str, kinds: &[&str]| {
+        entity
+            .split('+')
+            .any(|part| kinds.iter().any(|kind| part.contains(kind)))
+    };
+    let mut refusals = Vec::new();
+    for surface in surfaces {
+        if let Surface::Other(other) = surface {
+            if !named(&other.entity, &["SURFACE"]) {
+                refusals.push(Refusal::new(
+                    RefusalCode::GeometryUnreadable,
+                    Some(other.instance),
+                    format!("#{} is a {}, not a surface", other.instance, other.entity),
+                ));
+            }
+        }
+    }
+    for curve in curves {
+        if let Curve::Other(other) = curve.basis() {
+            let kinds = ["CURVE", "ELLIPSE", "HYPERBOLA", "PARABOLA", "POLYLINE"];
+            if !named(&other.entity, &kinds) {
+                refusals.push(Refusal::new(
+                    RefusalCode::GeometryUnreadable,
+                    Some(other.instance),
+                    format!("#{} is a {}, not a curve", other.instance, other.entity),
+                ));
+            }
+        }
+    }
+    refusals
+}
+
+/// `x < limit`, false if either is NaN. Every bound in this stage is
+/// tested this way round, so that a NaN fails it.
+fn below(x: f64, limit: f64) -> bool {
+    x < limit
+}
+
+/// `x <= limit`, false if either is NaN.
+fn at_most(x: f64, limit: f64) -> bool {
+    x <= limit
+}
+
+/// True unless every value is finite and below [`RANGE_MM`] in magnitude.
+fn beyond(values: &[f64]) -> bool {
+    values.iter().any(|v| !below(v.abs(), RANGE_MM))
+}
+
+/// Check 26: every vertex, every surface's and circle's location and
+/// radii, and every line's point lie within [`RANGE_MM`].
+fn out_of_range(
+    solid: &Solid,
+    points: &[P],
+    surfaces: &[Surface],
+    curves: &[Curve],
+) -> Vec<Refusal> {
+    let refusal = |instance: u64, what: &str| {
+        Refusal::new(
+            RefusalCode::OutOfRange,
+            Some(instance),
+            format!("{what} #{instance} lies beyond the {RANGE_MM} mm read"),
+        )
+    };
+    let mut refusals = Vec::new();
+    for (vertex, p) in solid.vertices().iter().zip(points) {
+        if beyond(p) {
+            refusals.push(refusal(vertex.instance, "vertex"));
+        }
+    }
+    for surface in surfaces {
+        let far = match surface {
+            Surface::Plane(s) => beyond(&s.position.location),
+            Surface::Cylindrical(s) => beyond(&s.position.location) || beyond(&[s.radius]),
+            Surface::Conical(s) => beyond(&s.position.location) || beyond(&[s.radius]),
+            Surface::Spherical(s) => beyond(&s.position.location) || beyond(&[s.radius]),
+            Surface::Toroidal(s) => {
+                beyond(&s.position.location) || beyond(&[s.major_radius, s.minor_radius])
+            }
+            _ => false,
+        };
+        if far {
+            refusals.push(refusal(surface.instance(), "surface"));
+        }
+    }
+    for curve in curves {
+        let far = match curve.basis() {
+            Curve::Line(c) => beyond(&c.pnt),
+            Curve::Circle(c) => beyond(&c.position.location) || beyond(&[c.radius]),
+            _ => false,
+        };
+        if far {
+            refusals.push(refusal(curve.basis().instance(), "curve"));
+        }
+    }
+    refusals
 }
 
 /// Checks 23 and 24: every vertex lies on the surfaces of its faces and the
@@ -400,7 +510,7 @@ fn vertex_offsets(
                 continue;
             };
             largest = largest.max(off);
-            if off > bound {
+            if !at_most(off, bound) {
                 refusals.push(Refusal::new(
                     RefusalCode::VertexOffSurface,
                     Some(v.instance),
@@ -421,7 +531,7 @@ fn vertex_offsets(
                 continue;
             };
             largest = largest.max(off);
-            if off > bound {
+            if !at_most(off, bound) {
                 refusals.push(Refusal::new(
                     RefusalCode::VertexOffCurve,
                     Some(v.instance),
@@ -505,12 +615,12 @@ fn ccw_angle(centre: P, from: P, to: P, axis: P) -> f64 {
     }
 }
 
-/// The signed angle a circular edge use sweeps about `normal`.
-fn sweep(travel: &Travel<'_>, circle: &stepq::geometry::Circle, normal: P) -> f64 {
+/// The signed angle a circular edge use sweeps about its circle's axis.
+fn sweep(travel: &Travel<'_>, circle: &stepq::geometry::Circle) -> f64 {
     let z = circle.position.z;
     let centre = circle.position.location;
     let along = travel.forward == travel.edge_same_sense;
-    let about_z = if travel.closed {
+    if travel.closed {
         if along {
             std::f64::consts::TAU
         } else {
@@ -520,11 +630,6 @@ fn sweep(travel: &Travel<'_>, circle: &stepq::geometry::Circle, normal: P) -> f6
         ccw_angle(centre, travel.from, travel.to, z)
     } else {
         -ccw_angle(centre, travel.to, travel.from, z)
-    };
-    if dot(z, normal) >= 0.0 {
-        about_z
-    } else {
-        -about_z
     }
 }
 
@@ -545,12 +650,8 @@ fn orientation(
             Surface::Plane(plane) => {
                 let z = plane.position.z;
                 let normal = if sense { z } else { [-z[0], -z[1], -z[2]] };
-                net_area(
-                    &travels(solid, index, curves, points),
-                    plane.position.location,
-                    normal,
-                )
-                .is_some_and(|area| area <= 0.0)
+                net_area(&travels(solid, index, curves, points), normal)
+                    .is_some_and(|area| !below(0.0, area))
             }
             Surface::Cylindrical(s) => circles_disagree(
                 &travels(solid, index, curves, points),
@@ -581,9 +682,16 @@ fn orientation(
     refusals
 }
 
-/// The net signed area of a plane face's loops about `normal`, or `None`
-/// if an edge is not a line or circle.
-fn net_area(loops: &[Vec<Travel<'_>>], origin: P, normal: P) -> Option<f64> {
+/// The net signed area of a plane face's loops projected along `normal`,
+/// or `None` if an edge is not a line or circle, or the face has no edge.
+///
+/// Areas are measured from the face's first vertex, so that a plane
+/// placed far from its face loses no digits. A circle's term is its exact
+/// projection, scaled by the cosine between its axis and the normal: a
+/// circle standing across the plane, which no valid face has, then counts
+/// as its chord and cannot turn the sign.
+fn net_area(loops: &[Vec<Travel<'_>>], normal: P) -> Option<f64> {
+    let origin = loops.iter().flatten().next()?.from;
     let mut area = 0.0;
     for travel in loops.iter().flatten() {
         let (a, b) = (sub(travel.from, origin), sub(travel.to, origin));
@@ -591,7 +699,7 @@ fn net_area(loops: &[Vec<Travel<'_>>], origin: P, normal: P) -> Option<f64> {
             Curve::Line(_) => dot(cross(a, b), normal) / 2.0,
             Curve::Circle(circle) => {
                 let c = sub(circle.position.location, origin);
-                let theta = sweep(travel, circle, normal);
+                let theta = sweep(travel, circle) * dot(circle.position.z, normal);
                 dot(cross(c, sub(b, a)), normal) / 2.0 + circle.radius * circle.radius * theta / 2.0
             }
             _ => return None,
@@ -605,25 +713,41 @@ fn net_area(loops: &[Vec<Travel<'_>>], origin: P, normal: P) -> Option<f64> {
 /// lies above its lowest circle; its boundary runs counterclockwise about z
 /// there exactly when the outward normal points away from the axis (a
 /// shaft, `sense` true), and the other way at its highest circle.
+///
+/// The circles bound the face's extent only if every other edge is a line
+/// between their stations; a face with any other edge is not judged.
 fn circles_disagree(loops: &[Vec<Travel<'_>>], origin: P, z: P, sense: bool) -> bool {
     let mut uses = Vec::new();
+    let mut lines = Vec::new();
     for travel in loops.iter().flatten() {
-        let Curve::Circle(circle) = travel.curve.basis() else {
-            continue;
-        };
-        let n = circle.position.z;
-        let lever = circle.radius.max(1.0);
-        let (offset, station) = radial(circle.position.location, origin, z);
-        if length(cross(n, z)) * lever > IDENTITY_MM || offset > IDENTITY_MM {
-            continue;
+        match travel.curve.basis() {
+            Curve::Circle(circle) => {
+                let n = circle.position.z;
+                let lever = circle.radius.max(1.0);
+                let (offset, station) = radial(circle.position.location, origin, z);
+                if !(at_most(length(cross(n, z)) * lever, IDENTITY_MM)
+                    && at_most(offset, IDENTITY_MM))
+                {
+                    return false;
+                }
+                let along = travel.forward == travel.edge_same_sense;
+                let ccw = along == (dot(n, z) > 0.0);
+                uses.push((station, ccw));
+            }
+            Curve::Line(_) => {
+                lines.extend([travel.from, travel.to].map(|p| radial(p, origin, z).1));
+            }
+            _ => return false,
         }
-        let along = travel.forward == travel.edge_same_sense;
-        let ccw = along == (dot(n, z) > 0.0);
-        uses.push((station, ccw));
     }
     let lowest = uses.iter().map(|u| u.0).fold(f64::INFINITY, f64::min);
     let highest = uses.iter().map(|u| u.0).fold(f64::NEG_INFINITY, f64::max);
-    if uses.is_empty() || highest - lowest <= IDENTITY_MM {
+    if uses.is_empty()
+        || !below(IDENTITY_MM, highest - lowest)
+        || lines
+            .iter()
+            .any(|&t| !(at_most(lowest - IDENTITY_MM, t) && at_most(t, highest + IDENTITY_MM)))
+    {
         return false;
     }
     uses.iter().any(|&(station, ccw)| {

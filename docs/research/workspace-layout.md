@@ -65,7 +65,7 @@ fitment/
 │       └── tests/adversarial.rs                        (fake helpers; no Python needed)
 ├── schemas/                [M3] features.v1.json socket.v1.json report.v1.json (generated, drift-tested)
 ├── corpus/                 [M2] README.md (FP definition, case labels) · baseline.json [M4] · out/ (already gitignored)
-├── fixtures/               [M2] README.md + manifest.toml committed; fetched files gitignored
+├── fixtures/               [M2] README.md + manifest.json committed; fetched files gitignored
 ├── tools/
 │   ├── fetch-fixtures.sh       [M2] stepq's script and SHA-256 pins, destination fixtures/
 │   ├── gen-corpus.py (+.lock)  [M2] uv script: parts [M2], assemblies [M3], bad candidates [M4], fit probes [M7]
@@ -239,7 +239,7 @@ All shared types live in `fitment-core`. The crate that relies on the socket inv
   - M6: scoring moves to `fitment-corpus`, so the server test runs the same cases end to end.
   - M7: the same cases run with the real helper.
 - **Fixtures policy.**
-  - Third-party STEP is never committed and never uploaded as a CI artifact (no redistribution terms). `tools/fetch-fixtures.sh` fetches it into `fixtures/`, checked against SHA-256 pins. Only `README.md` and `manifest.toml` are tracked.
+  - Third-party STEP is never committed and never uploaded as a CI artifact (no redistribution terms). `tools/fetch-fixtures.sh` fetches it into `fixtures/`, checked against SHA-256 pins. Only `README.md` and `manifest.json` are tracked.
   - The generated corpus is not committed. CI shares it between jobs as an artifact; it is our own MIT output.
   - The only committed STEP is the small unit set (decision 6), excluded from packages.
   - Tests skip locally when inputs are missing, but fail when `FITMENT_REQUIRE_CORPUS`, `FITMENT_REQUIRE_FIXTURES` or `FITMENT_REQUIRE_FIT` is 1, which CI sets. A skipped gate must not pass green.
@@ -351,7 +351,7 @@ Member manifests:
 - Every advisory `ignore` entry carries a reason.
 - New file `deny/core.toml` (M0).
 
-**.gitignore:** add `/fixtures/*`, `!/fixtures/README.md`, `!/fixtures/manifest.toml`, `/fuzz/target`, `/fuzz/artifacts`, `/fuzz/corpus`.
+**.gitignore:** add `/fixtures/*`, `!/fixtures/README.md`, `!/fixtures/manifest.json`, `/fuzz/target`, `/fuzz/artifacts`, `/fuzz/corpus`.
 
 **CONTRIBUTING.md**
 
