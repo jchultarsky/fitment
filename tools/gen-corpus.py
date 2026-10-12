@@ -24,7 +24,12 @@ the convention the answers are stated in:
 
 Files are written without pcurves (fitment reads 3D curves; pcurves make
 them 2.4 times larger) and with a fixed FILE_NAME time stamp, so the same
-script always writes the same bytes on one platform. The unit set lives in
+script always writes the same bytes on one platform. In the corpus only,
+each positive part built from a shape is written again with pcurves
+(`_pc`) and, where its answers follow from its construction alone, moved
+into a second skew frame (`_rot`); parts whose answers are patched by
+hand (p32, p33) and text edits (p20, p29) have no `_rot`, and text edits
+no `_pc`. The unit set lives in
 crates/fitment-core/tests/data; CI regenerates it and diffs it against that
 copy.
 """
@@ -121,8 +126,10 @@ class Motion:
 IDENTITY = Motion((0, 0, 1), 0.0, (0, 0, 0))
 # The frame motion of p14 and p14s: no axis of the result is axis-aligned.
 TILT = Motion((1, 2, 3), 37.0, (200.0, -40.0, 17.0))
-# The motion of every positive part's `_rot` variant: a second skew frame.
-VARIANT = Motion((2, -1, 1), 23.0, (-35.0, 12.0, 60.0))
+# The motion of the `_rot` variants: a second skew frame, turned far enough
+# (140 degrees) that holes along y and z come out with the other canonical
+# sign, so the variants test that fitment re-chooses it.
+VARIANT = Motion((2, -1, 1), 140.0, (-35.0, 12.0, 60.0))
 # The mapped item of p29: a quarter turn about z, then a shift.
 MAPPED = Motion((0, 0, 1), 90.0, (100.0, -50.0, 25.0))
 
@@ -580,9 +587,9 @@ def build(w: Writer, unit_only: bool):
             w.case(name, tests, rules, unit_set, construction, expect)
         if unit_only:
             return
-        # Every positive part again, in the corpus only: written with
-        # pcurves, as Open CASCADE writes by default, and in a second skew
-        # frame, where nothing is axis-aligned.
+        # Every positive part built here again, in the corpus only: written
+        # with pcurves, as Open CASCADE writes by default, and, where its
+        # answers follow from its construction alone, in a second skew frame.
         w.shape(shape, f"{name}_pc", unit=unit, pcurves=True)
         w.case(f"{name}_pc", f"{name} written with pcurves", rules, False, {"variant_of": name}, expect)
         if not isinstance(features, dict):

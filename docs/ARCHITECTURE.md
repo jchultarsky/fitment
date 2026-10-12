@@ -37,11 +37,12 @@ Gate, stages 1 to 3: file, product structure, shape   gate/mod.rs
 Gate, stages 4 and 5: topology, units                 gate/solid.rs
   │   closed, connected shells; length, angle and uncertainty units
   ▼
-Copy of the solid into fitment's types (Topo)         gate/solid.rs, features/topo.rs
-  ▼
-Gate, stage 6: geometry                               gate/geometry.rs
-  │   every value read and in range; vertices on their surfaces and
-  │   curves within the stated uncertainty; faces oriented as they say
+Gate, stage 6: geometry
+  │   every point, surface and curve read (check 22)  gate/solid.rs
+  │   then copied into fitment's types (Topo)         features/topo.rs
+  │   each a surface or curve, in range; vertices on  gate/geometry.rs
+  │   their surfaces and curves within the stated
+  │   uncertainty; faces oriented as they say
   ▼
 Move into the part's frame (a mapped item's placement), range again
   ▼
@@ -72,8 +73,10 @@ the same rule:
 - **Say `unknown`** where a rule cannot decide: an outline with an unread
   edge, a cylinder bounded by B-splines (`undecided`), a hole end whose
   walk meets something the rules do not cover. `part.complete` is false
-  when anything is undecided or unknown. M3 and M4 treat unknowns as
-  unverified (design, section 9.6).
+  when a cylinder is undecided or a hole or shaft has an irregular or
+  unknown end; an unknown outline does not affect it, so a consumer checks
+  each outline's status. M3 and M4 treat unknowns as unverified (design,
+  section 9.6).
 - **Never state a wrong known value.** Every rule that was found to guess
   in review was withdrawn or made to say `unknown` instead: the seam proof
   (F3), a walk that turns back along its axis (W7b), a drill point after a
@@ -130,7 +133,7 @@ them, and every bound is tested so that NaN fails it.
 | Unit set | `crates/fitment-core/tests/data`, `tests/parts.rs` | 24 generated parts (under 300 KB) checked against their construction on every OS |
 | Review reproducers | `crates/fitment-core/tests/edits`, `tests/{planes,cylinders,holes}.rs` | Each input a review used to break a rule, with the answer it must give |
 | Gate edits | `tests/features.rs` | Hand-edited STEP for the gate's checks, stage by stage |
-| Generated corpus | `tools/gen-corpus.py`, `crates/fitment/tests/corpus.rs` | 132 cases in CI: every positive part also with pcurves (`_pc`) and in a second skew frame (`_rot`), answers from the construction alone |
+| Generated corpus | `tools/gen-corpus.py`, `crates/fitment/tests/corpus.rs` | 132 cases in CI, answers from the construction alone: 41 of the 43 positive parts also with pcurves (`_pc`; the text edits p20 and p29 have none), and 39 in a second skew frame (`_rot`; nor have p32 and p33, whose answers are patched by hand) |
 | Goldens | `crates/fitment/tests/golden` | The exact bytes of each unit part's document |
 | Fixtures | `tools/fetch-fixtures.sh`, `fixtures/manifest.json`, `tests/fixtures.rs` | 45 public STEP files: pinned gate results and counts of planes, outlines, cylinders, holes and shafts |
 | Oracle | `tools/verify-occt.py` | Open CASCADE 8.0.1, a kernel the generator does not use: `manifest` checks the construction; `features` checks fitment's planes, cylinders, holes and shafts, with the fixtures' tallies pinned |
