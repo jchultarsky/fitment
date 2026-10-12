@@ -1003,10 +1003,46 @@ def build(w: Writer, unit_only: bool):
            ["4.2#25"], True, {"from": "p01"}, refused(6, "face_orientation"))
 
 
+# A number in a Part 21 file, as Open CASCADE writes them.
+NUMBER = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[Ee][-+]?\d+)?")
+# How far a written number may differ between platforms: the last digit of
+# what Open CASCADE writes, and noise near zero from its trigonometry, are
+# the platform's maths library's. Far below any test tolerance (1e-6 mm).
+SAME_NUMBER = 1e-9
+
+
+def differences(generated: Path, committed: Path):
+    """How the files of `committed` differ from those just `generated`: the
+    manifests must be identical, and each .stp the same text but for
+    numbers within SAME_NUMBER. Returns one line per difference."""
+    found = []
+    names = sorted({p.name for p in generated.iterdir()} | {p.name for p in committed.iterdir()})
+    for name in names:
+        a, b = generated / name, committed / name
+        if not a.exists() or not b.exists():
+            found.append(f"{name}: only in {'the committed set' if b.exists() else 'the generated set'}")
+            continue
+        x, y = a.read_text(encoding="latin-1"), b.read_text(encoding="latin-1")
+        if not name.endswith(".stp"):
+            if x != y:
+                found.append(f"{name}: differs")
+            continue
+        if NUMBER.sub("#", x) != NUMBER.sub("#", y):
+            found.append(f"{name}: differs in more than its numbers")
+            continue
+        for u, v in zip(NUMBER.findall(x), NUMBER.findall(y)):
+            if abs(float(u) - float(v)) > SAME_NUMBER:
+                found.append(f"{name}: {u} against {v}")
+                break
+    return found
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("out", type=Path, help="the directory to write into")
     parser.add_argument("--unit-set", action="store_true", help="write only the committed unit set")
+    parser.add_argument("--check", type=Path, metavar="DIR",
+                        help="after writing, check that DIR holds the same files (numbers within 1e-9)")
     args = parser.parse_args()
     # Open CASCADE's progress messages are noise here.
     messenger = Message.DefaultMessenger_s()
@@ -1037,6 +1073,14 @@ def main():
     text = head[:-2] + ',\n "cases": [\n' + cases + "\n ]\n}\n"
     json.loads(text)
     (args.out / "manifest.json").write_text(text, encoding="utf-8", newline="\n")
+    if args.check is not None:
+        found = differences(args.out, args.check)
+        for line in found:
+            print(line)
+        if found:
+            raise SystemExit(f"{args.check} is not what the generator writes: regenerate it with "
+                             f"tools/gen-corpus.py --unit-set {args.check}")
+        print(f"{args.check} matches the generator")
 
 
 if __name__ == "__main__":
