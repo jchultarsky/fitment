@@ -66,14 +66,15 @@ jobs:
 
   unit-set:
     name: unit set matches the generator
-    # Its own job, so that a byte difference between platforms (the set is
-    # generated locally) shows here without holding back every test job.
+    # Its own job, so that a difference shows here without holding back
+    # every test job.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.1.0
-      - run: tools/gen-corpus.py --unit-set "$RUNNER_TEMP/unit"
-      - run: diff -r "$RUNNER_TEMP/unit" crates/fitment-core/tests/data
+      # The same files, but for the last digit of a number: Open CASCADE's
+      # trigonometry rounds by the platform's maths library.
+      - run: tools/gen-corpus.py --unit-set "$RUNNER_TEMP/unit" --check crates/fitment-core/tests/data
 
   test:
     name: test (${{ matrix.os }})

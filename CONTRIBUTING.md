@@ -176,10 +176,11 @@ $ cargo test -p fitment --test corpus         # fitment reads each part as expec
 ```
 
 `crates/fitment-core/tests/data` holds the small unit set, the parts every
-`cargo test` reads without Python. It is exactly what
-`tools/gen-corpus.py --unit-set` writes, which CI checks byte for byte, so
-change the generator and regenerate the set in the same commit; it must
-stay under 300 KB. Tests that need the generated corpus skip without it,
+`cargo test` reads without Python. It is what `tools/gen-corpus.py
+--unit-set` writes, which CI checks with `--check`: the same files, every
+number within 1e-9 mm, since Open CASCADE's trigonometry rounds the last
+digit by the platform. Change the generator and regenerate the set in the
+same commit; it must stay under 300 KB. Tests that need the generated corpus skip without it,
 and fail without it when `FITMENT_REQUIRE_CORPUS=1`, which CI sets.
 
 ### Golden files

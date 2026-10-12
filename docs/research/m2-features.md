@@ -943,7 +943,7 @@ Hand-written STEP snippets inside the Rust tests cover what generated files cann
 - **Without pcurves (R9).** Pcurves make the files 2.4 times larger, about 530 KB in all. stepq reads 3D curves, and the `_pc` variants cover pcurves in CI.
 - **Guards:**
   - a CLI test fails if `tests/data` exceeds 300,000 bytes, or if its listing differs from the manifest;
-  - CI regenerates the set and diffs it against the committed copy, so the manifest and the bytes must match the pinned generator;
+  - CI regenerates the set and checks it against the committed copy (`gen-corpus.py --check`): the manifest identical, and each part the same text with every number within 1e-9 mm;
   - `cargo package --list` must show no `.stp` or `.step` file.
 - **Core test** `tests/parts.rs` has one `include_bytes!` per file and asserts each part against the manifest. Core tests cannot list directories, because clippy bans `std::fs` in core.
 
@@ -1099,7 +1099,7 @@ The consistency review corrected populations (48 or 55 files), counts, six expec
 - **A whole shell written inside out** passes every per-face check (R11). Only the oracle's positive-volume check sees it, and only on files CI reads. A sound global test, for example on support planes extended with circle extremes, needs measuring: a naive version flags 21 valid fixture shells.
 - **Ellipses and B-spline circles lose holes.** Angled holes and CAS.CADE-style exports give irregular or undecided cylinders. That is safe but costs coverage. Reading ellipses (stated centre, axes and radii) would be a natural stepq 0.7 addition, if the corpus shows it matters.
 - **Vertices off their circles by up to 1e-2 mm in Creo files.** No length uses vertices. Vertices enter only the side test (F4) and the apex test (W4), both with ε_v, and arc sweeps (F2), where shared vertices cancel. Their worst outcome is an `Irregular` or `Unknown` end, a false negative.
-- **The committed unit set is a byte-exact copy of what the pinned generator writes on macOS.** Whether Open CASCADE 7.9 writes the same bytes on Linux is untested. If not, the committed set is regenerated from the CI artifact through a `workflow_dispatch` job, and the manifest diff stays the hard check.
+- **The generator's bytes differ by platform.** PR 2's first CI run found two parts (p14s, p25) whose numbers differ between macOS and Linux in the last digit, or as noise near zero (`0.` against `-1.15E-15`): Open CASCADE's trigonometry rounds by the platform's maths library. The check is therefore the same text with numbers within 1e-9 mm, not the same bytes. Tests read only the committed files, so their results do not depend on the platform that generated them.
 - **The probes differ from the rules in about 240 cases, in both directions,** listed in [m2-evidence/A-cylinders.md](m2-evidence/A-cylinders.md), section 12.1, plus every rule changed after review (G3, F2's union test, F3, W3, W4, W8). The implementation follows the rules as written, so fixture counts will move. The pins come from the implementation, not from this document.
 - **The uncertainty floor.** 179 of 916 accepted parts state more than 0.01 mm, while only 9 measure more. M4 (D9) must reject, not widen its tolerance, when a vertex-derived value is below the larger of the two. Widening is a false-positive path.
 
