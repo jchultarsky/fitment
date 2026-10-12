@@ -52,6 +52,10 @@ pub(crate) struct Element {
     /// fillet there lies inside a hole's or outside a shaft's cylinder.
     pub(crate) own_lo: f64,
     pub(crate) own_hi: f64,
+    /// What is known of it: its cylinder and zones, before an unknown side
+    /// runs to the part's extent (U3). A fit holds only here.
+    pub(crate) known_lo: f64,
+    pub(crate) known_hi: f64,
     /// True on a side whose extent is not known (U3).
     pub(crate) lo_unknown: bool,
     pub(crate) hi_unknown: bool,
@@ -154,7 +158,7 @@ pub(crate) fn elements(part: &Part) -> Vec<Element> {
         part.cylinders.iter().map(|c| (c.id, c)).collect();
     let mut out = Vec::new();
     for stack in stacks {
-        out.extend(stack_elements(&cylinders, &faces, &stack));
+        out.extend(stack_elements(part, &cylinders, &faces, &stack));
     }
     for cylinder in &part.cylinders {
         if !matches!(cylinder.class, CylinderClass::Undecided { .. }) {
@@ -184,6 +188,8 @@ pub(crate) fn elements(part: &Part) -> Vec<Element> {
             hi,
             own_lo: lo,
             own_hi: hi,
+            known_lo: lo,
+            known_hi: hi,
             lo_unknown: true,
             hi_unknown: true,
             undecided: true,
@@ -222,6 +228,7 @@ fn range(stations: &[f64]) -> (f64, f64) {
 }
 
 fn stack_elements(
+    part: &Part,
     cylinders: &BTreeMap<FeatureId, &crate::features::Cylinder>,
     faces: &BTreeMap<FeatureId, Vec<u64>>,
     stack: &Stack<'_>,
@@ -289,6 +296,8 @@ fn stack_elements(
                 hi,
                 own_lo: lo,
                 own_hi: hi,
+                known_lo: lo,
+                known_hi: hi,
                 lo_unknown,
                 hi_unknown,
                 undecided: false,
@@ -301,13 +310,86 @@ fn stack_elements(
             }
         })
         .collect();
-    stretch(&mut out, stack.side);
+    let zones = Zones(transition_ranges(part, stack));
+    stretch(&mut out, stack.side, &zones);
+    for element in &mut out {
+        element.known_lo = element.lo;
+        element.known_hi = element.hi;
+    }
     out
 }
 
+/// A transition's stations along its stack's axis and its radii, where
+/// known.
+struct Range {
+    lo: f64,
+    hi: f64,
+    radii: Option<(f64, f64)>,
+}
+
+/// The cones and tori of a stack, as ranges (planes are steps between
+/// segments, of no length).
+fn transition_ranges(part: &Part, stack: &Stack<'_>) -> Vec<Range> {
+    let mut out = Vec::new();
+    for id in stack.transitions {
+        if let Some(cone) = part.cones.iter().find(|c| c.id == *id) {
+            let apex = station(cone.apex_mm.to_array(), stack.point, stack.dir);
+            let widens = dot(cone.axis.direction.to_array(), stack.dir).signum();
+            let tan = libm::tan(cone.semi_angle_rad);
+            out.push(match cone.radii_mm {
+                Some([a, b]) if tan > 0.0 && tan.is_finite() => {
+                    let (x, y) = (apex + widens * a / tan, apex + widens * b / tan);
+                    Range {
+                        lo: x.min(y),
+                        hi: x.max(y),
+                        radii: Some((a.min(b), a.max(b))),
+                    }
+                }
+                _ => Range {
+                    lo: f64::NEG_INFINITY,
+                    hi: f64::INFINITY,
+                    radii: None,
+                },
+            });
+        } else if let Some(torus) = part.tori.iter().find(|t| t.id == *id) {
+            let centre = station(torus.axis.point_mm.to_array(), stack.point, stack.dir);
+            let (major, minor) = (torus.major_radius_mm, torus.minor_radius_mm);
+            out.push(Range {
+                lo: centre - minor,
+                hi: centre + minor,
+                radii: Some(((major - minor).max(0.0), major + minor)),
+            });
+        }
+    }
+    out
+}
+
+/// What lies between a stack's segments and past its ends.
+struct Zones(Vec<Range>);
+
+impl Zones {
+    /// True if every cone or torus that may reach into the stations `lo`
+    /// to `hi` lies outside a hole's cylinder of `radius`, or inside a
+    /// shaft's: the element may stand for that zone.
+    fn covered(&self, lo: f64, hi: f64, side: Side, radius: f64) -> bool {
+        let slack = 1e-6 * radius.max(1.0);
+        self.0
+            .iter()
+            .filter(|r| r.hi > lo + slack && r.lo < hi - slack)
+            .all(|r| match (r.radii, side) {
+                (Some((low, _)), Side::Hole) => low >= radius - slack,
+                (Some((_, high)), Side::Shaft) => high <= radius + slack,
+                (None, _) => false,
+            })
+    }
+}
+
 /// X7: each transition between two segments goes to a hole's narrower
-/// segment or a shaft's wider one, and each end segment reaches its rim.
-fn stretch(elements: &mut [Element], side: Side) {
+/// segment or a shaft's wider one, and each end segment reaches its rim,
+/// when every cone and torus there lies on the safe side of the
+/// element's cylinder: a chamfer or countersink does, a countersunk
+/// screw's head or a bead does not, and its zone stays uncovered.
+fn stretch(elements: &mut [Element], side: Side, zones: &Zones) {
     for i in 1..elements.len() {
         let (before, after) = elements.split_at_mut(i);
         let (Some(a), Some(b)) = (before.last_mut(), after.first_mut()) else {
@@ -320,6 +402,10 @@ fn stretch(elements: &mut [Element], side: Side) {
             Side::Hole => a.radius <= b.radius,
             Side::Shaft => a.radius >= b.radius,
         };
+        let radius = if a_takes { a.radius } else { b.radius };
+        if !zones.covered(a.hi, b.lo, side, radius) {
+            continue;
+        }
         if a_takes {
             a.hi = b.lo;
         } else {
@@ -328,12 +414,16 @@ fn stretch(elements: &mut [Element], side: Side) {
     }
     if let Some(first) = elements.first_mut() {
         if let (false, Some(rim)) = (first.lo_unknown, first.start_rim) {
-            first.lo = first.lo.min(rim);
+            if rim < first.lo && zones.covered(rim, first.lo, side, first.radius) {
+                first.lo = rim;
+            }
         }
     }
     if let Some(last) = elements.last_mut() {
         if let (false, Some(rim)) = (last.hi_unknown, last.finish_rim) {
-            last.hi = last.hi.max(rim);
+            if rim > last.hi && zones.covered(last.hi, rim, side, last.radius) {
+                last.hi = rim;
+            }
         }
     }
 }
@@ -362,11 +452,9 @@ pub(crate) fn placed(element: &Element, motion: &Motion, extent: Option<&Extent>
     });
     if element.lo_unknown {
         moved.lo = bound.map_or(f64::NEG_INFINITY, |b| b.0.min(element.lo));
-        moved.own_lo = moved.lo;
     }
     if element.hi_unknown {
         moved.hi = bound.map_or(f64::INFINITY, |b| b.1.max(element.hi));
-        moved.own_hi = moved.hi;
     }
     moved
 }

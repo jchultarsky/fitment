@@ -2001,6 +2001,29 @@ def build_assemblies(w: Writer, which):
            {"top": "dia 6.6, z 0 to 10", "low": "dia 6, z -10 to 0", "pin": "dia 6, z -10 to 0"},
            asm_expect(s46, sockets=sockets46))
 
+    # s18: a 90 deg countersunk screw, flush, in a dia 6.6 hole countersunk to dia 12.4, with a nut below. The
+    # head's cone flares past the shank, so the shank does not stand for it (X7), and the cone is Q1's (PR 4).
+    h18 = Hole((0, 0, 10), DOWN, [(6.6, 10)], through=10, countersink=(12.4, 90))
+    plate18 = cut(box(-20, -20, 0, 40, 40, 10), tool(h18))
+    screw18 = fuse(cone((0, 0, 6.8), UP, 3, 6.2, 3.2), cyl((0, 0, -8), UP, 3, 14.8))
+    s18 = Node("s18_csink").add(Leaf("PLATE", plate18)).add(Leaf("SCREW", screw18)).add(Leaf("NUT", a_hex_nut()))
+    sockets18 = {
+        # The shank's end at the cone is unknown (air, then the head), so past z 6.8 nothing is read (U3):
+        # pinned where the plate's dia 6.6 wall is, free in its countersink's zone.
+        "PLATE": [e_socket([e_axial("bore", (0, 0, 0), Z, [(0, 6.8, 6.6, 6, "clearance", False),
+                                                          (6.8, 7.1, 6.6, None, "not_read", True),
+                                                          (7.1, 10, 6.6, None, "not_read", False)],
+                                    open_at=[0], flags=["extent_unknown"])])],
+        "SCREW": [e_socket([e_axial("shaft", (0, 0, 0), Z, [(-5, 0, 6, None, "interference", True),
+                                                           (0, 6.8, 6, 6.6, "clearance", False),
+                                                           (6.8, 10, 6, None, "not_read", False)],
+                                    flags=["extent_unknown", "thread_not_confirmed"])])],
+    }
+    a.case("s18_csink", s18, "a 90 deg countersunk screw, flush, with a nut", ["X7", "U3", "B1", "B6", "I1", "I2"], False,
+           {"plate": "40 x 40 x 10, dia 6.6 through, countersunk 90 deg to dia 12.4 at z 10",
+            "screw": "dia 6 from z -8, head cone dia 6 at z 6.8 to dia 12.4 at z 10", "nut": "z -5 to 0"},
+           asm_expect(s18, sockets=sockets18))
+
     # Refusals and ambiguities.
 
     s21 = Node("r21_name_ambiguous").add(long_plate, m_tr((50, 0, 0)))
