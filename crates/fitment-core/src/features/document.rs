@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{FeatureKind, Part};
+use super::{FeatureKind, Part, SolidInfo};
 use crate::EXTRACTOR_VERSION;
 use crate::gate::Refusal;
 
@@ -46,15 +46,15 @@ pub struct Extraction {
 impl Extraction {
     /// The constants this version extracts with.
     pub const CURRENT: Self = Self {
-        identity_mm: 1e-6,
+        identity_mm: crate::gate::solid::IDENTITY_MM,
         parallel_sine: 1e-9,
         vertex_side_mm: 1e-3,
         lever_min_mm: 1.0,
         sweep_rad: 1e-9,
         walk_max: 8,
-        gate_slack_mm: 1e-6,
-        gate_slack_rel: 1e-6,
-        range_mm: 1e6,
+        gate_slack_mm: crate::gate::solid::GATE_SLACK_MM,
+        gate_slack_rel: crate::gate::solid::GATE_SLACK_REL,
+        range_mm: crate::gate::solid::RANGE_MM,
     };
 }
 
@@ -293,6 +293,19 @@ fn check_part(part: &Part) -> Result<(), FormatError> {
             solid.instance, solid.id, solid.instance
         ));
     }
+    check_solid(solid)?;
+    let largest = solid
+        .units
+        .uncertainty
+        .iter()
+        .map(|u| u.value_mm)
+        .fold(0.0, f64::max);
+    if part.max_uncertainty_mm.to_bits() != largest.to_bits() {
+        return invalid(format!(
+            "max_uncertainty_mm is {}, not the largest stated uncertainty, {largest}",
+            part.max_uncertainty_mm
+        ));
+    }
     if !part
         .other_items
         .windows(2)
@@ -301,6 +314,32 @@ fn check_part(part: &Part) -> Result<(), FormatError> {
         return invalid("other items are not sorted by #id, or repeat".to_owned());
     }
     Ok(())
+}
+
+/// The rules a solid read back must keep: what the gate established.
+fn check_solid(solid: &SolidInfo) -> Result<(), FormatError> {
+    let positive = |x: f64| x.is_finite() && x > 0.0;
+    let units = &solid.units;
+    let problem = if solid.shells == 0 || solid.faces == 0 {
+        Some("a solid has at least one shell and one face")
+    } else if !positive(units.length.factor) || !positive(units.plane_angle.factor) {
+        Some("a unit's factor is positive")
+    } else if units.uncertainty.is_empty() {
+        Some("a solid states at least one uncertainty")
+    } else if !units.uncertainty.iter().all(|u| positive(u.value_mm)) {
+        Some("an uncertainty is positive")
+    } else if !(solid.max_vertex_offset_mm.is_finite() && solid.max_vertex_offset_mm >= 0.0) {
+        Some("a vertex offset is a distance")
+    } else {
+        None
+    };
+    match problem {
+        Some(rule) => Err(FormatError::Invalid(format!(
+            "solid #{} breaks a rule: {rule}",
+            solid.instance
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// The document as read, before its rules are checked. Every key is

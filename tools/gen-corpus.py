@@ -399,8 +399,9 @@ def revolved_cut(shape, centre, profile):
     through `centre` (x, y). `profile` is cadquery drawing steps on the XZ
     plane, in (radius, z): a cut by a revolved tool states its tori
     consistently, where Open CASCADE 7.9 writes some filleted tori inside
-    out (their loops reversed by FACE_BOUND .F. while same_sense stays
-    .T.), which fitment rightly refuses as a solid that is not closed."""
+    out (the torus's loop, as its FACE_BOUND and same_sense state it, runs
+    the same way as both its neighbours along their shared circles), which
+    fitment rightly refuses as a solid that is not closed."""
     tool = profile(cq.Workplane("XZ")).close().revolve(360, (0, 0, 0), (0, 1, 0))
     return cut(shape, tool.translate((centre[0], centre[1], 0)).val().wrapped)
 

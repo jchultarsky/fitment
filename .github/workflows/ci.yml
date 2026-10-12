@@ -52,7 +52,12 @@ jobs:
       - name: Cache fixtures
         uses: actions/cache@v6
         with:
-          path: fixtures
+          # The downloads only: a restored copy of the tracked manifest
+          # would overwrite the one being tested.
+          path: |
+            fixtures/nist
+            fixtures/nist-edm
+            fixtures/steptools
           key: fixtures-${{ hashFiles('tools/fetch-fixtures.sh') }}
       - run: tools/fetch-fixtures.sh core
       # Every test part, with answers from the construction alone.

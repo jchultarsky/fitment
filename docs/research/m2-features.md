@@ -117,18 +117,18 @@ The checks run in stages. A stage that refuses skips the later stages, which nee
 | | 12 | `ShapeItem::transform` succeeds for the solid | `solid_placement_unreadable` | 0. No fixture places a solid through a mapped item; a generated case covers it (section 13) |
 | Topology | 13 | Not `TopologyError::Unsupported` | `topology_unsupported` | 0 |
 | | 14 | Not `Malformed`, `Missing` or `UnresolvedReference` | `topology_malformed` | 1 solid: a Creo chassis loop that does not close |
-| | 15 | Every edge has exactly two uses, with opposite `forward` | `solid_not_closed` | 0 of 1,260 |
-| | 16 | Each shell is connected through shared edges | `shell_disconnected` | 0 of 1,260 |
+| | 15 | Every edge has exactly two uses, with opposite `forward`, by faces of one shell | `solid_not_closed` | 0 of 1,260 |
+| | 16 | Each shell is connected through shared edges. Runs only if check 15 passed: walking a face's neighbours is linear only once every edge has two uses, and a hostile file with one edge used 80,000 times took 15 s before (found in review of PR 3) | `shell_disconnected` | 0 of 1,260 |
 | Units | 17 | `ContextUnits::of_item(solid)` succeeds | `units_unreadable` | 0 |
 | | 18 | The length unit reads | `length_unit_unreadable` | 0; accepted parts are 840 mm, 76 inch |
 | | 19 | The plane angle unit reads | `angle_unit_unreadable` | 0 |
 | | 20 | The uncertainties read | `uncertainty_unreadable` | 0 |
 | | 21 | At least one uncertainty has a length unit, under any name | `uncertainty_missing` | 0. Names vary: `closure` 819, `distance_accuracy_value` 422, others 19 |
-| Geometry | 22 | Every vertex point, every face surface and every edge curve reads. `Surface::Other` and `Curve::Other` are not errors | `geometry_unreadable` | 0 |
+| Geometry | 22 | Every vertex point, every face surface and every edge curve reads. `Surface::Other` and `Curve::Other` are not errors, but must name a surface or curve entity: stepq reads any entity it does not interpret as one, so a face on a `CARTESIAN_POINT` would otherwise pass (found in review of PR 3) | `geometry_unreadable` | 0 |
 | | 23 | Vertices lie on their analytic surfaces (section 4.1, item 8) | `vertex_off_surface` | 2 of 1,260 solids, up to 0.040 mm against u = 0.0018 mm. 1,384,196 vertex uses checked |
 | | 24 | End vertices lie on their lines and circles | `vertex_off_curve` | 0 |
-| | 25 | **Face orientation agrees with the loops.** (a) A planar face whose outline is known has positive net signed area about its outward normal. (b) On a cylinder or cone face, each coaxial circle at the face's lowest or highest station runs, in the face's loop, counterclockwise about z exactly when the face lies on the +z side of that circle and the face is a shaft wall, or on the −z side and a hole wall. Section 18, C1 | `face_orientation` | 0. 118,773 circle uses agree and none disagree over all 55 files; net area is positive on all 8,922 readable planar faces in the 48 files under 16 MB. One flipped `same_sense` in a generated part gives 2 disagreements |
-| Extraction | 26 | Every coordinate is finite and below 1e6 mm in magnitude | `out_of_range` | 0. The fixtures reach about 1e4 mm |
+| | 25 | **Face orientation agrees with the loops.** (a) A planar face whose outline is known has positive net signed area about its outward normal. (b) On a cylinder or cone face, each coaxial circle at the face's lowest or highest station runs, in the face's loop, counterclockwise about z exactly when the face lies on the +z side of that circle and the face is a shaft wall, or on the −z side and a hole wall. Section 18, C1 | `face_orientation` | 0. 118,773 circle uses agree and none disagree over all 55 files; net area is positive on all 8,922 readable planar faces in the 48 files under 16 MB. One flipped `same_sense` in a generated part gives 2 disagreements. As built in PR 3, after review: (a) is measured from the face's first vertex, and a circle's term is its exact projection onto the plane (scaled by the cosine of its axis to the normal), so an arc standing across the plane counts as its chord and cannot turn the sign; (b) judges a face only if every edge is a coaxial circle or a line between the extreme circles' stations, since otherwise the circles need not bound the face |
+| Extraction | 26 | Every coordinate is finite and below 1e6 mm in magnitude: vertices, every surface's and circle's location and radii, and every line's point. It runs before checks 23 to 25, which need finite arithmetic: a cylinder placed at 1e308 made a vertex's distance NaN, which no bound refused (found in review of PR 3). Every bound is tested so that NaN fails it | `out_of_range` | 0. The fixtures reach about 1e4 mm |
 | | 27 | Cylinder faces that share an edge, on one cylinder within 1e-6 mm, have opposite senses (a wall of zero thickness) | `contradiction` | 0 |
 | | 28 | A perpendicular annulus whose sense contradicts its two radii | `contradiction` | 0 |
 | | 29 | A closed chain of end arcs sweeps a multiple of 2π other than 2π | `contradiction` | 0 |
@@ -665,11 +665,13 @@ This is a 60 × 40 × 10 mm plate generated with Open CASCADE 8.0.1. It has two 
   "part": {
     "definition": { "instance": 5, "product": { "instance": 7, "id": "Open CASCADE STEP translator 8.0 1", "name": "Open CASCADE STEP translator 8.0 1" } },
     "frame": { "shape_representation": 10 },
-    "solids": [ { "id": "solid-15", "instance": 15, "entity": "MANIFOLD_SOLID_BREP", "transform": null,
-                  "shells": 1, "faces": 10, "max_vertex_offset_mm": 0.0,
-                  "units": { "length": { "name": "millimetre", "factor": 1.0 },
-                             "plane_angle": { "name": "radian", "factor": 1.0 },
-                             "uncertainty": [ { "name": "distance_accuracy_value", "value_mm": 1e-7 } ] } } ],
+    "solids": [ { "id": "solid-15", "instance": 15, "entity": "MANIFOLD_SOLID_BREP", "representation": 10, "transform": null,
+                  "shells": 1, "faces": 10,
+                  "units": { "context": 12,
+                             "length": { "instance": 13, "name": "millimetre", "factor": 1.0 },
+                             "plane_angle": { "instance": 14, "name": "radian", "factor": 1.0 },
+                             "uncertainty": [ { "instance": 11, "name": "distance_accuracy_value", "value_mm": 1e-7 } ] },
+                  "max_vertex_offset_mm": 0.0 } ],
     "max_uncertainty_mm": 1e-7,
     "complete": true,
     "face_counts": { "plane": 7, "cylindrical": 3, "conical": 0, "spherical": 0, "toroidal": 0, "other": 0, "total": 10 },
@@ -982,7 +984,7 @@ The `features` mode below, fitment against Open CASCADE, arrives with PR 4.
 
 ### 15.1 Fixtures
 
-- `tools/fetch-fixtures.sh` is copied from stepq, with the same URLs and SHA-256 pins, into `fixtures/`. Only `README.md` and `manifest.toml` are tracked.
+- `tools/fetch-fixtures.sh` is copied from stepq, with the same URLs and SHA-256 pins, into `fixtures/`. Only `README.md` and `manifest.json` are tracked.
 - M2 uses stepq's `core` set (about 20 MB). The `ocp` set is all assemblies and stays manual.
 - **Each file's gate result is pinned** in `fixtures/manifest.json` (JSON, which the tests already read), for example `"features": "refused", "reasons": ["assembly"]`. The first pins, from PR 3, match the census in section 4.2: of the 45 core files, 24 accepted, 9 assemblies, 10 with surface models, 1 tessellated only and 1 with several definitions.
 - **Fixture tests assert:**
@@ -1095,7 +1097,7 @@ The consistency review corrected populations (48 or 55 files), counts, six expec
 ## 19. Risks
 
 - **Real exporters split faces; the generated parts mostly do not.** 94% of full cylinders in the fixtures are split. p17, p18 and p20 and the NIST fixtures cover the split path, but the generator can only produce Open CASCADE's way of splitting.
-- **Open CASCADE 7.9 writes some filleted tori inside out.** In PR 3, two generated parts filleted with `BRepFilletAPI` (p31's floor fillet, p32's rim round) had a torus face whose loop is reversed by `FACE_BOUND .F.` while its `same_sense` stays `.T.`: by the schema the face runs the same way as both its neighbours along their shared circles. Open CASCADE repairs orientation as it reads, so it called the solids valid; fitment's check 15 refuses them as `solid_not_closed`. The generator now cuts those parts with revolved tools, which Open CASCADE writes consistently. Real parts exported by Open CASCADE with such fillets will be refused too: a false negative, never a misread. None of the 45 core fixtures is affected.
+- **Open CASCADE 7.9 writes some filleted tori inside out.** In PR 3, two generated parts filleted with `BRepFilletAPI` (p31's floor fillet, p32's rim round) had a torus face whose loop, as its `FACE_BOUND` and `same_sense` state it, runs the same way as both its neighbours along their shared circles (p32's states `.F.` on the bound and `.T.` on the face, p31's the reverse). Open CASCADE repairs orientation as it reads, so it called the solids valid; fitment's check 15 refuses them as `solid_not_closed`. The generator now cuts those parts with revolved tools, which Open CASCADE writes consistently. Real parts exported by Open CASCADE with such fillets will be refused too: a false negative, never a misread. None of the 45 core fixtures is affected.
 - **The end walk is the most complex rule.** In A's probe it gave 108 unknown hole ends (about 84 of them G3 cases the rules resolve) and 56 non-mutual steps. Each unknown must stay `unknown`, never default to open or closed, or a blind hole could read as through. The review found two such defaults (C2, C3) after the rules were written; every W4 and W5 row now has a case, and the `u` parts must read `unknown`.
 - **A whole shell written inside out** passes every per-face check (R11). Only the oracle's positive-volume check sees it, and only on files CI reads. A sound global test, for example on support planes extended with circle extremes, needs measuring: a naive version flags 21 valid fixture shells.
 - **Ellipses and B-spline circles lose holes.** Angled holes and CAS.CADE-style exports give irregular or undecided cylinders. That is safe but costs coverage. Reading ellipses (stated centre, axes and radii) would be a natural stepq 0.7 addition, if the corpus shows it matters.
@@ -1115,6 +1117,7 @@ The consistency review corrected populations (48 or 55 files), counts, six expec
 7. Spheres (ball-end bottoms): an `unknown` end in M2.
 8. Coordinates beyond 1e6 mm: refused as `out_of_range`.
 9. Fixtures on three OSes: no; Linux only until M4's determinism job.
+10. A stated uncertainty with no upper bound: a file that states u = 1e5 mm passes checks 23 and 24 with a vertex 82 mm off its cylinder, and `max_vertex_offset_mm` reports it honestly. Default for M2: accepted, since the uncertainty is recorded and becomes the matcher's floor, which M3 must then reject as too coarse to seat anything. A gate bound, such as u above 1 mm or a fraction of the solid's extent, needs measuring on the fixtures first (found in review of PR 3).
 
 ## Evidence
 
