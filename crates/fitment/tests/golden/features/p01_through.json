@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 3,
+  "extractor_version": 4,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -710,16 +710,25 @@
           "point_mm": [
             20.0,
             15.0,
-            9.0
+            0.0
           ],
           "direction": [
             0.0,
             0.0,
-            -1.0
+            1.0
           ]
         },
         "radius_mm": 3.3,
-        "spread_mm": 0.0
+        "spread_mm": 0.0,
+        "class": {
+          "kind": "full"
+        },
+        "stations_mm": [
+          0.0,
+          8.0
+        ],
+        "wall_openings": 0,
+        "near_misses": []
       }
     ],
     "cones": [],

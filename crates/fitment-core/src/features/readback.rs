@@ -7,8 +7,9 @@
 use std::collections::BTreeSet;
 use std::f64::consts::TAU;
 
+use super::cylinder::CylinderClass;
 use super::outline::{Outline, OutlineLoop, Segment};
-use super::{FeatureId, Part, SolidInfo};
+use super::{FeatureId, FeatureKind, Part, SolidInfo};
 use crate::geom::Point3;
 
 /// Relative slack on sums read back: a sum is recomputed in the order it
@@ -91,12 +92,46 @@ pub(super) fn check(part: &Part, solid: &SolidInfo) -> Checked {
             ));
         }
     }
+    cylinders(part, &ids)?;
     if !part
         .notes
         .windows(2)
         .all(|pair| (pair[0].instance, pair[0].code) <= (pair[1].instance, pair[1].code))
     {
         return Err("the notes are not sorted by #id, then code".to_owned());
+    }
+    Ok(())
+}
+
+/// Each cylinder's stations ascend, its class is in range, its near misses
+/// are other cylinders of the part, and only a full one has wall openings.
+fn cylinders(part: &Part, ids: &BTreeSet<FeatureId>) -> Checked {
+    for cylinder in &part.cylinders {
+        let id = cylinder.id;
+        let sorted = cylinder.stations_mm.windows(2).all(|w| w[0] < w[1]);
+        let class = match &cylinder.class {
+            CylinderClass::FullBySeam { proven_extent_mm } => {
+                proven_extent_mm[0] == 0.0 && proven_extent_mm[1] > 0.0
+            }
+            CylinderClass::Partial {
+                sweep_rad: Some(sweep),
+            } => *sweep >= 0.0 && *sweep <= TAU,
+            _ => true,
+        };
+        let near = cylinder
+            .near_misses
+            .iter()
+            .all(|n| *n != id && n.kind() == FeatureKind::Cylinder && ids.contains(n));
+        let openings = cylinder.wall_openings == 0
+            || matches!(
+                cylinder.class,
+                CylinderClass::Full { .. } | CylinderClass::FullOneEndIrregular { .. }
+            );
+        if !(sorted && class && near && openings) {
+            return Err(format!(
+                "cylinder '{id}' has unsorted stations, a class out of range, a near miss that is not another cylinder of the part, or wall openings while not full"
+            ));
+        }
     }
     Ok(())
 }

@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 3,
+  "extractor_version": 4,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -517,17 +517,27 @@
         "axis": {
           "point_mm": [
             20.0,
-            11.726497308104,
-            24.330127018922
+            24.90747728811673,
+            1.5000000000033111
           ],
           "direction": [
             0.0,
-            0.50000000000019,
-            -0.8660254037843289
+            -0.50000000000019,
+            0.8660254037843289
           ]
         },
         "radius_mm": 3.0,
-        "spread_mm": 0.0
+        "spread_mm": 0.0,
+        "class": {
+          "kind": "full_by_seam",
+          "proven_extent_mm": [
+            0.0,
+            23.094010767585274
+          ]
+        },
+        "stations_mm": [],
+        "wall_openings": 0,
+        "near_misses": []
       }
     ],
     "cones": [],

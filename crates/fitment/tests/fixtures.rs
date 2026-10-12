@@ -129,7 +129,7 @@ fn accepted(part: &Value, fixture: &Value) -> impl Iterator<Item = String> {
             fixture["unknown_outlines"]
         ));
     }
-    problems.extend(common::partition(part));
+    problems.extend(common::expect::partition(part));
     problems.into_iter()
 }
 

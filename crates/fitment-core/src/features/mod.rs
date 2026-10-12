@@ -9,6 +9,7 @@
 
 mod cylinder;
 mod document;
+mod full;
 mod group;
 mod other;
 mod outline;
@@ -27,7 +28,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::gate::Refusal;
 use crate::geom::Rigid;
 
-pub use cylinder::{Axis, Cylinder, Sense};
+pub use cylinder::{Axis, Cylinder, CylinderClass, End, Sense, UndecidedReason};
 pub use other::{Cone, OtherFace, OtherReason, Torus};
 pub use outline::{Outline, OutlineLoop, OutlineProblem, Segment};
 pub use plane::{Plane, PlaneFace};
@@ -159,6 +160,10 @@ pub enum NoteCode {
     /// A planar face's `face_outer_bound` is not its loop with positive
     /// area, which fitment takes as the outer one (section 5.3).
     StatedOuterBoundDiffers,
+    /// Two cylinder faces that share this edge lie on one surface within
+    /// the stated uncertainty, but not within 1e-6 mm, so they are two
+    /// features (section 5.2).
+    NearMiss,
 }
 
 /// The product definition a part was read from.

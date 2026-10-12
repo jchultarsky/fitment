@@ -1053,7 +1053,13 @@ Each PR comes with its tests. `EXTRACTOR_VERSION` goes up with every PR that cha
    - the partition check, in `read_part`, in `from_json`, and on every unit part, corpus part and fixture;
    - the planes of every corpus part checked against the construction, and each accepted fixture's plane count pinned;
    - `verify-occt.py features` for planes, in CI on the corpus and the fixtures.
-5. **Cylinders:** full or partial F, the near-miss notes, contradictions 27 and 29, and the oracle's cylinder checks. Grouping G and sense S arrived in PR 4.
+5. **Cylinders:** full or partial F, the near-miss notes, contradictions 27 and 29, and the oracle's cylinder checks. Grouping G and sense S arrived in PR 4. As built:
+   - `class` is `full`, `full_one_end_irregular` (with `irregular`: `start` or `finish`, the end at the lowest or highest station), `full_by_seam` (with `proven_extent_mm`), `partial` (with `sweep_rad`, the widest station's cover) or `undecided` (with `reason`: `no_end_circle` or `irregular_at_both_ends`);
+   - a cylinder's axis has the canonical sign of section 9.4 and its point at the lowest station (else at the seam's start, else the stated location), so `stations_mm` starts at 0;
+   - `near_misses` lists the other cylinders' ids, and each shared edge gets a `near_miss` note;
+   - wall openings are counted as connected chains of "other" boundary edges with a vertex strictly between the stations;
+   - every corpus part's cylinders match the construction one to one (`tests/support/expect.rs`, shared by the core and CLI tests), and the oracle checks every cylinder's radius, axis line, sense, 360° cover where fitment says full, and extent where both ends are known: 1,728 cylinders over the corpus and the 24 accepted fixtures, 0 disagreements. 21 fixture cylinders cover 360° in Open CASCADE but are not full in fitment, all false negatives by rule: 14 are faces with an end circle and axial lines in one loop (F4 makes any axial line partial), 7 are bounded by B-splines (`undecided`). Its probe first sat at the middle of a face's parameter bounds, which a face with a cutout does not cover; it now finds a point on the face;
+   - on the fixtures, the census of section 8.5 holds: NIST ctc_01 has 10 full holes in each of its three exports, and ftc_10 has 42 (14 with one irregular end).
 6. **Holes and shafts:** the end walk W, stacks K, lengths E, cones and tori in walks, `complete`, and the oracle's through/blind and depth checks.
 7. **Hardening.**
    - the `_pc` and `_rot` variants;

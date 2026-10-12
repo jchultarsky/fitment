@@ -47,10 +47,10 @@ impl Extraction {
     /// The constants this version extracts with.
     pub const CURRENT: Self = Self {
         identity_mm: crate::gate::geometry::IDENTITY_MM,
-        parallel_sine: 1e-9,
-        vertex_side_mm: 1e-3,
-        lever_min_mm: 1.0,
-        sweep_rad: 1e-9,
+        parallel_sine: super::group::PARALLEL_SINE,
+        vertex_side_mm: super::full::VERTEX_SIDE_MM,
+        lever_min_mm: super::group::LEVER_MIN_MM,
+        sweep_rad: super::full::SWEEP_RAD,
         walk_max: 8,
         gate_slack_mm: crate::gate::geometry::GATE_SLACK_MM,
         gate_slack_rel: crate::gate::geometry::GATE_SLACK_REL,
