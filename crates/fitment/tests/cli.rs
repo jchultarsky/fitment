@@ -87,3 +87,23 @@ fn the_table_names_the_solid() {
         .success()
         .stdout(contains("solid-").and(contains("MANIFOLD_SOLID_BREP")));
 }
+
+#[test]
+fn text_from_the_file_cannot_add_lines_to_stderr() {
+    // A schema name holding an encoded line break and escape character.
+    let step = "ISO-10303-21;HEADER;FILE_DESCRIPTION((''),'2;1');\
+        FILE_NAME('t','',(''),(''),'','','');\
+        FILE_SCHEMA(('X\\X\\0A\\X\\1Bfitment: ok.stp: accepted'));ENDSEC;\
+        DATA;ENDSEC;END-ISO-10303-21;";
+    let dir = std::env::temp_dir().join(format!("fitment-cli-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("forged.stp");
+    std::fs::write(&file, step).unwrap();
+    let output = fitment().arg("features").arg(&file).output().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(!stderr.contains('\u{1b}'), "{stderr:?}");
+    assert!(stderr.contains("\\n"), "{stderr}");
+}

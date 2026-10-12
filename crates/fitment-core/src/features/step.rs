@@ -9,19 +9,11 @@ use stepq::model::{Graph, ProductStructure};
 use stepq::p21::parse;
 
 use super::{
-    DefinitionRef, FeatureId, FeatureKind, FileHeader, Frame, OtherItem, Part, ProductRef, Refused,
+    DefinitionRef, FeatureId, FeatureKind, FileHeader, Frame, OtherItem, Part, ProductRef,
     SolidInfo,
 };
 use crate::gate::{self, Refusal, RefusalCode};
 use crate::geom::Rigid;
-
-/// Refuses with `refusals`, sorted and capped.
-fn refuse(refusals: Vec<Refusal>, header: Option<FileHeader>) -> Refused {
-    Refused {
-        refusals: gate::finish(refusals),
-        header: header.map(Box::new),
-    }
-}
 
 /// The header facts a document records, accepted or refused.
 fn header_of(info: &Info) -> FileHeader {
@@ -40,69 +32,68 @@ fn rigid(transform: &stepq::geometry::Rigid) -> Option<Rigid> {
     Rigid::new(transform.rotation, transform.translation)
 }
 
-pub(super) fn read(step: &[u8]) -> Result<Part, Refused> {
-    // Stage 1: the file.
-    let exchange = match parse(step) {
-        Ok(exchange) => exchange,
-        Err(error) => {
-            return Err(refuse(
-                vec![Refusal::new(
-                    RefusalCode::Unparseable,
-                    None,
-                    format!("the file is not ISO 10303-21: {error}"),
-                )],
+/// The file's header facts, when it can be parsed, and its part or the
+/// reasons it is refused, sorted and capped.
+pub(super) fn read(step: &[u8]) -> (Option<FileHeader>, Result<Part, Vec<Refusal>>) {
+    match parse(step) {
+        Err(error) => (
+            None,
+            Err(vec![Refusal::new(
+                RefusalCode::Unparseable,
                 None,
-            ));
+                format!("the file is not ISO 10303-21: {error}"),
+            )]),
+        ),
+        Ok(exchange) => {
+            // `build`, not `new`: a dangling reference is a refusal with its
+            // `#id`s, not an error that stops the reading of the header.
+            let graph = Graph::build(exchange);
+            let info = Info::new(&graph);
+            let header = header_of(&info);
+            (Some(header), part(&graph, &info).map_err(gate::finish))
         }
-    };
-    // `build`, not `new`: a dangling reference is a refusal with its
-    // `#id`s, not an error that stops the reading of the header.
-    let graph = Graph::build(exchange);
-    let info = Info::new(&graph);
-    let header = header_of(&info);
-    let refusals = gate::file(&graph, &info);
+    }
+}
+
+/// Gate stages 1 to 3, then the part.
+fn part(graph: &Graph<'_>, info: &Info) -> Result<Part, Vec<Refusal>> {
+    // Stage 1: the file.
+    let refusals = gate::file(graph, info);
     if !refusals.is_empty() {
-        return Err(refuse(refusals, Some(header)));
+        return Err(refusals);
     }
 
     // Stage 2: the product structure.
-    let structure = ProductStructure::new(&graph);
+    let structure = ProductStructure::new(graph);
     let refusals = gate::structure(&structure);
     if !refusals.is_empty() {
-        return Err(refuse(refusals, Some(header)));
+        return Err(refusals);
     }
     let Some(definition) = structure.definitions().first() else {
-        return Err(refuse(
-            vec![Refusal::new(
-                RefusalCode::Internal,
-                None,
-                "the gate passed a file with no definition",
-            )],
-            Some(header),
-        ));
+        return Err(vec![Refusal::new(
+            RefusalCode::Internal,
+            None,
+            "the gate passed a file with no definition",
+        )]);
     };
 
     // Stage 3: the shape. Index 0 is in range: there is one definition.
-    let shape = structure.shape(&graph, 0);
-    let solid =
-        gate::shape(&graph, &shape).map_err(|refusals| refuse(refusals, Some(header.clone())))?;
+    let shape = structure.shape(graph, 0);
+    let solid = gate::shape(graph, &shape)?;
     let item = solid.item;
     let transform = match &solid.transform {
         None => None,
         Some(transform) => match rigid(transform) {
             Some(transform) => Some(transform),
             None => {
-                return Err(refuse(
-                    vec![Refusal::new(
-                        RefusalCode::SolidPlacementUnreadable,
-                        Some(item.item),
-                        format!(
-                            "the map placing solid #{} is not a finite rigid transform",
-                            item.item
-                        ),
-                    )],
-                    Some(header),
-                ));
+                return Err(vec![Refusal::new(
+                    RefusalCode::SolidPlacementUnreadable,
+                    Some(item.item),
+                    format!(
+                        "the map placing solid #{} is not a finite rigid transform",
+                        item.item
+                    ),
+                )]);
             }
         },
     };
@@ -136,6 +127,5 @@ pub(super) fn read(step: &[u8]) -> Result<Part, Refused> {
             transform,
         }],
         other_items: others.into_values().collect(),
-        header,
     })
 }

@@ -35,9 +35,12 @@ check "declares a static item (global state)" \
 check "names stepq outside gate.rs and features/step.rs" \
   sh -c "grep -rlE '(^|[^[:alnum:]_])stepq::|use[[:space:]]+stepq' '$src' | grep -vxE '$src/(gate|features/step)\.rs' | grep ."
 
-# tests/data holds STEP files that must never ship.
+# tests/data holds STEP files that must never ship. The listing runs on its
+# own first, so that a failing `cargo package` fails the script (set -e)
+# rather than look like a clean list.
+packaged=$(cargo package --list -p fitment-core --locked --allow-dirty)
 check "would publish a STEP file" \
-  sh -c "cargo package --list -p fitment-core --locked --allow-dirty | grep -iE '\.(stp|step|p21)\$'"
+  grep -iE '\.(stp|step|p21)$' <<<"$packaged"
 
 cargo deny --manifest-path crates/fitment-core/Cargo.toml --config deny/core.toml check bans
 python3 tools/core-deps.py

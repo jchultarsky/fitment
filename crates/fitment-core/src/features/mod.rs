@@ -25,26 +25,31 @@ pub use document::{
 };
 
 /// Reads the one part a STEP file holds. Bytes in, values out: no I/O.
+/// [`FeaturesDocument::read`] gives the same result with the file's header
+/// facts, as `fitment features` prints it.
 ///
 /// # Errors
 ///
 /// Every way the input can fail is a [`Refused`] with its reasons, sorted;
 /// nothing panics.
 pub fn read_part(step: &[u8]) -> Result<Part, Refused> {
-    step::read(step)
+    step::read(step).1.map_err(|refusals| Refused { refusals })
 }
 
-/// Why a file was refused: its reasons, never empty, and its header facts
-/// when the file could be parsed.
+/// Why a file was refused: its reasons, never empty.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{}", summary(refusals))]
-#[non_exhaustive]
+// The field is private; `refusals` reads it.
+#[allow(clippy::exhaustive_structs)]
 pub struct Refused {
+    refusals: Vec<Refusal>,
+}
+
+impl Refused {
     /// The reasons, sorted by code, then instance, then message.
-    pub refusals: Vec<Refusal>,
-    /// What the file's header states, if it could be parsed. Boxed so that
-    /// `Result<Part, Refused>` stays small.
-    pub header: Option<Box<FileHeader>>,
+    pub fn refusals(&self) -> &[Refusal] {
+        &self.refusals
+    }
 }
 
 fn summary(refusals: &[Refusal]) -> String {
@@ -75,18 +80,9 @@ pub struct Part {
     pub frame: Frame,
     /// The part's solids. A canonical part has exactly one.
     pub solids: Vec<SolidInfo>,
-    /// Items of the part's shape that are not solids: curve and point sets.
+    /// Items of the part's shape that are not solids: curve and point
+    /// sets, sorted by `#id`.
     pub other_items: Vec<OtherItem>,
-    /// The file's header facts, which the document writes in its envelope.
-    #[serde(skip)]
-    pub(crate) header: FileHeader,
-}
-
-impl Part {
-    /// What the file's header states.
-    pub fn header(&self) -> &FileHeader {
-        &self.header
-    }
 }
 
 /// The product definition a part was read from.
@@ -97,6 +93,7 @@ pub struct DefinitionRef {
     /// The `product_definition`'s `#id`.
     pub instance: u64,
     /// The product it defines, if the file states one.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub product: Option<ProductRef>,
 }
 
@@ -108,8 +105,10 @@ pub struct ProductRef {
     /// The `product`'s `#id`.
     pub instance: u64,
     /// Its `id`, usually a part number.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub id: Option<String>,
     /// Its `name`.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub name: Option<String>,
 }
 
@@ -138,6 +137,7 @@ pub struct SolidInfo {
     pub representation: u64,
     /// The map from the solid's representation into the part's frame, if
     /// a mapped item places it; `None` if its coordinates are the frame's.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub transform: Option<Rigid>,
 }
 

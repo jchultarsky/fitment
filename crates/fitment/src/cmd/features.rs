@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::ValueEnum;
-use fitment_core::{FeaturesDocument, RefusalCode, read_part};
+use fitment_core::{FeaturesDocument, RefusalCode, Status};
 
 use crate::exit;
 
@@ -26,38 +26,56 @@ enum Format {
     Table,
 }
 
+/// `text` with every control character escaped, so that text from a file
+/// cannot start a new line or move the terminal: one reason, one line.
+fn printable(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            let escaped: Vec<char> = if c.is_control() {
+                c.escape_default().collect()
+            } else {
+                vec![c]
+            };
+            escaped
+        })
+        .collect()
+}
+
+/// Writes one line to stderr. A closed stderr is not worth a panic.
+fn note(line: &str) {
+    let _ = writeln!(io::stderr().lock(), "{line}");
+}
+
 pub fn run(args: &Args) -> ExitCode {
-    let path = args.file.display();
+    let path = printable(&args.file.display().to_string());
     let bytes = match std::fs::read(&args.file) {
         Ok(bytes) => bytes,
         Err(error) => {
-            eprintln!("error: cannot read {path}: {error}");
+            note(&format!("error: cannot read {path}: {error}"));
             return ExitCode::FAILURE;
         }
     };
-    let (document, code) = match read_part(&bytes) {
-        Ok(part) => (FeaturesDocument::accepted(part), ExitCode::SUCCESS),
-        Err(refused) => {
-            for refusal in &refused.refusals {
-                eprintln!(
-                    "fitment: {path}: refused: {}: {}",
-                    refusal.code.name(),
-                    refusal.message
-                );
-            }
-            // An internal refusal is a fitment bug, not a property of the
-            // input, so it is an error rather than a refusal.
-            let internal = refused
-                .refusals
+    let document = FeaturesDocument::read(&bytes);
+    for refusal in document.refusals() {
+        note(&format!(
+            "fitment: {path}: refused: {}: {}",
+            refusal.code.name(),
+            printable(&refusal.message)
+        ));
+    }
+    let code = match document.status() {
+        Status::Accepted => ExitCode::SUCCESS,
+        // An internal refusal is a fitment bug, not a property of the
+        // input, so it is an error rather than a refusal.
+        Status::Refused
+            if document
+                .refusals()
                 .iter()
-                .any(|refusal| refusal.code == RefusalCode::Internal);
-            let code = if internal {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::from(exit::REFUSED)
-            };
-            (FeaturesDocument::refused(refused), code)
+                .any(|refusal| refusal.code == RefusalCode::Internal) =>
+        {
+            ExitCode::FAILURE
         }
+        Status::Refused => ExitCode::from(exit::REFUSED),
     };
     let text = match args.format {
         Format::Json => document.to_json(),
@@ -68,7 +86,7 @@ pub fn run(args: &Args) -> ExitCode {
         // A reader that stopped reading, such as `head`, is not an error.
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: cannot write the result: {error}");
+            note(&format!("error: cannot write the result: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -77,19 +95,19 @@ pub fn run(args: &Args) -> ExitCode {
 /// A summary for people: one line per fact. Not a stable format.
 fn table(document: &FeaturesDocument) -> String {
     let mut lines = Vec::new();
-    if let Some(header) = &document.header {
+    if let Some(header) = document.header() {
         lines.push(format!(
             "schema    {}   {}",
             header.schema.as_deref().unwrap_or("unrecognized"),
-            header.originating_system.as_deref().unwrap_or("")
+            printable(header.originating_system.as_deref().unwrap_or(""))
         ));
     }
-    if let Some(part) = &document.part {
+    if let Some(part) = document.part() {
         let product = part.definition.product.as_ref();
         lines.push(format!(
             "part      #{} '{}'   frame #{}",
             part.definition.instance,
-            product.and_then(|p| p.name.as_deref()).unwrap_or(""),
+            printable(product.and_then(|p| p.name.as_deref()).unwrap_or("")),
             part.frame.shape_representation
         ));
         for solid in &part.solids {
@@ -105,10 +123,10 @@ fn table(document: &FeaturesDocument) -> String {
             ));
         }
         for item in &part.other_items {
-            lines.push(format!("#{:<11}{}", item.instance, item.entity));
+            lines.push(format!("#{:<11}{}", item.instance, printable(&item.entity)));
         }
     }
-    for refusal in &document.refusals {
+    for refusal in document.refusals() {
         let at = refusal
             .instance
             .map(|id| format!("#{id} "))
@@ -116,7 +134,7 @@ fn table(document: &FeaturesDocument) -> String {
         lines.push(format!(
             "refused   {}: {at}{}",
             refusal.code.name(),
-            refusal.message
+            printable(&refusal.message)
         ));
     }
     let mut text = lines.join("\n");
