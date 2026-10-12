@@ -3,7 +3,9 @@
 //!
 //! A planar, cylindrical or conical face lies in the convex hull of its
 //! boundary: a planar region in its loops' hull, and every point of a
-//! cylinder or cone face on a ruling whose two ends are on the boundary.
+//! cylinder or cone face on a ruling whose two ends are on the boundary,
+//! except a cone face that holds its apex (a pointed pin's tip, bounded by
+//! one circle): its apex is added (`holds_apex`).
 //! So the box of the boundary bounds such a face: each line edge by its
 //! vertices, each circle edge by its whole circle. A torus face takes its
 //! whole torus's box. A face on any other surface (a sphere, a B-spline)
@@ -12,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::topo::{Curve, Loop, P, Surface, Topo};
+use super::topo::{Curve, Face, Loop, P, Surface, Topo, cross, dot, sub};
 use crate::geom::Point3;
 
 /// An axis-aligned box in the part's frame, in mm.
@@ -57,7 +59,19 @@ pub(crate) fn of(topo: &Topo, slack: f64) -> Option<Extent> {
     };
     for face in &topo.faces {
         match &face.surface {
-            Surface::Plane { .. } | Surface::Cylinder { .. } | Surface::Cone { .. } => {}
+            Surface::Plane { .. } | Surface::Cylinder { .. } => {}
+            Surface::Cone {
+                location,
+                z,
+                radius,
+                semi_angle,
+                ..
+            } => {
+                if holds_apex(topo, face, *location, *z) {
+                    let apex = super::group::apex(*location, *z, *radius, *semi_angle);
+                    bounds.add(apex, [0.0; 3]);
+                }
+            }
             Surface::Torus {
                 location,
                 z,
@@ -95,11 +109,68 @@ pub(crate) fn of(topo: &Topo, slack: f64) -> Option<Extent> {
     })
 }
 
+/// The signed angle a point moving from `from` to `to` turns about the
+/// axis through `origin` along unit `z`, in (−π, π]; 0 when either lies on
+/// the axis.
+fn turn(origin: P, z: P, from: P, to: P) -> f64 {
+    let flat = |p: P| {
+        let d = sub(p, origin);
+        sub(d, [z[0] * dot(d, z), z[1] * dot(d, z), z[2] * dot(d, z)])
+    };
+    let (a, b) = (flat(from), flat(to));
+    let (sin, cos) = (dot(cross(a, b), z), dot(a, b));
+    if sin == 0.0 && cos == 0.0 {
+        0.0
+    } else {
+        libm::atan2(sin, cos)
+    }
+}
+
+/// True if `face`, on a cone about the axis through `origin` along unit
+/// `z`, holds the cone's apex: an odd number of its loops wind once around
+/// the axis. A frustum's two circles wind twice, a half face's loop not at
+/// all, a pointed tip's one circle once. A loop through the apex itself
+/// has its vertex there, which bounds it anyway.
+pub(crate) fn holds_apex(topo: &Topo, face: &Face, origin: P, z: P) -> bool {
+    let mut winding = 0usize;
+    for travels in topo.travels(face) {
+        let mut angle = 0.0;
+        for travel in &travels {
+            angle += match travel.curve {
+                // Every circle on a cone is about its axis, within what the
+                // file states: one whose centre lies closer to the axis
+                // than its radius turns about the axis as it turns about
+                // its own centre. Generous on purpose: counting a winding
+                // that is not there only adds the apex to the box.
+                Curve::Circle {
+                    centre,
+                    z: n,
+                    radius,
+                    ..
+                } if super::topo::length(cross(sub(*centre, origin), z)) < *radius => {
+                    travel.sweep(*centre, *n) * dot(*n, z).signum()
+                }
+                Curve::Circle { .. } | Curve::Line { .. } | Curve::Other { .. } => {
+                    // A chord or a curve about another axis turns by the
+                    // angle between its ends; an arc beyond π about another
+                    // axis cannot lie on this cone face.
+                    turn(origin, z, travel.from, travel.to)
+                }
+            };
+        }
+        if angle.abs() > std::f64::consts::PI {
+            winding += 1;
+        }
+    }
+    winding % 2 == 1
+}
+
 /// The largest distance from the origin of anything `topo` states: its
 /// vertices, its curves' and surfaces' locations grown by their radii, and
 /// a cone's apex. Every feature value is one of these or derived along
-/// them, so a rigid motion by `t` keeps every placed coordinate within
-/// this plus `|t|` (check 38).
+/// them: a point projected onto an axis lies within √2 of this, so a
+/// rigid motion by `t` keeps every placed coordinate within √2 times this
+/// plus `|t|` (check 38).
 pub(crate) fn reach(topo: &Topo) -> f64 {
     let norm = |p: P| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
     let mut far: f64 = 0.0;

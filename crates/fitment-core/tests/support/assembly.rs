@@ -193,8 +193,20 @@ fn floors(listing: &Listing, expect: &Value) -> Vec<String> {
         .iter()
         .filter(|o| accepted(o))
         .filter(|o| {
+            let offset = match listing
+                .definitions()
+                .get(o.definition)
+                .and_then(|d| d.read.as_ref())
+            {
+                Some(fitment_core::ComponentRead::Accepted(read)) => read
+                    .solids
+                    .first()
+                    .map_or(f64::NAN, |s| s.max_vertex_offset_mm),
+                _ => f64::NAN,
+            };
             o.part_uncertainty_mm.to_bits() != part.to_bits()
                 || o.placement_uncertainty_mm.to_bits() != placement.to_bits()
+                || o.vertex_offset_mm.to_bits() != offset.to_bits()
         })
         .map(|o| {
             format!(
@@ -250,14 +262,21 @@ fn gate(read: &AssemblyRead, expect: &Value) -> Vec<String> {
     if found != wanted {
         failures.push(format!("assembly gate {found:?}, expected {wanted:?}"));
     }
-    // The kind of failure, which a component's refusal names.
+    // The kind of failure, and the component, which a component's refusal
+    // names: `component #<n> ('<id>', ...): <codes>`.
     if let Some(kind) = expect["kind"].as_str() {
-        if !read
-            .gate_refusals()
-            .iter()
-            .any(|r| r.message.contains(kind))
-        {
-            failures.push(format!("assembly gate: no refusal names {kind}"));
+        let component = expect["component"].as_str().map(|id| format!("('{id}',"));
+        let named = read.gate_refusals().iter().any(|r| {
+            r.message.contains(kind)
+                && component
+                    .as_ref()
+                    .is_none_or(|c| r.message.contains(c.as_str()))
+        });
+        if !named {
+            failures.push(format!(
+                "assembly gate: no refusal names {kind} for {}",
+                expect["component"]
+            ));
         }
     }
     failures

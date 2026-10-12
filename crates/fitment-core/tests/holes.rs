@@ -110,3 +110,20 @@ fn stations_come_from_circle_centres_not_vertices() {
     assert_eq!(hole.kind, HoleKind::Through);
     assert_eq!(hole.length_mm, Some(8.0));
 }
+
+/// A pointed tip: one cone face bounded only by its base circle, with no
+/// vertex at the apex. The face holds the apex, so the part's extent must
+/// reach it and the cone's radii must run to 0 (review of M3 PR 2).
+const CONE_TIP: &[u8] = include_bytes!("edits/cone_tip.stp");
+
+#[test]
+fn a_cone_face_holding_its_apex_bounds_it() {
+    let document = fitment_core::FeaturesDocument::read(CONE_TIP);
+    let part = document.part().expect("accepted");
+    let extent = part.extent.expect("planes, a cone and a circle bound it");
+    // Apex 10 / tan(0.2) below the base.
+    let depth = 10.0 / libm::tan(0.2);
+    assert!(extent.min_mm.to_array()[2] <= -depth + 1e-9, "{extent:?}");
+    let [low, high] = part.cones[0].radii_mm.expect("one coaxial circle");
+    assert_eq!((low, high), (0.0, 10.0));
+}

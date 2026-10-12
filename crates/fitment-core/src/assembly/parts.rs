@@ -479,6 +479,67 @@ impl PartsDocument {
         self.check_tree()
     }
 
+    /// Floors: finite, never negative or `-0.0`; a part's own floors the
+    /// same for all its occurrences and 0 where no part was read; and a
+    /// refused component exactly when the gate says `component_refused`.
+    fn check_floors(&self) -> Result<(), String> {
+        let refused_components = self
+            .parts
+            .iter()
+            .filter_map(|p| p.component.as_ref())
+            .any(|c| c.gate.status == Status::Refused);
+        let gate_names_it = self.assembly_gate.as_ref().is_some_and(|g| {
+            g.refusals
+                .iter()
+                .any(|r| r.code == crate::gate::RefusalCode::ComponentRefused)
+        });
+        if refused_components != gate_names_it {
+            return Err(
+                "a refused component and the gate's component_refused go together".to_owned(),
+            );
+        }
+        for part in &self.parts {
+            let accepted = part
+                .component
+                .as_ref()
+                .is_some_and(|c| c.gate.status == Status::Accepted);
+            let first = part.occurrences.first();
+            for occurrence in &part.occurrences {
+                let floors = [
+                    occurrence.part_uncertainty_mm,
+                    occurrence.vertex_offset_mm,
+                    occurrence.placement_uncertainty_mm,
+                ];
+                if !floors
+                    .iter()
+                    .all(|f| f.is_finite() && !f.is_sign_negative())
+                {
+                    return Err(format!("{:?}: an uncertainty is negative", occurrence.path));
+                }
+                // A part's own floors are its part's: the same for every
+                // occurrence, and 0 where no part was read.
+                let own = |o: &PartOccurrence| {
+                    (
+                        o.part_uncertainty_mm.to_bits(),
+                        o.vertex_offset_mm.to_bits(),
+                    )
+                };
+                let consistent = if accepted {
+                    first.is_none_or(|f| own(f) == own(occurrence))
+                } else {
+                    own(occurrence) == (0.0f64.to_bits(), 0.0f64.to_bits())
+                };
+                if !consistent {
+                    return Err(format!(
+                        "{:?}: its part's floors are not its definition's",
+                        occurrence.path
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The occurrences form the tree `read` gives: every path unique and
     /// within the limits of check 34, every path's parent an assembly's
     /// occurrence, a part never a parent and an assembly always one, and
@@ -491,17 +552,10 @@ impl PartsDocument {
         if !self.notes.windows(2).all(|pair| pair[0] < pair[1]) {
             return Err("notes are not sorted, or repeat".to_owned());
         }
+        self.check_floors()?;
         for part in &self.parts {
             check_component(part)?;
             for occurrence in &part.occurrences {
-                let floors = [
-                    occurrence.part_uncertainty_mm,
-                    occurrence.vertex_offset_mm,
-                    occurrence.placement_uncertainty_mm,
-                ];
-                if !floors.iter().all(|f| f.is_finite() && *f >= 0.0) {
-                    return Err(format!("{:?}: an uncertainty is negative", occurrence.path));
-                }
                 if kinds.insert(&occurrence.path, part.kind).is_some() {
                     return Err(format!("the path {:?} occurs twice", occurrence.path));
                 }

@@ -551,9 +551,12 @@ RULES.update({
     "m3.4.1#33": {"tests": [f"{M3_CORE}/assemblies.rs::a_cycle_is_an_unreadable_placement"]},
     "m3.4.1#34": {"tests": [f"{M3_CORE}/assemblies.rs::a_diamond_past_the_occurrence_limit_is_refused"]},
     "m3.4.1#35": {"tests": [f"{M3_CORE}/assemblies.rs::material_in_an_assembly_s_own_shape_is_refused"]},
-    "m3.4.1#36": {"tests": [f"{M3_CORE}/assemblies.rs::a_snippet_assembly_reads"]},
+    "m3.4.1#36": {"tests": [f"{M3_CORE}/assemblies.rs::a_snippet_assembly_reads",
+                            f"{M3_CORE}/assemblies.rs::a_solid_two_definitions_share_is_refused_unread"]},
     "m3.4.1#37": {},
-    "m3.4.1#38": {"tests": [f"{M3_CORE}/assemblies.rs::a_placement_far_out_of_range_is_refused"]},
+    "m3.4.1#38": {"tests": [f"{M3_CORE}/assemblies.rs::a_placement_far_out_of_range_is_refused",
+                            f"{M3_CORE}/assemblies.rs::check_38_counts_the_part_s_reach_beside_the_translation",
+                            f"{M3_CORE}/assemblies.rs::a_translation_of_1e17_mm_is_refused_without_panic"]},
     "m3.4.1#39": {"deferred": "M3 PR 3 builds the relation search"},
     "T1": {}, "T2": {"tests": [f"{M3_CORE}/assemblies.rs::a_definition_instance_selects_unless_an_id_reads_the_same"]},
     "T3": {}, "T4": {}, "T5": {}, "T6": {"deferred": "M3 PR 3: the socket command's exit code for a selection error"},
@@ -566,7 +569,7 @@ RULES.update({
     "P4": {"deferred": "M3 PR 3 moves features"}, "P5": {"deferred": "M3 PR 3 moves features"},
     "P6": {"deferred": "M3 PR 3 compares placed axes"},
     "P8": {"deferred": "M3 PR 3 builds s22"},
-    "Z1": {},
+    "Z1": {"tests": [f"{M3_CORE}/assemblies.rs::a_placement_floor_is_the_largest_its_path_states"]},
     **{f"Z{k}": {"deferred": "M3 PR 3 relates features"} for k in range(2, 8)},
     **{f"{letter}{k}": {"deferred": f"M3 PR {pr}"} for letter, n, pr in [
         ("N", 5, 3), ("X", 6, 3), ("B", 8, 3), ("I", 7, 3), ("J", 3, 3), ("U", 8, 3), ("A", 3, 3),
@@ -1621,7 +1624,8 @@ def build_assemblies(w: Writer, which):
                 "matched_by": "product_id"},
                {"part": "BRACKET", "occurrence_of": "BRACKET", "nth": 1, "result": "BRACKET", "occurrences": 1,
                 "matched_by": "product_id"},
-           ]))
+           ], components={"BRACKET": {"holes": 5, "shafts": 0}, "PLATE": {"holes": 8, "shafts": 0},
+                          "NUT": {"holes": 1, "shafts": 0}, "BOLT": {"holes": 0, "shafts": 1}}))
 
     # s07: the same without a sub-assembly. s08: two sub-assembly products sharing their leaves.
     s07 = Node("s07_twice").add(long_plate, m_tr((50, 0, 0)))
@@ -1745,15 +1749,17 @@ def build_assemblies(w: Writer, which):
             f.inst[face] = flip_sense(f.inst[face])
         return edit
 
-    def refused36(kind):
-        return {"result": "refused", "check": 36, "refusals": ["component_refused"], "kind": kind}
+    def refused36(kind, component):
+        return {"result": "refused", "check": 36, "refusals": ["component_refused"], "kind": kind,
+                "component": component}
 
     a.case("r23_component_refused", s02, "s02 with one cylinder face of the screw flipped (a text edit)",
            ["m3.4.1#36"], False, {"from": "s02"},
-           asm_expect(s02, gate=refused36("face_orientation")), edit=flip_face("SCREW", "CYLINDRICAL_SURFACE"))
+           asm_expect(s02, gate=refused36("face_orientation", "SCREW")),
+           edit=flip_face("SCREW", "CYLINDRICAL_SURFACE"))
     a.case("r27_target_refused", s01, "s01 with one plane face of the bracket flipped (a text edit)",
            ["m3.4.1#36"], False, {"from": "s01"},
-           asm_expect(s01, gate=refused36("face_orientation")), edit=flip_face("BRACKET", "PLANE"))
+           asm_expect(s01, gate=refused36("face_orientation", "BRACKET")), edit=flip_face("BRACKET", "PLANE"))
 
     def other_frame(f: Part21):
         """The screw's usage places a second shape representation of the

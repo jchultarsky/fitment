@@ -110,6 +110,9 @@ pub enum RefusalCode {
     /// listed from, so its features would be placed in an unknown frame
     /// (check 37).
     SolidFrameUnplaced,
+    /// A component's solid is the solid of another definition too: each
+    /// would be read in full, once per definition (check 36).
+    SolidShared,
 }
 
 impl RefusalCode {
@@ -152,6 +155,7 @@ impl RefusalCode {
             Self::AssemblyShapeItem => "assembly_shape_item",
             Self::ComponentRefused => "component_refused",
             Self::SolidFrameUnplaced => "solid_frame_unplaced",
+            Self::SolidShared => "solid_shared",
         }
     }
 }
@@ -748,6 +752,7 @@ mod tests {
             AssemblyShapeItem,
             ComponentRefused,
             SolidFrameUnplaced,
+            SolidShared,
         ];
         assert!(
             all.windows(2).all(|pair| pair[0] < pair[1]),

@@ -555,6 +555,9 @@ fn cone_radii(topo: &Topo, group: &[usize], location: [f64; 3], z: [f64; 3]) -> 
         high = high.max(r);
     };
     for face in group.iter().filter_map(|&i| topo.faces.get(i)) {
+        if super::extent::holds_apex(topo, face, location, z) {
+            take(0.0);
+        }
         for vertex in topo.face_vertices(face) {
             take(radial(topo.vertices.get(vertex)?.point, location, z).0);
         }

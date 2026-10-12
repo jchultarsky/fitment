@@ -358,7 +358,7 @@ pub(crate) fn context_uncertainty(graph: &Graph<'_>, representation: u64) -> Opt
         .ok()?
         .iter()
         .filter(|u| u.unit.kind == stepq::units::UnitKind::Length)
-        .map(|u| u.value)
-        .filter(|v| v.is_finite() && *v >= 0.0)
+        .filter_map(|u| crate::geom::finite(u.value))
+        .filter(|v| *v >= 0.0)
         .reduce(f64::max)
 }

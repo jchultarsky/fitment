@@ -106,12 +106,21 @@ fn components(
 ) -> Vec<Refusal> {
     let mut refusals = Vec::new();
     let mut frames: BTreeMap<usize, (Vec<u64>, f64)> = BTreeMap::new();
+    let shared = shared_solids(graph, structure, listing, indices);
     for (listed_index, (listed, &index)) in listing.definitions.iter_mut().zip(indices).enumerate()
     {
         if listed.kind != DefinitionKind::Part {
             continue;
         }
-        match part_of_definition(graph, structure, index) {
+        let read = match shared.get(&listed_index) {
+            Some(&solid) => Err(vec![Refusal::new(
+                RefusalCode::SolidShared,
+                Some(solid),
+                format!("solid #{solid} is the solid of another definition too"),
+            )]),
+            None => part_of_definition(graph, structure, index),
+        };
+        match read {
             Ok(read) => {
                 frames.insert(listed_index, (read.frames, read.reach_mm));
                 listed.read = Some(ComponentRead::Accepted(Box::new(read.part)));
@@ -174,12 +183,39 @@ fn components(
     refusals
 }
 
+/// The parts whose solid another part's shape holds too, with that solid:
+/// stepq refuses a shared representation but not a shared solid, and each
+/// definition would read it in full. Found from the shapes alone, before
+/// anything is read.
+fn shared_solids(
+    graph: &Graph<'_>,
+    structure: &ProductStructure,
+    listing: &Listing,
+    indices: &[usize],
+) -> BTreeMap<usize, u64> {
+    let mut owners: BTreeMap<u64, BTreeSet<usize>> = BTreeMap::new();
+    for (listed_index, (listed, &index)) in listing.definitions.iter().zip(indices).enumerate() {
+        if listed.kind == DefinitionKind::Part {
+            for solid in structure.shape(graph, index).solids {
+                owners.entry(solid.item).or_default().insert(listed_index);
+            }
+        }
+    }
+    owners
+        .into_iter()
+        .filter(|(_, by)| by.len() > 1)
+        .flat_map(|(solid, by)| by.into_iter().map(move |listed| (listed, solid)))
+        .collect()
+}
+
 /// Check 38: a part reaching `reach` mm from its origin, moved by
-/// `transform`, stays within range: a rotation keeps distances, so no
-/// placed point lies farther than `reach + |t|`.
+/// `transform`, stays within range. A rotation keeps distances, and a
+/// feature point derived from what the solid states (an axis point, the
+/// foot of a vertex on the axis) lies within √2 of `reach`, so no placed
+/// value lies farther than `√2 · reach + |t|`.
 fn in_range(transform: &Rigid, reach: f64) -> bool {
     let t = transform.translation();
-    let far = reach + (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+    let far = std::f64::consts::SQRT_2 * reach + (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
     far.is_finite() && far < gate::geometry::RANGE_MM
 }
 
@@ -245,33 +281,41 @@ fn uncertainties(graph: &Graph<'_>, listing: &mut Listing) -> Vec<AssemblyNote> 
     notes
 }
 
+/// At most this many earlier occurrences in one grid cell are compared
+/// with a new one: the note is advice, and occurrences that differ only in
+/// rotation share a cell.
+const COMPARED_PER_CELL: usize = 64;
+
 /// Two occurrences of one definition at one place (within `IDENTITY_MM`),
 /// found through a grid of their translations, so the work stays linear.
+/// An occurrence out of range (check 38 refuses it) is left out.
 fn coincident(listing: &Listing) -> Vec<AssemblyNote> {
     let tolerance = gate::geometry::IDENTITY_MM;
-    let cell = |x: f64| (x / tolerance).floor();
+    // Within range, a cell index fits i64 with room for the ±1 below.
+    #[allow(clippy::cast_possible_truncation)]
+    let cell = |x: f64| (x / tolerance).floor() as i64;
     let mut grid: BTreeMap<(usize, [i64; 3]), Vec<usize>> = BTreeMap::new();
     let mut notes = Vec::new();
     for (index, occurrence) in listing.occurrences.iter().enumerate() {
         let t = occurrence.transform.translation();
-        // Saturating: a cell index far out of i64's range is still one cell.
-        #[allow(clippy::cast_possible_truncation)]
-        let key = [cell(t[0]) as i64, cell(t[1]) as i64, cell(t[2]) as i64];
+        if !in_range(&occurrence.transform, 0.0) {
+            continue;
+        }
+        let key = [cell(t[0]), cell(t[1]), cell(t[2])];
         let mut found = None;
         'cells: for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
                     let near = [key[0] + dx, key[1] + dy, key[2] + dz];
-                    for &other in grid
+                    let earlier = grid
                         .get(&(occurrence.definition, near))
                         .into_iter()
-                        .flatten()
-                    {
-                        if same_place(
-                            &listing.occurrences[other].transform,
-                            &occurrence.transform,
-                            tolerance,
-                        ) {
+                        .flatten();
+                    for &other in earlier.take(COMPARED_PER_CELL) {
+                        let same = listing.occurrences.get(other).is_some_and(|o| {
+                            same_place(&o.transform, &occurrence.transform, tolerance)
+                        });
+                        if same {
                             found = Some(other);
                             break 'cells;
                         }
@@ -279,8 +323,7 @@ fn coincident(listing: &Listing) -> Vec<AssemblyNote> {
                 }
             }
         }
-        if let Some(other) = found {
-            let first = &listing.occurrences[other];
+        if let Some(first) = found.and_then(|other| listing.occurrences.get(other)) {
             notes.push(AssemblyNote {
                 code: AssemblyNoteCode::CoincidentOccurrences,
                 instance: occurrence.path.usages().last().map(|u| u.instance),
@@ -290,11 +333,10 @@ fn coincident(listing: &Listing) -> Vec<AssemblyNote> {
                     occurrence.path.display(PathForm::Instance)
                 ),
             });
-        } else {
-            grid.entry((occurrence.definition, key))
-                .or_default()
-                .push(index);
         }
+        grid.entry((occurrence.definition, key))
+            .or_default()
+            .push(index);
     }
     notes
 }
