@@ -33,7 +33,7 @@ mod verdict;
 pub use features::{
     DefinitionRef, Extraction, FEATURES_FORMAT, FEATURES_FORMAT_VERSION, FeatureId, FeatureIdError,
     FeatureKind, FeaturesDocument, FileHeader, FormatError, Frame, OtherItem, Part, ProductRef,
-    Refused, SolidInfo, Status, read_part,
+    Refused, SolidInfo, SolidUnits, StatedUncertainty, StatedUnit, Status, read_part,
 };
 pub use fit::{FitStatus, Interference, NO_FIT_VERIFIER};
 pub use gate::{Refusal, RefusalCode};
@@ -45,4 +45,4 @@ pub use verdict::{Check, RejectReason, RequirementId, Verdict, VerdictKind, deci
 /// whenever the output for any input could change: a rule, a constant, an
 /// order, a field. A features document records it, and the catalog
 /// re-reads every file whose document has another (milestone M5).
-pub const EXTRACTOR_VERSION: u32 = 1;
+pub const EXTRACTOR_VERSION: u32 = 2;

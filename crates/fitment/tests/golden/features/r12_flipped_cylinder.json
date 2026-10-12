@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 1,
+  "extractor_version": 2,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -22,29 +22,13 @@
     "preprocessor_version": "Open CASCADE STEP processor 7.9",
     "implementation_level": "2;1"
   },
-  "status": "accepted",
-  "refusals": [],
-  "part": {
-    "definition": {
-      "instance": 5,
-      "product": {
-        "instance": 7,
-        "id": "r12_flipped_cylinder",
-        "name": "r12_flipped_cylinder"
-      }
-    },
-    "frame": {
-      "shape_representation": 10
-    },
-    "solids": [
-      {
-        "id": "solid-15",
-        "instance": 15,
-        "entity": "MANIFOLD_SOLID_BREP",
-        "representation": 10,
-        "transform": null
-      }
-    ],
-    "other_items": []
-  }
+  "status": "refused",
+  "refusals": [
+    {
+      "code": "face_orientation",
+      "instance": 187,
+      "message": "face #187 states same_sense .T. but its loops run the other way"
+    }
+  ],
+  "part": null
 }

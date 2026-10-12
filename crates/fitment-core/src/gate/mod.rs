@@ -8,6 +8,8 @@
 //!
 //! This file and `features/step.rs` are the only ones that name stepq.
 
+pub(crate) mod solid;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

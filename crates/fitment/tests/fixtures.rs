@@ -1,0 +1,75 @@
+//! Third-party STEP files, run through the built `fitment` as a user would.
+//!
+//! `tools/fetch-fixtures.sh core` downloads them into `fixtures/`; they are
+//! never committed. `fixtures/manifest.json` pins what fitment's gate makes
+//! of each one. Each file must give exactly its pinned result, and never a
+//! panic or an `internal` refusal. Without the files the test passes with a
+//! note, unless `FITMENT_REQUIRE_FIXTURES=1`, which CI sets.
+
+use std::fs;
+use std::path::Path;
+
+use assert_cmd::Command;
+use serde_json::Value;
+
+#[test]
+fn every_fixture_gives_its_pinned_gate_result() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("manifest.json")).unwrap()).unwrap();
+    let fixtures = manifest["fixtures"].as_array().unwrap();
+    let required = std::env::var_os("FITMENT_REQUIRE_FIXTURES").is_some_and(|v| v == "1");
+    let missing: Vec<&str> = fixtures
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .filter(|path| !root.join(path).is_file())
+        .collect();
+    if !missing.is_empty() {
+        assert!(
+            !required,
+            "FITMENT_REQUIRE_FIXTURES=1 but {} fixtures are missing, such as {}; run tools/fetch-fixtures.sh core",
+            missing.len(),
+            missing[0]
+        );
+        eprintln!("skipped: run tools/fetch-fixtures.sh core");
+        return;
+    }
+    let mut failures = Vec::new();
+    for fixture in fixtures {
+        let path = fixture["path"].as_str().unwrap();
+        let output = Command::cargo_bin("fitment")
+            .unwrap()
+            .arg("features")
+            .arg(root.join(path))
+            .output()
+            .unwrap();
+        let Ok(document) = serde_json::from_slice::<Value>(&output.stdout) else {
+            failures.push(format!(
+                "{path}: no document; exit {:?}",
+                output.status.code()
+            ));
+            continue;
+        };
+        let mut reasons: Vec<&str> = document["refusals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|refusal| refusal["code"].as_str().unwrap())
+            .collect();
+        reasons.dedup();
+        let pinned: Vec<&str> = fixture["reasons"]
+            .as_array()
+            .map(|r| r.iter().map(|c| c.as_str().unwrap()).collect())
+            .unwrap_or_default();
+        if document["status"] != fixture["features"]
+            || reasons != pinned
+            || reasons.contains(&"internal")
+        {
+            failures.push(format!(
+                "{path}: {} {reasons:?}, pinned {} {pinned:?}",
+                document["status"], fixture["features"]
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

@@ -48,10 +48,10 @@ const PARTS: &[(&str, &[u8])] = parts![
 ];
 
 /// The gate stages built so far (`docs/research/m2-features.md`, 4.2).
-const BUILT_STAGES: u64 = 3;
+const BUILT_STAGES: u64 = 6;
 
 /// Refusals by stages not built yet: these parts are accepted for now.
-const NOT_YET: &[&str] = &["r05_no_length_unit", "r12_flipped_cylinder"];
+const NOT_YET: &[&str] = &[];
 
 fn cases() -> Vec<Value> {
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
@@ -91,11 +91,14 @@ fn each_part_is_accepted_or_refused_as_its_construction_says() {
             skipped.push(name.to_owned());
         }
         if refused_now {
-            let codes: Vec<String> = document
+            // The distinct codes, in order: a code repeats once per
+            // instance at fault, and the manifest names each code once.
+            let mut codes: Vec<String> = document
                 .refusals()
                 .iter()
                 .map(|refusal| refusal.code.name().to_owned())
                 .collect();
+            codes.dedup();
             let expected: Vec<String> = expect["refusals"]
                 .as_array()
                 .unwrap()

@@ -70,19 +70,36 @@ fn shaped(items: &str, more: &str) -> Vec<u8> {
 
 const SOLID_30: &str = "#30=MANIFOLD_SOLID_BREP('',#31);#31=CLOSED_SHELL('',());";
 
-/// Solid #30 in representation #14, held by #20 through mapped item #71
-/// (moved 100 mm along x) and, if `twice`, #70 (at the origin).
+/// p01, a real solid, with its shape representation #10 listing `items`
+/// instead of `(#11,#15)` (its origin and its solid #15), and `more`
+/// instances added, numbered from #9001.
+fn p01_with(items: &str, more: &str) -> Vec<u8> {
+    let text = std::str::from_utf8(P01_THROUGH).unwrap();
+    let listed = "#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15),#204);";
+    assert!(text.contains(listed));
+    let text = text.replace(
+        listed,
+        &format!("#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',({items}),#204);"),
+    );
+    let end = text.rfind("ENDSEC;").unwrap();
+    format!("{}{more}\n{}", &text[..end], &text[end..]).into_bytes()
+}
+
+/// p01's solid moved into representation #9003 and held by #10 through
+/// mapped item #9010 (moved 100 mm along x) and, if `twice`, #9011 (in
+/// place).
 fn mapped(twice: bool) -> Vec<u8> {
-    let items = if twice { "#70,#71" } else { "#71" };
-    shaped(
+    let items = if twice {
+        "#11,#9010,#9011"
+    } else {
+        "#11,#9010"
+    };
+    p01_with(
         items,
-        &format!(
-            "{SOLID_30}#14=SHAPE_REPRESENTATION('',(#30,#24),#21);\
-             #24=AXIS2_PLACEMENT_3D('',#80,$,$);#80=CARTESIAN_POINT('',(0.,0.,0.));\
-             #69=REPRESENTATION_MAP(#24,#14);#70=MAPPED_ITEM('',#69,#24);\
-             #71=MAPPED_ITEM('',#69,#25);#25=AXIS2_PLACEMENT_3D('',#81,$,$);\
-             #81=CARTESIAN_POINT('',(100.,0.,0.));"
-        ),
+        "#9003=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15),#204);\
+         #9004=REPRESENTATION_MAP(#11,#9003);#9010=MAPPED_ITEM('',#9004,#9005);\
+         #9011=MAPPED_ITEM('',#9004,#11);\
+         #9005=AXIS2_PLACEMENT_3D('',#9006,$,$);#9006=CARTESIAN_POINT('',(100.,0.,0.));",
     )
 }
 
@@ -216,11 +233,20 @@ fn a_shell_alone_has_no_solid_and_an_unread_item() {
 }
 
 #[test]
-fn one_solid_passes_the_first_three_stages() {
-    let part = read_part(&shaped("#30", SOLID_30)).unwrap();
-    assert_eq!(part.solids[0].instance, 30);
-    assert_eq!(part.solids[0].transform, None);
-    assert_eq!(part.frame.shape_representation, 20);
+fn a_solid_carries_its_units_and_measured_offset() {
+    let part = read_part(P01_THROUGH).unwrap();
+    let solid = &part.solids[0];
+    assert_eq!((solid.shells, solid.faces), (1, 7));
+    assert_eq!(solid.units.length.name, "millimetre");
+    assert_eq!(solid.units.length.factor, 1.0);
+    assert_eq!(solid.units.plane_angle.name, "radian");
+    assert_eq!(solid.units.uncertainty.len(), 1);
+    assert_eq!(part.max_uncertainty_mm, solid.units.uncertainty[0].value_mm);
+    assert!(
+        solid.max_vertex_offset_mm < 1e-9,
+        "{}",
+        solid.max_vertex_offset_mm
+    );
 }
 
 #[test]
@@ -237,28 +263,26 @@ fn two_solids_in_one_shape_are_refused() {
 
 #[test]
 fn a_solid_listed_twice_in_one_place_is_one_solid() {
-    let input = shaped(
-        "#30",
-        &format!(
-            "{SOLID_30}#9=SHAPE_DEFINITION_REPRESENTATION(#7,#23);\
-             #23=SHAPE_REPRESENTATION('',(#30),#21);"
-        ),
+    let input = p01_with(
+        "#11,#15",
+        "#9001=SHAPE_DEFINITION_REPRESENTATION(#4,#9002);\
+         #9002=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#15),#204);",
     );
     let part = read_part(&input).unwrap();
     // The frame is the smallest shape representation, whatever the order
     // stepq walks them in.
-    assert_eq!(part.frame.shape_representation, 20);
+    assert_eq!(part.frame.shape_representation, 10);
 }
 
 #[test]
 fn a_solid_placed_by_a_mapped_item_has_its_transform() {
     let part = read_part(&mapped(false)).unwrap();
     let solid = &part.solids[0];
-    assert_eq!(solid.instance, 30);
-    assert_eq!(solid.representation, 14);
+    assert_eq!(solid.instance, 15);
+    assert_eq!(solid.representation, 9003);
     let transform = solid.transform.as_ref().unwrap();
     assert_eq!(transform.translation(), [100.0, 0.0, 0.0]);
-    assert_eq!(part.frame.shape_representation, 20);
+    assert_eq!(part.frame.shape_representation, 10);
 }
 
 #[test]
@@ -294,22 +318,20 @@ fn an_incomplete_shape_is_refused_and_ends_the_stage() {
 
 #[test]
 fn a_curve_and_point_set_is_kept_beside_the_solid() {
-    let input = shaped(
-        "#30,#50",
-        &format!(
-            "{SOLID_30}#50=GEOMETRIC_CURVE_SET('',(#51,#52,#55));\
-             #51=CARTESIAN_POINT('',(0.,0.,0.));\
-             #52=LINE('',#51,#53);#53=VECTOR('',#54,1.);#54=DIRECTION('',(1.,0.,0.));\
-             #55=(BOUNDED_CURVE()B_SPLINE_CURVE(1,(#51,#56),.UNSPECIFIED.,.F.,.F.)\
-             B_SPLINE_CURVE_WITH_KNOTS((2,2),(0.,1.),.UNSPECIFIED.)CURVE()\
-             GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE((1.,1.))\
-             REPRESENTATION_ITEM(''));\
-             #56=CARTESIAN_POINT('',(1.,0.,0.));"
-        ),
+    let input = p01_with(
+        "#11,#15,#9050",
+        "#9050=GEOMETRIC_CURVE_SET('',(#9051,#9052,#9055));\
+         #9051=CARTESIAN_POINT('',(0.,0.,0.));\
+         #9052=LINE('',#9051,#9053);#9053=VECTOR('',#9054,1.);#9054=DIRECTION('',(1.,0.,0.));\
+         #9055=(BOUNDED_CURVE()B_SPLINE_CURVE(1,(#9051,#9056),.UNSPECIFIED.,.F.,.F.)\
+         B_SPLINE_CURVE_WITH_KNOTS((2,2),(0.,1.),.UNSPECIFIED.)CURVE()\
+         GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE((1.,1.))\
+         REPRESENTATION_ITEM(''));\
+         #9056=CARTESIAN_POINT('',(1.,0.,0.));",
     );
     let part = read_part(&input).unwrap();
     assert_eq!(part.other_items.len(), 1);
-    assert_eq!(part.other_items[0].instance, 50);
+    assert_eq!(part.other_items[0].instance, 9050);
     assert_eq!(part.other_items[0].entity, "GEOMETRIC_CURVE_SET");
 }
 
@@ -444,4 +466,82 @@ fn refusals_read_back_must_be_sorted() {
         FeaturesDocument::from_json(&reversed),
         Err(FormatError::Invalid(_))
     ));
+}
+
+/// p01 with `from` replaced by `to`, once: a hand-written fault in a real
+/// solid, for the gate checks no generated part reaches.
+fn p01_edit(from: &str, to: &str) -> Vec<u8> {
+    let text = std::str::from_utf8(P01_THROUGH).unwrap();
+    assert_eq!(text.matches(from).count(), 1, "{from}");
+    text.replacen(from, to, 1).into_bytes()
+}
+
+/// The codes `input` is refused with, each once, in order.
+fn distinct_codes(input: &[u8]) -> Vec<RefusalCode> {
+    let mut codes = refusal_codes(input);
+    codes.dedup();
+    codes
+}
+
+#[test]
+fn stage_4_refuses_a_solid_whose_topology_cannot_be_read() {
+    let face_surface = p01_edit("#17 = ADVANCED_FACE(", "#17 = FACE_SURFACE(");
+    let refused = read_part(&face_surface).unwrap_err();
+    assert_eq!(refused.refusals()[0].code, RefusalCode::TopologyUnsupported);
+    assert_eq!(refused.refusals()[0].instance, Some(17));
+    let empty = p01_edit(
+        "#16 = CLOSED_SHELL('',(#17,#57,#88,#123,#147,#175,#187));",
+        "#16 = CLOSED_SHELL('',());",
+    );
+    assert_eq!(distinct_codes(&empty), [RefusalCode::TopologyMalformed]);
+}
+
+#[test]
+fn stage_4_refuses_a_shell_with_a_face_missing() {
+    let open = p01_edit("CLOSED_SHELL('',(#17,#57,", "CLOSED_SHELL('',(#57,");
+    assert_eq!(distinct_codes(&open), [RefusalCode::SolidNotClosed]);
+}
+
+#[test]
+fn stage_5_refuses_missing_units() {
+    let no_angle = p01_edit("((#205,#206,#207))", "((#205,#207))");
+    assert_eq!(
+        distinct_codes(&no_angle),
+        [RefusalCode::AngleUnitUnreadable]
+    );
+    let no_uncertainty = p01_edit("GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#208)) ", "");
+    assert_eq!(
+        distinct_codes(&no_uncertainty),
+        [RefusalCode::UncertaintyMissing]
+    );
+}
+
+#[test]
+fn stage_6_refuses_unreadable_and_out_of_range_geometry() {
+    let zero = p01_edit(
+        "#199 = CYLINDRICAL_SURFACE('',#200,3.3);",
+        "#199 = CYLINDRICAL_SURFACE('',#200,0.);",
+    );
+    let refused = read_part(&zero).unwrap_err();
+    assert_eq!(refused.refusals()[0].code, RefusalCode::GeometryUnreadable);
+    assert_eq!(refused.refusals()[0].instance, Some(199));
+    let far = p01_edit(
+        "#23 = CARTESIAN_POINT('',(0.,0.,0.));",
+        "#23 = CARTESIAN_POINT('',(2.E+06,0.,0.));",
+    );
+    assert_eq!(distinct_codes(&far), [RefusalCode::OutOfRange]);
+}
+
+#[test]
+fn stage_6_refuses_a_plane_face_whose_sense_is_flipped() {
+    // One character: the face at x = 0 now claims the plane's own normal,
+    // +x, as outward, while its loop still runs as for -x.
+    let flipped = p01_edit(
+        "#17 = ADVANCED_FACE('',(#18),#52,.F.);",
+        "#17 = ADVANCED_FACE('',(#18),#52,.T.);",
+    );
+    let refused = read_part(&flipped).unwrap_err();
+    assert_eq!(refused.refusals().len(), 1);
+    assert_eq!(refused.refusals()[0].code, RefusalCode::FaceOrientation);
+    assert_eq!(refused.refusals()[0].instance, Some(17));
 }

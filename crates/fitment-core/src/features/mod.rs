@@ -80,6 +80,9 @@ pub struct Part {
     pub frame: Frame,
     /// The part's solids. A canonical part has exactly one.
     pub solids: Vec<SolidInfo>,
+    /// The largest length uncertainty the solids' contexts state, in mm:
+    /// the matcher's tolerance floor.
+    pub max_uncertainty_mm: f64,
     /// Items of the part's shape that are not solids: curve and point
     /// sets, sorted by `#id`.
     pub other_items: Vec<OtherItem>,
@@ -139,6 +142,57 @@ pub struct SolidInfo {
     /// a mapped item places it; `None` if its coordinates are the frame's.
     #[serde(deserialize_with = "Option::deserialize")]
     pub transform: Option<Rigid>,
+    /// How many shells it has: the outer one, then its voids.
+    pub shells: u32,
+    /// How many faces it has.
+    pub faces: u32,
+    /// The units its context states.
+    pub units: SolidUnits,
+    /// The largest distance of a vertex from a surface or curve it lies on,
+    /// as measured, in mm. Values read from vertices cannot be trusted
+    /// below the larger of this and the stated uncertainty.
+    pub max_vertex_offset_mm: f64,
+}
+
+/// The units a solid's context states.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct SolidUnits {
+    /// The representation context's `#id`.
+    pub context: u64,
+    /// Its length unit; every length is reported in mm.
+    pub length: StatedUnit,
+    /// Its plane angle unit; every angle is reported in radians.
+    pub plane_angle: StatedUnit,
+    /// Its length uncertainties, in mm. At least one.
+    pub uncertainty: Vec<StatedUncertainty>,
+}
+
+/// A unit as the file states it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct StatedUnit {
+    /// The named unit's `#id`.
+    pub instance: u64,
+    /// Its name as stepq labels it, such as `millimetre` or `inch`.
+    pub name: String,
+    /// A value in this unit times `factor` is in mm (or radians).
+    pub factor: f64,
+}
+
+/// An uncertainty as the file states it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct StatedUncertainty {
+    /// The `uncertainty_measure_with_unit`'s `#id`.
+    pub instance: u64,
+    /// Its name as written, such as `distance_accuracy_value`.
+    pub name: String,
+    /// Its value, in mm.
+    pub value_mm: f64,
 }
 
 /// An item of the part's shape that is not a solid. The gate lets only

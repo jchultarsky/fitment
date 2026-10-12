@@ -904,7 +904,7 @@ fitment features <FILE> [--format json|table]
 | p29_mapped | a solid placed in its definition through a mapped item with transform T (text edit) | p01's answers moved by T, which `construction` states; `solids[0].transform` is T | G | 8,600 |
 | p30_round_bore | plate 10 mm, boss Ø16 × 6 with a 1 mm round on its top edge, Ø4 bore through both | hole through, length 16 (rim on the boss top, W8); boss shaft `root_free`, protrusion 6 | U | (to measure) |
 | p31_fillet_post | Ø16 pocket 8 deep with a 1 mm floor fillet, Ø4 × 3 post on its floor | post shaft `root_free`, protrusion 3; the pocket is blind with an annular bottom whose wall ends at z = 13 and whose floor (`floor_at`) is at z = 12; the fillet is a torus | G | (to measure) |
-| p32_torus_cbore | Ø11 counterbore over Ø6.6 through, with a 0.5 mm fillet on the counterbore floor and a 0.5 mm round at the rim | through stack; walk crosses torus, annulus, torus (W4); rim on the top face | U | (to measure) |
+| p32_torus_cbore | Ø11 counterbore over Ø6.6 through, with a 0.5 mm fillet on the counterbore floor and a 0.5 mm round at the rim, cut as one revolved tool | through stack; walk crosses torus, annulus, torus (W4); rim on the top face. Filleted with `BRepFilletAPI`, Open CASCADE 7.9 wrote the rim round's torus inside out, which check 15 refuses (found in PR 3) | U | (to measure) |
 | p33_step_drill | Ø8 to depth 10, then Ø5 through via a 118° cone | through stack of two segments joined by a cone (K3 step drill) | G | (to measure) |
 | p34_cbore_blind | Ø11×4 counterbore over Ø6 blind to 12 with a flat floor, then a 118° point ending on a Ø3 flat | blind; bottom `cone_then_flat` | G | (to measure) |
 | p35_annular_bottom | Ø10 blind hole 8 deep around a Ø4 post rising from its floor | blind; bottom `annular`, post radius 2 | G | (to measure) |
@@ -984,7 +984,7 @@ The `features` mode below, fitment against Open CASCADE, arrives with PR 4.
 
 - `tools/fetch-fixtures.sh` is copied from stepq, with the same URLs and SHA-256 pins, into `fixtures/`. Only `README.md` and `manifest.toml` are tracked.
 - M2 uses stepq's `core` set (about 20 MB). The `ocp` set is all assemblies and stays manual.
-- **Each file's gate result is pinned** in `fixtures/manifest.toml`, for example `features = "refused"` with `reason = "assembly"`. The first pins come from the census in section 4.2.
+- **Each file's gate result is pinned** in `fixtures/manifest.json` (JSON, which the tests already read), for example `"features": "refused", "reasons": ["assembly"]`. The first pins, from PR 3, match the census in section 4.2: of the 45 core files, 24 accepted, 9 assemblies, 10 with surface models, 1 tessellated only and 1 with several definitions.
 - **Fixture tests assert:**
   - no panic and no `internal` refusal on any file;
   - the pinned gate result;
@@ -1033,7 +1033,7 @@ Each PR comes with its tests. `EXTRACTOR_VERSION` goes up with every PR that cha
    - `verify-occt.py manifest`;
    - the `corpus` CI job.
 3. **Gate stages 4 to 6.**
-   - topology, units, geometry, vertex and face-orientation checks;
+   - topology, units, geometry, vertex and face-orientation checks, and `libm` (moved here from PR 4: the planar orientation check sums arc sweeps);
    - `fetch-fixtures.sh` and the pinned gate census;
    - the fixture test.
 4. **Planes and the partition.**
@@ -1095,6 +1095,7 @@ The consistency review corrected populations (48 or 55 files), counts, six expec
 ## 19. Risks
 
 - **Real exporters split faces; the generated parts mostly do not.** 94% of full cylinders in the fixtures are split. p17, p18 and p20 and the NIST fixtures cover the split path, but the generator can only produce Open CASCADE's way of splitting.
+- **Open CASCADE 7.9 writes some filleted tori inside out.** In PR 3, two generated parts filleted with `BRepFilletAPI` (p31's floor fillet, p32's rim round) had a torus face whose loop is reversed by `FACE_BOUND .F.` while its `same_sense` stays `.T.`: by the schema the face runs the same way as both its neighbours along their shared circles. Open CASCADE repairs orientation as it reads, so it called the solids valid; fitment's check 15 refuses them as `solid_not_closed`. The generator now cuts those parts with revolved tools, which Open CASCADE writes consistently. Real parts exported by Open CASCADE with such fillets will be refused too: a false negative, never a misread. None of the 45 core fixtures is affected.
 - **The end walk is the most complex rule.** In A's probe it gave 108 unknown hole ends (about 84 of them G3 cases the rules resolve) and 56 non-mutual steps. Each unknown must stay `unknown`, never default to open or closed, or a blind hole could read as through. The review found two such defaults (C2, C3) after the rules were written; every W4 and W5 row now has a case, and the `u` parts must read `unknown`.
 - **A whole shell written inside out** passes every per-face check (R11). Only the oracle's positive-volume check sees it, and only on files CI reads. A sound global test, for example on support planes extended with circle extremes, needs measuring: a naive version flags 21 valid fixture shells.
 - **Ellipses and B-spline circles lose holes.** Angled holes and CAS.CADE-style exports give irregular or undecided cylinders. That is safe but costs coverage. Reading ellipses (stated centre, axes and radii) would be a natural stepq 0.7 addition, if the corpus shows it matters.

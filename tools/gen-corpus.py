@@ -394,6 +394,23 @@ def round_edges(shape, radius, pick):
     return fillet.Shape()
 
 
+def revolved_cut(shape, centre, profile):
+    """`shape` minus the solid `profile` sweeps about the vertical axis
+    through `centre` (x, y). `profile` is cadquery drawing steps on the XZ
+    plane, in (radius, z): a cut by a revolved tool states its tori
+    consistently, where Open CASCADE 7.9 writes some filleted tori inside
+    out (their loops reversed by FACE_BOUND .F. while same_sense stays
+    .T.), which fitment rightly refuses as a solid that is not closed."""
+    tool = profile(cq.Workplane("XZ")).close().revolve(360, (0, 0, 0), (0, 1, 0))
+    return cut(shape, tool.translate((centre[0], centre[1], 0)).val().wrapped)
+
+
+def arc_mid(centre, radius, degrees):
+    """The point of the arc about `centre` (r, z) at `degrees`."""
+    a = math.radians(degrees)
+    return (centre[0] + radius * math.cos(a), centre[1] + radius * math.sin(a))
+
+
 def circle_at(z, radius):
     return lambda c: abs(c.Location().Z() - z) < 1e-9 and abs(c.Radius() - radius) < 1e-9
 
@@ -812,8 +829,11 @@ def build(w: Writer, unit_only: bool):
          "a bore through a boss with a 1 mm round on its top edge: length 16, rim on the boss top (W8)",
          ["W8", "W3.torus", "W4.torus"], True, {"plate": [0, 0, 0, 40, 40, 10], "boss": "dia 16 x 6, R1 round"})
 
-    pocket31 = round_edges(cut(box(0, 0, 0, 40, 40, 20), cyl((20, 20, 12), UP, 8, 9)), 1.0, circle_at(12, 8))
-    s31 = fuse(pocket31, cyl((20, 20, 12), UP, 2, 3))
+    # A dia 16 pocket from z 12 with an R1 floor fillet, around a dia 4 post
+    # to z 15, cut as one revolved tool.
+    s31 = revolved_cut(box(0, 0, 0, 40, 40, 20), (20, 20), lambda w: (
+        w.moveTo(0, 15).lineTo(2, 15).lineTo(2, 12).lineTo(7, 12)
+        .threePointArc(arc_mid((7, 13), 1, -45), (8, 13)).lineTo(8, 21).lineTo(0, 21)))
     part("p31_fillet_post", s31,
          # The wall ends at z 13, where the floor fillet starts; the floor is at z 12.
          Features([Hole((20, 20, 20), DOWN, [(16, 7)], post_diameter=4, floor_below=1)],
@@ -823,7 +843,12 @@ def build(w: Writer, unit_only: bool):
          ["W8", "W5.bottom.annular"], False, {"box": [0, 0, 0, 40, 40, 20], "pocket": "dia 16 x 8, R1 floor fillet"})
 
     h32 = Hole((20, 20, 12), DOWN, [(11, 4), (6.6, 12)], through=12)
-    s32 = round_edges(cut(box(0, 0, 0, 40, 40, 12), tool(h32)), 0.5, lambda c: abs(c.Radius() - 5.5) < 1e-9)
+    # The bore, the counterbore with its R0.5 floor fillet, and the R0.5 rim
+    # round, cut as one revolved tool.
+    s32 = revolved_cut(box(0, 0, 0, 40, 40, 12), (20, 20), lambda w: (
+        w.moveTo(0, -1).lineTo(3.3, -1).lineTo(3.3, 8).lineTo(5.0, 8)
+        .threePointArc(arc_mid((5.0, 8.5), 0.5, -45), (5.5, 8.5)).lineTo(5.5, 11.5)
+        .threePointArc(arc_mid((6.0, 11.5), 0.5, 135), (6.0, 12)).lineTo(6.0, 13).lineTo(0, 13)))
     e32 = accepted(Features([h32], planes=box_planes(0, 0, 0, 40, 40, 12) + [Plane(UP, 8)], tori=2))
     # The dia 11 wall runs only from the floor fillet (z 8.5) to the rim
     # round (z 11.5); the rim stays on the top face (W8).

@@ -20,7 +20,7 @@ use serde_json::Value;
 const UNIT_SET_BYTES: u64 = 300_000;
 
 /// The gate stages built so far (`docs/research/m2-features.md`, 4.2).
-const BUILT_STAGES: u64 = 3;
+const BUILT_STAGES: u64 = 6;
 
 fn unit_set() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests/data")
@@ -103,12 +103,15 @@ fn every_corpus_part_is_accepted_or_refused_as_its_construction_says() {
             .unwrap();
         let document: Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|e| panic!("{name}: not JSON: {e}"));
-        let codes: Vec<&str> = document["refusals"]
+        // The distinct codes, in order: a code repeats once per instance
+        // at fault, and the manifest names each code once.
+        let mut codes: Vec<&str> = document["refusals"]
             .as_array()
             .unwrap()
             .iter()
             .map(|refusal| refusal["code"].as_str().unwrap())
             .collect();
+        codes.dedup();
         let expect = &case["expect"];
         let refused =
             expect["result"] == "refused" && expect["stage"].as_u64().unwrap() <= BUILT_STAGES;
