@@ -34,7 +34,8 @@ For an accepted case, every face must be accounted for:
 
 For an assembly case (docs/research/m3-socket.md, section 13), XCAF's
 leaf placements, composed from the root, one to one with the
-construction's: product by name, transform within 1e-8.
+construction's: product by name, transform within 1e-9. Leaves that
+are one product's are told apart only by their transforms.
 
 For a refused case, the facts Open CASCADE or the file text can show: an
 assembly usage, two product definitions, two solids, no solid, a surface
@@ -639,7 +640,7 @@ def check_refused(path, solids, codes, problems, case):
 
 # -------------------------------------------------------------- assemblies
 
-PLACEMENT_TOL = 1e-8  # mm and rotation entries: answers are rounded to 9 decimals
+PLACEMENT_TOL = 1e-9  # mm and rotation entries (P9): answers are rounded to 9 decimals
 
 
 def xcaf_leaves(path):
@@ -696,6 +697,12 @@ def check_assembly(directory, case):
         return [f"{name}: Open CASCADE cannot read it"]
     expect = case["expect"]
     if expect["listing"]["result"] != "accepted":
+        # What Open CASCADE can show of a refusal: two roots are two free
+        # shapes. A placement edit it may read another way is not judged.
+        if "several_roots" in expect["listing"]["refusals"]:
+            roots = {tuple(row[3] for row in m) for _, m in leaves}
+            if len(leaves) < 2 or len(roots) < 2:
+                return [f"{name}: refused for two roots, but Open CASCADE reads {len(leaves)} leaves"]
         return []
     problems = []
     # XCAF names a leaf by its PRODUCT.name; the manifest keys it by id.

@@ -174,10 +174,17 @@ fn a_snippet_assembly_reads() {
         .map(|&i| listing.occurrences()[i].path.display(PathForm::UsageId))
         .collect();
     assert_eq!(paths, ["u1/u2", "u1/u3"]);
-    // Both written forms of a path read, and mixed.
-    for path in ["u1/u3", "#100000/#100020", "u1/#100020"] {
+    // Both written forms of a path read, and mixed; each names its own
+    // occurrence.
+    for (path, nth) in [
+        ("u1/u3", 1),
+        ("#100000/#100020", 1),
+        ("u1/#100020", 1),
+        ("u1/u2", 0),
+        ("#100000/u2", 0),
+    ] {
         let one = listing.select(Some("B"), Some(path)).unwrap();
-        assert_eq!(one.occurrences, [b.occurrences[1]], "{path}");
+        assert_eq!(one.occurrences, [b.occurrences[nth]], "{path}");
     }
 }
 
@@ -393,4 +400,123 @@ fn a_parts_document_that_breaks_its_rules_is_not_read() {
     let mut json: Value = serde_json::from_str(&text).unwrap();
     json["parts"].as_array_mut().unwrap().reverse();
     assert!(PartsDocument::from_json(&json.to_string()).is_err());
+}
+
+#[test]
+fn definitions_in_a_cycle_beside_the_root_are_refused() {
+    // A lone part beside two definitions using each other: one root, yet
+    // no assembly (review of M3 PR 1).
+    let lone = snippet(&["R", "A", "B"], &[(1, 2, "u1"), (2, 1, "u2")], "", &[]);
+    let read = read_assembly(lone.as_bytes());
+    assert!(read.listing().is_none());
+    assert_eq!(codes(read.refusals()), [RefusalCode::SeveralRoots]);
+    // The root places P; apart from it, a cycle places Q somewhere.
+    let beside = snippet(
+        &["ROOT", "P", "A", "B", "Q"],
+        &[(0, 1, "u1"), (2, 3, "u2"), (3, 2, "u3"), (3, 4, "u4")],
+        "",
+        &[],
+    );
+    let read = read_assembly(beside.as_bytes());
+    assert_eq!(codes(read.refusals()), [RefusalCode::SeveralRoots]);
+    assert!(read.refusals()[0].message.contains("not reached from the root"));
+}
+
+#[test]
+fn a_usage_stepq_cannot_read_is_refused_not_dropped() {
+    // The second usage's child is not a reference: stepq skips it, which
+    // would make B's quantity 1.
+    let text = snippet(&["ROOT", "B"], &[(0, 1, "u1"), (0, 1, "u2")], "", &[]).replace(
+        "#100010=NEXT_ASSEMBLY_USAGE_OCCURRENCE('u2','','',#102,#202,$);",
+        "#100010=NEXT_ASSEMBLY_USAGE_OCCURRENCE('u2','','',#102,$,$);",
+    );
+    let read = read_assembly(text.as_bytes());
+    assert!(read.listing().is_none());
+    assert!(
+        read.refusals()
+            .iter()
+            .any(|r| r.code == RefusalCode::PlacementUnreadable && r.instance == Some(100_010)),
+        "{:?}",
+        read.refusals()
+    );
+}
+
+#[test]
+fn long_usage_ids_on_many_paths_are_refused() {
+    // 2^15 leaf occurrences, each path carrying a 1,000-byte id: within
+    // the occurrence limit, past the label budget of check 34.
+    let long = "x".repeat(1_000);
+    let names: Vec<String> = (0..17).map(|k| format!("D{k}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let ids: Vec<String> = (0..30).map(|k| format!("u{k}")).collect();
+    let mut usages: Vec<(usize, usize, &str)> = vec![(0, 1, long.as_str())];
+    usages.extend((0..30).map(|k| (k / 2 + 1, k / 2 + 2, ids[k].as_str())));
+    let text = snippet(&names, &usages, "", &[]);
+    let read = read_assembly(text.as_bytes());
+    assert!(read.listing().is_none());
+    assert_eq!(codes(read.refusals()), [RefusalCode::TooManyOccurrences]);
+    assert!(read.refusals()[0].message.contains("bytes of usage ids"));
+}
+
+#[test]
+fn the_occurrence_limit_keeps_the_usages_that_cannot_be_placed() {
+    // An unplaced usage above a diamond past the limit: both reasons.
+    let names: Vec<String> = (0..22).map(|k| format!("D{k}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let ids: Vec<String> = (0..41).map(|k| format!("u{k}")).collect();
+    let mut usages: Vec<(usize, usize, &str)> = vec![(0, 1, ids[40].as_str())];
+    usages.extend((0..40).map(|k| (k / 2 + 1, k / 2 + 2, ids[k].as_str())));
+    let text = snippet(&names, &usages, "", &[]).replace(
+        "#100002=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#100003,#100001);\n",
+        "",
+    );
+    let read = read_assembly(text.as_bytes());
+    assert_eq!(
+        codes(read.refusals()),
+        [RefusalCode::PlacementUnreadable, RefusalCode::TooManyOccurrences]
+    );
+}
+
+#[test]
+fn a_parts_document_whose_tree_is_broken_is_not_read() {
+    let (_, bytes) = ASSEMBLIES[3];
+    let text = PartsDocument::read(bytes).to_json();
+    let json: Value = serde_json::from_str(&text).unwrap();
+    let part = |json: &Value, id: &str| {
+        json["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|p| p["definition"]["product"]["id"] == id)
+            .unwrap()
+    };
+    let refuses = |edit: &dyn Fn(&mut Value), why: &str| {
+        let mut changed = json.clone();
+        edit(&mut changed);
+        let error = PartsDocument::from_json(&changed.to_string());
+        assert!(error.is_err(), "{why}: read");
+    };
+    let bracket = part(&json, "BRACKET");
+    let lb = part(&json, "LB_ASSEM");
+    refuses(
+        &|j| j["parts"][bracket]["kind"] = Value::from("assembly"),
+        "a part marked assembly",
+    );
+    refuses(
+        &|j| j["parts"][lb]["kind"] = Value::from("part"),
+        "an assembly marked part",
+    );
+    refuses(
+        &|j| j["parts"][bracket]["occurrences"][0]["path"][0] = Value::from(999_999),
+        "a path whose parent does not occur",
+    );
+    refuses(
+        &|j| j["parts"][bracket]["occurrences"][0]["label"][1] = Value::from(" "),
+        "a blank label",
+    );
+    refuses(
+        &|j| j["parts"][bracket]["occurrences"][0]["label"][1] = Value::Null,
+        "a missing label where paths are written by id",
+    );
+    refuses(&|j| j["source"]["header"] = Value::Null, "no header");
 }

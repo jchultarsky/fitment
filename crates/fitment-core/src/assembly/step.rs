@@ -58,23 +58,26 @@ pub(super) fn read(step: &[u8]) -> AssemblyRead {
         Err(refusals) => return refused(header, refusals),
     };
     let placements = Placements::new(&graph, &structure);
+    let mut refusals = gate::assembly::unread_usages(&graph, &structure);
     let placed = match gate::assembly::occurrences(&placements, &structure, root) {
         Ok(placed) => placed,
-        Err(refusals) => return refused(header, refusals),
+        Err(more) => {
+            refusals.extend(more);
+            return refused(header, refusals);
+        }
     };
-    let listing = listing(&structure, root, placed);
-    let mut refusals = gate::assembly::assembly(&structure);
-    for listed in &listing.definitions {
-        if listed.kind == DefinitionKind::Assembly {
-            if let Some(index) = structure
-                .definitions()
-                .iter()
-                .position(|definition| definition.instance == listed.definition.instance)
-            {
-                refusals.extend(gate::assembly::assembly_shape(&graph, &structure, index));
-            }
+    let reached: BTreeSet<usize> = placed.iter().map(|p| p.occurrence.definition).collect();
+    refusals.extend(gate::assembly::unreached(&structure, &reached));
+    if !refusals.is_empty() {
+        return refused(header, refusals);
+    }
+    let mut refusals = gate::assembly::assembly(&structure, root);
+    for &index in &reached {
+        if structure.children(index).next().is_some() {
+            refusals.extend(gate::assembly::assembly_shape(&graph, &structure, index));
         }
     }
+    let listing = listing(&structure, root, placed);
     AssemblyRead {
         header,
         refusals: Vec::new(),
