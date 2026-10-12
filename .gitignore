@@ -32,3 +32,4 @@ __pycache__/
 
 # Probe output behind docs/research/m1-stepq-read.md; large, not committed
 /docs/research/m1-evidence/
+/docs/research/m2-evidence/
