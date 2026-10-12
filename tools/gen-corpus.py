@@ -7,6 +7,7 @@
 
     tools/gen-corpus.py OUT_DIR              every case: the generated corpus
     tools/gen-corpus.py --unit-set OUT_DIR   only the committed unit set
+    tools/gen-corpus.py --assembly-set OUT_DIR   only the committed assemblies
 
 Each part is built from explicit primitives (boxes, cylinders, cones, tori
 from fillets, one prism), a few through documented text edits of a written
@@ -539,6 +540,36 @@ RULES = {
     "E2": {}, "E3": {}, "E4": {},
     "9.4": {}, "9.7": {}, "13.2": {},
 }
+
+# M3 (docs/research/m3-socket.md): its gate checks 31 to 39 and its rules.
+# Those a later PR builds are deferred with the PR that builds them, so the
+# coverage test sees every id the design states from the start.
+M3_CORE = "crates/fitment-core/tests"
+RULES.update({
+    "m3.4.1#31": {"tests": [f"{M3_CORE}/assemblies.rs::a_part_file_lists_one_part_and_is_not_an_assembly"]},
+    "m3.4.1#32": {"tests": [f"{M3_CORE}/assemblies.rs::an_assembly_needs_exactly_one_root"]},
+    "m3.4.1#33": {"tests": [f"{M3_CORE}/assemblies.rs::a_cycle_is_an_unreadable_placement"]},
+    "m3.4.1#34": {"tests": [f"{M3_CORE}/assemblies.rs::a_diamond_past_the_occurrence_limit_is_refused"]},
+    "m3.4.1#35": {"tests": [f"{M3_CORE}/assemblies.rs::material_in_an_assembly_s_own_shape_is_refused"]},
+    "m3.4.1#36": {"deferred": "M3 PR 2 reads the components"},
+    "m3.4.1#37": {"deferred": "M3 PR 2 reads the components"},
+    "m3.4.1#38": {"deferred": "M3 PR 2 reads the components"},
+    "m3.4.1#39": {"deferred": "M3 PR 3 builds the relation search"},
+    "T1": {}, "T2": {"tests": [f"{M3_CORE}/assemblies.rs::a_definition_instance_selects_unless_an_id_reads_the_same"]},
+    "T3": {}, "T4": {}, "T5": {}, "T6": {"deferred": "M3 PR 3: the socket command's exit code for a selection error"},
+    "O1": {}, "O2": {}, "O3": {"tests": [f"{M3_CORE}/assemblies.rs::a_path_segment_that_names_two_usages_is_refused"]},
+    "O4": {}, "O5": {}, "O6": {},
+    "P1": {}, "P2": {}, "P7": {}, "P9": {},
+    "P3": {"deferred": "M3 PR 2 reads the components and checks their frames"},
+    "P4": {"deferred": "M3 PR 3 moves features"}, "P5": {"deferred": "M3 PR 3 moves features"},
+    "P6": {"deferred": "M3 PR 3 compares placed axes"},
+    "P8": {"deferred": "M3 PR 3 builds s22"},
+    **{f"Z{k}": {"deferred": "M3 PR 2 (Z1) and PR 3 (the rest)"} for k in range(1, 8)},
+    **{f"{letter}{k}": {"deferred": f"M3 PR {pr}"} for letter, n, pr in [
+        ("N", 5, 3), ("X", 6, 3), ("B", 8, 3), ("I", 7, 3), ("J", 3, 3), ("U", 8, 3), ("A", 3, 3),
+        ("H", 2, 4), ("Q", 2, 4), ("C", 6, 4), ("L", 2, 4), ("Y", 4, 3), ("V", 2, 3)]
+       for k in range(1, n + 1)},
+})
 
 
 def coverage(cases):
@@ -1208,6 +1239,477 @@ def build(w: Writer, unit_only: bool):
            ["4.2#25", "4.2#25b"], True, {"from": "p01"}, refused(6, "face_orientation"))
 
 
+# ------------------------------------------------------------- assemblies
+#
+# docs/research/m3-socket.md, section 13. Each assembly is a tree of Leaf
+# parts and Node assemblies, each child placed by a 4x4 matrix; one Python
+# object is one product however often it is placed. It is written through
+# XCAF directly, so that product names and shared sub-assemblies are exactly
+# the construction's, and the expected occurrence transforms come from the
+# same tree, multiplied in pure Python.
+
+
+def m_motion(m: Motion):
+    """The 4x4 matrix of a Motion: rotation by `angle` about `axis`, then the shift."""
+    cols = [m.vector(e) for e in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+    return [[cols[0][i], cols[1][i], cols[2][i], m.shift[i]] for i in range(3)] + [[0.0, 0.0, 0.0, 1.0]]
+
+
+def m_tr(v):
+    return m_motion(Motion((0, 0, 1), 0.0, tuple(float(c) for c in v)))
+
+
+def m_rot(axis, deg, shift=(0, 0, 0)):
+    return m_motion(Motion(axis, deg, shift))
+
+
+def m_mul(*ms):
+    out = [[float(i == j) for j in range(4)] for i in range(4)]
+    for m in ms:
+        out = [[sum(out[i][k] * m[k][j] for k in range(4)) for j in range(4)] for i in range(4)]
+    return out
+
+
+def m_inv(m):
+    """The inverse of a rigid 4x4 matrix."""
+    rt = [[m[j][i] for j in range(3)] for i in range(3)]
+    t = [-sum(rt[i][k] * m[k][3] for k in range(3)) for i in range(3)]
+    return [rt[i] + [t[i]] for i in range(3)] + [[0.0, 0.0, 0.0, 1.0]]
+
+
+I4 = m_tr((0, 0, 0))
+
+
+@dataclass(eq=False)
+class Leaf:
+    """A part: one product."""
+    name: str
+    shape: object
+
+
+@dataclass(eq=False)
+class Node:
+    """An assembly: one product whose children are (Leaf or Node, 4x4 matrix)."""
+    name: str
+    children: list = field(default_factory=list)
+
+    def add(self, child, matrix=None):
+        self.children.append((child, matrix if matrix is not None else I4))
+        return self
+
+
+def occurrences(node, at=None, out=None):
+    """{product name: [3x4 rows]} for every leaf occurrence under `node`."""
+    at = I4 if at is None else at
+    out = {} if out is None else out
+    for child, matrix in node.children:
+        placed = m_mul(at, matrix)
+        if isinstance(child, Leaf):
+            out.setdefault(child.name, []).append([[r(x) for x in row] for row in placed[:3]])
+        else:
+            occurrences(child, placed, out)
+    return out
+
+
+def quantities(root):
+    """{(name, kind): quantity} for every definition under `root`, the root included."""
+    out = {(root.name, "assembly"): 1}
+
+    def walk(node):
+        for child, _ in node.children:
+            kind = "part" if isinstance(child, Leaf) else "assembly"
+            out[(child.name, kind)] = out.get((child.name, kind), 0) + 1
+            if isinstance(child, Node):
+                walk(child)
+
+    walk(root)
+    return out
+
+
+def listing(root):
+    """The `parts` expected of `root`: id, name, kind and quantity, by name."""
+    return [{"id": name, "name": name, "kind": kind, "quantity": n}
+            for (name, kind), n in sorted(quantities(root).items())]
+
+
+def write_xcaf(w: Writer, root: Node, name: str, pcurves=False):
+    """Writes the tree under `root` as one STEP assembly: every Leaf and
+    Node object one product, named after it, every child one usage."""
+    from OCP.STEPCAFControl import STEPCAFControl_Writer
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+
+    doc = TDocStd_Document(TCollection_ExtendedString("XmlOcaf"))
+    tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    labels = {}
+
+    def label(item):
+        if id(item) in labels:
+            return labels[id(item)]
+        if isinstance(item, Leaf):
+            made = tool.AddShape(item.shape, False)
+        else:
+            made = tool.NewShape()
+            for child, matrix in item.children:
+                t = gp_Trsf()
+                t.SetValues(*[matrix[i][j] for i in range(3) for j in range(4)])
+                tool.AddComponent(made, label(child), TopLoc_Location(t))
+        TDataStd_Name.Set_s(made, TCollection_ExtendedString(item.name))
+        labels[id(item)] = made
+        return made
+
+    roots = root if isinstance(root, list) else [root]
+    for item in roots:
+        label(item)
+    tool.UpdateAssemblies()
+    # The writer first: its first construction initialises the STEP
+    # statics, which would undo settings made before it.
+    writer = STEPCAFControl_Writer()
+    Interface_Static.SetIVal_s("write.surfacecurve.mode", 1 if pcurves else 0)
+    Interface_Static.SetIVal_s("write.step.assembly", 1)
+    Interface_Static.SetCVal_s("xstep.cascade.unit", "MM")
+    Interface_Static.SetCVal_s("write.step.unit", "MM")
+    if not writer.Transfer(doc, STEPControl_AsIs):
+        raise RuntimeError(f"{name}: transfer failed")
+    path = w.out / f"{name}.stp"
+    if writer.Write(str(path)) != IFSelect_RetDone:
+        raise OSError(f"{name}: write failed")
+    fix_assembly(path)
+    return path
+
+
+def fix_assembly(path: Path):
+    """A fixed time stamp, and usage ids renumbered from 1 in file order:
+    Open CASCADE numbers them with a counter that runs across the whole
+    process, so a case written alone would differ."""
+    Writer.fix_time(path)
+    text = path.read_text(encoding="latin-1")
+    k = iter(range(1, 10 ** 6))
+    text = re.sub(r"(NEXT_ASSEMBLY_USAGE_OCCURRENCE\s*\(\s*')[^']*(')",
+                  lambda m: f"{m.group(1)}{next(k)}{m.group(2)}", text)
+    path.write_text(text, encoding="latin-1", newline="\n")
+
+
+def hex_prism(af, z0, h):
+    """A hexagonal prism across flats `af` (two flats normal to y), from z0 up by h."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    rad = af / math.sqrt(3)
+    poly = BRepBuilderAPI_MakePolygon()
+    for k in range(6):
+        a = math.radians(60 * k)
+        poly.Add(gp_Pnt(rad * math.cos(a), rad * math.sin(a), z0))
+    poly.Close()
+    face = BRepBuilderAPI_MakeFace(poly.Wire()).Face()
+    return BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, h)).Shape()
+
+
+def through(shape, pts, d, z0, z1):
+    """`shape` with through holes of diameter d at `pts`, cut from z0 - 1 to z1 + 1."""
+    return cut(shape, *[cyl((x, y, z0 - 1), UP, d / 2, z1 - z0 + 2) for x, y in pts])
+
+
+PTS = [(-30, -15), (30, -15), (-30, 15), (30, 15)]
+
+
+def a_plate(lx=100, ly=60, t=10, d=6.6, pts=PTS):
+    """A plate centred in x and y, top face at z = 0, through holes at `pts`."""
+    return through(box(-lx / 2, -ly / 2, -t, lx, ly, t), pts, d, -t, 0)
+
+
+def a_bracket():
+    """80 x 50 x 8, bottom face at z = 0: four dia 6.6 holes, one dia 8."""
+    return through(through(box(-40, -25, 0, 80, 50, 8), PTS, 6.6, 0, 8), [(0, 0)], 8, 0, 8)
+
+
+def a_hex_bolt(length=25, d=6):
+    """Hex head (across flats 10) z 0 to 4, its bearing face at z = 0; shank z -length to 0."""
+    return fuse(hex_prism(10, 0, 4), cyl((0, 0, -length), UP, d / 2, length))
+
+
+def a_hex_nut():
+    """Across flats 10, z -5 to 0 (its bearing face at z = 0); a dia 5 hole."""
+    return through(hex_prism(10, -5, 5), [(0, 0)], 5, -5, 0)
+
+
+def a_shcs(length=16):
+    """Socket head cap screw without its socket: head dia 10, z 0 to 6; shank dia 6 down to -length."""
+    return fuse(cyl((0, 0, 0), UP, 5, 6), cyl((0, 0, -length), UP, 3, length))
+
+
+def bolted(name, bracket=None, bolt=None, nut=None):
+    """A bracket on nothing, four bolts through it at z = 8 and four nuts at z = -10."""
+    sub = Node(name)
+    sub.add(bracket or Leaf("BRACKET", a_bracket()))
+    bolt = bolt or Leaf("BOLT", a_hex_bolt())
+    nut = nut or Leaf("NUT", a_hex_nut())
+    for x, y in PTS:
+        sub.add(bolt, m_tr((x, y, 8)))
+        sub.add(nut, m_tr((x, y, -10)))
+    return sub
+
+
+def asm_expect(root, select=(), listing_result=None, gate=None):
+    """The answers of an assembly case: its parts list, every leaf
+    occurrence's transform, the selections to try, and the assembly gate."""
+    expect = {"listing": listing_result or {"result": "accepted", "path_form": "usage_id", "parts": listing(root)},
+              "assembly_gate": gate or {"result": "accepted"},
+              "select": list(select)}
+    if expect["listing"]["result"] == "accepted":
+        expect["occurrences"] = occurrences(root)
+    return expect
+
+
+class Asm:
+    """Writes assembly cases."""
+
+    def __init__(self, w: Writer, which):
+        self.w, self.which = w, which
+
+    def case(self, name, root, tests, rules, unit_set, construction, expect, edit=None):
+        if not self.which(unit_set):
+            return None
+        path = write_xcaf(self.w, root, name)
+        if edit is not None:
+            f = Part21(path.read_text(encoding="latin-1"))
+            edit(f)
+            path.write_text(f.text(), encoding="latin-1", newline="\n")
+            Writer.fix_time(path)
+        self.w.cases.append({"id": name, "file": f"{name}.stp", "kind": "assembly",
+                             "set": "unit" if unit_set else "corpus", "tests": tests, "rules": rules,
+                             "construction": construction, "expect": expect})
+        return path
+
+
+def usage_of(f: Part21, child_name):
+    """The usage (NAUO) whose child is the product named `child_name`."""
+    product = next(n for n in f.find("PRODUCT(") if f.inst[n].startswith(f"PRODUCT('{child_name}'"))
+    formation = next(n for n in f.find("PRODUCT_DEFINITION_FORMATION") if product in f.refs(n))
+    definition = next(n for n in f.find("PRODUCT_DEFINITION(") if formation in f.refs(n))
+    return next(n for n in f.find("NEXT_ASSEMBLY_USAGE_OCCURRENCE") if f.refs(n)[1] == definition)
+
+
+def placement_of(f: Part21, usage):
+    """The CDSR, relationship and item_defined_transformation that place `usage`."""
+    pds = next(n for n in f.find("PRODUCT_DEFINITION_SHAPE") if f.refs(n) == [usage])
+    cdsr = next(n for n in f.find("CONTEXT_DEPENDENT_SHAPE_REPRESENTATION") if f.refs(n)[1] == pds)
+    relationship = f.refs(cdsr)[0]
+    idt = next(ref for ref in f.refs(relationship) if f.inst[ref].startswith("ITEM_DEFINED_TRANSFORMATION"))
+    return cdsr, relationship, idt
+
+
+def component_item(f: Part21, usage):
+    """The transform item of `usage`'s placement that lies in the
+    component's representation, and that representation."""
+    _, relationship, idt = placement_of(f, usage)
+    rep_1, rep_2 = [ref for ref in f.refs(relationship) if not f.inst[ref].startswith("ITEM_DEFINED")][:2]
+    item_1, item_2 = f.refs(idt)
+    child = f.refs(usage)[1]
+    pds = next(n for n in f.find("PRODUCT_DEFINITION_SHAPE") if f.refs(n) == [child])
+    sdr = next(n for n in f.find("SHAPE_DEFINITION_REPRESENTATION") if f.refs(n)[0] == pds)
+    component_rep = f.refs(sdr)[1]
+    if rep_1 == component_rep:
+        return idt, item_1, rep_1
+    return idt, item_2, rep_2
+
+
+def replace_component_item(f: Part21, usage, value):
+    """Gives `usage` a component-side transform item of its own, `value`:
+    Open CASCADE shares one identity frame among every usage, so editing
+    that frame would move them all."""
+    idt, item, rep = component_item(f, usage)
+    n = f.add(value)
+    f.inst[idt] = re.sub(rf"#{item}\b", f"#{n}", f.inst[idt], count=1)
+    f.inst[rep] = re.sub(rf"#{item}\b", f"#{item},#{n}", f.inst[rep], count=1)
+
+
+def build_assemblies(w: Writer, which):
+    """Every assembly case `which(unit_set)` asks for."""
+    a = Asm(w, which)
+    pts8 = PTS + [(x + 100, y) for x, y in PTS]
+
+    # s01: the bracket bolted to a plate; its dia 8 hole has nothing on its axis.
+    s01 = Node("s01_bolted").add(Leaf("PLATE", a_plate()))
+    bracket, bolt, nut = Leaf("BRACKET", a_bracket()), Leaf("BOLT", a_hex_bolt()), Leaf("NUT", a_hex_nut())
+    s01.add(bracket)
+    for x, y in PTS:
+        s01.add(bolt, m_tr((x, y, 8)))
+        s01.add(nut, m_tr((x, y, -10)))
+    a.case("s01_bolted", s01, "a bracket bolted to a plate with four hex bolts and nuts", ["T3", "T5", "O1", "O4", "O5", "O6",
+           "P2", "m3.4.1#32", "m3.4.1#33", "m3.4.1#35"], True,
+           {"plate": [100, 60, 10], "bracket": [80, 50, 8], "holes": 6.6, "pts": PTS,
+            "bolt": {"af": 10, "head": 4, "d": 6, "length": 25, "at_z": 8}, "nut": {"af": 10, "h": 5, "d": 5, "at_z": -10}},
+           asm_expect(s01, select=[
+               {"part": "BRACKET", "result": "BRACKET", "occurrences": 1, "matched_by": "product_id"},
+               {"part": "BOLT", "result": "BOLT", "occurrences": 4, "matched_by": "product_id"},
+               {"part": "NOPE", "error": "part_not_found", "suggestions": []},
+               {"part": "bolt", "error": "part_not_found", "suggestions": ["BOLT"]},
+               {"part": "s01_bolted", "error": "part_is_assembly"},
+               {"part": "BRACKET", "occurrence_of": "BOLT", "error": "occurrence_mismatch"},
+               {"occurrence_of": "BRACKET", "result": "BRACKET", "occurrences": 1, "matched_by": "occurrence"},
+               {"part": "BRACKET", "occurrence": "nowhere", "error": "occurrence_not_found"},
+               {"error": "nothing_selected"},
+           ]))
+
+    # s02: a counterbored block on a base, a socket head cap screw into the base's dia 5 blind hole.
+    s02 = Node("s02_cbore")
+    base = cut(box(-30, -30, -10, 60, 60, 10), cyl((0, 0, -9), UP, 2.5, 10))
+    block = cut(box(-20, -20, 0, 40, 40, 15), cyl((0, 0, -1), UP, 3.3, 17), cyl((0, 0, 8.5), UP, 5.5, 7.5))
+    s02.add(Leaf("BASE", base)).add(Leaf("BLOCK", block)).add(Leaf("SCREW", a_shcs()), m_tr((0, 0, 8.5)))
+    c02 = {"base": "60 x 60 x 10, top at z 0, dia 5 blind 9 deep", "block": "40 x 40 x 15, dia 11 x 6.5 over dia 6.6",
+           "screw": "head dia 10 x 6, shank dia 6 x 16, at z 8.5"}
+    a.case("s02_cbore", s02, "a counterbored block screwed to a base", ["T3", "P2"], True, c02,
+           asm_expect(s02, select=[{"part": "BLOCK", "result": "BLOCK", "occurrences": 1, "matched_by": "product_id"}]))
+
+    # s03: a plate on four dowels in a base: holes 5.97 (press), 6.2 (clearance), 6 and 6.015 (line to line at tau).
+    xs = (-30, -10, 10, 30)
+    holes03 = (5.97, 6.2, 6.0, 6.015)
+    plate03 = box(-40, -20, 0, 80, 40, 10)
+    for x, d in zip(xs, holes03):
+        plate03 = through(plate03, [(x, 0)], d, 0, 10)
+    base03 = cut(box(-50, -30, -10, 100, 60, 10), *[cyl((x, 0, -8), UP, 3.0, 9) for x in xs])
+    s03 = Node("s03_dowels").add(Leaf("BASE", base03)).add(Leaf("PLATE", plate03))
+    dowel = Leaf("DOWEL", cyl((0, 0, 0), UP, 3.0, 16))
+    for x in xs:
+        s03.add(dowel, m_tr((x, 0, -8)))
+    a.case("s03_dowels", s03, "a plate on four dowels: press, clearance and two line-to-line fits", ["T3", "P2"], True,
+           {"plate": [80, 40, 10], "holes": list(zip(xs, holes03)), "dowel": "dia 6 x 16 from z -8",
+            "base": "100 x 60 x 10, dia 6 blind 8 deep"},
+           asm_expect(s03, select=[{"part": "DOWEL", "result": "DOWEL", "occurrences": 4, "matched_by": "product_id"}]))
+
+    # s08x: one sub-assembly product (bracket, bolts, nuts) used twice, as AS1 does.
+    long_plate = Leaf("PLATE", a_plate(lx=220, pts=[(x - 50, y) for x, y in pts8]))
+    turned = m_rot((0, 0, 1), 180, (100, 0, 0))
+    lb = bolted("LB_ASSEM")
+    s08x = Node("s08x_nested").add(long_plate, m_tr((50, 0, 0))).add(lb).add(lb, turned)
+    a.case("s08x_nested", s08x, "one sub-assembly product used twice: one definition, two paths",
+           ["O1", "O4", "P1", "T1"], True,
+           {"plate": "220 x 60 x 10 at x 50", "LB_ASSEM": "bracket, 4 bolts, 4 nuts", "second": "turned 180 about z, x + 100"},
+           asm_expect(s08x, select=[
+               {"part": "BRACKET", "result": "BRACKET", "occurrences": 2, "matched_by": "product_id"},
+               {"part": "LB_ASSEM", "error": "part_is_assembly"},
+               {"part": "BRACKET", "occurrence_of": "BRACKET", "result": "BRACKET", "occurrences": 1,
+                "matched_by": "product_id"},
+           ]))
+
+    # s07: the same without a sub-assembly. s08: two sub-assembly products sharing their leaves.
+    s07 = Node("s07_twice").add(long_plate, m_tr((50, 0, 0)))
+    s07.add(bracket).add(bracket, turned)
+    for x, y in pts8:
+        s07.add(bolt, m_tr((x, y, 8)))
+        s07.add(nut, m_tr((x, y, -10)))
+    a.case("s07_twice", s07, "two brackets on one plate, the second turned 180 deg", ["T3", "O6"], False,
+           {"from": "s08x, flat"}, asm_expect(s07, select=[
+               {"part": "BRACKET", "result": "BRACKET", "occurrences": 2, "matched_by": "product_id"}]))
+    s08 = Node("s08_nested").add(long_plate, m_tr((50, 0, 0)))
+    s08.add(bolted("LB_A", bracket, bolt, nut)).add(bolted("LB_B", bracket, bolt, nut), turned)
+    a.case("s08_nested", s08, "two sub-assembly products sharing their leaves", ["O1", "P1"], False,
+           {"from": "s08x, with two sub-assembly products"}, asm_expect(s08, select=[
+               {"part": "BRACKET", "result": "BRACKET", "occurrences": 2, "matched_by": "product_id"}]))
+
+    # s23: a joint twelve levels deep, each level turned 30 deg about a skew axis.
+    inner = Node("LEVEL_12").add(bracket).add(bolt, m_tr((-30, -15, 8)))
+    for k in range(11, 0, -1):
+        axis = (1, (k % 3) - 1 + 0.5, 2)
+        inner = Node(f"LEVEL_{k}").add(inner, m_rot(axis, 30, (k * 7.0, -k * 3.0, k * 1.5)))
+    s23 = Node("s23_deep").add(inner, m_rot((0, 1, 1), 30, (5, 5, 5)))
+    a.case("s23_deep", s23, "a joint nested 12 levels deep under skew turns", ["P2", "P9"], False,
+           {"levels": 12, "turn": "30 deg about (1, k mod 3 - 0.5, 2), shift (7k, -3k, 1.5k)"}, asm_expect(s23))
+
+    # s25: s01 with two sibling usages sharing an id, so paths are written by instance (O2).
+    def same_id(f: Part21):
+        usages = f.find("NEXT_ASSEMBLY_USAGE_OCCURRENCE")
+        f.inst[usages[1]] = re.sub(r"\('[^']*'", "('1'", f.inst[usages[1]], count=1)
+
+    exp25 = asm_expect(s01, select=[{"part": "BRACKET", "result": "BRACKET", "occurrences": 1,
+                                     "matched_by": "product_id"}])
+    exp25["listing"]["path_form"] = "instance"
+    a.case("s25_usage_ids", s01, "s01 with two sibling usages both given the id '1' (a text edit)", ["O2", "O3"], False,
+           {"from": "s01"}, exp25, edit=same_id)
+
+    # Refusals and ambiguities.
+    s21 = Node("r21_name_ambiguous").add(long_plate, m_tr((50, 0, 0)))
+    s21.add(Leaf("BRACKET-A", a_bracket())).add(Leaf("BRACKET-B", a_bracket()), turned)
+
+    def rename(f: Part21):
+        for n in f.find("PRODUCT("):
+            f.inst[n] = re.sub(r"^PRODUCT\('(BRACKET-[AB])','[^']*'", r"PRODUCT('\1','BRACKET'", f.inst[n])
+
+    exp21 = asm_expect(s21, select=[{"part": "BRACKET", "error": "part_ambiguous", "candidates": 2},
+                                    {"part": "BRACKET-A", "result": "BRACKET-A", "occurrences": 1,
+                                     "matched_by": "product_id"}])
+    for p in exp21["listing"]["parts"]:
+        if p["id"].startswith("BRACKET-"):
+            p["name"] = "BRACKET"
+    a.case("r21_name_ambiguous", s21, "two bracket products, ids BRACKET-A and BRACKET-B, both named BRACKET",
+           ["T4"], False, {"from": "s07, without bolts"}, exp21, edit=rename)
+
+    r32 = Node("r32_id_ambiguous")
+    r32.add(Node("SIDE_A").add(Leaf("BOLT", a_hex_bolt())), m_tr((-30, 0, 0)))
+    r32.add(Node("SIDE_B").add(Leaf("BOLT", a_hex_bolt(length=30, d=8))), m_tr((30, 0, 0)))
+    exp32 = asm_expect(r32, select=[{"part": "BOLT", "error": "part_ambiguous", "candidates": 2}])
+    exp32["listing"]["parts"] = sorted([{"id": "BOLT", "name": "BOLT", "kind": "part", "quantity": 1}] * 2 + [
+        p for p in exp32["listing"]["parts"] if p["id"] != "BOLT"], key=lambda p: (p["id"], p["kind"]))
+    exp32["occurrences"] = {"BOLT": occurrences(r32)["BOLT"]}
+    a.case("r32_id_ambiguous", r32, "two different parts, both with PRODUCT.id BOLT, in two sub-assemblies", ["T3"],
+           False, {"bolts": "M6 x 25 and M8 x 30"}, exp32)
+
+    refused33 = {"result": "refused", "check": 33, "refusals": ["placement_unreadable"]}
+
+    def unplaced(f: Part21):
+        cdsr, _, _ = placement_of(f, usage_of(f, "SCREW"))
+        del f.inst[cdsr]
+
+    a.case("r24_unplaced", s02, "s02 without the screw usage's context_dependent_shape_representation", ["m3.4.1#33"], False,
+           {"from": "s02"}, asm_expect(s02, listing_result=refused33), edit=unplaced)
+
+    def divergent(f: Part21):
+        point = f.add("CARTESIAN_POINT('',(10.,0.,0.))")
+        z, x = f.add("DIRECTION('',(0.,0.,1.))"), f.add("DIRECTION('',(1.,0.,0.))")
+        replace_component_item(f, usage_of(f, "SCREW"), f"AXIS2_PLACEMENT_3D('',#{point},#{z},#{x})")
+
+    a.case("r25_divergent", s02, "s02 with the screw's component-side frame moved to (10, 0, 0)", ["m3.4.1#33"], False,
+           {"from": "s02"}, asm_expect(s02, listing_result=refused33), edit=divergent)
+
+    def mirrored(f: Part21):
+        o = f.add("CARTESIAN_POINT('',(0.,0.,0.))")
+        x = f.add("DIRECTION('',(-1.,0.,0.))")
+        y = f.add("DIRECTION('',(0.,1.,0.))")
+        z = f.add("DIRECTION('',(0.,0.,1.))")
+        replace_component_item(f, usage_of(f, "SCREW"),
+                               f"CARTESIAN_TRANSFORMATION_OPERATOR_3D('','',#{x},#{y},#{o},1.,#{z})")
+
+    a.case("r26_mirrored", s02, "s02 with the screw's component-side frame a mirroring cartesian_transformation_operator_3d",
+           ["m3.4.1#33", "P7"], False, {"from": "s02"}, asm_expect(s02, listing_result=refused33), edit=mirrored)
+
+    def quantified(f: Part21):
+        usage = usage_of(f, "SCREW")
+        ident, name_ = re.match(r"NEXT_ASSEMBLY_USAGE_OCCURRENCE\('([^']*)','([^']*)'", f.inst[usage]).groups()
+        parent, child = f.refs(usage)[:2]
+        unit = next(n for n in f.inst if "LENGTH_UNIT" in f.inst[n])
+        m = f.add(f"MEASURE_WITH_UNIT(COUNT_MEASURE(4.),#{unit})")
+        f.inst[usage] = (f"(ASSEMBLY_COMPONENT_USAGE($)NEXT_ASSEMBLY_USAGE_OCCURRENCE()PRODUCT_DEFINITION_RELATIONSHIP("
+                         f"'{ident}','{name_}','',#{parent},#{child})PRODUCT_DEFINITION_USAGE()"
+                         f"QUANTIFIED_ASSEMBLY_COMPONENT_USAGE(#{m}))")
+
+    a.case("r28_quantified", s02, "s02 with the screw usage quantified, quantity 4", ["m3.4.1#33"], False, {"from": "s02"},
+           asm_expect(s02, listing_result=refused33), edit=quantified)
+
+    two = [Node("ROOT_A").add(Leaf("PLATE", a_plate())), Node("ROOT_B").add(bolt, m_tr((0, 0, 8)))]
+    path = None
+    if which(False):
+        path = write_xcaf(w, two, "r30_two_roots")
+        w.cases.append({"id": "r30_two_roots", "file": "r30_two_roots.stp", "kind": "assembly", "set": "corpus",
+                        "tests": "two root assemblies in one file", "rules": ["m3.4.1#32"],
+                        "construction": {"roots": ["ROOT_A: a plate", "ROOT_B: a bolt"]},
+                        "expect": {"listing": {"result": "refused", "check": 32, "refusals": ["several_roots"]},
+                                   "assembly_gate": {"result": "refused"}, "select": []}})
+    return path
+
+
 # A number in a Part 21 file, as Open CASCADE writes them.
 NUMBER = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[Ee][-+]?\d+)?")
 # How far a written number may differ between platforms: the last digit of
@@ -1246,6 +1748,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("out", type=Path, help="the directory to write into")
     parser.add_argument("--unit-set", action="store_true", help="write only the committed unit set")
+    parser.add_argument("--assembly-set", action="store_true",
+                        help="write only the committed assembly set (crates/fitment-core/tests/assemblies)")
     parser.add_argument("--check", type=Path, metavar="DIR",
                         help="after writing, check that DIR holds the same files (numbers within 1e-9)")
     args = parser.parse_args()
@@ -1256,14 +1760,20 @@ def main():
         messenger.RemovePrinter(printers.Value(i))
 
     w = Writer(args.out)
-    build(w, args.unit_set)
-    if args.unit_set:
+    if args.assembly_set:
+        build_assemblies(w, lambda unit_set: unit_set)
+    else:
+        build(w, args.unit_set)
+        if not args.unit_set:
+            build_assemblies(w, lambda unit_set: True)
+    committed = args.unit_set or args.assembly_set
+    if committed:
         keep = {c["file"] for c in w.cases if c["set"] == "unit"}
         w.cases = [c for c in w.cases if c["set"] == "unit"]
         for path in args.out.glob("*.stp"):
             if path.name not in keep:
                 path.unlink()
-    if not args.unit_set:
+    if not committed:
         rule_ids = coverage(w.cases)
     manifest = {
         "format": "fitment.test-parts",
@@ -1273,7 +1783,7 @@ def main():
         "tolerance": {"linear_mm": 1e-6, "angular_rad": 1e-9},
         "cases": sorted(w.cases, key=lambda c: c["id"]),
     }
-    if not args.unit_set:
+    if not committed:
         # The full corpus only: the committed unit set stays within its
         # budget, and CI checks coverage on the corpus.
         manifest = {**{k: v for k, v in manifest.items() if k != "cases"}, "rule_ids": rule_ids,
@@ -1291,7 +1801,7 @@ def main():
             print(line)
         if found:
             raise SystemExit(f"{args.check} is not what the generator writes: regenerate it with "
-                             f"tools/gen-corpus.py --unit-set {args.check}")
+                             f"tools/gen-corpus.py {'--assembly-set' if args.assembly_set else '--unit-set'} {args.check}")
         print(f"{args.check} matches the generator")
 
 

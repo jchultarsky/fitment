@@ -23,13 +23,21 @@
 // variant or field is not a breaking change after the first publish.
 #![warn(clippy::exhaustive_enums, clippy::exhaustive_structs)]
 
+mod assembly;
 mod features;
 mod fit;
 mod gate;
 mod geom;
+mod sha256;
 mod tolerance;
 mod verdict;
 
+pub use assembly::{
+    AssemblyRead, Candidate, DefinitionKind, GateResult, ListedDefinition, Listing,
+    MAX_OCCURRENCES, MatchedBy, Occurrence, OccurrencePath, PARTS_FORMAT, PARTS_FORMAT_VERSION,
+    PartEntry, PartOccurrence, PartsDocument, PartsFormatError, PathForm, SelectError, Selection,
+    Source, UsageRef, read_assembly,
+};
 pub use features::{
     Axis, Bottom, Cone, Countersink, Cylinder, CylinderClass, DefinitionRef, End, Extraction,
     FEATURES_FORMAT, FEATURES_FORMAT_VERSION, FaceCounts, FeatureId, FeatureIdError, FeatureKind,
@@ -42,6 +50,7 @@ pub use features::{
 pub use fit::{FitStatus, Interference, NO_FIT_VERIFIER};
 pub use gate::{Refusal, RefusalCode};
 pub use geom::{Dir3, Point3, Rigid, Vec3};
+pub use sha256::{sha256, sha256_hex};
 pub use tolerance::{ToleranceError, TolerancePolicy};
 pub use verdict::{Check, RejectReason, RequirementId, Verdict, VerdictKind, decide};
 

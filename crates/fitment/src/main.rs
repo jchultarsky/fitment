@@ -24,6 +24,11 @@ enum Command {
     ///
     /// Exit codes: 0 accepted, 1 error, 2 usage, 3 refused.
     Features(cmd::features::Args),
+    /// List the parts of an assembly with their quantities and
+    /// occurrences, and whether a socket can be read from it.
+    ///
+    /// Exit codes: 0 listed, 1 error, 2 usage, 3 refused.
+    Parts(cmd::parts::Args),
 }
 
 /// Exit codes shared by every command.
@@ -36,5 +41,6 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Features(args) => cmd::features::run(&args),
+        Command::Parts(args) => cmd::parts::run(&args),
     }
 }

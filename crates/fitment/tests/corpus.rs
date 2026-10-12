@@ -23,11 +23,19 @@ use serde_json::Value;
 /// Decision 6: the committed unit set's budget.
 const UNIT_SET_BYTES: u64 = 300_000;
 
+/// The committed assemblies' budget (`docs/research/m3-socket.md`, 13.5):
+/// the set as built in M3 PR 1, 187,691 bytes, with 10% headroom.
+const ASSEMBLY_SET_BYTES: u64 = 210_000;
+
 /// The gate stages built so far (`docs/research/m2-features.md`, 4.2).
 const BUILT_STAGES: u64 = 6;
 
 fn unit_set() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests/data")
+}
+
+fn assembly_set() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests/assemblies")
 }
 
 fn manifest(dir: &Path) -> Value {
@@ -39,7 +47,17 @@ fn manifest(dir: &Path) -> Value {
 
 #[test]
 fn the_unit_set_fits_its_budget_and_its_manifest() {
-    let dir = unit_set();
+    fits(&unit_set(), UNIT_SET_BYTES);
+}
+
+#[test]
+fn the_assembly_set_fits_its_budget_and_its_manifest() {
+    fits(&assembly_set(), ASSEMBLY_SET_BYTES);
+}
+
+/// `dir` holds exactly the files its manifest lists, within `budget` bytes.
+fn fits(dir: &Path, budget: u64) {
+    let dir = dir.to_path_buf();
     let mut total = 0;
     let mut files = BTreeSet::new();
     for entry in fs::read_dir(&dir).unwrap() {
@@ -48,8 +66,9 @@ fn the_unit_set_fits_its_budget_and_its_manifest() {
         files.insert(entry.file_name().to_string_lossy().into_owned());
     }
     assert!(
-        total <= UNIT_SET_BYTES,
-        "the unit set is {total} bytes, over the {UNIT_SET_BYTES} of decision 6"
+        total <= budget,
+        "{} is {total} bytes, over its budget of {budget}",
+        dir.display()
     );
     let mut listed: BTreeSet<String> = manifest(&dir)["cases"]
         .as_array()
@@ -97,7 +116,7 @@ fn every_corpus_part_is_accepted_or_refused_as_its_construction_says() {
     let cases = manifest(&dir)["cases"].as_array().unwrap().clone();
     assert!(!cases.is_empty(), "the corpus manifest lists no case");
     let mut failures = Vec::new();
-    for case in &cases {
+    for case in cases.iter().filter(|case| case["kind"] != "assembly") {
         let name = case["id"].as_str().unwrap();
         let output = Command::cargo_bin("fitment")
             .unwrap()
@@ -149,6 +168,30 @@ fn every_corpus_part_is_accepted_or_refused_as_its_construction_says() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+#[test]
+fn every_corpus_assembly_reads_as_its_construction_says() {
+    let Some(dir) = corpus() else {
+        return;
+    };
+    let cases = manifest(&dir)["cases"].as_array().unwrap().clone();
+    let assemblies: Vec<&Value> = cases.iter().filter(|c| c["kind"] == "assembly").collect();
+    assert!(
+        !assemblies.is_empty(),
+        "the corpus manifest lists no assembly"
+    );
+    let mut failures = Vec::new();
+    for case in assemblies {
+        let name = case["id"].as_str().unwrap();
+        let bytes = fs::read(dir.join(case["file"].as_str().unwrap())).unwrap();
+        failures.extend(
+            common::assembly::check(case, &bytes)
+                .into_iter()
+                .map(|f| format!("{name}: {f}")),
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// Coverage is checked, not claimed (design, section 13.1): every rule
 /// and gate check the corpus manifest lists has a case that cites it, a
 /// Rust test that exists, or a reason it is deferred; and every rule a case
@@ -189,14 +232,22 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
             }
         }
     }
-    // Every rule the design states in bold (`**G1.`, `**W7b.`) and every
-    // gate check is listed, itself or by its parts (`K2.blind`).
-    let design = fs::read_to_string(root.join("docs/research/m2-features.md")).unwrap();
+    // Every rule the designs state in bold (`**G1.`, `**W7b.`, `**B8.`)
+    // and every gate check is listed, itself or by its parts (`K2.blind`).
+    // M2's checks are keyed `4.2#n`, M3's `m3.4.1#n`.
     let listed = |rule: &str| {
         rules.contains_key(rule) || rules.keys().any(|k| k.starts_with(&format!("{rule}.")))
     };
-    let checks = (1..=30).map(|n| format!("4.2#{n}"));
-    for rule in design_rules(&design).into_iter().chain(checks) {
+    let mut stated = Vec::new();
+    for design in ["docs/research/m2-features.md", "docs/research/m3-socket.md"] {
+        stated.extend(design_rules(
+            &fs::read_to_string(root.join(design)).unwrap(),
+        ));
+    }
+    let checks = (1..=30)
+        .map(|n| format!("4.2#{n}"))
+        .chain((31..=39).map(|n| format!("m3.4.1#{n}")));
+    for rule in stated.into_iter().chain(checks) {
         if !listed(&rule) {
             failures.push(format!(
                 "{rule}: the design states it, but rule_ids does not list it"

@@ -6,6 +6,12 @@
 #[allow(dead_code)] // each test binary uses part of it
 pub mod expect;
 
+/// The comparison of an assembly against its test case, shared with
+/// fitment-core's tests.
+#[path = "../../../fitment-core/tests/support/assembly.rs"]
+#[allow(dead_code)] // each test binary uses part of it
+pub mod assembly;
+
 /// Why fitment-core cannot read back the document `fitment features`
 /// printed, if it cannot: every document it writes must keep the rules
 /// `from_json` checks.

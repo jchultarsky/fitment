@@ -32,6 +32,10 @@ For an accepted case, every face must be accounted for:
     countersink, its cone; for an annular bottom, the post on the axis;
   - each shaft's root (material beside it, air past it) and free end.
 
+For an assembly case (docs/research/m3-socket.md, section 13), XCAF's
+leaf placements, composed from the root, one to one with the
+construction's: product by name, transform within 1e-8.
+
 For a refused case, the facts Open CASCADE or the file text can show: an
 assembly usage, two product definitions, two solids, no solid, a surface
 model, no length unit; and that the stated gate stage is its codes'.
@@ -633,7 +637,87 @@ def check_refused(path, solids, codes, problems, case):
             problems.append(f"{case}: the file shows {code}, but the case is not refused for it")
 
 
+# -------------------------------------------------------------- assemblies
+
+PLACEMENT_TOL = 1e-8  # mm and rotation entries: answers are rounded to 9 decimals
+
+
+def xcaf_leaves(path):
+    """Every leaf occurrence Open CASCADE's XCAF reads, as (product name,
+    3x4 rows root <- leaf), composed from the free shapes down."""
+    from OCP.collections import Sequence_TDF_Label
+    from OCP.STEPCAFControl import STEPCAFControl_Reader
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDF import TDF_Label
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+
+    doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+    reader = STEPCAFControl_Reader()
+    reader.SetNameMode(True)
+    if reader.ReadFile(str(path)) != IFSelect_RetDone or not reader.Transfer(doc):
+        return None
+    tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+
+    def name_of(label):
+        n = TDataStd_Name()
+        return n.Get().ToExtString() if label.FindAttribute(TDataStd_Name.GetID_s(), n) else "?"
+
+    out = []
+
+    def walk(label, loc):
+        if tool.IsAssembly_s(label):
+            comps = Sequence_TDF_Label()
+            tool.GetComponents_s(label, comps, False)
+            for i in range(1, comps.Length() + 1):
+                comp, ref = comps.Value(i), TDF_Label()
+                if tool.GetReferredShape_s(comp, ref):
+                    walk(ref, loc.Multiplied(tool.GetLocation_s(comp)))
+        else:
+            t = loc.Transformation()
+            out.append((name_of(label), [[t.Value(i, j) for j in range(1, 5)] for i in range(1, 4)]))
+
+    free = Sequence_TDF_Label()
+    tool.GetFreeShapes(free)
+    for i in range(1, free.Length() + 1):
+        walk(free.Value(i), TopLoc_Location())
+    return out
+
+
+def check_assembly(directory, case):
+    """An assembly case: Open CASCADE's leaf placements, one to one with the
+    construction's. A case whose listing is refused (an edit Open CASCADE
+    may read another way) is checked only for being readable."""
+    name = case["id"]
+    leaves = xcaf_leaves(directory / case["file"])
+    if leaves is None:
+        return [f"{name}: Open CASCADE cannot read it"]
+    expect = case["expect"]
+    if expect["listing"]["result"] != "accepted":
+        return []
+    problems = []
+    # XCAF names a leaf by its PRODUCT.name; the manifest keys it by id.
+    names = {p["id"]: p["name"] for p in expect["listing"]["parts"]}
+    wanted = [(names.get(product, product), m) for product, ms in expect["occurrences"].items() for m in ms]
+    if len(wanted) != len(leaves):
+        problems.append(f"{name}: Open CASCADE reads {len(leaves)} leaf occurrences, the construction "
+                        f"{len(wanted)}")
+    left = list(leaves)
+    for product, m in wanted:
+        at = next((k for k, (n, found) in enumerate(left) if n == product and all(
+            abs(found[i][j] - m[i][j]) <= PLACEMENT_TOL for i in range(3) for j in range(4))), None)
+        if at is None:
+            problems.append(f"{name}: no {product} where the construction places one: {m}")
+        else:
+            left.pop(at)
+    return problems
+
+
 def check_case(directory, case):
+    if case.get("kind") == "assembly":
+        return check_assembly(directory, case)
     problems = []
     name = case["id"]
     path = directory / case["file"]
