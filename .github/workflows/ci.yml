@@ -40,8 +40,39 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+  corpus:
+    name: test parts and Open CASCADE oracle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # setup-uv publishes no moving major tag, so pin the release.
+      - uses: astral-sh/setup-uv@v10.1.0
+      # Every test part, with answers from the construction alone.
+      - run: tools/gen-corpus.py corpus/out
+      # The committed unit set is exactly what the pinned generator writes.
+      - name: Unit set matches the generator
+        run: |
+          tools/gen-corpus.py --unit-set "$RUNNER_TEMP/unit"
+          diff -r "$RUNNER_TEMP/unit" crates/fitment-core/tests/data
+      # Open CASCADE 8.0.1, a kernel the generator does not use, reads every
+      # part as its construction says: this catches generator bugs.
+      - run: tools/verify-occt.py manifest corpus/out
+      - run: cargo test -p fitment --test corpus --locked
+        env:
+          FITMENT_REQUIRE_CORPUS: "1"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: corpus
+          path: corpus/out
+          retention-days: 7
+          if-no-files-found: error
+
   test:
     name: test (${{ matrix.os }})
+    # The generated corpus runs on every OS from the artifact, without Python.
+    needs: corpus
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -51,7 +82,13 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: corpus
+          path: corpus/out
       - run: cargo test --workspace --all-features --locked
+        env:
+          FITMENT_REQUIRE_CORPUS: "1"
 
   msrv:
     name: MSRV

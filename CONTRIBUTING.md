@@ -160,6 +160,28 @@ The small unit parts in `crates/fitment-core/tests/data` are the only
 committed STEP files; the package's `include` list keeps them out of
 releases.
 
+### Test parts
+
+The parts fitment is tested on are generated, never downloaded, with
+answers that come from their construction alone. `tools/gen-corpus.py`
+writes them with cadquery 2.8.0 (Open CASCADE 7.9.3); `tools/verify-occt.py`
+reads them back with Open CASCADE 8.0.1 and checks them against those
+answers. Both are uv scripts with committed lock files; you need
+[uv](https://docs.astral.sh/uv/) only to run them.
+
+```console
+$ tools/gen-corpus.py corpus/out              # every case, into corpus/out (ignored)
+$ tools/verify-occt.py manifest corpus/out    # Open CASCADE agrees with the answers
+$ cargo test -p fitment --test corpus         # fitment reads each part as expected
+```
+
+`crates/fitment-core/tests/data` holds the small unit set, the parts every
+`cargo test` reads without Python. It is exactly what
+`tools/gen-corpus.py --unit-set` writes, which CI checks byte for byte, so
+change the generator and regenerate the set in the same commit; it must
+stay under 300 KB. Tests that need the generated corpus skip without it,
+and fail without it when `FITMENT_REQUIRE_CORPUS=1`, which CI sets.
+
 ### Golden files
 
 `crates/fitment/tests/golden.rs` runs `fitment features` on every unit

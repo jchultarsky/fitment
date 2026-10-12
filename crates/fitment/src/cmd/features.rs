@@ -127,12 +127,9 @@ fn table(document: &FeaturesDocument) -> String {
         }
     }
     for refusal in document.refusals() {
-        let at = refusal
-            .instance
-            .map(|id| format!("#{id} "))
-            .unwrap_or_default();
+        // The message names the instance at fault itself.
         lines.push(format!(
-            "refused   {}: {at}{}",
+            "refused   {}: {}",
             refusal.code.name(),
             printable(&refusal.message)
         ));

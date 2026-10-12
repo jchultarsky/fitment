@@ -886,7 +886,7 @@ fitment features <FILE> [--format json|table]
 | p11_fillet_slot | L block with a R3 fillet, an obround slot, one Ø6.6 hole | 1 hole; fillet 90° and two slot ends 180°, all partial | U | 22,570 |
 | p12_edge_notch | Ø8 through, cutting a plate edge | no hole; a partial concave cylinder of 240° | U | 10,771 |
 | p13_cross | Ø8 along x and Ø6 along y, crossing | Ø8 through, length 30, with wall openings. Ø6: two cylinders (G5), each with one opening and one irregular end, length `null` (R8) | G | 29,545 |
-| p13b_cross_equal | as p13, both Ø8 | four Ø8 cylinders, two per axis (G5), each full with one opening and one irregular end; stacks `unknown`, length `null` | G | 13,441 |
+| p13b_cross_equal | as p13, both Ø8 | two through holes of length 30, each with wall openings: equal bores keep a strip of wall along their top and bottom, so neither splits (found by the oracle in PR 2) | G | 13,441 |
 | p14s_rotated_cbore | p05 rotated 37° about (1, 2, 3) and moved | p05's answers, moved | U | 12,920 |
 | p14_rotated | p08 under the same motion | p08's answers, moved | G | 20,016 |
 | p16_inch | p05 written in inches | p05's answers, in mm | U | 11,246 |
@@ -901,7 +901,7 @@ fitment features <FILE> [--format json|table]
 | p26_all_bspline | p01 converted to NURBS | accepted: 0 planes, 0 holes, 7 other faces (R1) | U | 12,254 |
 | p27_freeform | a profile with a spline top, a Ø6.6 hole away from it | accepted: the hole is read, the spline face is other | G | 9,037 |
 | p28_void | 20 mm cube with a Ø8 spherical void | accepted: the sphere is an other face in shell 1, no hole (R5) | G | 7,338 |
-| p29_mapped | a solid placed in its definition through a mapped item with transform T (text edit) | p01's answers moved by T, which `construction` states; `solids[0].transform` is T | U | (to measure) |
+| p29_mapped | a solid placed in its definition through a mapped item with transform T (text edit) | p01's answers moved by T, which `construction` states; `solids[0].transform` is T | G | 8,600 |
 | p30_round_bore | plate 10 mm, boss Ø16 × 6 with a 1 mm round on its top edge, Ø4 bore through both | hole through, length 16 (rim on the boss top, W8); boss shaft `root_free`, protrusion 6 | U | (to measure) |
 | p31_fillet_post | Ø16 pocket 8 deep with a 1 mm floor fillet, Ø4 × 3 post on its floor | post shaft `root_free`, protrusion 3; the fillet is a torus | G | (to measure) |
 | p32_torus_cbore | Ø11 counterbore over Ø6.6 through, with a 0.5 mm fillet on the counterbore floor and a 0.5 mm round at the rim | through stack; walk crosses torus, annulus, torus (W4); rim on the top face | U | (to measure) |
@@ -915,9 +915,9 @@ fitment features <FILE> [--format json|table]
 | u02_undercut_post | as u01, but the chamber floor is an annulus around a Ø4 post | must read `unknown`, never through | G | (to measure) |
 | u03_half_capped | Ø6 through hole in a 10 mm plate, half of its top covered by a block | must read `unknown` at the top ("2 groups beyond"), whatever the face order | G | (to measure) |
 | u04_ball_end | Ø6 hole ending in a hemisphere | must read `unknown` at the bottom (section 20, item 7) | G | (to measure) |
-| u05_drill_pierced | p04 with a Ø3 cross bore through its drill point | must read `unknown` at the bottom, not `point` (W4) | G | (to measure) |
+| u05_drill_pierced | p04 with a Ø3 cross bore through its drill point | must read `unknown` at the bottom, not `point` (W4). The cross bore is one through hole with a wall opening: its wall reaches below the tip (found by the oracle in PR 2) | G | (to measure) |
 | u06_general_face | Ø6 hole whose bottom is closed by a face that also bounds something else | must read `unknown` (W5) | G | (to measure) |
-| r03_two_solids | a compound of two cubes | refused: `assembly`. Open CASCADE writes a compound as two products under a third, so `several_solids` is tested with a hand-written snippet instead (found in PR 1) | U | 15,526 |
+| r03_two_solids | a compound of two cubes, written with `write.step.assembly` off | refused: `several_solids`. With assembly mode on, Open CASCADE writes a compound as two products under a third (found in PR 1); the generator writes every file with it off | U | 15,526 |
 | r04_assembly | `cq.Assembly` of two cubes | refused: `assembly` | U | 15,295 |
 | r05_no_length_unit | p01 without its `LENGTH_UNIT` (text edit) | refused: `length_unit_unreadable` | U | 8,319 |
 | r06_shell | p01's shell written alone | refused: `no_solid` and `unread_shape_item` | U | 8,347 |
@@ -939,7 +939,7 @@ Hand-written STEP snippets inside the Rust tests cover what generated files cann
 
 ### 13.4 The unit set
 
-- **Committed in `crates/fitment-core/tests/data/`:** the parts marked U, 25 files. The 20 that were measured total 224,380 bytes. The five new ones (p29, p30, p32, u01, r12) are small plates of about 8 to 11 KB each, so the set is expected near 290 KB with the manifest. If it goes over, p29 moves to the generated corpus first; the size test enforces the cap.
+- **Committed in `crates/fitment-core/tests/data/`:** the parts marked U, 24 files, and the manifest, one case per line: 282,934 bytes as generated in PR 2, against the 300,000 cap. p29 moved to the generated corpus to make room. Products are named after their case, because Open CASCADE otherwise numbers them by how many it has written in the process, which made a file's bytes depend on the cases before it.
 - **Without pcurves (R9).** Pcurves make the files 2.4 times larger, about 530 KB in all. stepq reads 3D curves, and the `_pc` variants cover pcurves in CI.
 - **Guards:**
   - a CLI test fails if `tests/data` exceeds 300,000 bytes, or if its listing differs from the manifest;

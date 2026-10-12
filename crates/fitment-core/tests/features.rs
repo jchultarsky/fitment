@@ -201,11 +201,10 @@ fn an_assembly_is_refused() {
 }
 
 #[test]
-fn open_cascade_writes_two_solids_as_an_assembly() {
-    // A compound of two solids comes out as two products under a third, so
-    // it is refused as an assembly; `several_solids` needs a file that
-    // lists two solids in one shape (below).
-    assert_eq!(refusal_codes(R03_TWO_SOLIDS), [RefusalCode::Assembly]);
+fn two_solids_in_one_product_are_refused() {
+    // The generator writes a compound of two cubes with assembly mode off,
+    // so they are one product with two solids, not an assembly.
+    assert_eq!(refusal_codes(R03_TWO_SOLIDS), [RefusalCode::SeveralSolids]);
 }
 
 #[test]

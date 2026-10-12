@@ -25,9 +25,9 @@
   "status": "refused",
   "refusals": [
     {
-      "code": "assembly",
-      "instance": null,
-      "message": "the file is an assembly with 2 usages of 3 product definitions; features reads one part"
+      "code": "several_solids",
+      "instance": 165,
+      "message": "the part's shape holds 2 solids (#15, #165); a canonical part holds one"
     }
   ],
   "part": null
