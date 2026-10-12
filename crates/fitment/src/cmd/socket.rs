@@ -7,7 +7,8 @@ use std::process::ExitCode;
 
 use clap::ValueEnum;
 use fitment_core::{
-    BoreSpan, Fit, RefusalCode, Requires, SelectError, ShaftSpan, SocketDocument, Status,
+    Basis, BoreSpan, Fit, RefusalCode, Requires, Ring, SeatContact, SelectError, ShaftSpan,
+    SocketDocument, Status,
 };
 
 use super::text::{mm, note, printable};
@@ -293,6 +294,26 @@ fn shaft_span(span: &ShaftSpan) -> String {
     )
 }
 
+fn seat(contacts: &[SeatContact], rings: &[Ring]) -> String {
+    let by: usize = contacts.iter().map(|c| c.by.len()).sum();
+    let unknown = contacts
+        .iter()
+        .filter(|c| c.basis == Basis::Unknown)
+        .count();
+    let mut parts = vec![format!("{} faces, {by} contacts", contacts.len())];
+    if unknown > 0 {
+        parts.push(format!("{unknown} outlines unknown"));
+    }
+    parts.extend(rings.iter().map(|ring| {
+        format!(
+            "ring Ø{}..Ø{}",
+            mm(ring.inner_diameter_mm),
+            mm(ring.outer_diameter_mm)
+        )
+    }));
+    parts.join(", ")
+}
+
 /// The review view: one line per requirement.
 fn table(document: &SocketDocument) -> String {
     let mut lines = Vec::new();
@@ -327,6 +348,45 @@ fn table(document: &SocketDocument) -> String {
                 Requires::Shaft { spans, .. } => {
                     spans.iter().map(shaft_span).collect::<Vec<_>>().join("; ")
                 }
+                Requires::Seat {
+                    contacts, rings, ..
+                } => seat(contacts, rings),
+                Requires::Grip {
+                    length_mm, holes, ..
+                } => format!("{} mm thick, {} holes through", mm(*length_mm), holes.len()),
+                Requires::ConicalSeat {
+                    included_angle_rad,
+                    radii_mm,
+                    ..
+                } => format!(
+                    "{}° included{}",
+                    mm(included_angle_rad.to_degrees()),
+                    radii_mm.map_or_else(String::new, |[a, b]| format!(
+                        ", radii {}..{}",
+                        mm(a),
+                        mm(b)
+                    ))
+                ),
+                Requires::PartialBore {
+                    diameter_mm,
+                    clear_diameter_mm,
+                    from_mm,
+                    to_mm,
+                    ..
+                }
+                | Requires::PartialShaft {
+                    diameter_mm,
+                    clear_diameter_mm,
+                    from_mm,
+                    to_mm,
+                    ..
+                } => format!(
+                    "{}..{} Ø{} partial{}",
+                    mm(*from_mm),
+                    mm(*to_mm),
+                    mm(*diameter_mm),
+                    clear_diameter_mm.map_or_else(String::new, |c| format!(" clear Ø{}", mm(c)))
+                ),
                 Requires::Unresolved { causes, .. } => causes
                     .iter()
                     .map(|c| format!("{:?} ({} faces)", c.cause, c.faces.len()))

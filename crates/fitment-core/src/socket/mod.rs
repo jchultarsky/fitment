@@ -6,14 +6,16 @@ mod block;
 mod combine;
 mod geo;
 mod model;
+mod overlap;
+mod planar;
 mod rules;
 
 use serde::{Deserialize, Serialize};
 
 pub use model::{
-    BoreSpan, Cause, CauseFaces, Depth, Envelope, Extracted, Fit, Flag, LeftOut, LeftOutReason,
-    Notes, Open, PlacedRef, Requirement, Requires, ReviewEntry, ReviewStatus, SelectionRecord,
-    ShaftSpan, Socket, SocketConstants, SourceRef, Target,
+    Basis, BoreSpan, Cause, CauseFaces, Depth, Envelope, Extracted, Fit, Flag, LeftOut,
+    LeftOutReason, Notes, Open, PlacedRef, Requirement, Requires, ReviewEntry, ReviewStatus, Ring,
+    SeatContact, SelectionRecord, ShaftSpan, Socket, SocketConstants, SourceRef, Target, Toucher,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,7 +39,7 @@ pub const SOCKET_FORMAT_VERSION: u32 = 1;
 
 /// The version of the socket rules: it rises whenever a socket rule,
 /// constant, order or field could change any socket (R20).
-pub const SOCKET_RULES_VERSION: u32 = 1;
+pub const SOCKET_RULES_VERSION: u32 = 2;
 
 /// The least contact tolerance, in mm (Z3).
 pub(crate) const CONTACT_MM: f64 = 0.01;
@@ -341,18 +343,7 @@ impl SocketDocument {
         let mut expected = Vec::new();
         for socket in &extracted.sockets {
             for requirement in &socket.requirements {
-                let derived = match &requirement.requires {
-                    Requires::Bore { hole, .. } => format!("bore:{hole}"),
-                    Requires::Shaft { shaft, .. } => format!("shaft:{shaft}"),
-                    Requires::Unresolved {
-                        definition: Some(n),
-                        ..
-                    } => format!("unresolved:part-{n}"),
-                    Requires::Unresolved {
-                        feature: Some(f), ..
-                    } => format!("unresolved:{f}"),
-                    Requires::Unresolved { .. } => String::new(),
-                };
+                let derived = combine::id_of(&requirement.requires);
                 if derived != requirement.id {
                     return Err(format!(
                         "requirement '{}' is not named by what it requires",
@@ -558,7 +549,27 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
         let own = occurrence.path.instances();
         let (mut requirements, left_out) =
             combine::requirements(target, &targets, &found, &own, &paths);
+        // C6 leaves out the faces the axial rules read.
+        let mut explained: BTreeMap<usize, BTreeSet<u64>> = BTreeMap::new();
+        for relation in &found.relations {
+            explained
+                .entry(relation.neighbour)
+                .or_default()
+                .extend(relation.faces.iter().copied());
+        }
+        let faces = planar::target_faces(target);
+        let plane_found = planar::relate(target, &faces, &neighbours, &explained, &mut pairs)
+            .map_err(|_| too_many())?;
+        requirements.extend(combine::planar(
+            target,
+            &faces,
+            &plane_found,
+            &found.rings,
+            &own,
+            &paths,
+        ));
         requirements.extend(unread_neighbours(listing, &neighbours, &indices));
+        let mut requirements = combine::merge_same(requirements);
         combine::order(&mut requirements);
         for requirement in &requirements {
             cited.extend(requirement.sources.iter().map(|s| s.neighbour.clone()));

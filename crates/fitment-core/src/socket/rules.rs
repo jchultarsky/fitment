@@ -99,6 +99,22 @@ pub(crate) struct Found {
     pub(crate) skew: BTreeMap<FeatureId, BTreeSet<u64>>,
     /// Target holes whose only partner beyond a gap is blocked (J3).
     pub(crate) blocked: BTreeSet<FeatureId>,
+    /// H1: a wider neighbour cylinder ending at a target hole's open rim.
+    pub(crate) rings: Vec<Ring>,
+}
+
+/// A wider neighbour cylinder ending at a target hole's open rim (H1).
+#[derive(Debug, Clone)]
+pub(crate) struct Ring {
+    /// The target plane the rim lies on.
+    pub(crate) plane: FeatureId,
+    /// The target hole.
+    pub(crate) hole: FeatureId,
+    pub(crate) neighbour: usize,
+    pub(crate) faces: Vec<u64>,
+    pub(crate) inner: f64,
+    pub(crate) outer: f64,
+    pub(crate) floor: f64,
 }
 
 /// Check 39's count was spent.
@@ -231,12 +247,26 @@ impl Search<'_, '_> {
         };
         let tau = CONTACT_MM.max(neighbour.floor);
         match (a.side, b.side) {
+            // Partial cylinders: a target one takes what occupies it or
+            // holds it (U1); a neighbour's partial hole holds a target
+            // shaft (I7); a neighbour's partial shaft in a target hole is
+            // B8's, as unread material.
+            (Side::Hole, Side::Shaft) if b.partial.is_some() => self.skew_only(a, b, tau),
+            (Side::Hole, Side::Hole) | (Side::Shaft, Side::Shaft)
+                if a.partial.is_some() || b.partial.is_some() => {}
             (Side::Hole, Side::Hole) => self.continuation(t, a, n, e, b, tau),
             (_, Side::Shaft) if !neighbour.near => {}
             (Side::Hole, Side::Shaft) => self.occupied(t, a, n, b, tau),
             (Side::Shaft, Side::Hole) if neighbour.near => self.held(t, a, n, b, tau),
             (Side::Shaft, Side::Shaft) => self.abutting(t, a, n, b, tau),
             (Side::Shaft, Side::Hole) => {}
+        }
+    }
+
+    /// U7 alone, for neighbour material no axial rule reads.
+    fn skew_only(&mut self, a: &Element, b: &Element, tau: f64) {
+        if axial::pair(a, b, PARALLEL_SINE_REL, 1.0).is_none() {
+            self.skew(a, b, tau);
         }
     }
 
@@ -279,6 +309,7 @@ impl Search<'_, '_> {
         // A wider cylinder that only touches the rim does not enter: a head
         // bearing there (H1), not an occupant.
         if p.length.abs() <= tau && margin < -tau {
+            self.ring(a, n, b, &p, tau);
             return;
         }
         let mut relation = self.relation(t, "B", n, b, &p);
@@ -320,6 +351,34 @@ impl Search<'_, '_> {
         self.push_split(&relation, a, b, &p, 1.0, tau);
     }
 
+    /// H1: a wider neighbour cylinder, near enough the axis to cover the
+    /// rim all round, touching an open rim of a target hole: the plane the
+    /// hole opens onto there is a seat.
+    fn ring(&mut self, a: &Element, n: usize, b: &Element, p: &Pair, tau: f64) {
+        if p.e_max > b.radius - a.radius || a.partial.is_some() || a.undecided {
+            return;
+        }
+        // The rim it touches: an open end, or a step inside the stack.
+        let at_start = (p.hi - a.lo).abs() <= tau || (p.lo - a.lo).abs() <= tau;
+        let plane = if at_start {
+            a.start_into
+        } else {
+            a.finish_into
+        };
+        let Some(plane) = plane else {
+            return;
+        };
+        self.found.rings.push(Ring {
+            plane,
+            hole: a.feature,
+            neighbour: n,
+            faces: b.wall.clone(),
+            inner: 2.0 * a.radius,
+            outer: 2.0 * b.radius,
+            floor: self.neighbours.get(n).map_or(0.0, |x| x.floor),
+        });
+    }
+
     /// I1 to I3: a target shaft in a neighbour hole.
     fn held(&mut self, t: usize, a: &Element, n: usize, b: &Element, tau: f64) {
         let Some(p) = axial::pair(a, b, PARALLEL_SINE_REL, -1.0) else {
@@ -330,6 +389,16 @@ impl Search<'_, '_> {
         }
         let room = b.radius - p.e_max;
         let margin = room - a.radius;
+        // I7: a neighbour's partial hole (a slot end, a V) holds the
+        // target shaft: pinned, since its sector is not read.
+        if b.partial.is_some() {
+            let mut relation = self.relation(t, "I7", n, b, &p);
+            relation.fit = Some(Fit::NotRead);
+            relation.span = Some(span(a, &p, tau));
+            relation.flags.insert(Flag::PartialNeighbour);
+            self.found.relations.push(relation);
+            return;
+        }
         // A shaft wider than the hole that only touches its rim does not
         // enter it: its end bears there.
         if p.length.abs() <= tau && margin < -tau {
@@ -586,8 +655,27 @@ impl Search<'_, '_> {
             return Ok(());
         };
         let tau = CONTACT_MM.max(neighbour.floor);
+        // Its cylinders' faces, by face: axis point, direction and radius,
+        // in the target's frame.
+        let round: BTreeMap<u64, (V, V, f64)> = neighbour
+            .part
+            .cylinders
+            .iter()
+            .flat_map(|c| {
+                let axis = (
+                    neighbour.motion.point(c.axis.point_mm.to_array()),
+                    neighbour.motion.dir(c.axis.direction.to_array()),
+                    c.radius_mm,
+                );
+                c.faces.iter().map(move |f| (*f, axis))
+            })
+            .collect();
         for (t, a) in self.targets.iter().enumerate() {
-            if a.side != Side::Hole || a.hi - a.lo <= 2.0 * tau || a.radius <= tau {
+            if a.side != Side::Hole
+                || a.partial.is_some()
+                || a.hi - a.lo <= 2.0 * tau
+                || a.radius <= tau
+            {
                 continue;
             }
             let features = self.read.get(&(t, n));
@@ -603,6 +691,15 @@ impl Search<'_, '_> {
                 self.count()?;
                 if read.contains(&face.face) {
                     continue;
+                }
+                // A cylinder parallel to the hole that stays outside its
+                // core (a wider coaxial bore beside it) meets nothing in it,
+                // whatever its box says.
+                if let Some((p, d, radius)) = round.get(&face.face) {
+                    let e = norm(super::geo::across(sub(*p, a.point), a.dir));
+                    if norm(super::geo::cross(*d, a.dir)) <= 1e-9 && radius - e >= a.radius - tau {
+                        continue;
+                    }
                 }
                 if let Some((lo, hi)) = meets_core(a, face, &neighbour.motion, tau) {
                     faces.push(face.face);

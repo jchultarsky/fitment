@@ -1334,6 +1334,133 @@ def span_problems(where, kind, axis, span, m, others, tally):
     return []
 
 
+NEAR = 1.0  # mm: fitment's NEAR_MM, the near band of a contact (C5, Z6)
+COS_LIMIT = math.sqrt(1 - 0.01 ** 2)  # fitment's PARALLEL_SINE_REL
+
+
+def turn(m, v):
+    """A 3x4 transform's rotation applied to vector v."""
+    return [sum(m[i][j] * v[j] for j in range(3)) for i in range(3)]
+
+
+def planar_faces(shape):
+    """(face, outward normal, a point of its plane, box) for every planar
+    face of `shape`."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    out = []
+    for face in explore(shape, TopAbs_FACE):
+        face = as_face(face)
+        facts = plane_facts(face)
+        if facts is None:
+            continue
+        box = Bnd_Box()
+        BRepBndLib.Add_s(face, box)
+        out.append((face, facts[0], facts[1], box))
+    return out
+
+
+def faces_on(faces, normal, offset):
+    """The faces of `faces` on the plane of outward `normal` and `offset`."""
+    return [f for f in faces if dot(f[1], normal) >= 1 - 1e-9 and abs(dot(f[2], normal) - offset) <= 1e-5]
+
+
+def distance(a, b):
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    measure = BRepExtrema_DistShapeShape(a, b)
+    return measure.Value() if measure.IsDone() else math.inf
+
+
+def common_area(face, other, normal, gap):
+    """The area `other`, moved by `gap` against `normal` onto `face`'s
+    plane, shares with `face`."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Trsf, gp_Vec
+    t = gp_Trsf()
+    t.SetTranslation(gp_Vec(*[-gap * c for c in normal]))
+    moved = BRepBuilderAPI_Transform(other, t, True).Shape()
+    common = BRepAlgoAPI_Common(face, moved)
+    if not common.IsDone():
+        return math.inf
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(common.Shape(), props)
+    return props.Mass()
+
+
+def seat_problems(where, socket, m, target, others, tally):
+    """C1 to C5 and L1, L2 against Open CASCADE, both ways: each seat's
+    plane is a face of the target with another solid within the near band
+    of it; each grip is the separation of its planes (or from its cone's
+    apex); and every target face with an opposed face of another solid
+    within the band, sharing area with it, is in a seat."""
+    problems = []
+    ours = planar_faces(target)
+    planes, apexes = {}, {}
+    for requirement in socket["requirements"]:
+        q = requirement["requires"]
+        if q["kind"] == "seat":
+            tally["seats"] += 1
+            n = turn(m, q["normal"])
+            offset = dot(n, apply(m, [c * q["offset_mm"] for c in q["normal"]]))
+            planes[q["plane"]] = (n, offset)
+            faces = faces_on(ours, n, offset)
+            if not faces:
+                problems.append(f"{where} {requirement['id']}: the part has no face on that plane")
+            elif not any(distance(f[0], o) <= NEAR + 1e-6 for f in faces for o in others):
+                problems.append(f"{where} {requirement['id']}: nothing within {NEAR} mm of it")
+        elif q["kind"] == "conical_seat":
+            tally["conical seats"] += 1
+            apexes[q["cone"]] = apply(m, q["apex_mm"])
+            from OCP.BRepAdaptor import BRepAdaptor_Surface as Surface
+            found = False
+            for face in explore(target, TopAbs_FACE):
+                surface = Surface(as_face(face))
+                if surface.GetType() == Kind.GeomAbs_Cone:
+                    apex = xyz(surface.Cone().Apex())
+                    found = found or math.dist(apex, apexes[q["cone"]]) <= 1e-5
+            if not found:
+                problems.append(f"{where} {requirement['id']}: the part has no cone with that apex")
+    for requirement in socket["requirements"]:
+        q = requirement["requires"]
+        if q["kind"] != "grip":
+            continue
+        tally["grips"] += 1
+        ends = [planes.get(x) or apexes.get(x) for x in q["seats"]]
+        plane = next((e for e in ends if isinstance(e, tuple)), None)
+        other = next((e for e in ends if e is not plane), None)
+        if plane is None or other is None:
+            problems.append(f"{where} {requirement['id']}: a seat it names is not in the socket")
+            continue
+        n, offset = plane
+        point = other if isinstance(other, list) else [c * other[1] for c in other[0]]
+        separation = abs(dot(n, point) - offset)
+        if abs(separation - q["length_mm"]) > 1e-5:
+            problems.append(f"{where} {requirement['id']}: {q['length_mm']} long, Open CASCADE measures {separation}")
+    # The other direction: every opposed face within the band that shares area.
+    theirs = [g for o in others for g in planar_faces(o)]
+    for face, n, point, box in ours:
+        offset = dot(n, point)
+        if any(dot(p[0], n) >= 1 - 1e-9 and abs(p[1] - offset) <= 1e-5 for p in planes.values()):
+            continue
+        tally["faces off every seat"] += 1
+        for g, gn, gpoint, gbox in theirs:
+            if dot(gn, n) > -COS_LIMIT:
+                continue
+            gap = dot(n, sub(gpoint, point))
+            if abs(gap) > NEAR or box.Distance(gbox) > NEAR + 1e-6:
+                continue
+            if common_area(face, g, n, gap) > 1e-6:
+                problems.append(f"{where}: a face on the plane {r_(n)} at {offset:.6g} touches another solid "
+                                f"{gap:.4g} mm away, and no seat holds it")
+                break
+    return problems
+
+
+def r_(v):
+    return [round(x, 6) for x in v]
+
+
 def socket_problems(directory, case, binary, tally):
     """What Open CASCADE sees that one case's sockets miss: every point of a
     left-out hole's axis, over its wall, must be air in every other solid
@@ -1368,6 +1495,7 @@ def socket_problems(directory, case, binary, tally):
             others = [shape for i, (_, _, shape) in enumerate(leaves) if i != mine[0]]
             tally["others"] += len(others)
             where = f"{case['id']} {target} {socket['id']}"
+            problems += seat_problems(where, socket, m, leaves[mine[0]][2], others, tally)
             for requirement in socket["requirements"]:
                 requires = requirement["requires"]
                 if requires["kind"] in ("bore", "shaft"):
@@ -1402,7 +1530,8 @@ def socket_main(argv):
     if not binary.is_file():
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    tally = {"cases": 0, "others": 0, "bore spans": 0, "shaft spans": 0, "left out holes": 0}
+    tally = {"cases": 0, "others": 0, "bore spans": 0, "shaft spans": 0, "left out holes": 0, "seats": 0,
+             "conical seats": 0, "grips": 0, "faces off every seat": 0}
     problems = []
     for case in manifest["cases"]:
         if case.get("kind") != "assembly" or "sockets" not in case["expect"]:
