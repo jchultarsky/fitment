@@ -37,12 +37,17 @@ enum Surface {
         dir: V,
         radius: f64,
         sense: Sense,
+        /// Its end circles' axis points, both ends known (a full cylinder).
+        ends: Option<(V, V)>,
     },
     Cone {
         apex: V,
         /// The way it widens.
         dir: V,
         semi_angle: f64,
+        /// Its end circles, centre and radius, where its radii are known:
+        /// the face lies between them.
+        circles: Option<[(V, f64); 2]>,
     },
     /// A torus: its box alone.
     Boxed,
@@ -132,6 +137,16 @@ fn faces(part: &Part, boxes: &[FaceBox], elements: &[Element], motion: &Motion) 
                     dir: motion.dir(c.axis.direction.to_array()),
                     radius: c.radius_mm,
                     sense: c.sense,
+                    ends: match (&c.class, c.stations_mm.first(), c.stations_mm.last()) {
+                        (crate::features::CylinderClass::Full { .. }, Some(a), Some(b)) => {
+                            let (p, d) = (c.axis.point_mm.to_array(), c.axis.direction.to_array());
+                            Some((
+                                motion.point(add(p, scale(d, *a))),
+                                motion.point(add(p, scale(d, *b))),
+                            ))
+                        }
+                        _ => None,
+                    },
                 },
                 c.id,
             );
@@ -145,6 +160,12 @@ fn faces(part: &Part, boxes: &[FaceBox], elements: &[Element], motion: &Motion) 
                     apex: motion.point(c.apex_mm.to_array()),
                     dir: motion.dir(c.axis.direction.to_array()),
                     semi_angle: c.semi_angle_rad,
+                    circles: c.radii_mm.and_then(|radii| {
+                        let tan = libm::tan(c.semi_angle_rad);
+                        let (apex, d) = (c.apex_mm.to_array(), c.axis.direction.to_array());
+                        (tan > 0.0 && tan.is_finite())
+                            .then(|| radii.map(|r| (motion.point(add(apex, scale(d, r / tan))), r)))
+                    }),
                 },
                 c.id,
             );
@@ -531,6 +552,38 @@ fn clip_below(points: &[V], f: impl Fn(&V) -> f64) -> Vec<V> {
     out
 }
 
+/// The stations a face spans along an axis: a full cylinder's by its end
+/// circles about that axis (exact, whatever the frame), else its box's.
+fn spans(face: &Face, point: V, dir: V) -> (f64, f64) {
+    if let Surface::Cylinder {
+        ends: Some((x, y)),
+        dir: own,
+        radius,
+        ..
+    } = &face.surface
+    {
+        // The circles' stations, widened by their tilt to this axis.
+        let tilt = radius * norm(cross(*own, dir));
+        let (u, v) = (dot(sub(*x, point), dir), dot(sub(*y, point), dir));
+        return (u.min(v) - tilt, u.max(v) + tilt);
+    }
+    if let Surface::Cone {
+        circles: Some(circles),
+        dir: own,
+        ..
+    } = &face.surface
+    {
+        let sine = norm(cross(*own, dir));
+        return circles
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (c, r)| {
+                let s = dot(sub(*c, point), dir);
+                (lo.min(s - r * sine), hi.max(s + r * sine))
+            });
+    }
+    stations(face.bounds, point, dir)
+}
+
 /// The stations a face's box spans along an axis.
 fn stations(bounds: Option<(V, V)>, point: V, dir: V) -> (f64, f64) {
     let Some((low, high)) = bounds else {
@@ -566,7 +619,7 @@ fn plane_cylinder(
     else {
         return Ok(true);
     };
-    let (lo, hi) = stations(cylinder.bounds, *point, *dir);
+    let (lo, hi) = spans(cylinder, *point, *dir);
     if !(lo.is_finite() && hi.is_finite()) {
         return Ok(true);
     }
@@ -634,11 +687,45 @@ fn plane_cone(plane: &Face, cone: &Face, tau: f64, count: &mut Count) -> Result<
             apex,
             dir,
             semi_angle,
+            ..
         },
     ) = (&plane.surface, &cone.surface)
     else {
         return Ok(true);
     };
+    let along = dot(*dir, *normal);
+    // Between its end circles, where known: their heights over the plane,
+    // and the hull of their outlines as its footprint; else its box.
+    if let Surface::Cone {
+        circles: Some(circles),
+        ..
+    } = &cone.surface
+    {
+        let sine = (1.0 - along * along).max(0.0).sqrt();
+        let (low, high) =
+            circles
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (c, r)| {
+                    let h = dot(*normal, *c) - offset;
+                    (lo.min(h - r * sine), hi.max(h + r * sine))
+                });
+        if low > tau || high < -tau {
+            return Ok(false);
+        }
+        if along.abs() < 1.0 - PARALLEL_SINE_REL * PARALLEL_SINE_REL / 2.0 {
+            let (origin, u, w) = frame(*normal, *offset);
+            let points: Vec<V> = circles
+                .iter()
+                .flat_map(|(c, r)| overlap::disc(*c, *dir, *r))
+                .map(|p| sub(p, scale(*normal, dot(*normal, p) - offset)))
+                .collect();
+            let hull: Vec<V> = hull(&overlap::flatten(&points, origin, u, w))
+                .into_iter()
+                .map(|q| add(origin, add(scale(u, q[0]), scale(w, q[1]))))
+                .collect();
+            return in_region(plane, &hull, tau, count);
+        }
+    }
     let Some((low, high)) = cone.bounds else {
         return Ok(true);
     };
@@ -655,7 +742,6 @@ fn plane_cone(plane: &Face, cone: &Face, tau: f64, count: &mut Count) -> Result<
     if heights.iter().all(|h| *h > tau) || heights.iter().all(|h| *h < -tau) {
         return Ok(false);
     }
-    let along = dot(*dir, *normal);
     if along.abs() >= 1.0 - PARALLEL_SINE_REL * PARALLEL_SINE_REL / 2.0 {
         // Where its axis crosses the plane, and its widest within τ of it.
         let s = (offset - dot(*normal, *apex)) / along;
@@ -665,6 +751,31 @@ fn plane_cone(plane: &Face, cone: &Face, tau: f64, count: &mut Count) -> Result<
         return in_region(plane, &overlap::disc(crossing, *normal, widest), tau, count);
     }
     footprint(plane, cone, tau, count)
+}
+
+/// The convex hull of `points` (Andrew's monotone chain), counterclockwise.
+fn hull(points: &[P2]) -> Vec<P2> {
+    let mut sorted: Vec<P2> = points.to_vec();
+    sorted.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    let turn = |o: P2, a: P2, b: P2| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    let mut out: Vec<P2> = Vec::new();
+    for pass in [false, true] {
+        let start = out.len();
+        let iter: Box<dyn Iterator<Item = &P2>> = if pass {
+            Box::new(sorted.iter().rev())
+        } else {
+            Box::new(sorted.iter())
+        };
+        for p in iter {
+            while out.len() >= start + 2 && turn(out[out.len() - 2], out[out.len() - 1], *p) <= 0.0
+            {
+                out.pop();
+            }
+            out.push(*p);
+        }
+        out.pop();
+    }
+    out
 }
 
 /// The footprint of `other`'s box on `plane`'s plane, against its region.
@@ -708,12 +819,14 @@ fn cylinders(t: &Face, f: &Face, tau: f64) -> bool {
             dir: d,
             radius: r,
             sense: ours,
+            ..
         },
         Surface::Cylinder {
             point: q,
             dir: e,
             radius: s,
             sense: theirs,
+            ..
         },
     ) = (&t.surface, &f.surface)
     else {
@@ -722,7 +835,7 @@ fn cylinders(t: &Face, f: &Face, tau: f64) -> bool {
     if norm(cross(*d, *e)) > PARALLEL_SINE_REL {
         return false;
     }
-    let (a, b) = (stations(t.bounds, *p, *d), stations(f.bounds, *p, *d));
+    let (a, b) = (spans(t, *p, *d), spans(f, *p, *d));
     let common = a.1.min(b.1) - a.0.max(b.0);
     if common < -tau {
         return false;
@@ -762,10 +875,7 @@ fn cylinder_cone(cylinder: &Face, cone: &Face, tau: f64) -> bool {
     if norm(cross(*dir, *e)) > PARALLEL_SINE_REL {
         return true;
     }
-    let (a, b) = (
-        stations(cylinder.bounds, *point, *dir),
-        stations(cone.bounds, *point, *dir),
-    );
+    let (a, b) = (spans(cylinder, *point, *dir), spans(cone, *point, *dir));
     let (lo, hi) = (a.0.max(b.0) - tau, a.1.min(b.1) + tau);
     if lo > hi || !(lo.is_finite() && hi.is_finite()) {
         return lo <= hi;
@@ -783,4 +893,158 @@ fn cylinder_cone(cylinder: &Face, cone: &Face, tau: f64) -> bool {
     // The cylinder's surface lies between |r − e| and r + e of the cone's
     // axis.
     near <= radius + apart + tau && far >= (radius - apart).abs() - tau
+}
+
+/// What B8's closed forms decide about a face and a hole's core.
+pub(crate) enum Core {
+    /// It cannot meet it.
+    Apart,
+    /// It may, over these stations of the hole's axis.
+    Meets((f64, f64)),
+}
+
+/// A part's faces as B8 sees them, in the target's frame.
+pub(crate) struct Shapes(Vec<Face>);
+
+impl Shapes {
+    pub(crate) fn of(
+        part: &Part,
+        boxes: &[FaceBox],
+        elements: &[Element],
+        motion: &Motion,
+    ) -> Self {
+        Self(faces(part, boxes, elements, motion))
+    }
+
+    /// B8 in closed form: `Some(Core::Apart)` if face `id` cannot meet hole
+    /// element `a`'s open core (radius r − τ, stations shrunk by τ),
+    /// `Some(Core::Meets(stations))` if it may, with the stations its region spans
+    /// along the axis; `None` where only its box can tell (a cone, a torus,
+    /// an unknown outline, a cylinder at an angle).
+    pub(crate) fn meets_core(&self, id: u64, a: &Element, tau: f64) -> Option<Core> {
+        let face = self.0.iter().find(|f| f.id == id)?;
+        let core = a.radius - tau;
+        let (lo, hi) = (a.lo + tau, a.hi - tau);
+        let station = |p: V| dot(sub(p, a.point), a.dir);
+        match &face.surface {
+            Surface::Plane {
+                normal,
+                outer: Some(outer),
+                holes,
+                offset,
+            } => {
+                let span = outer
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), p| {
+                        let s = station(*p);
+                        (l.min(s), h.max(s))
+                    });
+                let clipped = clip_below(&clip_below(outer, |p| lo - station(*p)), |p| {
+                    station(*p) - hi
+                });
+                if clipped.len() < 3 {
+                    return Some(Core::Apart);
+                }
+                let crossing = dot(*normal, a.dir);
+                // Where the axis crosses the face's plane inside the
+                // clipped region, the core's section there is a disc
+                // (an ellipse within radius core / cos): in one of the
+                // face's holes, it meets nothing there.
+                if crossing.abs() > 1e-12 {
+                    let s = (offset - dot(*normal, a.point)) / crossing;
+                    let x = add(a.point, scale(a.dir, s));
+                    let (origin, u, w) = frame(*normal, *offset);
+                    let flat = |points: &[V]| overlap::flatten(points, origin, u, w);
+                    let disc = flat(&overlap::disc(x, *normal, core / crossing.abs()));
+                    let mut pairs = 0;
+                    if holes
+                        .iter()
+                        .any(|h| overlap::contained(&disc, &flat(h), tau, &mut pairs))
+                    {
+                        return Some(Core::Apart);
+                    }
+                }
+                let nearest = nearest_to_line(&clipped, a.point, a.dir, *normal);
+                Some(if nearest < core {
+                    Core::Meets(span)
+                } else {
+                    Core::Apart
+                })
+            }
+            // B8 is about material: a shaft's lies inside its surface, and
+            // meets the core where their discs overlap (a D-shaft filling a
+            // hole with no face inside it); a hole's lies outside, and meets
+            // it unless the core is wholly in the hole.
+            Surface::Cylinder {
+                point,
+                dir,
+                radius,
+                sense,
+                ends,
+            } if norm(cross(*dir, a.dir)) <= 1e-9 => {
+                let apart = norm(across(sub(*point, a.point), a.dir));
+                // A full cylinder's stations are its end circles'; else
+                // its box's.
+                let _ = ends;
+                let (l, h) = spans(face, a.point, a.dir);
+                if h <= lo || l >= hi {
+                    return Some(Core::Apart);
+                }
+                let meets = match sense {
+                    Sense::Shaft => apart < radius + core,
+                    // Its material lies just outside its surface: in the
+                    // core where the surface reaches it, unless the core
+                    // lies wholly in the hole.
+                    Sense::Hole => apart > radius - core && apart < radius + core,
+                };
+                Some(if meets {
+                    Core::Meets((l, h))
+                } else {
+                    Core::Apart
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The least distance from the line through `point` along unit `dir` to
+/// the planar polygon `polygon` (in the plane of unit `normal`): zero if
+/// the line crosses it inside.
+fn nearest_to_line(polygon: &[V], point: V, dir: V, normal: V) -> f64 {
+    let crossing = dot(normal, dir);
+    if crossing.abs() > 1e-12 {
+        let s = dot(sub(polygon[0], point), normal) / crossing;
+        let x = add(point, scale(dir, s));
+        let (u, w) = perpendiculars(normal);
+        let flat = overlap::flatten(polygon, x, u, w);
+        if overlap::inside([0.0, 0.0], &flat) {
+            return 0.0;
+        }
+    }
+    let mut best = f64::INFINITY;
+    for (i, a) in polygon.iter().enumerate() {
+        let b = polygon[(i + 1) % polygon.len()];
+        best = best.min(segment_to_line(*a, b, point, dir));
+    }
+    best
+}
+
+/// The least distance from segment `a b` to the line through `p` along
+/// unit `d`.
+fn segment_to_line(a: V, b: V, p: V, d: V) -> f64 {
+    let at = |t: f64| {
+        let x = add(a, scale(sub(b, a), t));
+        norm(across(sub(x, p), d))
+    };
+    // The distance is convex along the segment: a ternary search would
+    // do, but its square is a quadratic with its least point in closed form.
+    let (u, v) = (across(sub(a, p), d), across(sub(b, a), d));
+    let vv = dot(v, v);
+    let t = if vv > 0.0 {
+        (-dot(u, v) / vv).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    at(t).min(at(0.0)).min(at(1.0))
 }

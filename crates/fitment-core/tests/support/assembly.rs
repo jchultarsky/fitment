@@ -612,6 +612,15 @@ fn spans_match(p: [f64; 3], d: [f64; 3], spans: &[Span], expected: &[Value]) -> 
     None
 }
 
+/// I4's room to a blind hole's floor against the expected.
+fn extra_matches(found: Option<f64>, wanted: &Value) -> Option<String> {
+    let same = match found {
+        Some(x) => close(x, wanted),
+        None => wanted.is_null(),
+    };
+    (!same).then(|| format!("max_extra {found:?}, expected {wanted}"))
+}
+
 /// One expected bore or shaft against one requirement: `None` if they
 /// agree, else why not.
 fn axial_matches(
@@ -655,26 +664,35 @@ fn axial_matches(
             )
         }
         Requires::Shaft {
-            shaft, axis, spans, ..
-        } => (
-            "shaft",
-            *shaft,
+            shaft,
             axis,
-            spans
-                .iter()
-                .map(|s| {
-                    (
-                        s.from_mm,
-                        s.to_mm,
-                        s.shaft_diameter_mm,
-                        s.clear_diameter_mm,
-                        s.fit,
-                        s.pinned,
-                    )
-                })
-                .collect(),
-            None,
-        ),
+            spans,
+            max_extra_mm,
+            ..
+        } => {
+            if let Some(problem) = extra_matches(*max_extra_mm, &expect["max_extra"]) {
+                return Some(problem);
+            }
+            (
+                "shaft",
+                *shaft,
+                axis,
+                spans
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.from_mm,
+                            s.to_mm,
+                            s.shaft_diameter_mm,
+                            s.clear_diameter_mm,
+                            s.fit,
+                            s.pinned,
+                        )
+                    })
+                    .collect(),
+                None,
+            )
+        }
         _ => return Some("not a bore or shaft".to_owned()),
     };
     if expect["kind"] != kind {
@@ -701,21 +719,26 @@ fn axial_matches(
             return Some(problem);
         }
     }
-    if let Some(open) = open {
-        let found = rims(part, feature, open);
-        let wanted: Vec<[f64; 3]> = expect["open"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(point)
-            .collect();
-        let all = found.len() == wanted.len()
-            && wanted.iter().all(|w| found.iter().any(|f| near(*f, *w)));
-        if !all {
-            return Some(format!("open at {found:?}, expected {wanted:?}"));
-        }
-    }
-    None
+    open.and_then(|open| open_matches(part, feature, open, expect))
+}
+
+/// A bore's required openings against the expected rims.
+fn open_matches(
+    part: &fitment_core::Part,
+    feature: fitment_core::FeatureId,
+    open: fitment_core::Open,
+    expect: &Value,
+) -> Option<String> {
+    let found = rims(part, feature, open);
+    let wanted: Vec<[f64; 3]> = expect["open"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(point)
+        .collect();
+    let all =
+        found.len() == wanted.len() && wanted.iter().all(|w| found.iter().any(|f| near(*f, *w)));
+    (!all).then(|| format!("open at {found:?}, expected {wanted:?}"))
 }
 
 /// One socket's left-out features against the expected ones, one to one.
@@ -782,34 +805,71 @@ fn close(a: f64, b: &Value) -> bool {
 /// Occurrence paths to their products' ids.
 type Names = std::collections::BTreeMap<Vec<u64>, String>;
 
-/// A seat's touchers against the expected (product, gap, flags), one to
-/// one.
-fn touchers_match(contacts: &[fitment_core::SeatContact], expect: &Value, names: &Names) -> bool {
-    let Some(wanted) = expect["touchers"].as_array() else {
-        return true;
-    };
-    let mut left: Vec<&Value> = wanted.iter().collect();
-    for toucher in contacts.iter().flat_map(|c| c.by.iter()) {
-        let product = names.get(&toucher.neighbour).map_or("", String::as_str);
-        let mut flags: Vec<String> = toucher
+/// A seat's touchers, occurrence by occurrence from its sources (C1, C5,
+/// H1): each occurrence has `by` of them, and the expected (product, gap,
+/// flags) where given; and the seat lists exactly their union (9.1).
+fn touchers_match(
+    requirement: &fitment_core::Requirement,
+    contacts: &[fitment_core::SeatContact],
+    expect: &Value,
+    names: &Names,
+) -> bool {
+    type Toucher = (Vec<u64>, u64, f64, Vec<String>);
+    let mut per: std::collections::BTreeMap<Vec<u64>, Vec<Toucher>> =
+        std::collections::BTreeMap::new();
+    for source in &requirement.sources {
+        if !matches!(source.rule.as_str(), "C1" | "C5" | "H1") {
+            continue;
+        }
+        let mut flags: Vec<String> = source
             .flags
             .iter()
             .filter_map(|f| serde_json::to_value(f).ok()?.as_str().map(str::to_owned))
             .collect();
         flags.sort();
-        let found = left.iter().position(|w| {
-            w["product"] == product
-                && close(toucher.gap_mm, &w["gap"])
-                && strings(&w["flags"]) == flags
-        });
-        match found {
-            Some(i) => {
-                left.swap_remove(i);
-            }
-            None => return false,
+        let face = source.faces.first().copied().unwrap_or(0);
+        let entry = per.entry(source.occurrence.clone()).or_default();
+        if !entry.iter().any(|t| t.0 == source.neighbour && t.1 == face) {
+            entry.push((
+                source.neighbour.clone(),
+                face,
+                source.gap_mm.unwrap_or(0.0),
+                flags,
+            ));
         }
     }
-    left.is_empty()
+    let union: std::collections::BTreeSet<(Vec<u64>, u64)> =
+        per.values().flatten().map(|t| (t.0.clone(), t.1)).collect();
+    let listed: std::collections::BTreeSet<(Vec<u64>, u64)> = contacts
+        .iter()
+        .flat_map(|c| c.by.iter())
+        .map(|t| (t.neighbour.clone(), t.face))
+        .collect();
+    let listed_count: usize = contacts.iter().map(|c| c.by.len()).sum();
+    if union != listed || listed_count != listed.len() {
+        return false;
+    }
+    per.values().all(|touchers| {
+        if expect["by"].as_u64() != u64::try_from(touchers.len()).ok() {
+            return false;
+        }
+        let Some(wanted) = expect["touchers"].as_array() else {
+            return true;
+        };
+        let mut left: Vec<&Value> = wanted.iter().collect();
+        for (neighbour, _, gap, flags) in touchers {
+            let product = names.get(neighbour).map_or("", String::as_str);
+            match left.iter().position(|w| {
+                w["product"] == product && close(*gap, &w["gap"]) && strings(&w["flags"]) == *flags
+            }) {
+                Some(i) => {
+                    left.swap_remove(i);
+                }
+                None => return false,
+            }
+        }
+        left.is_empty()
+    })
 }
 
 /// One seat against one expected.
@@ -828,8 +888,7 @@ fn seat_one(
     let (Some(e), Some(p)) = (point(&expect["normal"]), point(&expect["point"])) else {
         return false;
     };
-    let by: usize = contacts.iter().map(|c| c.by.len()).sum();
-    if !touchers_match(contacts, expect, names) {
+    if !touchers_match(requirement, contacts, expect, names) {
         return false;
     }
     let mut basis: Vec<String> = contacts
@@ -850,7 +909,6 @@ fn seat_one(
     let wanted_rings: Vec<&Value> = expect["rings"].as_array().into_iter().flatten().collect();
     (0..3).all(|i| (n[i] - e[i]).abs() <= 1e-9)
         && (n[0] * p[0] + n[1] * p[1] + n[2] * p[2] - offset_mm).abs() <= POINT_TOL
-        && expect["by"].as_u64() == u64::try_from(by).ok()
         && basis == strings(&expect["basis"])
         && flag_names(requirement) == strings(&expect["flags"])
         && found_rings.len() == wanted_rings.len()
@@ -997,14 +1055,34 @@ fn planar_matches(socket: &fitment_core::Socket, expect: &Value, names: &Names) 
 fn socket_matches(
     part: &fitment_core::Part,
     socket: &fitment_core::Socket,
-    (at, names): (Option<[f64; 3]>, &Names),
+    (at, names): (&[[f64; 3]], &Names),
     expect: &Value,
 ) -> Option<String> {
     use fitment_core::Requires;
-    if let Some(wanted) = point(&expect["at"]) {
-        if !at.is_some_and(|a| near(a, wanted)) {
-            return Some(format!("its occurrence is at {at:?}, expected {wanted:?}"));
+    // 9.1: the occurrences it merges, by where each is placed.
+    let wanted: Vec<[f64; 3]> = expect["at"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(point)
+        .collect();
+    let mut left = wanted.clone();
+    for a in at {
+        match left.iter().position(|w| near(*a, *w)) {
+            Some(i) => {
+                left.swap_remove(i);
+            }
+            None => {
+                return Some(format!(
+                    "its occurrences are at {at:?}, expected {wanted:?}"
+                ));
+            }
         }
+    }
+    if !left.is_empty() {
+        return Some(format!(
+            "its occurrences are at {at:?}, expected {wanted:?}"
+        ));
     }
     if let Some(problem) = planar_matches(socket, expect, names) {
         return Some(problem);
@@ -1175,18 +1253,19 @@ pub fn sockets(bytes: &[u8], listing: &Listing, expect: &Value) -> Vec<String> {
             continue;
         }
         for socket in &extracted.sockets {
-            let at = extracted
+            let at: Vec<[f64; 3]> = extracted
                 .occurrences
                 .iter()
-                .find(|o| socket.occurrences.first() == Some(&o.path))
-                .map(|o| o.transform.translation());
+                .filter(|o| socket.occurrences.contains(&o.path))
+                .map(|o| o.transform.translation())
+                .collect();
             let reasons: Vec<String> = left
                 .iter()
-                .filter_map(|w| socket_matches(part, socket, (at, &names), w))
+                .filter_map(|w| socket_matches(part, socket, (&at, &names), w))
                 .collect();
             match left
                 .iter()
-                .position(|w| socket_matches(part, socket, (at, &names), w).is_none())
+                .position(|w| socket_matches(part, socket, (&at, &names), w).is_none())
             {
                 Some(i) => {
                     left.swap_remove(i);

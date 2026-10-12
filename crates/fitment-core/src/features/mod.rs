@@ -16,7 +16,7 @@ mod other;
 mod outline;
 mod plane;
 mod primary;
-mod readback;
+pub(crate) mod readback;
 mod stack;
 mod step;
 pub(crate) use step::{header_of, part_of_definition};

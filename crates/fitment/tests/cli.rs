@@ -341,3 +341,60 @@ fn socket_of_a_part_file_is_refused() {
         .code(3)
         .stderr(contains("not_an_assembly"));
 }
+
+#[test]
+fn review_records_a_decision_and_socket_carries_it_over() {
+    let dir = scratch("review");
+    let input = dir.join("s01.stp");
+    let out = dir.join("bracket.socket.json");
+    fitment()
+        .args(["socket", "--part", "BRACKET"])
+        .arg(&input)
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .success();
+    let grip = "grip:plane-467+plane-570";
+    // A removal needs a note; an unknown id is a usage error.
+    fitment()
+        .args(["review", "--remove", grip])
+        .arg(&out)
+        .assert()
+        .code(2)
+        .stderr(contains("needs a note"));
+    fitment()
+        .args(["review", "--keep", "bore:hole-1"])
+        .arg(&out)
+        .assert()
+        .code(2);
+    fitment()
+        .args(["review", "--remove", grip, "--note", "may be thicker"])
+        .arg(&out)
+        .assert()
+        .success();
+    fitment()
+        .arg("review")
+        .arg(&out)
+        .assert()
+        .success()
+        .stdout(contains("removed  grip:plane-467+plane-570"));
+    // Extracted again onto the same file, the decision carries over.
+    fitment()
+        .args(["socket", "--part", "BRACKET"])
+        .arg(&input)
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .success()
+        .stderr(contains("1 decisions carried over, 0 stale"));
+    // A document edited by hand is refused.
+    let text = std::fs::read_to_string(&out).unwrap().replace("\"contact_mm\": 0.01", "\"contact_mm\": 0.02");
+    std::fs::write(&out, text).unwrap();
+    fitment()
+        .arg("review")
+        .arg(&out)
+        .assert()
+        .code(3)
+        .stderr(contains("digest"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

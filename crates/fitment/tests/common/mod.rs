@@ -12,6 +12,10 @@ pub mod expect;
 #[allow(dead_code)] // each test binary uses part of it
 pub mod assembly;
 
+/// The comparison of a socket with its `_rot` and `_tgt` variants'.
+#[allow(dead_code)] // each test binary uses part of it
+pub mod variants;
+
 /// Why fitment-core cannot read back the document `fitment features`
 /// printed, if it cannot: every document it writes must keep the rules
 /// `from_json` checks.
