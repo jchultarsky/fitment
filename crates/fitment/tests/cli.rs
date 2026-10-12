@@ -89,6 +89,20 @@ fn the_table_names_the_solid() {
 }
 
 #[test]
+fn the_table_lists_each_feature() {
+    fitment()
+        .args(["features", "--format", "table"])
+        .arg(unit_part("p05_cbore.stp"))
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "through Ø6.6/Ø11 length 15   opening@0 → opening@15",
+        ))
+        .stdout(predicates::str::contains("hole Ø11 full"))
+        .stdout(predicates::str::contains("complete true"));
+}
+
+#[test]
 fn text_from_the_file_cannot_add_lines_to_stderr() {
     // A schema name holding an encoded line break and escape character.
     let step = "ISO-10303-21;HEADER;FILE_DESCRIPTION((''),'2;1');\

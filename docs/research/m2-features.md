@@ -1077,6 +1077,8 @@ Each PR comes with its tests. `EXTRACTOR_VERSION` goes up with every PR that cha
    - the oracle on all fixtures, with pinned tallies;
    - the table view;
    - `docs/ARCHITECTURE.md` (crate graph, format and extractor versions, determinism rules).
+
+   As built: every positive part of the corpus is written again with pcurves (`_pc`, 41 cases) and moved by a second skew motion (`_rot`, 39 cases; two parts whose answers are hand-stated rather than moved have none), for 132 cases; fitment and both oracle modes agree on all of them. `verify-occt.py features --expect fixtures/manifest.json` fails when the fixtures' tallies move. `fitment features --format table` prints one line per feature.
 8. **M2 exit.** PLAN.md is updated (section 17), and the README status. The rule-coverage test is turned on.
 
 ## 17. Changes to PLAN.md

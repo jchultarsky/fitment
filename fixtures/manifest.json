@@ -1,5 +1,6 @@
 {
  "comment": "fitment's gate result for each fixture of the core set (tools/fetch-fixtures.sh core). The first results came from the D2 census (docs/research/m2-features.md, section 4.2); they are regression pins, re-pinned only in a pull request that says why.",
+ "oracle": {"accepted": 24, "refused": 21, "plane faces": 1521, "areas": 1436, "areas within the vertex offsets": 24, "unknown outlines": 61, "cylinders": 1650, "full cylinders": 544, "cylinders full only in Open CASCADE": 0, "holes probed": 396, "shafts probed": 12},
  "fixtures": [
   {"path": "nist-edm/as1_pe.stp", "features": "refused", "reasons": ["assembly"]},
   {"path": "nist-edm/clevis21.stp", "features": "accepted", "planes": 16, "unknown_outlines": 0, "full_cylinders": 12, "holes": {"blind": 6}, "shafts": {}},
