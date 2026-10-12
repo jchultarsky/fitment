@@ -89,6 +89,32 @@ fn values(requirement: &Requirement) -> String {
     .unwrap_or_default()
 }
 
+/// What the user decides on: the requirement's values without its
+/// touchers, which name each socket's own neighbours (a seat on the same
+/// plane is the same requirement in every socket).
+fn target_values(requirement: &Requirement) -> String {
+    let mut value = serde_json::to_value((
+        &requirement.requires,
+        requirement.floor_mm,
+        &requirement.flags,
+    ))
+    .unwrap_or_default();
+    strip_touchers(&mut value);
+    value.to_string()
+}
+
+fn strip_touchers(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.remove("by");
+            map.remove("neighbour");
+            map.values_mut().for_each(strip_touchers);
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(strip_touchers),
+        _ => {}
+    }
+}
+
 /// Applies `status` (with `note`) to requirement `id` in every socket
 /// holding it, or only in `socket`.
 pub(crate) fn decide(
@@ -119,7 +145,7 @@ pub(crate) fn decide(
     if holding.is_empty() {
         return Err(ReviewError::UnknownId(id.to_owned()));
     }
-    let distinct: BTreeSet<String> = holding.iter().map(|(_, r)| values(r)).collect();
+    let distinct: BTreeSet<String> = holding.iter().map(|(_, r)| target_values(r)).collect();
     if distinct.len() > 1 {
         return Err(ReviewError::DiffersBetweenSockets {
             id: id.to_owned(),

@@ -232,3 +232,88 @@ fn decisions_follow_sockets_that_split_and_stop_where_they_merge() {
             .any(|s| s.reason == StaleReason::OccurrencesDisagree)
     );
 }
+
+#[test]
+fn a_socket_merging_decided_and_undecided_occurrences_carries_nothing() {
+    // The moved bolt's socket is decided, the other three's not; merged
+    // again, the four disagree.
+    let mut split = socket(&moved_bolt(), "BOLT");
+    let seat = split.extracted().unwrap().sockets[0]
+        .requirements
+        .iter()
+        .find(|r| r.id.starts_with("seat:"))
+        .unwrap()
+        .id
+        .clone();
+    let lone = split
+        .extracted()
+        .unwrap()
+        .sockets
+        .iter()
+        .find(|s| s.occurrences.len() == 1)
+        .unwrap()
+        .id
+        .clone();
+    split
+        .decide(&seat, Some(&lone), ReviewStatus::Kept, None)
+        .unwrap();
+    let mut merged = socket(S01, "BOLT");
+    let outcome = merged.carry_over(&split);
+    assert_eq!((outcome.carried, outcome.stale), (0, 1));
+    assert_eq!(
+        merged.stale_reviews()[0].reason,
+        StaleReason::OccurrencesDisagree
+    );
+}
+
+#[test]
+fn decisions_with_different_notes_do_not_agree() {
+    let mut split = socket(&moved_bolt(), "BOLT");
+    let seat = split.extracted().unwrap().sockets[0]
+        .requirements
+        .iter()
+        .find(|r| r.id.starts_with("seat:"))
+        .unwrap()
+        .id
+        .clone();
+    split
+        .decide(&seat, Some("socket-1"), ReviewStatus::Kept, Some("one"))
+        .unwrap();
+    split
+        .decide(&seat, Some("socket-2"), ReviewStatus::Kept, Some("two"))
+        .unwrap();
+    let mut merged = socket(S01, "BOLT");
+    assert_eq!(merged.carry_over(&split).carried, 0);
+}
+
+#[test]
+fn a_decision_whose_requirement_is_gone_goes_stale_and_stays() {
+    let mut bracket = socket(S01, "BRACKET");
+    let grip = bracket.extracted().unwrap().sockets[0].requirements[1]
+        .id
+        .clone();
+    bracket
+        .decide(&grip, None, ReviewStatus::Removed, Some("gone"))
+        .unwrap();
+    // No occurrence of the plate's sockets is the bracket's.
+    let mut plate = socket(S01, "PLATE");
+    let outcome = plate.carry_over(&bracket);
+    assert_eq!((outcome.carried, outcome.stale), (0, 1));
+    assert_eq!(
+        plate.stale_reviews()[0].reason,
+        StaleReason::RequirementGone
+    );
+    // Extracted once more, the stale decision is kept.
+    let mut again = socket(S01, "PLATE");
+    again.carry_over(&plate);
+    assert_eq!(again.stale_reviews().len(), 1);
+}
+
+#[test]
+fn a_decision_in_no_socket_is_refused() {
+    let mut document = socket(S01, "BRACKET");
+    assert_eq!(
+        document.decide("bore:hole-1", Some("socket-9"), ReviewStatus::Kept, None),
+        Err(ReviewError::UnknownSocket("socket-9".to_owned()))
+    );
+}

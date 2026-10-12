@@ -114,7 +114,9 @@ pub fn run(args: &Args) -> ExitCode {
         Status::Refused => ExitCode::from(exit::REFUSED),
     };
     if let Some(output) = &args.output {
-        if let Some(problem) = (!args.force)
+        // A refused result never touches OUT (9.5): no need to guard it.
+        let refused = document.status() == Status::Refused;
+        if let Some(problem) = (!args.force && !refused)
             .then(|| foreign(output, &args.file, &document))
             .flatten()
         {

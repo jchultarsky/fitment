@@ -50,6 +50,16 @@ fn socket_rules(socket: &Socket, anchors: &[FeatureId]) -> Checked {
     if !keys.windows(2).all(|w| w[0] < w[1]) {
         return Err(format!("{id}'s requirements are not in order, or repeat"));
     }
+    if socket.left_out.iter().any(|l| {
+        !(positive(l.diameter_mm)
+            && l.from_mm.is_finite()
+            && l.to_mm.is_finite()
+            && l.from_mm <= l.to_mm)
+    }) {
+        return Err(format!(
+            "{id} leaves out a feature with no diameter or wall"
+        ));
+    }
     if !socket
         .left_out
         .windows(2)
@@ -104,14 +114,24 @@ fn requirement_rules(requirement: &Requirement) -> Checked {
     if !requirement.sources.is_empty() && requirement.floor_mm < largest {
         return Err("its floor is below one of its sources' (Y1)".to_owned());
     }
+    lists_and_sources(requirement)?;
     let labelled = requirement.flags.contains(&Flag::ThreadNotConfirmed)
         || requirement.flags.contains(&Flag::Conflict);
     match &requirement.requires {
         Requires::Bore { spans, .. } => bore_rules(spans, labelled)?,
         Requires::Shaft { spans, .. } => shaft_rules(spans, labelled)?,
-        Requires::Seat { contacts, .. } => {
+        Requires::Seat {
+            contacts, rings, ..
+        } => {
             if contacts.is_empty() || contacts.iter().any(|c| c.by.is_empty()) {
                 return Err("a seat has a contact with nothing on it".to_owned());
+            }
+            if rings.iter().any(|r| {
+                !(positive(r.inner_diameter_mm)
+                    && r.inner_diameter_mm < r.outer_diameter_mm
+                    && r.outer_diameter_mm.is_finite())
+            }) {
+                return Err("a ring's diameters are not ordered and positive".to_owned());
             }
             for c in contacts {
                 let known = crate::features::readback::outline(&c.outline, None)?;
@@ -172,6 +192,35 @@ fn requirement_rules(requirement: &Requirement) -> Checked {
     Ok(())
 }
 
+/// A requirement's lists in the document's order, its sources present
+/// (Y2), and a conflict a source's.
+fn lists_and_sources(requirement: &Requirement) -> Checked {
+    // Its lists in the document's order, each unique.
+    let mut ordered_copy = requirement.clone();
+    super::merge::normalize(&mut ordered_copy);
+    if ordered_copy != *requirement {
+        return Err("its lists are not in the document's order, or repeat".to_owned());
+    }
+    // Every kind a relation gives cites its relations (Y2); a conflict is
+    // a source's.
+    let derived = matches!(
+        requirement.requires,
+        Requires::Grip { .. } | Requires::Unresolved { .. }
+    );
+    if !derived && requirement.sources.is_empty() {
+        return Err("it cites no source (Y2)".to_owned());
+    }
+    if requirement.flags.contains(&Flag::Conflict)
+        && !requirement
+            .sources
+            .iter()
+            .any(|s| s.flags.contains(&Flag::Conflict))
+    {
+        return Err("it is flagged conflict, but no source is".to_owned());
+    }
+    Ok(())
+}
+
 fn tight(fit: Fit) -> bool {
     matches!(fit, Fit::LineToLine | Fit::Interference)
 }
@@ -193,6 +242,9 @@ fn bore_rules(spans: &[super::model::BoreSpan], labelled: bool) -> Checked {
         if tight(s.fit) && !labelled {
             return Err("a tight fit carries no thread_not_confirmed".to_owned());
         }
+        if tight(s.fit) && !s.pinned {
+            return Err("a tight fit is not pinned (Y1)".to_owned());
+        }
     }
     Ok(())
 }
@@ -213,6 +265,9 @@ fn shaft_rules(spans: &[super::model::ShaftSpan], labelled: bool) -> Checked {
         }
         if tight(s.fit) && !labelled {
             return Err("a tight fit carries no thread_not_confirmed".to_owned());
+        }
+        if tight(s.fit) && !s.pinned {
+            return Err("a tight fit is not pinned (Y1)".to_owned());
         }
     }
     Ok(())

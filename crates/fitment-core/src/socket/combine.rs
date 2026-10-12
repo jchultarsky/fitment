@@ -653,14 +653,70 @@ fn seat_sources(
     sources
 }
 
+/// The neighbour faces on each face of `plane`: its contacts' and, around
+/// each ring's hole, the ring's (H1).
+fn touchers_by_face(
+    part: &Part,
+    plane: &crate::features::Plane,
+    contacts: &[&super::planar::Contact],
+    ours: &[&super::rules::Ring],
+    paths: &[Vec<u64>],
+) -> BTreeMap<u64, Vec<Toucher>> {
+    let path = |n: usize| paths.get(n).cloned().unwrap_or_default();
+    let mut by_face: BTreeMap<u64, Vec<Toucher>> = BTreeMap::new();
+    for contact in contacts {
+        by_face.entry(contact.face).or_default().push(Toucher {
+            neighbour: path(contact.neighbour),
+            face: contact.neighbour_face,
+            gap_mm: clean(contact.gap),
+            flags: contact.flags.iter().copied().collect(),
+        });
+    }
+    // A ring requires the target faces around its hole on this plane.
+    for ring in ours {
+        for face in ring_faces(part, plane, ring.hole) {
+            by_face.entry(face).or_default().push(Toucher {
+                neighbour: path(ring.neighbour),
+                face: ring.faces.first().copied().unwrap_or(0),
+                gap_mm: 0.0,
+                flags: Vec::new(),
+            });
+        }
+    }
+    by_face
+}
+
+/// A ring on a plane with no face found around its hole: what touches
+/// there is no rule's (C6).
+fn ringless(plane: FeatureId, rings: &[&super::rules::Ring]) -> Requirement {
+    let mut faces: Vec<u64> = rings.iter().flat_map(|r| r.faces.iter().copied()).collect();
+    faces.sort_unstable();
+    faces.dedup();
+    unresolved(
+        plane,
+        None,
+        vec![CauseFaces {
+            cause: Cause::ContactNoRule,
+            faces,
+        }],
+    )
+}
+
 /// The faces of `plane` whose outline borders a cylinder of `hole` (an
 /// unknown outline may).
 fn ring_faces(part: &Part, plane: &crate::features::Plane, hole: FeatureId) -> Vec<u64> {
+    // Its cylinders and transitions: a chamfered or countersunk rim
+    // borders the plane through its cone.
     let cylinders: BTreeSet<FeatureId> = part
         .holes
         .iter()
         .filter(|h| h.id == hole)
-        .flat_map(|h| h.segments.iter().map(|s| s.cylinder))
+        .flat_map(|h| {
+            h.segments
+                .iter()
+                .map(|s| s.cylinder)
+                .chain(h.transitions.iter().copied())
+        })
         .collect();
     plane
         .faces
@@ -706,26 +762,7 @@ pub(crate) fn planar(
             .iter()
             .flat_map(|c| c.flags.iter().copied())
             .collect();
-        let mut by_face: BTreeMap<u64, Vec<Toucher>> = BTreeMap::new();
-        for contact in &contacts {
-            by_face.entry(contact.face).or_default().push(Toucher {
-                neighbour: path(contact.neighbour),
-                face: contact.neighbour_face,
-                gap_mm: clean(contact.gap),
-                flags: contact.flags.iter().copied().collect(),
-            });
-        }
-        // A ring requires the target faces around its hole on this plane.
-        for ring in &ours {
-            for face in ring_faces(part, plane, ring.hole) {
-                by_face.entry(face).or_default().push(Toucher {
-                    neighbour: path(ring.neighbour),
-                    face: ring.faces.first().copied().unwrap_or(0),
-                    gap_mm: 0.0,
-                    flags: Vec::new(),
-                });
-            }
-        }
+        let mut by_face = touchers_by_face(part, plane, &contacts, &ours, paths);
         let mut seat_contacts = Vec::new();
         for face in &plane.faces {
             let Some(mut by) = by_face.remove(&face.face) else {
@@ -747,6 +784,12 @@ pub(crate) fn planar(
                 outline: face.outline.clone(),
                 by,
             });
+        }
+        // A ring on a plane with no face found around its hole requires no
+        // face: what touches there is no rule's (C6), never an empty seat.
+        if seat_contacts.is_empty() {
+            out.push(ringless(plane.id, &ours));
+            continue;
         }
         let mut sources = seat_sources(&contacts, &ours, occurrence, paths);
         sources.sort_by(|a, b| {

@@ -395,7 +395,6 @@ impl SocketDocument {
         let Some(extracted) = &self.extracted else {
             return Ok(());
         };
-        let mut expected = Vec::new();
         for socket in &extracted.sockets {
             for requirement in &socket.requirements {
                 let derived = combine::id_of(&requirement.requires);
@@ -405,7 +404,6 @@ impl SocketDocument {
                         requirement.id
                     ));
                 }
-                expected.push((socket.id.clone(), requirement.id.clone()));
             }
         }
         check_occurrences(extracted)?;
@@ -458,6 +456,26 @@ fn check_occurrences(extracted: &Extracted) -> Result<(), String> {
                     cited.insert(source.neighbour.as_slice());
                 }
             }
+        }
+    }
+    // Every neighbour a toucher or ring names is listed too.
+    let named = extracted
+        .sockets
+        .iter()
+        .flat_map(|s| &s.requirements)
+        .flat_map(|r| match &r.requires {
+            Requires::Seat {
+                contacts, rings, ..
+            } => contacts
+                .iter()
+                .flat_map(|c| c.by.iter().map(|t| t.neighbour.as_slice()))
+                .chain(rings.iter().map(|r| r.neighbour.as_slice()))
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        });
+    for path in named {
+        if !listed.contains(path) {
+            return Err("a seat names a neighbour the document does not list".to_owned());
         }
     }
     if cited.len() != listed.len() || listed.len() != extracted.neighbours.len() {
@@ -854,4 +872,143 @@ fn unread_neighbours(
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const S01: &[u8] = include_bytes!("../../tests/assemblies/s01_bolted.stp");
+
+    /// s01's BRACKET socket edited by `edit` and given the digest of what
+    /// it now states, as anyone can: true if `from_json` refuses it as
+    /// breaking a rule (9.4).
+    fn refused(edit: impl FnOnce(&mut Extracted)) -> bool {
+        let Ok(mut document) = SocketDocument::extract(S01, Some("BRACKET"), None) else {
+            return false;
+        };
+        let Some(extracted) = document.extracted.as_mut() else {
+            return false;
+        };
+        edit(extracted);
+        document.digest = Some(document.compute_digest());
+        matches!(
+            SocketDocument::from_json(&document.to_json()),
+            Err(SocketFormatError::Invalid(_))
+        )
+    }
+
+    #[test]
+    fn each_structural_rule_refuses_an_edit_with_its_digest_recomputed() {
+        // The document as extracted is not refused.
+        assert!(!refused(|_| {}));
+        // A3: a hole neither required nor left out.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                s.left_out.clear();
+            }
+        }));
+        // Y1: a floor below its sources'.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    r.floor_mm = 0.0;
+                }
+            }
+        }));
+        // N5: requirements out of order.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                s.requirements.reverse();
+            }
+        }));
+        // A tight fit with no label, and unpinned.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    if let Requires::Bore { spans, .. } = &mut r.requires {
+                        for span in spans {
+                            span.fit = Fit::Interference;
+                        }
+                    }
+                }
+            }
+        }));
+        // Spans that overlap.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    if let Requires::Bore { spans, .. } = &mut r.requires {
+                        let copy = spans.clone();
+                        spans.extend(copy);
+                    }
+                }
+            }
+        }));
+        // A seat with nothing on it.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    if let Requires::Seat { contacts, .. } = &mut r.requires {
+                        for c in contacts {
+                            c.by.clear();
+                        }
+                    }
+                }
+            }
+        }));
+        // A grip naming one seat twice.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    if let Requires::Grip { seats, .. } = &mut r.requires {
+                        if let Some(first) = seats.first().copied() {
+                            *seats = vec![first, first];
+                        }
+                    }
+                }
+            }
+        }));
+        // Sources out of order.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    r.sources.reverse();
+                }
+            }
+        }));
+        // A conflict no source shows.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    r.flags = vec![Flag::Conflict];
+                }
+            }
+        }));
+        // A left-out feature with no diameter.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for l in &mut s.left_out {
+                    l.diameter_mm = -1.0;
+                }
+            }
+        }));
+        // A socket misnumbered.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                s.id = "socket-2".to_owned();
+            }
+            for o in &mut e.occurrences {
+                o.socket = Some("socket-2".to_owned());
+            }
+        }));
+        // A requirement with no source.
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    r.sources.clear();
+                }
+            }
+        }));
+    }
 }

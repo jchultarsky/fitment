@@ -104,6 +104,9 @@ pub(crate) fn merge(sockets: Vec<Socket>) -> Vec<Socket> {
             }
             first.occurrences.sort();
             first.occurrences.dedup();
+            for requirement in &mut first.requirements {
+                normalize(requirement);
+            }
             Some(first)
         })
         .collect();
@@ -112,6 +115,53 @@ pub(crate) fn merge(sockets: Vec<Socket>) -> Vec<Socket> {
         socket.id = format!("socket-{}", k + 1);
     }
     merged
+}
+
+/// The document's order for a requirement's lists (9.4 checks it):
+/// sources by occurrence, neighbour, rule, feature and faces; contacts by
+/// face; touchers by neighbour and face; rings by hole, neighbour and
+/// diameters; grip holes and cause faces by `#id`; each unique.
+pub(crate) fn normalize(requirement: &mut Requirement) {
+    let key = |s: &super::model::SourceRef| {
+        (
+            s.occurrence.clone(),
+            s.neighbour.clone(),
+            s.rule.clone(),
+            s.feature.map(crate::features::FeatureId::instance),
+            s.faces.clone(),
+        )
+    };
+    requirement.sources.sort_by_key(key);
+    requirement.sources.dedup_by(|a, b| key(a) == key(b));
+    match &mut requirement.requires {
+        Requires::Seat {
+            contacts, rings, ..
+        } => {
+            contacts.sort_by_key(|c| c.face);
+            for c in contacts.iter_mut() {
+                c.by.sort_by(|x, y| (&x.neighbour, x.face).cmp(&(&y.neighbour, y.face)));
+                c.by.dedup_by(|x, y| x.neighbour == y.neighbour && x.face == y.face);
+            }
+            rings.sort_by(|x, y| {
+                (x.hole.instance(), &x.neighbour)
+                    .cmp(&(y.hole.instance(), &y.neighbour))
+                    .then(x.inner_diameter_mm.total_cmp(&y.inner_diameter_mm))
+                    .then(x.outer_diameter_mm.total_cmp(&y.outer_diameter_mm))
+            });
+            rings.dedup();
+        }
+        Requires::Grip { holes, .. } => {
+            holes.sort_by_key(|h| h.instance());
+            holes.dedup();
+        }
+        Requires::Unresolved { causes, .. } => {
+            for c in causes.iter_mut() {
+                c.faces.sort_unstable();
+                c.faces.dedup();
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `other`'s occurrences and requirements into `socket`, the strictest of
@@ -209,5 +259,94 @@ fn strictest(ours: &mut Requirement, theirs: Requirement) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::socket::SocketDocument;
+    use crate::socket::model::{Flag, LeftOut};
+
+    const S01: &[u8] = include_bytes!("../../tests/assemblies/s01_bolted.stp");
+
+    /// s01's bolt socket, for one occurrence path.
+    fn one(path: u64) -> Option<Socket> {
+        let document = SocketDocument::extract(S01, Some("BOLT"), None).ok()?;
+        let mut socket = document.extracted()?.sockets.first()?.clone();
+        socket.occurrences = vec![vec![path]];
+        Some(socket)
+    }
+
+    fn count(sockets: Vec<Socket>) -> usize {
+        merge(sockets).len()
+    }
+
+    #[test]
+    fn only_sockets_that_agree_merge() {
+        let (Some(a), Some(b)) = (one(1), one(2)) else {
+            return;
+        };
+        assert_eq!(count(vec![a.clone(), b.clone()]), 1);
+        // One toucher fewer on a seat.
+        let mut fewer = b.clone();
+        for r in &mut fewer.requirements {
+            if let Requires::Seat { contacts, .. } = &mut r.requires {
+                for c in contacts {
+                    c.by.clear();
+                }
+            }
+        }
+        assert_eq!(count(vec![a.clone(), fewer]), 2);
+        // A flag more.
+        let mut flagged = b.clone();
+        for r in &mut flagged.requirements {
+            r.flags.push(Flag::Offset);
+            r.flags.sort();
+        }
+        assert_eq!(count(vec![a.clone(), flagged]), 2);
+        // A feature left out.
+        let mut left = b.clone();
+        let shaft = left.requirements.iter().find_map(|r| match &r.requires {
+            Requires::Shaft { shaft, axis, .. } => Some((*shaft, *axis)),
+            _ => None,
+        });
+        if let Some((feature, axis)) = shaft {
+            left.left_out.push(LeftOut {
+                feature,
+                reason: crate::socket::model::LeftOutReason::NothingOnAxis,
+                axis,
+                diameter_mm: 1.0,
+                from_mm: 0.0,
+                to_mm: 1.0,
+            });
+        }
+        assert!(shaft.is_some());
+        assert_eq!(count(vec![a, left]), 2);
+    }
+
+    #[test]
+    fn sockets_are_numbered_by_their_smallest_occurrence() {
+        let (Some(a), Some(b), Some(c)) = (one(5), one(1), one(3)) else {
+            return;
+        };
+        let mut odd = c;
+        for r in &mut odd.requirements {
+            r.flags.push(Flag::Offset);
+            r.flags.sort();
+        }
+        // {1, 5} and {3}: the first holds path 1.
+        let merged = merge(vec![a, odd, b]);
+        assert_eq!(merged.len(), 2);
+        assert!(
+            merged
+                .first()
+                .is_some_and(|s| s.id == "socket-1" && s.occurrences == vec![vec![1], vec![5]])
+        );
+        assert!(
+            merged
+                .get(1)
+                .is_some_and(|s| s.id == "socket-2" && s.occurrences == vec![vec![3]])
+        );
     }
 }
