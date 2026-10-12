@@ -176,15 +176,31 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         if cases == 0 && tests.is_empty() && !deferred {
             failures.push(format!("{id}: no case, no test and no reason"));
         }
+        if deferred && (cases > 0 || !tests.is_empty()) {
+            failures.push(format!("{id}: deferred, yet a case or test covers it"));
+        }
         for test in tests {
             let Some((file, name)) = test.split_once("::") else {
                 failures.push(format!("{id}: '{test}' is not file::function"));
                 continue;
             };
-            let text = fs::read_to_string(root.join(file)).unwrap_or_default();
-            if !text.contains(&format!("fn {name}(")) {
+            if !is_test(&root.join(file), name) {
                 failures.push(format!("{id}: no test {name} in {file}"));
             }
+        }
+    }
+    // Every rule the design states in bold (`**G1.`, `**W7b.`) and every
+    // gate check is listed, itself or by its parts (`K2.blind`).
+    let design = fs::read_to_string(root.join("docs/research/m2-features.md")).unwrap();
+    let listed = |rule: &str| {
+        rules.contains_key(rule) || rules.keys().any(|k| k.starts_with(&format!("{rule}.")))
+    };
+    let checks = (1..=30).map(|n| format!("4.2#{n}"));
+    for rule in design_rules(&design).into_iter().chain(checks) {
+        if !listed(&rule) {
+            failures.push(format!(
+                "{rule}: the design states it, but rule_ids does not list it"
+            ));
         }
     }
     for case in manifest["cases"].as_array().unwrap() {
@@ -199,4 +215,37 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// True if `file` has a `#[test]` function `name`.
+fn is_test(file: &Path, name: &str) -> bool {
+    let text = fs::read_to_string(file).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    lines.iter().enumerate().any(|(i, line)| {
+        line.trim_start().starts_with(&format!("fn {name}("))
+            && lines[i.saturating_sub(2)..i]
+                .iter()
+                .any(|l| l.trim() == "#[test]")
+    })
+}
+
+/// The rule ids the design states in bold at the start of a rule, such as
+/// `**G1.` or `**W7b.`.
+fn design_rules(design: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for (at, _) in design.match_indices("**") {
+        let rest = &design[at + 2..];
+        let id: String = rest
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect();
+        let mut chars = id.chars();
+        let shaped = chars.next().is_some_and(|c| c.is_ascii_uppercase())
+            && chars.clone().next().is_some_and(|c| c.is_ascii_digit())
+            && id.len() <= 4;
+        if shaped && rest[id.len()..].starts_with('.') && !found.contains(&id) {
+            found.push(id);
+        }
+    }
+    found
 }
