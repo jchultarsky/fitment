@@ -529,8 +529,13 @@ fn rims(
     hole: fitment_core::FeatureId,
     open: fitment_core::Open,
 ) -> Vec<[f64; 3]> {
+    // A cylinder in no stack has no rim: any open end is wrong.
     let Some(stack) = part.holes.iter().find(|h| h.id == hole) else {
-        return Vec::new();
+        return [open.start, open.finish]
+            .into_iter()
+            .filter(|w| *w)
+            .map(|_| [f64::NAN; 3])
+            .collect();
     };
     let (p, d) = (
         stack.axis.point_mm.to_array(),
@@ -622,26 +627,33 @@ fn axial_matches(
             axis,
             spans,
             open,
+            depth,
             ..
-        } => (
-            "bore",
-            *hole,
-            axis,
-            spans
-                .iter()
-                .map(|s| {
-                    (
-                        s.from_mm,
-                        s.to_mm,
-                        s.hole_diameter_mm,
-                        s.clear_diameter_mm,
-                        s.fit,
-                        s.pinned,
-                    )
-                })
-                .collect(),
-            Some(*open),
-        ),
+        } => {
+            let depth = serde_json::to_value(depth).ok()?;
+            if expect.get("depth").is_some_and(|d| *d != depth) {
+                return Some(format!("depth {depth}, expected {}", expect["depth"]));
+            }
+            (
+                "bore",
+                *hole,
+                axis,
+                spans
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.from_mm,
+                            s.to_mm,
+                            s.hole_diameter_mm,
+                            s.clear_diameter_mm,
+                            s.fit,
+                            s.pinned,
+                        )
+                    })
+                    .collect(),
+                Some(*open),
+            )
+        }
         Requires::Shaft {
             shaft, axis, spans, ..
         } => (
@@ -706,13 +718,65 @@ fn axial_matches(
     None
 }
 
+/// One socket's left-out features against the expected ones, one to one.
+fn left_out_matches(socket: &fitment_core::Socket, expect: &Value) -> Option<String> {
+    let left_out: Vec<&Value> = expect["left_out"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .collect();
+    if socket.left_out.len() != left_out.len() {
+        return Some(format!(
+            "{} left out, expected {}",
+            socket.left_out.len(),
+            left_out.len()
+        ));
+    }
+    // One to one, with each wall's stations where stated.
+    let mut wanted_left = left_out.clone();
+    for left in &socket.left_out {
+        let reason = serde_json::to_value(left.reason).ok()?;
+        let (p, d) = (
+            left.axis.point_mm.to_array(),
+            left.axis.direction.to_array(),
+        );
+        let ends =
+            [left.from_mm, left.to_mm].map(|s| [p[0] + s * d[0], p[1] + s * d[1], p[2] + s * d[2]]);
+        let found = wanted_left.iter().position(|w| {
+            same_line(p, d, w)
+                && (left.diameter_mm - w["diameter"].as_f64().unwrap_or(f64::NAN)).abs()
+                    <= POINT_TOL
+                && w["reason"] == reason
+                && w["wall"].as_array().is_none_or(|wall| {
+                    let wall: Vec<[f64; 3]> = wall.iter().filter_map(point).collect();
+                    wall.len() == 2
+                        && ((near(ends[0], wall[0]) && near(ends[1], wall[1]))
+                            || (near(ends[0], wall[1]) && near(ends[1], wall[0])))
+                })
+        });
+        match found {
+            Some(i) => {
+                wanted_left.swap_remove(i);
+            }
+            None => return Some(format!("{} left out unexpectedly ({reason})", left.feature)),
+        }
+    }
+    None
+}
+
 /// One expected socket against one socket: `None` if they agree.
 fn socket_matches(
     part: &fitment_core::Part,
     socket: &fitment_core::Socket,
+    at: Option<[f64; 3]>,
     expect: &Value,
 ) -> Option<String> {
     use fitment_core::Requires;
+    if let Some(wanted) = point(&expect["at"]) {
+        if !at.is_some_and(|a| near(a, wanted)) {
+            return Some(format!("its occurrence is at {at:?}, expected {wanted:?}"));
+        }
+    }
     let axial: Vec<&fitment_core::Requirement> = socket
         .requirements
         .iter()
@@ -769,33 +833,23 @@ fn socket_matches(
     if causes != wanted_causes {
         return Some(format!("unresolved {causes:?}, expected {wanted_causes:?}"));
     }
-    let left_out: Vec<&Value> = expect["left_out"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .collect();
-    if socket.left_out.len() != left_out.len() {
-        return Some(format!(
-            "{} left out, expected {}",
-            socket.left_out.len(),
-            left_out.len()
-        ));
-    }
-    for left in &socket.left_out {
-        let reason = serde_json::to_value(left.reason).ok()?;
-        let ok = left_out.iter().any(|w| {
-            same_line(
-                left.axis.point_mm.to_array(),
-                left.axis.direction.to_array(),
-                w,
-            ) && (left.diameter_mm - w["diameter"].as_f64().unwrap_or(f64::NAN)).abs() <= POINT_TOL
-                && w["reason"] == reason
-        });
-        if !ok {
-            return Some(format!("{} left out unexpectedly ({reason})", left.feature));
-        }
-    }
-    None
+    left_out_matches(socket, expect)
+}
+
+/// A requirement's place in section 9.2's order, from its id alone.
+fn order_key(requirement: &fitment_core::Requirement) -> (bool, u64, u8) {
+    let (kind, anchor) = requirement.id.split_once(':').unwrap_or_default();
+    let number = anchor
+        .rsplit('-')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(u64::MAX);
+    let rank = match kind {
+        "bore" => 0,
+        "shaft" => 1,
+        _ => 9,
+    };
+    (anchor.starts_with("part-"), number, rank)
 }
 
 /// Every expected socket of every target named, one to one.
@@ -836,6 +890,18 @@ pub fn sockets(bytes: &[u8], listing: &Listing, expect: &Value) -> Vec<String> {
             failures.push(format!("{name}: not an accepted part"));
             continue;
         };
+        // V2: the target's extent, as its part reads.
+        if extracted.target.extent != part.extent {
+            failures.push(format!("{name}: the socket's extent is not its part's"));
+        }
+        // N5: by smallest anchor #id, then kind; a neighbour definition's
+        // unresolved last.
+        for socket in &extracted.sockets {
+            let keys: Vec<(bool, u64, u8)> = socket.requirements.iter().map(order_key).collect();
+            if keys.windows(2).any(|w| w[0] > w[1]) {
+                failures.push(format!("{name}: {} is out of order: {keys:?}", socket.id));
+            }
+        }
         let mut left: Vec<&Value> = wanted.as_array().into_iter().flatten().collect();
         if extracted.sockets.len() != left.len() {
             failures.push(format!(
@@ -846,13 +912,18 @@ pub fn sockets(bytes: &[u8], listing: &Listing, expect: &Value) -> Vec<String> {
             continue;
         }
         for socket in &extracted.sockets {
+            let at = extracted
+                .occurrences
+                .iter()
+                .find(|o| socket.occurrences.first() == Some(&o.path))
+                .map(|o| o.transform.translation());
             let reasons: Vec<String> = left
                 .iter()
-                .filter_map(|w| socket_matches(part, socket, w))
+                .filter_map(|w| socket_matches(part, socket, at, w))
                 .collect();
             match left
                 .iter()
-                .position(|w| socket_matches(part, socket, w).is_none())
+                .position(|w| socket_matches(part, socket, at, w).is_none())
             {
                 Some(i) => {
                     left.swap_remove(i);

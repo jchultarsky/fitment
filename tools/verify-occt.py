@@ -1285,12 +1285,62 @@ def apply(m, p):
     return [sum(m[i][j] * p[j] for j in range(3)) + m[i][3] for i in range(3)]
 
 
+def perpendiculars(d):
+    """Two unit vectors perpendicular to unit d and to each other."""
+    a = [1.0, 0.0, 0.0] if abs(d[0]) < 0.9 else [0.0, 1.0, 0.0]
+    u = [d[1] * a[2] - d[2] * a[1], d[2] * a[0] - d[0] * a[2], d[0] * a[1] - d[1] * a[0]]
+    n = math.sqrt(sum(x * x for x in u))
+    u = [x / n for x in u]
+    w = [d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0]]
+    return u, w
+
+
+def ring(m, axis, station, radius):
+    """Eight points at `radius` about `axis` at `station`, in the root frame."""
+    p, d = axis["point_mm"], axis["direction"]
+    u, w = perpendiculars(d)
+    out = []
+    for k in range(8):
+        c, s = math.cos(k * math.pi / 4), math.sin(k * math.pi / 4)
+        out.append(apply(m, [p[i] + station * d[i] + radius * (c * u[i] + s * w[i]) for i in range(3)]))
+    return out
+
+
+def inside_any(point, shapes):
+    return any(BRepClass3d_SolidClassifier(shape, gp_Pnt(*point), 1e-7).State() == TopAbs_IN for shape in shapes)
+
+
+def span_problems(where, kind, axis, span, m, others, tally):
+    """What Open CASCADE sees that one span misstates: a clearance span's
+    gap (between the clear diameter and the hole's, or the shaft's and its
+    limit) is air in every other solid, and an interference span's
+    occupant (or holder) is material just inside the target's surface."""
+    tally[f"{kind} spans"] += 1
+    mid = (span["from_mm"] + span["to_mm"]) / 2
+    own = span["hole_diameter_mm" if kind == "bore" else "shaft_diameter_mm"]
+    clear = span["clear_diameter_mm"]
+    if span["to_mm"] - span["from_mm"] <= 0.01:
+        return [f"{where}: a span of no length, {span['from_mm']}..{span['to_mm']}"]
+    if span["fit"] == "clearance" and clear is not None and abs(clear - own) > 0.05:
+        radius = (clear + own) / 4
+        for point in ring(m, axis, mid, radius):
+            if inside_any(point, others):
+                return [f"{where}: {span['fit']} with clear diameter {clear}, but Open CASCADE finds material "
+                        f"at radius {radius:.4f} at {point}"]
+    if span["fit"] == "interference":
+        radius = own / 2 - 0.001 if kind == "bore" else own / 2 + 0.001
+        if not any(inside_any(point, others) for point in ring(m, axis, mid, radius)):
+            return [f"{where}: interference, but Open CASCADE finds no other solid at radius {radius:.4f}"]
+    return []
+
+
 def socket_problems(directory, case, binary, tally):
     """What Open CASCADE sees that one case's sockets miss: every point of a
     left-out hole's axis, over its wall, must be air in every other solid
-    of the assembly (A1). A neighbour fitment cannot read, such as a
-    B-spline bolt, is a solid like any other here, so this is the check
-    that sees one."""
+    of the assembly (A1), and each bore's or shaft's spans must agree with
+    the material around them (span_problems). A neighbour fitment cannot
+    read, such as a B-spline bolt, is a solid like any other here, so this
+    is the check that sees one."""
     problems = []
     path = directory / case["file"]
     leaves = xcaf_leaves(path)
@@ -1303,30 +1353,41 @@ def socket_problems(directory, case, binary, tally):
             continue
         document = json.loads(run.stdout)
         extracted = document["extracted"]
-        by_socket = {o["socket"]: o for o in extracted["occurrences"]}
-        for socket in extracted["sockets"]:
-            occurrence = by_socket[socket["id"]]
+        for occurrence in extracted["occurrences"]:
+            socket = next(s for s in extracted["sockets"] if s["id"] == occurrence["socket"])
             t = occurrence["transform"]
             m = [row + [t["translation_mm"][i]] for i, row in enumerate(t["rotation"])]
-            # Every other solid: leaves not at this occurrence's placement.
-            others = [shape for name, found, shape in leaves
-                      if not all(abs(found[i][j] - m[i][j]) <= 1e-6 for i in range(3) for j in range(4))]
+            # Every other solid: every leaf but this occurrence itself, which
+            # is the target's product at this placement.
+            name = occurrence["definition"]["product"]["name"]
+            mine = [i for i, (n, found, _) in enumerate(leaves)
+                    if n == name and all(abs(found[i][j] - m[i][j]) <= 1e-6 for i in range(3) for j in range(4))]
+            if len(mine) != 1:
+                problems.append(f"{case['id']} {target}: {len(mine)} leaves at occurrence {occurrence['path']}")
+                continue
+            others = [shape for i, (_, _, shape) in enumerate(leaves) if i != mine[0]]
+            tally["others"] += len(others)
+            where = f"{case['id']} {target} {socket['id']}"
+            for requirement in socket["requirements"]:
+                requires = requirement["requires"]
+                if requires["kind"] in ("bore", "shaft"):
+                    for span in requires["spans"]:
+                        problems += span_problems(f"{where} {requirement['id']}", requires["kind"],
+                                                  requires["axis"], span, m, others, tally)
             for left in socket["left_out"]:
                 tally["left out holes"] += 1
                 p, d = left["axis"]["point_mm"], left["axis"]["direction"]
                 a, b = left["from_mm"], left["to_mm"]
+                if b - a <= 0.01:
+                    problems.append(f"{where}: {left['feature']} is left out over no length, {a}..{b}")
+                    continue
                 for k in range(1, 10):
                     s = a + (b - a) * k / 10
                     point = apply(m, [p[i] + s * d[i] for i in range(3)])
-                    for shape in others:
-                        classifier = BRepClass3d_SolidClassifier(shape, gp_Pnt(*point), 1e-7)
-                        if classifier.State() == TopAbs_IN:
-                            problems.append(f"{case['id']} {target} {socket['id']}: {left['feature']} is left out, "
-                                            f"but Open CASCADE finds material on its axis at {point}")
-                            break
-                    else:
-                        continue
-                    break
+                    if inside_any(point, others):
+                        problems.append(f"{where}: {left['feature']} is left out, "
+                                        f"but Open CASCADE finds material on its axis at {point}")
+                        break
     return problems
 
 
@@ -1341,7 +1402,7 @@ def socket_main(argv):
     if not binary.is_file():
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    tally = {"cases": 0, "left out holes": 0}
+    tally = {"cases": 0, "others": 0, "bore spans": 0, "shaft spans": 0, "left out holes": 0}
     problems = []
     for case in manifest["cases"]:
         if case.get("kind") != "assembly" or "sockets" not in case["expect"]:
@@ -1352,8 +1413,8 @@ def socket_main(argv):
         print(f"{'ok  ' if not found else 'FAIL'} {case['id']}")
     for problem in problems:
         print(problem, file=sys.stderr)
-    if tally["cases"] == 0 or tally["left out holes"] == 0:
-        problems.append("no socket case or no left-out hole was checked")
+    if any(v == 0 for v in tally.values()):
+        problems.append("a socket check examined nothing: " + ", ".join(f"{v} {k}" for k, v in tally.items()))
         print(problems[-1], file=sys.stderr)
     print(", ".join(f"{v} {k}" for k, v in tally.items()) + f"; {len(problems)} disagreements with Open CASCADE")
     sys.exit(1 if problems else 0)

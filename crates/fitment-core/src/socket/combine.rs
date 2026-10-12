@@ -99,7 +99,14 @@ fn spans(segments: &[(usize, &Element)], relations: &[&Relation], smallest: bool
         if !(lo.is_finite() && hi.is_finite()) {
             continue;
         }
+        // X7: the cylinder's own ends cut too, for a zone it stands for is
+        // never pinned.
         let mut cuts: Vec<f64> = vec![lo, hi];
+        cuts.extend(
+            [element.own_lo, element.own_hi]
+                .into_iter()
+                .filter(|x| *x > lo && *x < hi),
+        );
         for r in normal.iter().filter(|r| r.target == t) {
             if let Some((a, b)) = r.span {
                 cuts.extend([a, b].into_iter().filter(|x| *x > lo && *x < hi));
@@ -125,7 +132,19 @@ fn spans(segments: &[(usize, &Element)], relations: &[&Relation], smallest: bool
         };
         let pinned_only = !pins.is_empty();
         let make = |x0: f64, x1: f64, holding: &[&&Relation]| {
-            piece(x0, x1, 2.0 * element.radius, holding, pinned_only, smallest)
+            let zone = x1 <= element.own_lo || x0 >= element.own_hi;
+            let mut piece = piece(
+                x0,
+                x1,
+                2.0 * element.radius,
+                holding,
+                pinned_only && !zone,
+                smallest,
+            )?;
+            if zone {
+                piece.pinned = false;
+            }
+            Some(piece)
         };
         for pair in cuts.windows(2) {
             let holding = covering(pair[0], pair[1]);
@@ -363,21 +382,7 @@ fn stack_requirement(
     });
     let requires = match first.side {
         Side::Hole => {
-            // J's pin is provenance only where a read shaft spans the
-            // joint: it continues past the same rim.
-            let spanned = |start: bool| {
-                relations.iter().any(|r| {
-                    r.rule.starts_with('B')
-                        && r.rule != "B8"
-                        && if start { r.open_start } else { r.open_finish }
-                })
-            };
-            let kept: Vec<&Relation> = relations
-                .iter()
-                .copied()
-                .filter(|r| !r.unoccupied_only || !spanned(r.open_start))
-                .collect();
-            let pieces = spans(segments, &kept, false);
+            let pieces = spans(segments, relations, false);
             if first.undecided {
                 flags.insert(Flag::TargetUndecided);
             }
@@ -410,22 +415,27 @@ fn stack_requirement(
                 },
             }
         }
-        Side::Shaft => Requires::Shaft {
-            shaft: feature,
-            axis,
-            spans: spans(segments, relations, true)
-                .into_iter()
-                .map(|p| ShaftSpan {
-                    from_mm: clean(p.from),
-                    to_mm: clean(p.to),
-                    shaft_diameter_mm: clean(p.diameter),
-                    clear_diameter_mm: p.clear.map(clean),
-                    fit: p.fit,
-                    pinned: p.pinned,
-                })
-                .collect(),
-            max_extra_mm: None,
-        },
+        Side::Shaft => {
+            if first.undecided {
+                flags.insert(Flag::TargetUndecided);
+            }
+            Requires::Shaft {
+                shaft: feature,
+                axis,
+                spans: spans(segments, relations, true)
+                    .into_iter()
+                    .map(|p| ShaftSpan {
+                        from_mm: clean(p.from),
+                        to_mm: clean(p.to),
+                        shaft_diameter_mm: clean(p.diameter),
+                        clear_diameter_mm: p.clear.map(clean),
+                        fit: p.fit,
+                        pinned: p.pinned,
+                    })
+                    .collect(),
+                max_extra_mm: None,
+            }
+        }
     };
     let kind = match requires {
         Requires::Bore { .. } => "bore",
