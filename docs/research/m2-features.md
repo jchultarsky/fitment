@@ -618,7 +618,7 @@ Threads, knurls and splines are not cylinders under F4. They are partial or othe
 | `format_version` | `1`. Frozen at the first publish (M4). Before then it may change, together with `extractor_version` |
 | `extractor_version` | `EXTRACTOR_VERSION`, a `u32` starting at 1. Bumped whenever the output for any input could change. The catalog re-indexes on it (M5) |
 | `extraction` | Every constant of section 5.2 |
-| `header` | The file's recorded facts (section 4.2): `schema`, `schema_identifier`, `originating_system`, `preprocessor_version`, `implementation_level`. Present for refused documents too, `null` where the file could not be parsed |
+| `header` | The file's recorded facts (section 4.2): `schema` (the family), `schema_identifiers` (every one, as written), `originating_system`, `preprocessor_version`, `implementation_level`. Present for refused documents too, `null` where the file could not be parsed |
 | `status` | `"accepted"` or `"refused"` |
 | `refusals` | Empty when accepted; sorted and non-empty when refused |
 | `part` | The part, or `null` when refused. A refused document never lists features |
@@ -656,8 +656,8 @@ This is a 60 × 40 × 10 mm plate generated with Open CASCADE 8.0.1. It has two 
   "extractor_version": 1,
   "extraction": { "identity_mm": 1e-6, "parallel_sine": 1e-9, "vertex_side_mm": 1e-3, "lever_min_mm": 1.0,
                   "sweep_rad": 1e-9, "walk_max": 8, "gate_slack_mm": 1e-6, "gate_slack_rel": 1e-6, "range_mm": 1e6 },
-  "header": { "schema": "ap214", "schema_identifier": "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }",
-              "originating_system": "Open CASCADE STEP processor 8.0", "preprocessor_version": "Open CASCADE 8.0",
+  "header": { "schema": "ap214", "schema_identifiers": [ "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }" ],
+              "originating_system": "Open CASCADE 8.0", "preprocessor_version": "Open CASCADE STEP processor 8.0",
               "implementation_level": "2;1" },
   "status": "accepted",
   "refusals": [],
@@ -764,7 +764,7 @@ crates/fitment-core/src/
 
 - **stepq stays inside two files.** `features/step.rs` copies what the rules need into a crate-private `Topo`: faces with their surfaces in fitment's types, bounds, oriented edges, edge uses with `forward`, `face_sense`, seams, shells and vertices, each with its `#id`. No other module sees a stepq value. A CI grep checks that `stepq` appears in no file but `features/step.rs` and `gate.rs`, including in `use` lines, so a re-export cannot slip through. stepq stays a private dependency, so stepq 0.7 is a one-crate change.
 - **No panics.** stepq's `face_sense`, `uses` and `neighbours` panic on an out-of-range index, so `step.rs` calls them only with indices stepq returned for the same solid. An invariant that "cannot fail" returns `internal`.
-- **Dependencies.** stepq 0.6 is added by fitment #4 (M2, step 1): at workspace level with `default-features = false`, allowlisted in `deny/core.toml` with its `default` and `cli` features banned, and wrapped to `fitment-core` in `deny.toml`. `libm` 0.2 (rust-version 1.63) is added the same way in PR 1, at workspace level and in `deny/core.toml`, with the reason "bit-identical trigonometry on every OS".
+- **Dependencies.** stepq 0.6 is added by fitment #4 (M2, step 1): at workspace level with `default-features = false`, allowlisted in `deny/core.toml` with its `default` and `cli` features banned, and wrapped to `fitment-core` in `deny.toml`. `libm` 0.2 (rust-version 1.63) is added the same way in PR 4, where trigonometry is first used, at workspace level and in `deny/core.toml`, with the reason "bit-identical trigonometry on every OS".
 - **Packaging:** `include = ["src/**", "README.md", "LICENSE"]`, so `tests/data/*.stp` never ships (it would today).
 
 ### 11.2 Public API
@@ -913,7 +913,7 @@ fitment features <FILE> [--format json|table]
 | u04_ball_end | Ø6 hole ending in a hemisphere | must read `unknown` at the bottom (section 20, item 7) | G | (to measure) |
 | u05_drill_pierced | p04 with a Ø3 cross bore through its drill point | must read `unknown` at the bottom, not `point` (W4) | G | (to measure) |
 | u06_general_face | Ø6 hole whose bottom is closed by a face that also bounds something else | must read `unknown` (W5) | G | (to measure) |
-| r03_two_solids | two cubes, one product | refused: `several_solids` | U | 15,526 |
+| r03_two_solids | a compound of two cubes | refused: `assembly`. Open CASCADE writes a compound as two products under a third, so `several_solids` is tested with a hand-written snippet instead (found in PR 1) | U | 15,526 |
 | r04_assembly | `cq.Assembly` of two cubes | refused: `assembly` | U | 15,295 |
 | r05_no_length_unit | p01 without its `LENGTH_UNIT` (text edit) | refused: `length_unit_unreadable` | U | 8,319 |
 | r06_shell | p01's shell written alone | refused: `no_solid` and `unread_shape_item` | U | 8,347 |
@@ -1003,7 +1003,7 @@ A uv script pinned to `cadquery-ocp-novtk==8.0.1.1.0`, the M7 helper's pin (deci
 Each PR comes with its tests. `EXTRACTOR_VERSION` goes up with every PR that changes output.
 
 1. **Skeleton.** It builds on fitment #4, which adds stepq.
-   - `geom.rs`, and `libm` at workspace level and in `deny/core.toml`;
+   - `geom.rs` (`libm` waits for PR 4, where trigonometry is first used, so no PR adds an unused dependency);
    - `FeaturesDocument` and a `Part` with empty feature lists;
    - `read_part` with gate stages 1 to 3;
    - `fitment features` with its exit codes;
@@ -1021,6 +1021,7 @@ Each PR comes with its tests. `EXTRACTOR_VERSION` goes up with every PR that cha
    - `fetch-fixtures.sh` and the pinned gate census;
    - the fixture test.
 4. **Planes and the partition.**
+   - `libm`, at workspace level and in `deny/core.toml`;
    - grouping, outlines, areas;
    - cylinders, cones and tori held as unclassified groups for now;
    - the partition check;

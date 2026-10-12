@@ -23,10 +23,26 @@
 // variant or field is not a breaking change after the first publish.
 #![warn(clippy::exhaustive_enums, clippy::exhaustive_structs)]
 
+mod features;
 mod fit;
+mod gate;
+mod geom;
 mod tolerance;
 mod verdict;
 
+pub use features::{
+    DefinitionRef, Extraction, FEATURES_FORMAT, FEATURES_FORMAT_VERSION, FeatureId, FeatureIdError,
+    FeatureKind, FeaturesDocument, FileHeader, FormatError, Frame, OtherItem, Part, ProductRef,
+    Refused, SolidInfo, Status, read_part,
+};
 pub use fit::{FitStatus, Interference, NO_FIT_VERIFIER};
+pub use gate::{Refusal, RefusalCode};
+pub use geom::{Dir3, Point3, Rigid, Vec3};
 pub use tolerance::{ToleranceError, TolerancePolicy};
 pub use verdict::{Check, RejectReason, RequirementId, Verdict, VerdictKind, decide};
+
+/// The version of the rules that turn a STEP file into features. It rises
+/// whenever the output for any input could change: a rule, a constant, an
+/// order, a field. A features document records it, and the catalog
+/// re-reads every file whose document has another (milestone M5).
+pub const EXTRACTOR_VERSION: u32 = 1;
