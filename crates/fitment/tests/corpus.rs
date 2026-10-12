@@ -93,7 +93,6 @@ fn every_corpus_part_is_accepted_or_refused_as_its_construction_says() {
     let cases = manifest(&dir)["cases"].as_array().unwrap().clone();
     assert!(!cases.is_empty(), "the corpus manifest lists no case");
     let mut failures = Vec::new();
-    let mut ran = 0;
     for case in &cases {
         let name = case["id"].as_str().unwrap();
         let output = Command::cargo_bin("fitment")
@@ -102,7 +101,6 @@ fn every_corpus_part_is_accepted_or_refused_as_its_construction_says() {
             .arg(dir.join(case["file"].as_str().unwrap()))
             .output()
             .unwrap();
-        ran += 1;
         let document: Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|e| panic!("{name}: not JSON: {e}"));
         let codes: Vec<&str> = document["refusals"]
@@ -133,6 +131,5 @@ fn every_corpus_part_is_accepted_or_refused_as_its_construction_says() {
             ));
         }
     }
-    assert_eq!(ran, cases.len(), "every case ran");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

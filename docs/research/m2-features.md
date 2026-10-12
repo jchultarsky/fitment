@@ -886,7 +886,7 @@ fitment features <FILE> [--format json|table]
 | p11_fillet_slot | L block with a R3 fillet, an obround slot, one Ø6.6 hole | 1 hole; fillet 90° and two slot ends 180°, all partial | U | 22,570 |
 | p12_edge_notch | Ø8 through, cutting a plate edge | no hole; a partial concave cylinder of 240° | U | 10,771 |
 | p13_cross | Ø8 along x and Ø6 along y, crossing | Ø8 through, length 30, with wall openings. Ø6: two cylinders (G5), each with one opening and one irregular end, length `null` (R8) | G | 29,545 |
-| p13b_cross_equal | as p13, both Ø8 | two through holes of length 30, each with wall openings: equal bores keep a strip of wall along their top and bottom, so neither splits (found by the oracle in PR 2) | G | 13,441 |
+| p13b_cross_equal | as p13, both Ø8 | four Ø8 cylinders, two per bore (G2: the halves meet only at two points, sharing no edge), each with one opening and one irregular end; stacks `unknown`, length `null` | G | 13,441 |
 | p14s_rotated_cbore | p05 rotated 37° about (1, 2, 3) and moved | p05's answers, moved | U | 12,920 |
 | p14_rotated | p08 under the same motion | p08's answers, moved | G | 20,016 |
 | p16_inch | p05 written in inches | p05's answers, in mm | U | 11,246 |
@@ -903,7 +903,7 @@ fitment features <FILE> [--format json|table]
 | p28_void | 20 mm cube with a Ø8 spherical void | accepted: the sphere is an other face in shell 1, no hole (R5) | G | 7,338 |
 | p29_mapped | a solid placed in its definition through a mapped item with transform T (text edit) | p01's answers moved by T, which `construction` states; `solids[0].transform` is T | G | 8,600 |
 | p30_round_bore | plate 10 mm, boss Ø16 × 6 with a 1 mm round on its top edge, Ø4 bore through both | hole through, length 16 (rim on the boss top, W8); boss shaft `root_free`, protrusion 6 | U | (to measure) |
-| p31_fillet_post | Ø16 pocket 8 deep with a 1 mm floor fillet, Ø4 × 3 post on its floor | post shaft `root_free`, protrusion 3; the fillet is a torus | G | (to measure) |
+| p31_fillet_post | Ø16 pocket 8 deep with a 1 mm floor fillet, Ø4 × 3 post on its floor | post shaft `root_free`, protrusion 3; the pocket is blind with an annular bottom whose wall ends at z = 13 and whose floor (`floor_at`) is at z = 12; the fillet is a torus | G | (to measure) |
 | p32_torus_cbore | Ø11 counterbore over Ø6.6 through, with a 0.5 mm fillet on the counterbore floor and a 0.5 mm round at the rim | through stack; walk crosses torus, annulus, torus (W4); rim on the top face | U | (to measure) |
 | p33_step_drill | Ø8 to depth 10, then Ø5 through via a 118° cone | through stack of two segments joined by a cone (K3 step drill) | G | (to measure) |
 | p34_cbore_blind | Ø11×4 counterbore over Ø6 blind to 12 with a flat floor, then a 118° point ending on a Ø3 flat | blind; bottom `cone_then_flat` | G | (to measure) |
@@ -911,11 +911,11 @@ fitment features <FILE> [--format json|table]
 | p36_inclined_exit | Ø6 hole from the top whose far end meets a 30° inclined face | one opening at the top, the other end irregular (ellipse); kind `unknown` | G | (to measure) |
 | p37_cbore_shoulder | p05 plus a milled shoulder elsewhere, coplanar with the counterbore floor at z = 8.5 | p05's answers: the walk group is local (W1), so the shoulder does not change the counterbore | G | (to measure) |
 | p38_void_coplanar | p28 with a box void whose floor is coplanar with a step top, same normal | the void floor is its own plane in shell 1, not part of the step-top plane (section 7.2) | G | (to measure) |
-| u01_undercut_floor | Ø10 hole 20 deep; a 90° cone widens to an Ø16 chamber whose flat floor holds an off-axis Ø2 blind hole | must read `unknown` at the bottom end ("air then material"), never through | U | (to measure) |
-| u02_undercut_post | as u01, but the chamber floor is an annulus around a Ø4 post | must read `unknown`, never through | G | (to measure) |
+| u01_undercut_floor | Ø10 hole 20 deep; a 90° cone widens it straight onto an Ø16 flat floor that holds an off-axis Ø2 blind hole | must read `unknown` at the bottom end ("air then material": the cone says air, the floor material), never through. With an Ø16 cylinder between cone and floor, the walk would stop at a mutual step and never test plane agreement (found in review of PR 2) | U | (to measure) |
+| u02_undercut_post | as u01, the floor an annulus around a Ø4 post | must read `unknown`, never through | G | (to measure) |
 | u03_half_capped | Ø6 through hole in a 10 mm plate, half of its top covered by a block | must read `unknown` at the top ("2 groups beyond"), whatever the face order | G | (to measure) |
 | u04_ball_end | Ø6 hole ending in a hemisphere | must read `unknown` at the bottom (section 20, item 7) | G | (to measure) |
-| u05_drill_pierced | p04 with a Ø3 cross bore through its drill point | must read `unknown` at the bottom, not `point` (W4). The cross bore is one through hole with a wall opening: its wall reaches below the tip (found by the oracle in PR 2) | G | (to measure) |
+| u05_drill_pierced | p04 with a Ø3 cross bore at z = 6.4 through its drill point | must read `unknown` at the bottom, not `point` (W4). The bore pierces the cone but not the Ø8 wall, and a strip of its own wall survives below the tip, so it is one through hole with a wall opening | G | (to measure) |
 | u06_general_face | Ø6 hole whose bottom is closed by a face that also bounds something else | must read `unknown` (W5) | G | (to measure) |
 | r03_two_solids | a compound of two cubes, written with `write.step.assembly` off | refused: `several_solids`. With assembly mode on, Open CASCADE writes a compound as two products under a third (found in PR 1); the generator writes every file with it off | U | 15,526 |
 | r04_assembly | `cq.Assembly` of two cubes | refused: `assembly` | U | 15,295 |
@@ -950,6 +950,18 @@ Hand-written STEP snippets inside the Rust tests cover what generated files cann
 ## 14. The oracle: `tools/verify-occt.py`
 
 A uv script pinned to `cadquery-ocp-novtk==8.0.1.1.0`, the M7 helper's pin (decision 8), with a committed `.lock`. It has one function per check, as stepq's does.
+
+As built in PR 2 (`manifest` mode), after review:
+
+- **Every face is accounted for** in every accepted case: cylinder groups, planes with their face counts and shells, the number of distinct cones and tori, and other faces. A stray face a tool left behind is always a disagreement.
+- **Cylinder faces are grouped as G2 groups them**, by shared edges, so the oracle cannot agree with an answer the rules would not give. Grouping by touching spans did, for p13b.
+- **Sweeps are exact**, from the faces' parameter ranges.
+- **Every end of a known hole is tested on both sides**, by classifying points against the solid: air past an opening and material beside its rim; material past a bottom and air inside it. A drill point's or countersink's cone must exist with its apex and angle, an annular bottom's post must have its diameter, and a shaft's root and free end are tested the same way.
+- **Refusals are checked from the file text and Open CASCADE's solids**: assembly usages, product definitions, solid count, surface models, a length unit; and the stated stage must be the codes' stage.
+- **Not checked, so fitment's own tests are the only check:** a flipped `same_sense` and a vertex moved off its face (Open CASCADE repairs orientation as it reads), and the rules' own labels: `irregular` and `unknown` ends, and whether a hole is stated as `unknown`.
+- **Mutation score:** the review's 54 changed answers, 51 caught (the three left are those labels); its 7 deliberately wrong parts, all caught.
+
+The `features` mode below, fitment against Open CASCADE, arrives with PR 4.
 
 - **`verify-occt.py manifest`: Open CASCADE against construction.** It catches generator bugs, and it caught one while this was designed: an angled-hole part whose tool left an extra plane, so Open CASCADE read 7 planes where the manifest said 6.
   - Positive cases: one valid solid with positive volume; full concave groups match the expected hole segments; convex groups match the shafts; partial groups match within 0.5°; planes match; axis-line hits give through or blind and the depths.

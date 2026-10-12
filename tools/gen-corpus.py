@@ -141,6 +141,7 @@ class Hole:
     flat_after_point: float | None = None  # the diameter of a flat below a point
     countersink: tuple | None = None  # (diameter at the entry, included angle)
     post_diameter: float | None = None  # a post rising from a blind hole's floor
+    floor_below: float = 0.0  # how far below the wall's end the floor is (a floor fillet)
     rim_end: str = "opening"  # how the entry end reads: opening, unknown
     far_end: str | None = None  # how the far end reads, if not by its kind
     kind: str | None = None  # forced kind, such as "unknown"
@@ -156,7 +157,9 @@ class Hole:
                 "axis_line_point": r3(self.entry),
                 "axis_direction": r3(canonical(self.into)),
                 "diameter": r(self.segments[-1][0]),
-                "ends": [self.rim_end, self.far_end or "unknown"],
+                # In axis order, like every other hole's ends.
+                "ends": [self.rim_end, self.far_end or "unknown"] if canonical(self.into) == self.into
+                else [self.far_end or "unknown", self.rim_end],
             }
         cone_depth = 0.0
         if self.countersink is not None:
@@ -203,7 +206,8 @@ class Hole:
     def bottom(self):
         d = self.segments[-1][0]
         if self.post_diameter is not None:
-            return {"kind": "bottom", "bottom": "annular", "at": 0.0, "post_diameter": r(self.post_diameter)}
+            return {"kind": "bottom", "bottom": "annular", "at": 0.0, "post_diameter": r(self.post_diameter),
+                    "floor_at": r(-self.floor_below)}
         if self.point_deg is None:
             return {"kind": "bottom", "bottom": "flat", "at": 0.0}
         half = math.radians(self.point_deg / 2)
@@ -290,24 +294,27 @@ def r3(v):
 
 @dataclass
 class Features:
+    """Everything a part's faces are: so that a stray face, such as one a
+    cutting tool left behind, is always a disagreement."""
+
     holes: list = field(default_factory=list)
     shafts: list = field(default_factory=list)
     partials: list = field(default_factory=list)
-    planes: list | None = None  # None: not stated yet
-    other_faces: int | None = None
+    planes: list = field(default_factory=list)
+    cones: int = 0  # distinct conical surfaces
+    tori: int = 0  # distinct toroidal surfaces
+    other_faces: int = 0  # faces on spheres and unread surfaces
 
     def moved(self, m: Motion):
         return Features([h.moved(m) for h in self.holes], [s.moved(m) for s in self.shafts],
-                        [p.moved(m) for p in self.partials],
-                        None if self.planes is None else [p.moved(m) for p in self.planes], self.other_faces)
+                        [p.moved(m) for p in self.partials], [p.moved(m) for p in self.planes],
+                        self.cones, self.tori, self.other_faces)
 
     def expect(self):
-        out = {"holes": [h.expect() for h in self.holes], "shafts": [s.expect() for s in self.shafts],
-               "partial_cylinders": [p.expect() for p in self.partials],
-               "planes": None if self.planes is None else [p.expect() for p in self.planes]}
-        if self.other_faces is not None:
-            out["other_faces"] = self.other_faces
-        return out
+        return {"holes": [h.expect() for h in self.holes], "shafts": [s.expect() for s in self.shafts],
+                "partial_cylinders": [p.expect() for p in self.partials],
+                "planes": [p.expect() for p in self.planes],
+                "cones": self.cones, "tori": self.tori, "other_faces": self.other_faces}
 
 
 # ---------------------------------------------------------------- shapes
@@ -420,9 +427,13 @@ class Writer:
         self.fix_time(path)
         return path
 
-    def text(self, text, name):
+    def text(self, text, name, base):
+        """Writes an edited file, its products renamed from `base`'s case."""
         path = self.out / f"{name}.stp"
-        path.write_text(text, encoding="latin-1", newline="\n")
+        renamed = text.replace(f"'{base}'", f"'{name}'")
+        if renamed == text:
+            raise RuntimeError(f"{name}: no product named {base}")
+        path.write_text(renamed, encoding="latin-1", newline="\n")
         self.fix_time(path)
         return path
 
@@ -436,7 +447,7 @@ class Writer:
         if n != 1:
             raise RuntimeError(f"{path.name}: no FILE_NAME time stamp")
         names = []
-        for name in re.findall(r"Open CASCADE STEP translator [\d.]+ \d+", text):
+        for name in re.findall(r"Open CASCADE STEP translator [\d.]+ [\d.]+", text):
             if name not in names:
                 names.append(name)
         for k, name in enumerate(names):
@@ -514,6 +525,19 @@ class Part21:
         raise RuntimeError("no such plane face")
 
 
+def real(x):
+    """`x` as a Part 21 REAL: a decimal point always, an upper-case E."""
+    text = repr(float(x)).upper()
+    mantissa, _, exponent = text.partition("E")
+    if "." not in mantissa:
+        mantissa += "."
+    return mantissa + ("E" + exponent if exponent else "")
+
+
+def reals(v):
+    return "(" + ",".join(real(c) for c in v) + ")"
+
+
 def flip_sense(face_value):
     head, _, sense = face_value.rpartition(",")
     return head + "," + (".T.)" if sense.strip() == ".F.)" else ".F.)")
@@ -553,7 +577,7 @@ def build(w: Writer, unit_only: bool):
 
     h04 = Hole((20, 20, 20), DOWN, [(8, 12)], point_deg=118)
     part("p04_blind_drill", cut(box(0, 0, 0, 40, 40, 20), tool(h04)),
-         Features([h04], planes=box_planes(0, 0, 0, 40, 40, 20)),
+         Features([h04], planes=box_planes(0, 0, 0, 40, 40, 20), cones=1),
          "blind hole ending in a 118 deg drill point; depth to the shoulder 12",
          ["W4.apex", "W5.bottom.point", "E3", "8.6"], True,
          {"box": [0, 0, 0, 40, 40, 20], "hole": "dia 8 to depth 12, 118 deg point"})
@@ -567,7 +591,7 @@ def build(w: Writer, unit_only: bool):
 
     h06 = Hole((20, 20, 10), DOWN, [(6.6, 10)], through=10, countersink=(12.4, 90))
     part("p06_csink", cut(box(0, 0, 0, 40, 40, 10), tool(h06)),
-         Features([h06], planes=box_planes(0, 0, 0, 40, 40, 10)),
+         Features([h06], planes=box_planes(0, 0, 0, 40, 40, 10), cones=1),
          "90 deg countersink to dia 12.4 over dia 6.6 through", ["W3.cone", "W4.cone", "K3.countersink", "W8"],
          True, {"box": [0, 0, 0, 40, 40, 10], "hole": "dia 6.6 through, countersink 90 deg to 12.4"})
 
@@ -584,7 +608,7 @@ def build(w: Writer, unit_only: bool):
         return cut(box(0, 0, 0, 60, 40, 30), *[tool(h) for h in hs]), hs
 
     s08, h08 = multi()
-    f08 = Features(h08, planes=box_planes(0, 0, 0, 60, 40, 30) + [Plane(UP, 24, faces=2)])
+    f08 = Features(h08, planes=box_planes(0, 0, 0, 60, 40, 30) + [Plane(UP, 24, faces=2)], cones=1)
     part("p08_multi", s08, f08, "three stacks: plain, counterbored through, counterbored blind with a point",
          ["K1", "K2.through", "K2.blind"], False, {"box": [0, 0, 0, 60, 40, 30], "holes": "x = 15, 30, 45"})
 
@@ -603,19 +627,27 @@ def build(w: Writer, unit_only: bool):
          ["W4.post", "W5.root", "9.7"], True, {"plate": [0, 0, 0, 60, 40, 6], "boss": "dia 12, z 6 to 16"})
 
     h11 = Hole((35, 30, 10), DOWN, [(6.6, 10)], through=10)
-    s11 = fuse(box(0, 0, 0, 60, 40, 10), box(0, 0, 10, 10, 40, 20))
-    s11 = fuse(s11, cut(box(10, 0, 10, 3, 40, 3), cyl((13, 0, 13), (0, 1, 0), 3, 40)))
+    # One extruded L profile with its R3 fillet, so that each side is one
+    # face (fused boxes would leave coplanar faces split).
+    corner = 13 - 3 / math.sqrt(2)
+    s11 = (cq.Workplane("XZ").polyline([(10, 30), (0, 30), (0, 0), (60, 0), (60, 10), (13, 10)])
+           .threePointArc((corner, corner), (10, 13)).close().extrude(-40).val().wrapped)
     slot = fuse(cyl((25, 10, -1), UP, 3, 12), cyl((45, 10, -1), UP, 3, 12), box(25, 7, -1, 20, 6, 12))
     s11 = cut(s11, slot, tool(h11))
     part("p11_fillet_slot", s11,
          Features([h11], partials=[Partial((13, 0, 13), (0, 1, 0), 6, 90),
-                                   Partial((25, 10, 0), UP, 6, 180), Partial((45, 10, 0), UP, 6, 180)]),
+                                   Partial((25, 10, 0), UP, 6, 180), Partial((45, 10, 0), UP, 6, 180)],
+                  planes=[Plane(DOWN, 0), Plane(UP, 10), Plane(UP, 30), Plane((1, 0, 0), 10), Plane((-1, 0, 0), 0),
+                          Plane((1, 0, 0), 60), Plane((0, -1, 0), 0), Plane((0, 1, 0), 40), Plane((0, 1, 0), 7),
+                          Plane((0, -1, 0), -13)]),
          "concave cylinders that are not holes: a fillet (90 deg) and two slot ends (180 deg)",
          ["F4.partial", "F5"], True, {"L block": "60 x 40 x 10 with an upright", "slot": "width 6, x 25 to 45"})
 
     arc = 360 - 2 * math.degrees(math.acos(2 / 4))
     part("p12_edge_notch", cut(box(0, 0, 0, 40, 30, 8), cyl((2, 15, -1), UP, 4, 10)),
-         Features(partials=[Partial((2, 15, 0), UP, 8, arc)]),
+         Features(partials=[Partial((2, 15, 0), UP, 8, arc)],
+                  planes=[Plane(UP, 8), Plane(DOWN, 0), Plane((1, 0, 0), 40), Plane((-1, 0, 0), 0, faces=2),
+                          Plane((0, 1, 0), 30), Plane((0, -1, 0), 0)]),
          "a concave cylinder of 240 deg cut through an edge: more than half, not a hole", ["F4.partial"], True,
          {"box": [0, 0, 0, 40, 30, 8], "cut": "dia 8 at (2, 15)"})
 
@@ -630,14 +662,17 @@ def build(w: Writer, unit_only: bool):
     part("p13_cross", s13, Features([x13] + y13, planes=box_planes(0, 0, 0, 30, 30, 30)),
          "dia 8 along x crossed by dia 6 along y: the dia 6 is two cylinders, each ending in the dia 8 bore",
          ["G5", "F4.wall_openings", "F4.one_irregular"], False, {"cube": 30, "holes": "dia 8 along x, dia 6 along y"})
-    # Equal bores keep a strip of wall along their top and bottom, so each
-    # stays one cylinder: a through hole with wall openings.
+    # Equal bores meet along curves that touch only at two points, so each
+    # bore is two faces sharing no edge: four cylinders under G2.
     s13b = crossing(8)[0]
     part("p13b_cross_equal", s13b,
-         Features([Hole((0, 15, 15), (1, 0, 0), [(8, 30)], through=30),
-                   Hole((15, 0, 15), (0, 1, 0), [(8, 30)], through=30)], planes=box_planes(0, 0, 0, 30, 30, 30)),
-         "two equal dia 8 bores crossing: each one through hole with wall openings", ["F4.wall_openings"],
-         False, {"cube": 30, "holes": "dia 8 along x and y"})
+         Features([Hole((0, 15, 15), (1, 0, 0), [(8, 30)], kind="unknown", far_end="irregular"),
+                   Hole((30, 15, 15), (-1, 0, 0), [(8, 30)], kind="unknown", far_end="irregular"),
+                   Hole((15, 0, 15), (0, 1, 0), [(8, 30)], kind="unknown", far_end="irregular"),
+                   Hole((15, 30, 15), (0, -1, 0), [(8, 30)], kind="unknown", far_end="irregular")],
+                  planes=box_planes(0, 0, 0, 30, 30, 30)),
+         "two equal dia 8 bores crossing: four cylinders (G2), each with one opening and one irregular end",
+         ["G2", "G5", "F4.one_irregular"], False, {"cube": 30, "holes": "dia 8 along x and y"})
 
     def baked(shape, m):
         return BRepBuilderAPI_Transform(shape, m.trsf(), True).Shape()
@@ -673,15 +708,14 @@ def build(w: Writer, unit_only: bool):
         if key not in seen:
             seen.add(key)
             continue
-        fmt = lambda v: "(" + ",".join(repr(float(c)) for c in v) + ")"  # noqa: E731
-        p_ = f.add(f"CARTESIAN_POINT('',{fmt(add(pt, ax, 7))})")
-        a_ = f.add(f"DIRECTION('',{fmt([-c for c in ax])})")
-        r_ = f.add(f"DIRECTION('',{fmt(cross(ax, rf))})")
+        p_ = f.add(f"CARTESIAN_POINT('',{reals(add(pt, ax, 7))})")
+        a_ = f.add(f"DIRECTION('',{reals([-c for c in ax])})")
+        r_ = f.add(f"DIRECTION('',{reals(cross(ax, rf))})")
         f.inst[surface] = f"CYLINDRICAL_SURFACE('',#{f.add(f'AXIS2_PLACEMENT_3D({chr(39)}{chr(39)},#{p_},#{a_},#{r_})')},{radius})"
         edits += 1
     if edits != 2:
         raise RuntimeError(f"p20: {edits} edits, expected 2")
-    w.text(f.text(), "p20_split_surfaces")
+    w.text(f.text(), "p20_split_surfaces", "_p17_text")
     w.case("p20_split_surfaces", "p17 with each cylinder's second half on a surface moved 7 mm along the axis, "
            "reversed and turned 90 deg (a text edit): grouping ignores the placement and the axis sign",
            ["G1", "G4"], True, {**c05, "edit": "2 cylindrical surfaces restated"}, accepted(f05))
@@ -702,16 +736,19 @@ def build(w: Writer, unit_only: bool):
         top, bottom = Hole((x, 10, 10), DOWN, [(6, 4)]), Hole((x + off, 10, 0), UP, [(6, 4)])
         s22 = cut(s22, tool(top), tool(bottom))
         h22 += [top, bottom]
-    part("p22_coaxial_blind", s22, Features(h22),
+    part("p22_coaxial_blind", s22,
+         Features(h22, planes=box_planes(0, 0, 0, 40, 20, 10) + [Plane(UP, 6, faces=2), Plane(DOWN, -4, faces=2)]),
          "blind holes from opposite faces, a 2 mm wall between; one pair coaxial, one 0.02 mm apart: four blind holes",
          ["G5", "K2.blind"], True, {"box": [0, 0, 0, 40, 20, 10], "holes": "dia 6 x 4 from top and bottom at x 10, 30"})
 
     h23 = Hole((10, 10, 10), DOWN, [(6, 9.995)])
-    part("p23_thin_floor", cut(box(0, 0, 0, 20, 20, 10), tool(h23)), Features([h23]),
+    part("p23_thin_floor", cut(box(0, 0, 0, 20, 20, 10), tool(h23)),
+         Features([h23], planes=box_planes(0, 0, 0, 20, 20, 10) + [Plane(UP, 0.005)]),
          "a 0.005 mm floor: blind, never through", ["K2.blind"], False, {"box": [0, 0, 0, 20, 20, 10]})
 
     h24 = Hole((10, 10, 20), DOWN, [(10.02, 8), (10.0, 20)], through=20)
-    part("p24_radius_step", cut(box(0, 0, 0, 20, 20, 20), tool(h24)), Features([h24]),
+    part("p24_radius_step", cut(box(0, 0, 0, 20, 20, 20), tool(h24)),
+         Features([h24], planes=box_planes(0, 0, 0, 20, 20, 20) + [Plane(UP, 12)]),
          "dia 10.02 over dia 10.00: two segments joined by a 0.01 mm annulus", ["G1", "K3.counterbore"], False,
          {"box": [0, 0, 0, 20, 20, 20]})
 
@@ -732,7 +769,9 @@ def build(w: Writer, unit_only: bool):
     profile = (cq.Workplane("XZ").moveTo(0, 0).lineTo(40, 0).lineTo(40, 8)
                .spline([(20, 10), (0, 8)], includeCurrent=True).close().extrude(-30))
     h27 = Hole((20, 15, 0), UP, [(6.6, 4)])
-    part("p27_freeform", cut(profile.val().wrapped, tool(h27)), Features([h27]),
+    part("p27_freeform", cut(profile.val().wrapped, tool(h27)),
+         Features([h27], planes=[Plane(DOWN, 0), Plane((-1, 0, 0), 0), Plane((1, 0, 0), 40), Plane((0, -1, 0), 0),
+                                 Plane((0, 1, 0), 30), Plane(DOWN, -4)], other_faces=1),
          "a spline top face (surface of linear extrusion) away from a blind hole: the hole is read", ["8.7"], False,
          {"profile": "40 x 8 with a spline top, extruded 30 in y", "hole": "dia 6.6 x 4 from below"})
 
@@ -749,15 +788,14 @@ def build(w: Writer, unit_only: bool):
     context = f.refs(shape_rep)[-1]
     held = f.add(f"ADVANCED_BREP_SHAPE_REPRESENTATION('',(#{origin},#{solid}),#{context})")
     rep_map = f.add(f"REPRESENTATION_MAP(#{origin},#{held})")
-    fmt = lambda v: "(" + ",".join(repr(float(c)) for c in v) + ")"  # noqa: E731
-    p_ = f.add(f"CARTESIAN_POINT('',{fmt(MAPPED.shift)})")
-    z_ = f.add(f"DIRECTION('',{fmt(MAPPED.vector(UP))})")
-    x_ = f.add(f"DIRECTION('',{fmt(MAPPED.vector((1, 0, 0)))})")
+    p_ = f.add(f"CARTESIAN_POINT('',{reals(MAPPED.shift)})")
+    z_ = f.add(f"DIRECTION('',{reals(MAPPED.vector(UP))})")
+    x_ = f.add(f"DIRECTION('',{reals(MAPPED.vector((1, 0, 0)))})")
     target = f.add(f"AXIS2_PLACEMENT_3D('',#{p_},#{z_},#{x_})")
     mapped = f.add(f"MAPPED_ITEM('',#{rep_map},#{target})")
     f.inst[shape_rep] = f"ADVANCED_BREP_SHAPE_REPRESENTATION('',(#{origin},#{mapped}),#{context})"
     if not unit_only:
-        w.text(f.text(), "p29_mapped")
+        w.text(f.text(), "p29_mapped", "p01_through")
     w.case("p29_mapped", "p01's solid placed in its definition by a mapped item (a text edit): p01's answers moved by it",
            ["4.2#12", "5.1"], False,
            {"from": "p01", "mapped_item": {"axis": MAPPED.axis, "angle_deg": MAPPED.angle, "shift": MAPPED.shift}},
@@ -768,20 +806,25 @@ def build(w: Writer, unit_only: bool):
     boss30 = round_edges(cyl((20, 20, 10), UP, 8, 6), 1.0, circle_at(16, 8))
     h30 = Hole((20, 20, 16), DOWN, [(4, 16)], through=16)
     s30 = cut(fuse(box(0, 0, 0, 40, 40, 10), boss30), tool(h30))
-    part("p30_round_bore", s30, Features([h30], [Shaft((20, 20, 10), UP, 16, 5, protrusion=6)]),
+    part("p30_round_bore", s30,
+         Features([h30], [Shaft((20, 20, 10), UP, 16, 5, protrusion=6)],
+                  planes=box_planes(0, 0, 0, 40, 40, 10) + [Plane(UP, 16)], tori=1),
          "a bore through a boss with a 1 mm round on its top edge: length 16, rim on the boss top (W8)",
          ["W8", "W3.torus", "W4.torus"], True, {"plate": [0, 0, 0, 40, 40, 10], "boss": "dia 16 x 6, R1 round"})
 
     pocket31 = round_edges(cut(box(0, 0, 0, 40, 40, 20), cyl((20, 20, 12), UP, 8, 9)), 1.0, circle_at(12, 8))
     s31 = fuse(pocket31, cyl((20, 20, 12), UP, 2, 3))
     part("p31_fillet_post", s31,
-         Features([Hole((20, 20, 20), DOWN, [(16, 7)], post_diameter=4)], [Shaft((20, 20, 12), UP, 4, 3)]),
+         # The wall ends at z 13, where the floor fillet starts; the floor is at z 12.
+         Features([Hole((20, 20, 20), DOWN, [(16, 7)], post_diameter=4, floor_below=1)],
+                  [Shaft((20, 20, 12), UP, 4, 3)],
+                  planes=box_planes(0, 0, 0, 40, 40, 20) + [Plane(UP, 12), Plane(UP, 15)], tori=1),
          "a dia 4 x 3 post on the floor of a dia 16 pocket with a 1 mm floor fillet: protrusion 3",
          ["W8", "W5.bottom.annular"], False, {"box": [0, 0, 0, 40, 40, 20], "pocket": "dia 16 x 8, R1 floor fillet"})
 
     h32 = Hole((20, 20, 12), DOWN, [(11, 4), (6.6, 12)], through=12)
     s32 = round_edges(cut(box(0, 0, 0, 40, 40, 12), tool(h32)), 0.5, lambda c: abs(c.Radius() - 5.5) < 1e-9)
-    e32 = accepted(Features([h32]))
+    e32 = accepted(Features([h32], planes=box_planes(0, 0, 0, 40, 40, 12) + [Plane(UP, 8)], tori=2))
     # The dia 11 wall runs only from the floor fillet (z 8.5) to the rim
     # round (z 11.5); the rim stays on the top face (W8).
     e32["features"]["holes"][0]["segments"] = [[6.6, 0.0, 8.0], [11.0, 8.5, 11.5]]
@@ -794,20 +837,23 @@ def build(w: Writer, unit_only: bool):
     h33 = Hole((20, 20, 20), DOWN, [(8, 10), (5, 20)], through=20)
     s33 = cut(box(0, 0, 0, 40, 40, 20), tool(Hole((20, 20, 20), DOWN, [(8, 10)])),
               cone((20, 20, 10), DOWN, 4, 2.5, 1.5 / half59), cyl((20, 20, -1), UP, 2.5, 22))
-    e33 = accepted(Features([h33]))
+    e33 = accepted(Features([h33], planes=box_planes(0, 0, 0, 40, 40, 20), cones=1))
     # The dia 5 wall ends where the 118 deg cone from dia 8 meets it.
     e33["features"]["holes"][0]["segments"] = [[5.0, 0.0, r(10 - 1.5 / half59)], [8.0, 10.0, 20.0]]
     part("p33_step_drill", s33, e33, "dia 8 to depth 10, then dia 5 through via a 118 deg cone (a step drill)",
          ["K3.step_drill", "W4.cone"], False, {"box": [0, 0, 0, 40, 40, 20]})
 
     h34 = Hole((20, 20, 20), DOWN, [(11, 4), (6, 12)], point_deg=118, flat_after_point=3)
-    part("p34_cbore_blind", cut(box(0, 0, 0, 40, 40, 20), tool(h34)), Features([h34]),
+    part("p34_cbore_blind", cut(box(0, 0, 0, 40, 40, 20), tool(h34)),
+         Features([h34], planes=box_planes(0, 0, 0, 40, 40, 20) + [Plane(UP, 16), Plane(UP, 8 - 1.5 / half59)],
+                  cones=1),
          "a counterbored blind hole whose 118 deg point ends on a dia 3 flat", ["W5.bottom.cone_then_flat"], False,
          {"box": [0, 0, 0, 40, 40, 20]})
 
     s35 = fuse(cut(box(0, 0, 0, 40, 40, 20), cyl((20, 20, 12), UP, 5, 9)), cyl((20, 20, 12), UP, 2, 4))
     part("p35_annular_bottom", s35,
-         Features([Hole((20, 20, 20), DOWN, [(10, 8)], post_diameter=4)], [Shaft((20, 20, 12), UP, 4, 4)]),
+         Features([Hole((20, 20, 20), DOWN, [(10, 8)], post_diameter=4)], [Shaft((20, 20, 12), UP, 4, 4)],
+                  planes=box_planes(0, 0, 0, 40, 40, 20) + [Plane(UP, 12), Plane(UP, 16)]),
          "a dia 10 blind hole around a dia 4 post rising from its floor", ["W5.bottom.annular", "W4.post"], False,
          {"box": [0, 0, 0, 40, 40, 20]})
 
@@ -816,7 +862,10 @@ def build(w: Writer, unit_only: bool):
              .close().extrude(60).translate((-10, 0, 0)))
     s36 = cut(box(0, 0, 0, 40, 40, 20), wedge.val().wrapped, cyl((20, 20, -10), UP, 3, 40))
     part("p36_inclined_exit", s36,
-         Features([Hole((20, 20, 20), DOWN, [(6, 20)], kind="unknown", far_end="irregular")]),
+         Features([Hole((20, 20, 20), DOWN, [(6, 20)], kind="unknown", far_end="irregular")],
+                  planes=[Plane(UP, 20), Plane(DOWN, 0), Plane((1, 0, 0), 40), Plane((-1, 0, 0), 0),
+                          Plane((0, -1, 0), 0), Plane((0, 1, 0), 40),
+                          Plane((0, 0.5, -math.cos(math.radians(30))), 20 * 0.5 - 5 * math.cos(math.radians(30)))]),
          "a dia 6 hole whose far end meets a 30 deg face: one opening, one irregular end", ["F4.one_irregular"],
          False, {"box": [0, 0, 0, 40, 40, 20], "underside": "a 30 deg plane through (y 20, z 5)"})
 
@@ -841,49 +890,58 @@ def build(w: Writer, unit_only: bool):
          "a box void whose floor is coplanar with a step top: two planes, one per shell", ["7.2", "S3"], False,
          {"block": "20 x 20 x 12 with a 10 x 20 x 8 step", "void": "x 2 to 8, y 5 to 15, z 12 to 16"})
 
-    # Parts whose ends must read as unknown, never as through.
+    # Parts whose ends must read as unknown, never as through. In u01 and
+    # u02 a cone widens from the dia 10 bore straight onto a flat floor, so
+    # the walk crosses a cone that says air, then a plane that says
+    # material (W3, section 18 C2).
     def chamber(floor):
         top = cyl((20, 20, 10), UP, 5, 21)
         widen = cone((20, 20, 10), DOWN, 5, 8, 3)
-        room = cyl((20, 20, 4), UP, 8, 3)
-        s = cut(box(0, 0, 0, 40, 40, 30), fuse(top, widen, room))
-        return floor(s)
+        return floor(cut(box(0, 0, 0, 40, 40, 30), fuse(top, widen)))
 
-    room = Hole((20, 20, 7), DOWN, [(16, 3)], kind="unknown", rim_end="unknown")
-    s_u1 = chamber(lambda s: cut(s, cyl((25, 20, 2), UP, 1, 2.5)))
+    bore = Hole((20, 20, 30), DOWN, [(10, 20)], kind="unknown", far_end="unknown")
+    s_u1 = chamber(lambda s: cut(s, cyl((25, 20, 5), UP, 1, 2.5)))
     part("u01_undercut_floor", s_u1,
-         Features([Hole((20, 20, 30), DOWN, [(10, 20)], kind="unknown", far_end="unknown"), room,
-                   Hole((25, 20, 4), DOWN, [(2, 2)])]),
-         "a dia 10 hole widening by a cone into a dia 16 chamber with a flat floor: never through (C2)",
-         ["W3.plane_agreement"], True, {"box": [0, 0, 0, 40, 40, 30], "chamber": "dia 16, z 4 to 7"})
-    s_u2 = chamber(lambda s: fuse(s, cyl((20, 20, 4), UP, 2, 3)))
+         Features([bore, Hole((25, 20, 7), DOWN, [(2, 2)])],
+                  planes=box_planes(0, 0, 0, 40, 40, 30) + [Plane(UP, 7), Plane(UP, 5)], cones=1),
+         "a dia 10 hole widening by a cone onto a flat floor that holds an off-axis dia 2 hole: never through (C2)",
+         ["W3.plane_agreement"], True, {"box": [0, 0, 0, 40, 40, 30], "cone": "dia 10 at z 10 to dia 16 at z 7"})
+    s_u2 = chamber(lambda s: fuse(s, cyl((20, 20, 7), UP, 2, 3)))
     part("u02_undercut_post", s_u2,
-         Features([Hole((20, 20, 30), DOWN, [(10, 20)], kind="unknown", far_end="unknown"), room],
-                  [Shaft((20, 20, 4), UP, 4, 3)]),
-         "as u01, the chamber floor an annulus around a dia 4 post: never through", ["W3.plane_agreement"], False,
-         {"box": [0, 0, 0, 40, 40, 30]})
-    s_u3 = cut(fuse(box(0, 0, 0, 40, 30, 10), box(20, 0, 10, 20, 30, 10)), cyl((20, 15, -1), UP, 3, 11))
+         Features([bore], [Shaft((20, 20, 7), UP, 4, 3)],
+                  planes=box_planes(0, 0, 0, 40, 40, 30) + [Plane(UP, 7), Plane(UP, 10)], cones=1),
+         "as u01, the floor an annulus around a dia 4 post: never through", ["W3.plane_agreement"], False,
+         {"box": [0, 0, 0, 40, 40, 30], "post": "dia 4, z 7 to 10"})
+    # One extruded profile, so that each side is one face.
+    l_block = cq.Workplane("XZ").polyline([(0, 0), (40, 0), (40, 20), (20, 20), (20, 10), (0, 10)]).close().extrude(-30)
+    s_u3 = cut(l_block.val().wrapped, cyl((20, 15, -1), UP, 3, 11))
     part("u03_half_capped", s_u3,
-         Features([Hole((20, 15, 0), UP, [(6, 10)], kind="unknown", far_end="unknown")]),
+         Features([Hole((20, 15, 0), UP, [(6, 10)], kind="unknown", far_end="unknown")],
+                  planes=[Plane(DOWN, 0), Plane(UP, 10), Plane(UP, 20), Plane((-1, 0, 0), -20), Plane((-1, 0, 0), 0),
+                          Plane((1, 0, 0), 40), Plane((0, -1, 0), 0), Plane((0, 1, 0), 30), Plane(DOWN, -10)]),
          "a dia 6 hole half open, half capped at its top: unknown whatever the face order (H1)", ["G3", "W1"], False,
-         {"plate": [0, 0, 0, 40, 30, 10], "block": "x 20 to 40 on top"})
+         {"block": "x 0 to 20 at z 10, x 20 to 40 at z 20", "hole": "dia 6 at (20, 15), z 0 to 10"})
     s_u4 = cut(box(0, 0, 0, 30, 30, 20), cyl((15, 15, 10), UP, 3, 11),
                BRepPrimAPI_MakeSphere(gp_Pnt(15, 15, 10), 3).Shape())
     part("u04_ball_end", s_u4,
-         Features([Hole((15, 15, 20), DOWN, [(6, 10)], kind="unknown", far_end="unknown")]),
+         Features([Hole((15, 15, 20), DOWN, [(6, 10)], kind="unknown", far_end="unknown")],
+                  planes=box_planes(0, 0, 0, 30, 30, 20), other_faces=1),
          "a dia 6 hole ending in a hemisphere: its bottom is unknown", ["W4.sphere"], False, {"box": [0, 0, 0, 30, 30, 20]})
-    s_u5 = cut(cut(box(0, 0, 0, 40, 40, 20), tool(h04)), cyl((-1, 20, 7), (1, 0, 0), 1.5, 42))
+    # The dia 3 bore at z 6.4 spans z 4.9 to 7.9: it pierces the drill point
+    # (z 5.597 to 8) but not the dia 8 wall above it, and a strip of its own
+    # wall survives below the tip, so it is one through hole.
+    s_u5 = cut(cut(box(0, 0, 0, 40, 40, 20), tool(h04)), cyl((-1, 20, 6.4), (1, 0, 0), 1.5, 42))
     part("u05_drill_pierced", s_u5,
          Features([Hole((20, 20, 20), DOWN, [(8, 12)], kind="unknown", far_end="unknown"),
-                   # The bore's wall reaches z 5.5, below the tip at z 5.597, so a
-                   # strip of it survives under the point: one through hole.
-                   Hole((0, 20, 7), (1, 0, 0), [(3, 40)], through=40)]),
+                   Hole((0, 20, 6.4), (1, 0, 0), [(3, 40)], through=40)],
+                  planes=box_planes(0, 0, 0, 40, 40, 20), cones=1),
          "p04 with a dia 3 cross bore through its drill point: not a closed point (L1)", ["W4.apex"], False,
-         {"from": "p04", "cross bore": "dia 3 along x at z 7"})
+         {"from": "p04", "cross bore": "dia 3 along x at z 6.4"})
     s_u6 = cut(box(0, 0, 0, 40, 40, 20), cyl((20, 20, 12), UP, 5, 9), cyl((23, 20, 10), UP, 1, 2.5))
     part("u06_general_face", s_u6,
          Features([Hole((20, 20, 20), DOWN, [(10, 8)], kind="unknown", far_end="unknown"),
-                   Hole((23, 20, 12), DOWN, [(2, 2)])]),
+                   Hole((23, 20, 12), DOWN, [(2, 2)])],
+                  planes=box_planes(0, 0, 0, 40, 40, 20) + [Plane(UP, 12), Plane(UP, 10)]),
          "a dia 10 blind hole whose floor also holds an off-axis dia 2 hole: its bottom is unknown (W5)", ["W5.unknown"],
          False, {"box": [0, 0, 0, 40, 40, 20]})
 
@@ -905,7 +963,7 @@ def build(w: Writer, unit_only: bool):
     length = next(u for u in units if "LENGTH_UNIT" in f.inst[int(u[1:])])
     keep = ",".join(u for u in units if u != length)
     f.inst[context] = f.inst[context].replace(m.group(0), f"GLOBAL_UNIT_ASSIGNED_CONTEXT(({keep}))")
-    w.text(f.text(), "r05_no_length_unit")
+    w.text(f.text(), "r05_no_length_unit", "p01_through")
     w.case("r05_no_length_unit", f"p01 with its length unit {length} removed from the context (a text edit)",
            ["4.2#18"], True, {"from": "p01"}, refused(5, "length_unit_unreadable"))
 
@@ -926,21 +984,21 @@ def build(w: Writer, unit_only: bool):
         vertex = next(n for n in f.find("CARTESIAN_POINT") if f.point(n) == [0.0, 0.0, 8.0]
                       and any(f.inst[v] == f"VERTEX_POINT('',#{n})" for v in f.find("VERTEX_POINT")))
         f.inst[vertex] = "CARTESIAN_POINT('',(0.,0.,8.1))"
-        w.text(f.text(), "r10_off_surface")
+        w.text(f.text(), "r10_off_surface", "p01_through")
         w.case("r10_off_surface", "p01 with the vertex at (0, 0, 8) moved 0.1 mm off its top face (a text edit)",
                ["4.2#23", "4.2#24"], False, {"from": "p01"}, refused(6, "vertex_off_surface", "vertex_off_curve"))
 
         f = Part21(p01_text)
         top = f.plane_face(UP, 8)
         f.inst[top] = flip_sense(f.inst[top])
-        w.text(f.text(), "r11_flipped_plane")
+        w.text(f.text(), "r11_flipped_plane", "p01_through")
         w.case("r11_flipped_plane", "p01 with its top face's same_sense flipped (a text edit)", ["4.2#25"], False,
                {"from": "p01"}, refused(6, "face_orientation"))
 
     f = Part21(p01_text)
     wall = next(n for n in f.find("ADVANCED_FACE") if f.inst[f.refs(n)[-1]].startswith("CYLINDRICAL_SURFACE"))
     f.inst[wall] = flip_sense(f.inst[wall])
-    w.text(f.text(), "r12_flipped_cylinder")
+    w.text(f.text(), "r12_flipped_cylinder", "p01_through")
     w.case("r12_flipped_cylinder", "p01 with its hole face's same_sense flipped (a text edit): not a dia 6.6 pin (C1)",
            ["4.2#25"], True, {"from": "p01"}, refused(6, "face_orientation"))
 
