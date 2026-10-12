@@ -564,6 +564,12 @@ pub struct SocketConstants {
     pub near_mm: f64,
     /// The largest sine compared as parallel (Z5).
     pub parallel_sine_rel: f64,
+    /// Lengths within this merge occurrences (9.1), in mm.
+    pub merge_mm: f64,
+    /// Directions and angles within this merge occurrences (9.1).
+    pub merge_sine: f64,
+    /// The most occurrences an assembly may have (check 34).
+    pub max_occurrences: u64,
     /// The most candidate pairs examined (check 39).
     pub max_relations: u64,
 }

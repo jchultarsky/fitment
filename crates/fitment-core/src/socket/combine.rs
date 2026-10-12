@@ -115,17 +115,20 @@ fn spans(segments: &[(usize, &Element)], relations: &[&Relation], smallest: bool
             }
         }
         cuts.sort_by(f64::total_cmp);
-        cuts.dedup();
+        // Ends that differ by rounding alone are one: no sliver of a piece
+        // between a segment's end and a span's end at the same station.
+        cuts.dedup_by(|b, a| (*b - *a).abs() <= super::MERGE_MM);
         let covering = |x0: f64, x1: f64| -> Vec<&&Relation> {
             normal
                 .iter()
                 .filter(|r| r.target == t)
                 .filter(|r| {
                     r.span.is_some_and(|(a, b)| {
+                        let e = super::MERGE_MM;
                         if x0.total_cmp(&x1).is_eq() {
-                            a <= x0 && x0 <= b
+                            a <= x0 + e && x0 <= b + e
                         } else {
-                            a < b && a <= x0 && x1 <= b
+                            a < b && a <= x0 + e && x1 <= b + e
                         }
                     })
                 })
@@ -218,15 +221,22 @@ fn piece(
     })
 }
 
-/// Adds `piece`, joined to the last one when nothing differs.
+/// Adds `piece`, joined to the last one when nothing differs but by
+/// rounding (`MERGE_MM`): a value read through another frame differs in
+/// its last digits, and must not split a span (P2).
 fn push(pieces: &mut Vec<Piece>, piece: Piece) {
+    let same = |a: f64, b: f64| (a - b).abs() <= super::MERGE_MM;
     match pieces.last_mut() {
         Some(last)
-            if last.to.total_cmp(&piece.from).is_eq()
+            if same(last.to, piece.from)
                 && last.fit == piece.fit
                 && last.pinned == piece.pinned
-                && last.clear.map(f64::to_bits) == piece.clear.map(f64::to_bits)
-                && last.diameter.total_cmp(&piece.diameter).is_eq()
+                && match (last.clear, piece.clear) {
+                    (Some(a), Some(b)) => same(a, b),
+                    (None, None) => true,
+                    _ => false,
+                }
+                && same(last.diameter, piece.diameter)
                 && last.from < last.to
                 && piece.from < piece.to =>
         {
@@ -561,7 +571,11 @@ fn stack_requirement(
                         pinned: p.pinned,
                     })
                     .collect(),
-                max_extra_mm: None,
+                max_extra_mm: relations
+                    .iter()
+                    .filter_map(|r| r.extra)
+                    .reduce(f64::min)
+                    .map(clean),
             }
         }
     };
@@ -577,17 +591,19 @@ fn stack_requirement(
 /// The order of requirements within a socket (section 9.2): by smallest
 /// anchor `#id`, then kind; a neighbour definition's `unresolved` last.
 pub(crate) fn order(requirements: &mut [Requirement]) {
-    let key = |r: &Requirement| -> (u8, u64, u8) {
-        let (_, kind) = kind(&r.requires);
-        match &r.requires {
-            Requires::Unresolved {
-                definition: Some(n),
-                ..
-            } => (1, *n, kind),
-            _ => (0, anchor(r).map_or(0, FeatureId::instance), kind),
-        }
-    };
-    requirements.sort_by_key(key);
+    requirements.sort_by_key(order_key);
+}
+
+/// A requirement's place in that order.
+pub(crate) fn order_key(r: &Requirement) -> (u8, u64, u8) {
+    let (_, kind) = kind(&r.requires);
+    match &r.requires {
+        Requires::Unresolved {
+            definition: Some(n),
+            ..
+        } => (1, *n, kind),
+        _ => (0, anchor(r).map_or(0, FeatureId::instance), kind),
+    }
 }
 
 /// A seat's sources: its contacts (C1, or C5 in the near band) and its

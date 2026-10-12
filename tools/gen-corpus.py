@@ -1498,7 +1498,7 @@ def bolted(name, bracket=None, bolt=None, nut=None):
 # points, so the sign M2 gives an axis does not matter.
 
 
-def e_axial(kind, point, direction, spans, open_at=(), flags=(), depth="known"):
+def e_axial(kind, point, direction, spans, open_at=(), flags=(), depth="known", max_extra=None):
     """A bore or shaft: `spans` as (from, to, diameter, clear, fit, pinned)
     stations along `direction` from `point`; `open_at` the stations of rims
     that must be open (none on a cylinder in no stack); a bore's `depth`."""
@@ -1510,6 +1510,9 @@ def e_axial(kind, point, direction, spans, open_at=(), flags=(), depth="known"):
            "open": [r3(add(point, d, x)) for x in open_at], "flags": sorted(flags)}
     if kind == "bore":
         out["depth"] = depth
+    else:
+        # I4: how much longer the shaft may be before it meets a blind hole's floor.
+        out["max_extra"] = None if max_extra is None else r(max_extra)
     return out
 
 
@@ -1601,7 +1604,16 @@ def asm_expect(root, select=(), listing_result=None, gate=None, notes=(), compon
             ats = sorted(tuple(w["at"]) for w in wanted)
             truth = sorted(tuple(r(row[3]) for row in m) for m in placed[name])
             assert ats == truth, f"{name}: sockets at {ats}, occurrences at {truth}"
-        expect["sockets"] = sockets
+        # 9.1: occurrences whose sockets are the same share one, listing
+        # where each is.
+        merged = {}
+        for name, wanted in sockets.items():
+            groups = {}
+            for w in wanted:
+                key = json.dumps({k: v for k, v in w.items() if k != "at"}, sort_keys=True)
+                groups.setdefault(key, {**w, "at": []})["at"].append(w["at"])
+            merged[name] = [{**g, "at": sorted(g["at"])} for g in groups.values()]
+        expect["sockets"] = merged
     return expect
 
 
@@ -1623,7 +1635,58 @@ class Asm:
         self.w.cases.append({"id": name, "file": f"{name}.stp", "kind": "assembly",
                              "set": "unit" if unit_set else "corpus", "tests": tests, "rules": rules,
                              "construction": construction, "expect": expect})
+        if "sockets" in expect and edit is None and self.which(False):
+            self.variants(name, root, expect)
         return path
+
+    def variants(self, name, root, expect):
+        """`_rot`: the whole assembly under VARIANT, whose sockets must be the
+        base's; `_tgt`: every socket target modelled in TILT and placed by
+        TILT⁻¹, whose sockets must be the base's moved by TILT (P4, P5)."""
+        rot = Node(f"{name}_rot").add(root, m_motion(VARIANT))
+        write_xcaf(self.w, rot, f"{name}_rot")
+        self.w.cases.append({"id": f"{name}_rot", "file": f"{name}_rot.stp", "kind": "assembly", "set": "corpus",
+                             "tests": f"{name} under a skew root motion", "rules": ["P2", "P4", "P5"],
+                             "construction": {"variant_of": name, "root": "VARIANT"},
+                             "expect": {**asm_expect(rot), "variant": {"of": name, "kind": "rot",
+                                                                       "motion": m_motion(VARIANT)}}})
+        targets = set(expect["sockets"])
+        tgt = tilted(root, targets, f"{name}_tgt")
+        write_xcaf(self.w, tgt, f"{name}_tgt")
+        self.w.cases.append({"id": f"{name}_tgt", "file": f"{name}_tgt.stp", "kind": "assembly", "set": "corpus",
+                             "tests": f"{name} with its targets modelled in TILT", "rules": ["P4", "P5", "P6"],
+                             "construction": {"variant_of": name, "targets": "modelled in TILT, placed by TILT^-1"},
+                             "expect": {**asm_expect(tgt), "variant": {"of": name, "kind": "tgt",
+                                                                       "motion": m_motion(TILT)}}})
+
+
+def tilted(root, targets, name):
+    """`root` again, each leaf named in `targets` modelled in TILT (its shape
+    moved by TILT) and placed by TILT⁻¹, so that every solid stays where it
+    was; shared leaves and sub-assemblies stay shared."""
+    back = m_inv(m_motion(TILT))
+    leaves, nodes = {}, {}
+
+    def leaf(child):
+        if id(child) not in leaves:
+            leaves[id(child)] = Leaf(child.name, BRepBuilderAPI_Transform(child.shape, TILT.trsf(), True).Shape())
+        return leaves[id(child)]
+
+    def node(n, rename=None):
+        if id(n) in nodes:
+            return nodes[id(n)]
+        out = Node(rename or n.name)
+        nodes[id(n)] = out
+        for child, matrix in n.children:
+            if isinstance(child, Leaf) and child.name in targets:
+                out.add(leaf(child), m_mul(matrix, back))
+            elif isinstance(child, Leaf):
+                out.add(child, matrix)
+            else:
+                out.add(node(child), matrix)
+        return out
+
+    return node(root, name)
 
 
 def usage_of(f: Part21, child_name):
@@ -1747,7 +1810,7 @@ def build_assemblies(w: Writer, which):
         "SCREW": [e_socket([e_axial("shaft", (0, 0, -16), Z, [(0, 7.5, 6, None, "interference", True),
                                                              (7.5, 16, 6, 6.6, "clearance", False),
                                                              (16, 22, 10, 11, "clearance", False)],
-                                    flags=["thread_not_confirmed"])], at=(0, 0, 8.5),
+                                    flags=["thread_not_confirmed"], max_extra=1.5)], at=(0, 0, 8.5),
                            seats=[e_seat((0, 0, 0), (0, 0, -1))])],
     }
     a.case("s02_cbore", s02, "a counterbored block screwed to a base", ["T3", "P2", "B1", "B3", "B5", "B6", "B7", "I1",
@@ -1778,8 +1841,8 @@ def build_assemblies(w: Writer, which):
                                     [(0, 8, 6, None, "line_to_line", True)] + (
                                         [(8, 16, 6, None, "interference", True)] if d == 5.97 else
                                         [(8, 16, 6, 6.2, "clearance", False)] if d == 6.2 else []),
-                                    flags=["thread_not_confirmed"])], at=(x, 0, -8),
-                           # Each dowel bottoms on its hole's floor (I4).
+                                    flags=["thread_not_confirmed"], max_extra=0)], at=(x, 0, -8),
+                           # Each dowel bottoms on its hole's floor (I4): a seat, and no room to spare.
                            seats=[e_seat((0, 0, 0), (0, 0, -1))]) for x, d in zip(xs, holes03)],
     }
     # Line to line on both, with one fit: one span.
@@ -1820,9 +1883,33 @@ def build_assemblies(w: Writer, which):
     for x, y in pts8:
         s07.add(bolt, m_tr((x, y, 8)))
         s07.add(nut, m_tr((x, y, -10)))
+    # Both brackets need what s01's does: one socket for both (9.1).
     a.case("s07_twice", s07, "two brackets on one plate, the second turned 180 deg", ["T3", "O6"], False,
            {"from": "s08x, flat"}, asm_expect(s07, select=[
-               {"part": "BRACKET", "result": "BRACKET", "occurrences": 2, "matched_by": "product_id"}]))
+               {"part": "BRACKET", "result": "BRACKET", "occurrences": 2, "matched_by": "product_id"}],
+               sockets={"BRACKET": [bracket_socket, {**bracket_socket, "at": r3((100, 0, 0))}]}))
+
+    # s07b: s07 without the second bracket's bolt and nut at (130, 15), its own (-30, -15) turned: that
+    # bore is now continued by the plate's hole with no fastener across (J1, pinned), so the brackets need
+    # different sockets.
+    s07b = Node("s07b_one_missing").add(long_plate, m_tr((50, 0, 0)))
+    s07b.add(bracket).add(bracket, turned)
+    for x, y in pts8:
+        if (x, y) != (130, 15):
+            s07b.add(bolt, m_tr((x, y, 8)))
+            s07b.add(nut, m_tr((x, y, -10)))
+    missing = e_socket(
+        [e_axial("bore", (x, y, 0), Z, [(0, 8, 6.6, None, "not_read", True)] if (x, y) == (-30, -15)
+                 else [(0, 8, 6.6, 6, "clearance", False)], open_at=[0]) for x, y in PTS],
+        left_out=[e_left((0, 0, 0), Z, 8, wall=(0, 8))],
+        seats=[e_seat((0, 0, 0), (0, 0, -1), touchers=[("PLATE", 0, [])]),
+               e_seat((0, 0, 8), Z, by=3, touchers=[("BOLT", 0, [])] * 3)],
+        grips=[e_grip(8, holes=5)], at=(100, 0, 0))
+    a.case("s07b_one_missing", s07b, "s07 with one bolt and its nut removed from the second bracket", ["J1", "Y1"],
+           False, {"from": "s07", "removed": "the bolt and nut at (130, 15)"},
+           asm_expect(s07b, select=[
+               {"part": "BRACKET", "result": "BRACKET", "occurrences": 2, "matched_by": "product_id"}],
+               sockets={"BRACKET": [bracket_socket, missing]}))
     s08 = Node("s08_nested").add(long_plate, m_tr((50, 0, 0)))
     s08.add(bolted("LB_A", bracket, bolt, nut)).add(bolted("LB_B", bracket, bolt, nut), turned)
     a.case("s08_nested", s08, "two sub-assembly products sharing their leaves", ["O1"], False,
@@ -1944,7 +2031,7 @@ def build_assemblies(w: Writer, which):
     housing = cut(box(-20, -20, -20, 40, 40, 20), cyl((0, 0, -8), UP, 6.05, 9))
     s19 = Node("s19_boss").add(Leaf("COVER", cover)).add(Leaf("HOUSING", housing))
     sockets19 = {
-        "COVER": [e_socket([e_axial("shaft", (0, 0, 0), (0, 0, -1), [(0, 5, 12, 12.1, "clearance", False)])],
+        "COVER": [e_socket([e_axial("shaft", (0, 0, 0), (0, 0, -1), [(0, 5, 12, 12.1, "clearance", False)], max_extra=3)],
                            seats=[e_seat((0, 0, 0), (0, 0, -1))])],
         "HOUSING": [e_socket([e_axial("bore", (0, 0, -8), Z, [(3, 8, 12.1, 12, "clearance", False)])],
                              seats=[e_seat((0, 0, 0), Z)])],
@@ -2130,8 +2217,7 @@ def build_assemblies(w: Writer, which):
                  # The bolt, head bearing at z 27.2: the two washers' dia 6.4, the three plates' dia 6.6 (24 mm),
                  # then the nut's dia 5. Nothing of its head touches the washers' outsides (I5, C6).
                  "BOLT": [e_socket([e_axial("shaft", (0, 0, 0), (0, 0, -1),
-                                            [(0, 1.6, 6, 6.4, "clearance", False), (1.6, 3.2, 6, 6.4, "clearance", False),
-                                             (3.2, 27.2, 6, 6.6, "clearance", False),
+                                            [(0, 3.2, 6, 6.4, "clearance", False), (3.2, 27.2, 6, 6.6, "clearance", False),
                                              (27.2, 32.2, 6, None, "interference", True)],
                                             flags=["thread_not_confirmed"])],
                                    seats=[e_seat((0, 0, 0), (0, 0, -1), touchers=[("WASHER", 0, [])])],

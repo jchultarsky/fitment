@@ -7,8 +7,8 @@ use std::process::ExitCode;
 
 use clap::ValueEnum;
 use fitment_core::{
-    Basis, BoreSpan, Fit, RefusalCode, Requires, Ring, SeatContact, SelectError, ShaftSpan,
-    SocketDocument, Status,
+    Basis, BoreSpan, Fit, RefusalCode, Requires, ReviewStatus, Ring, SeatContact, SelectError,
+    ShaftSpan, SocketDocument, Status,
 };
 
 use super::text::{mm, note, printable};
@@ -86,7 +86,7 @@ pub fn run(args: &Args) -> ExitCode {
         note("error: name the part to replace with --part, or one occurrence with --occurrence");
         return ExitCode::from(2);
     }
-    let document =
+    let mut document =
         match SocketDocument::extract(&bytes, args.part.as_deref(), args.occurrence.as_deref()) {
             Ok(document) => document,
             Err(error) => {
@@ -102,10 +102,7 @@ pub fn run(args: &Args) -> ExitCode {
         ));
     }
     let code = match document.status() {
-        Status::Accepted => {
-            summary(&path, &document);
-            ExitCode::SUCCESS
-        }
+        Status::Accepted => ExitCode::SUCCESS,
         Status::Refused
             if document
                 .refusals()
@@ -115,10 +112,6 @@ pub fn run(args: &Args) -> ExitCode {
             ExitCode::FAILURE
         }
         Status::Refused => ExitCode::from(exit::REFUSED),
-    };
-    let text = match args.format {
-        Format::Json => document.to_json(),
-        Format::Table => table(&document),
     };
     if let Some(output) = &args.output {
         if let Some(problem) = (!args.force)
@@ -131,6 +124,16 @@ pub fn run(args: &Args) -> ExitCode {
             ));
             return ExitCode::from(2);
         }
+        carry_over(output, &mut document);
+    }
+    if document.status() == Status::Accepted {
+        summary(&path, &document);
+    }
+    let text = match args.format {
+        Format::Json => document.to_json(),
+        Format::Table => table(&document),
+    };
+    if let Some(output) = &args.output {
         if document.status() == Status::Refused {
             note(&format!(
                 "fitment: {}: left unchanged: the assembly was refused",
@@ -166,6 +169,30 @@ impl PartialEq for Format {
     }
 }
 
+/// 9.5: the decisions of OUT, this part's socket of this file extracted
+/// before, carried over to `document`.
+fn carry_over(output: &Path, document: &mut SocketDocument) {
+    let Some(old) = std::fs::read_to_string(output)
+        .ok()
+        .and_then(|text| SocketDocument::from_json(&text).ok())
+    else {
+        return;
+    };
+    let target = |d: &SocketDocument| d.extracted().map(|e| e.target.definition.instance);
+    if old.source().sha256 != document.source().sha256 || target(&old) != target(document) {
+        return;
+    }
+    let outcome = document.carry_over(&old);
+    if outcome.carried + outcome.stale > 0 {
+        note(&format!(
+            "fitment: {}: {} decisions carried over, {} stale",
+            printable(&output.display().to_string()),
+            outcome.carried,
+            outcome.stale
+        ));
+    }
+}
+
 /// Why OUT must not be replaced (9.5): it is the input, or it exists and
 /// is not a socket document for the same file and target. `None` if it
 /// may be.
@@ -198,7 +225,7 @@ fn foreign(output: &Path, input: &Path, document: &SocketDocument) -> Option<&'s
 
 /// Writes `bytes` to a temporary file beside `path`, then renames it; the
 /// temporary file is removed if either step fails.
-fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(format!(".{}.tmp", std::process::id()));
     let temporary = PathBuf::from(temporary);
@@ -225,11 +252,18 @@ fn summary(path: &str, document: &SocketDocument) {
         .as_ref()
         .and_then(|p| p.id.as_deref())
         .unwrap_or("");
+    // A requirement with no entry in the review reads as unreviewed.
+    let decided = document
+        .review()
+        .iter()
+        .filter(|e| e.status != ReviewStatus::Unreviewed)
+        .count();
     note(&format!(
-        "fitment: {path}: {}: {} occurrences, {} sockets, {requirements} requirements, {left} left out",
+        "fitment: {path}: {}: {} occurrences, {} sockets, {requirements} requirements ({} unreviewed), {left} left out",
         printable(name),
         extracted.occurrences.len(),
-        extracted.sockets.len()
+        extracted.sockets.len(),
+        requirements.saturating_sub(decided)
     ));
     for socket in &extracted.sockets {
         if socket.requirements.is_empty() {
@@ -314,8 +348,71 @@ fn seat(contacts: &[SeatContact], rings: &[Ring]) -> String {
     parts.join(", ")
 }
 
+/// One requirement's values, for the table.
+fn describe(requirement: &fitment_core::Requirement) -> String {
+    match &requirement.requires {
+        Requires::Bore { spans, open, .. } => {
+            let spans: Vec<String> = spans.iter().map(bore_span).collect();
+            format!(
+                "{}{}{}",
+                spans.join("; "),
+                if open.start { " open at start" } else { "" },
+                if open.finish { " open at finish" } else { "" }
+            )
+        }
+        Requires::Shaft { spans, .. } => {
+            spans.iter().map(shaft_span).collect::<Vec<_>>().join("; ")
+        }
+        Requires::Seat {
+            contacts, rings, ..
+        } => seat(contacts, rings),
+        Requires::Grip {
+            length_mm, holes, ..
+        } => format!("{} mm thick, {} holes through", mm(*length_mm), holes.len()),
+        Requires::ConicalSeat {
+            included_angle_rad,
+            radii_mm,
+            ..
+        } => format!(
+            "{}° included{}",
+            mm(included_angle_rad.to_degrees()),
+            radii_mm.map_or_else(String::new, |[a, b]| format!(
+                ", radii {}..{}",
+                mm(a),
+                mm(b)
+            ))
+        ),
+        Requires::PartialBore {
+            diameter_mm,
+            clear_diameter_mm,
+            from_mm,
+            to_mm,
+            ..
+        }
+        | Requires::PartialShaft {
+            diameter_mm,
+            clear_diameter_mm,
+            from_mm,
+            to_mm,
+            ..
+        } => format!(
+            "{}..{} Ø{} partial{}",
+            mm(*from_mm),
+            mm(*to_mm),
+            mm(*diameter_mm),
+            clear_diameter_mm.map_or_else(String::new, |c| format!(" clear Ø{}", mm(c)))
+        ),
+        Requires::Unresolved { causes, .. } => causes
+            .iter()
+            .map(|c| format!("{:?} ({} faces)", c.cause, c.faces.len()))
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => String::new(),
+    }
+}
+
 /// The review view: one line per requirement.
-fn table(document: &SocketDocument) -> String {
+pub(crate) fn table(document: &SocketDocument) -> String {
     let mut lines = Vec::new();
     let Some(extracted) = document.extracted() else {
         lines.push("refused".to_owned());
@@ -335,65 +432,7 @@ fn table(document: &SocketDocument) -> String {
             socket.occurrences.len()
         ));
         for requirement in &socket.requirements {
-            let what = match &requirement.requires {
-                Requires::Bore { spans, open, .. } => {
-                    let spans: Vec<String> = spans.iter().map(bore_span).collect();
-                    format!(
-                        "{}{}{}",
-                        spans.join("; "),
-                        if open.start { " open at start" } else { "" },
-                        if open.finish { " open at finish" } else { "" }
-                    )
-                }
-                Requires::Shaft { spans, .. } => {
-                    spans.iter().map(shaft_span).collect::<Vec<_>>().join("; ")
-                }
-                Requires::Seat {
-                    contacts, rings, ..
-                } => seat(contacts, rings),
-                Requires::Grip {
-                    length_mm, holes, ..
-                } => format!("{} mm thick, {} holes through", mm(*length_mm), holes.len()),
-                Requires::ConicalSeat {
-                    included_angle_rad,
-                    radii_mm,
-                    ..
-                } => format!(
-                    "{}° included{}",
-                    mm(included_angle_rad.to_degrees()),
-                    radii_mm.map_or_else(String::new, |[a, b]| format!(
-                        ", radii {}..{}",
-                        mm(a),
-                        mm(b)
-                    ))
-                ),
-                Requires::PartialBore {
-                    diameter_mm,
-                    clear_diameter_mm,
-                    from_mm,
-                    to_mm,
-                    ..
-                }
-                | Requires::PartialShaft {
-                    diameter_mm,
-                    clear_diameter_mm,
-                    from_mm,
-                    to_mm,
-                    ..
-                } => format!(
-                    "{}..{} Ø{} partial{}",
-                    mm(*from_mm),
-                    mm(*to_mm),
-                    mm(*diameter_mm),
-                    clear_diameter_mm.map_or_else(String::new, |c| format!(" clear Ø{}", mm(c)))
-                ),
-                Requires::Unresolved { causes, .. } => causes
-                    .iter()
-                    .map(|c| format!("{:?} ({} faces)", c.cause, c.faces.len()))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                _ => String::new(),
-            };
+            let what = describe(requirement);
             // Its flags, as the document names them: near_gap, abutting, …
             let flags: Vec<String> = requirement
                 .flags
@@ -405,7 +444,23 @@ fn table(document: &SocketDocument) -> String {
             } else {
                 format!(" [{}]", flags.join(", "))
             };
-            lines.push(format!("  -  {:<36} {what}{flags}", requirement.id));
+            let decision = document
+                .review()
+                .iter()
+                .find(|e| e.socket == socket.id && e.requirement == requirement.id)
+                .map_or("-", |e| {
+                    if e.status == ReviewStatus::Kept {
+                        "kept"
+                    } else if e.status == ReviewStatus::Removed {
+                        "removed"
+                    } else {
+                        "-"
+                    }
+                });
+            lines.push(format!(
+                "  {decision:<8} {:<36} {what}{flags}",
+                requirement.id
+            ));
         }
         for left in &socket.left_out {
             lines.push(format!(

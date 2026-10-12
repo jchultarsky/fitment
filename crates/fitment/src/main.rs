@@ -1,7 +1,7 @@
 //! The `fitment` command line.
 //!
 //! Commands arrive with the milestones that build them: `features` (M2),
-//! `parts` and `socket` (M3), `match` (M4), `catalog` (M5).
+//! `parts`, `socket` and `review` (M3), `match` (M4), `catalog` (M5).
 
 mod cmd;
 
@@ -35,6 +35,13 @@ enum Command {
     /// Exit codes: 0 extracted, 1 error, 2 usage (and a --part or
     /// --occurrence that names no part), 3 refused.
     Socket(cmd::socket::Args),
+    /// Check a socket document and show its review, or record one
+    /// decision in it: keep, remove (with a note) or unreview a
+    /// requirement.
+    ///
+    /// Exit codes: 0 valid (and updated), 1 error, 2 usage (an unknown id,
+    /// a removal without a note), 3 the document does not read back.
+    Review(cmd::review::Args),
 }
 
 /// Exit codes shared by every command.
@@ -49,5 +56,6 @@ fn main() -> ExitCode {
         Command::Features(args) => cmd::features::run(&args),
         Command::Parts(args) => cmd::parts::run(&args),
         Command::Socket(args) => cmd::socket::run(&args),
+        Command::Review(args) => cmd::review::run(&args),
     }
 }

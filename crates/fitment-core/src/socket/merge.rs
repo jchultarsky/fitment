@@ -1,0 +1,213 @@
+//! Sockets and merging (`docs/research/m3-socket.md`, 9.1): occurrences
+//! with the same requirement ids and the same features left out, whose
+//! every value agrees within `MERGE_MM` (lengths) or `MERGE_SINE`
+//! (directions and angles), share one socket. Values are bucketed by
+//! their quantized form, so merging is n log n; a value on a bin edge only
+//! costs an unmerged socket. Merged values are the strictest of the
+//! members; sources and touchers are their union.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde_json::Value;
+
+use super::model::{Requirement, Requires, Socket};
+use super::{MERGE_MM, MERGE_SINE};
+
+/// One value of a signature: a quantized number, or anything else exactly.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Atom {
+    Number(i64),
+    Text(String),
+}
+
+/// The keys whose numbers are directions or angles.
+const ANGULAR: [&str; 6] = [
+    "direction",
+    "normal",
+    "included_angle_rad",
+    "sweep_rad",
+    "sine",
+    "rotation",
+];
+
+/// The fields that name neighbours, or carry them: not values of the
+/// socket's own.
+const SKIPPED: [&str; 3] = ["sources", "neighbour", "by"];
+
+fn atoms(value: &Value, quantum: f64, out: &mut Vec<Atom>) {
+    match value {
+        Value::Number(n) => {
+            let x = n.as_f64().unwrap_or(f64::NAN);
+            #[allow(clippy::cast_possible_truncation)]
+            let q = (x / quantum).round() as i64;
+            out.push(Atom::Number(q));
+        }
+        Value::Array(items) => {
+            out.push(Atom::Text(format!("[{}", items.len())));
+            for item in items {
+                atoms(item, quantum, out);
+            }
+        }
+        Value::Object(map) => {
+            for (key, item) in map {
+                if key == "by" {
+                    // How many touch, not which.
+                    let count = item.as_array().map_or(0, Vec::len);
+                    out.push(Atom::Text(format!("by{count}")));
+                    continue;
+                }
+                if SKIPPED.contains(&key.as_str()) {
+                    continue;
+                }
+                out.push(Atom::Text(key.clone()));
+                let q = if ANGULAR.contains(&key.as_str()) {
+                    MERGE_SINE
+                } else {
+                    quantum
+                };
+                atoms(item, q, out);
+            }
+        }
+        other => out.push(Atom::Text(other.to_string())),
+    }
+}
+
+/// What must agree for two occurrences to share a socket.
+fn signature(socket: &Socket) -> Vec<Atom> {
+    let mut out = Vec::new();
+    for requirement in &socket.requirements {
+        out.push(Atom::Text(requirement.id.clone()));
+        let value = serde_json::to_value(&requirement.requires).unwrap_or(Value::Null);
+        atoms(&value, MERGE_MM, &mut out);
+        let flags = serde_json::to_value(&requirement.flags).unwrap_or(Value::Null);
+        atoms(&flags, MERGE_MM, &mut out);
+    }
+    let left = serde_json::to_value(&socket.left_out).unwrap_or(Value::Null);
+    atoms(&left, MERGE_MM, &mut out);
+    out
+}
+
+/// One socket per occurrence in, merged sockets out: numbered by their
+/// smallest occurrence path, each listing its occurrences in order.
+pub(crate) fn merge(sockets: Vec<Socket>) -> Vec<Socket> {
+    let mut buckets: BTreeMap<Vec<Atom>, Vec<Socket>> = BTreeMap::new();
+    for socket in sockets {
+        buckets.entry(signature(&socket)).or_default().push(socket);
+    }
+    let mut merged: Vec<Socket> = buckets
+        .into_values()
+        .filter_map(|members| {
+            let mut members = members.into_iter();
+            let mut first = members.next()?;
+            for other in members {
+                absorb(&mut first, other);
+            }
+            first.occurrences.sort();
+            first.occurrences.dedup();
+            Some(first)
+        })
+        .collect();
+    merged.sort_by(|a, b| a.occurrences.first().cmp(&b.occurrences.first()));
+    for (k, socket) in merged.iter_mut().enumerate() {
+        socket.id = format!("socket-{}", k + 1);
+    }
+    merged
+}
+
+/// `other`'s occurrences and requirements into `socket`, the strictest of
+/// each value kept.
+fn absorb(socket: &mut Socket, other: Socket) {
+    socket.occurrences.extend(other.occurrences);
+    for (ours, theirs) in socket.requirements.iter_mut().zip(other.requirements) {
+        strictest(ours, theirs);
+    }
+}
+
+fn strictest(ours: &mut Requirement, theirs: Requirement) {
+    ours.floor_mm = ours.floor_mm.max(theirs.floor_mm);
+    let flags: BTreeSet<_> = ours.flags.iter().chain(&theirs.flags).copied().collect();
+    ours.flags = flags.into_iter().collect();
+    ours.sources.extend(theirs.sources);
+    ours.sources.sort_by(|a, b| {
+        (&a.occurrence, &a.neighbour, &a.rule, &a.faces).cmp(&(
+            &b.occurrence,
+            &b.neighbour,
+            &b.rule,
+            &b.faces,
+        ))
+    });
+    match (&mut ours.requires, theirs.requires) {
+        (
+            Requires::Bore { spans, open, .. },
+            Requires::Bore {
+                spans: other,
+                open: their_open,
+                ..
+            },
+        ) => {
+            for (a, b) in spans.iter_mut().zip(other) {
+                // A bore must pass the larger of the occupants.
+                a.clear_diameter_mm = match (a.clear_diameter_mm, b.clear_diameter_mm) {
+                    (Some(x), Some(y)) => Some(x.max(y)),
+                    (x, y) => x.or(y),
+                };
+                a.pinned |= b.pinned;
+            }
+            open.start |= their_open.start;
+            open.finish |= their_open.finish;
+        }
+        (
+            Requires::Shaft {
+                spans,
+                max_extra_mm,
+                ..
+            },
+            Requires::Shaft {
+                spans: other,
+                max_extra_mm: their_extra,
+                ..
+            },
+        ) => {
+            for (a, b) in spans.iter_mut().zip(other) {
+                // A shaft must fit the smaller of the holes; pinned, none.
+                a.pinned |= b.pinned;
+                a.clear_diameter_mm = match (a.clear_diameter_mm, b.clear_diameter_mm) {
+                    _ if a.pinned => None,
+                    (Some(x), Some(y)) => Some(x.min(y)),
+                    _ => None,
+                };
+            }
+            *max_extra_mm = match (*max_extra_mm, their_extra) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                _ => None,
+            };
+        }
+        (
+            Requires::Seat {
+                contacts, rings, ..
+            },
+            Requires::Seat {
+                contacts: other,
+                rings: their_rings,
+                ..
+            },
+        ) => {
+            for (a, b) in contacts.iter_mut().zip(other) {
+                a.by.extend(b.by);
+                a.by.sort_by(|x, y| (&x.neighbour, x.face).cmp(&(&y.neighbour, y.face)));
+                a.by.dedup_by(|x, y| x.neighbour == y.neighbour && x.face == y.face);
+            }
+            rings.extend(their_rings);
+            rings.sort_by(|x, y| (x.hole, &x.neighbour).cmp(&(y.hole, &y.neighbour)));
+            rings.dedup();
+        }
+        (Requires::Unresolved { causes, .. }, Requires::Unresolved { causes: other, .. }) => {
+            for (a, b) in causes.iter_mut().zip(other) {
+                a.faces.extend(b.faces);
+                a.faces.sort_unstable();
+                a.faces.dedup();
+            }
+        }
+        _ => {}
+    }
+}

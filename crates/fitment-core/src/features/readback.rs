@@ -71,7 +71,7 @@ pub(super) fn check(part: &Part, solid: &SolidInfo) -> Checked {
         }
         let mut sum = Some(0.0);
         for face in &plane.faces {
-            let area = outline(&face.outline, &ids)
+            let area = outline(&face.outline, Some(&ids))
                 .map_err(|problem| format!("face #{} of '{}': {problem}", face.face, plane.id))?;
             if !same(area, face.area_mm2) {
                 return Err(format!(
@@ -460,7 +460,10 @@ fn face_counts(part: &Part) -> Checked {
 
 /// A face's outline is consistent, and gives this area: `None` if it is
 /// unknown, else the sum of its loops'.
-fn outline(outline: &Outline, ids: &BTreeSet<FeatureId>) -> Result<Option<f64>, String> {
+pub(crate) fn outline(
+    outline: &Outline,
+    ids: Option<&BTreeSet<FeatureId>>,
+) -> Result<Option<f64>, String> {
     let Outline::Known { loops } = outline else {
         return Ok(None);
     };
@@ -482,7 +485,7 @@ fn outline(outline: &Outline, ids: &BTreeSet<FeatureId>) -> Result<Option<f64>, 
 /// A loop's segments chain end to start and close, each arc has a positive
 /// radius and a sweep in [−2π, 2π], and each names a feature of the part
 /// across it.
-fn segments(lp: &OutlineLoop, ids: &BTreeSet<FeatureId>) -> Checked {
+fn segments(lp: &OutlineLoop, ids: Option<&BTreeSet<FeatureId>>) -> Checked {
     let ends = |segment: &Segment| -> (Point3, Point3, FeatureId) {
         match segment {
             Segment::Line {
@@ -509,7 +512,7 @@ fn segments(lp: &OutlineLoop, ids: &BTreeSet<FeatureId>) -> Checked {
         if from != previous {
             return Err(format!("loop #{bound}'s segments do not chain"));
         }
-        if !ids.contains(&across) {
+        if ids.is_some_and(|ids| !ids.contains(&across)) {
             return Err(format!(
                 "loop #{bound} names '{across}' across an edge, which the part does not have"
             ));

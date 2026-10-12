@@ -61,6 +61,9 @@ pub(crate) struct Relation {
     /// How far a B relation's shaft runs past the target element's start
     /// and finish; negative short of them.
     pub(crate) beyond: (f64, f64),
+    /// I4: how much longer a target shaft may be before its free end meets
+    /// the floor of the blind neighbour hole holding it.
+    pub(crate) extra: Option<f64>,
     pub(crate) flags: BTreeSet<Flag>,
     pub(crate) floor: f64,
 }
@@ -84,6 +87,7 @@ impl Relation {
             open_start: false,
             open_finish: false,
             beyond: (f64::NEG_INFINITY, f64::NEG_INFINITY),
+            extra: None,
             flags: BTreeSet::new(),
             floor,
         }
@@ -414,6 +418,7 @@ impl Search<'_, '_> {
         if through_unknown(a, b, &p) {
             relation.flags.insert(Flag::ExtentUnknown);
         }
+        relation.extra = to_floor(a, b, &p, tau);
         self.push_split(&relation, a, b, &p, -1.0, tau);
     }
 
@@ -655,6 +660,12 @@ impl Search<'_, '_> {
             return Ok(());
         };
         let tau = CONTACT_MM.max(neighbour.floor);
+        let shapes = super::touch::Shapes::of(
+            neighbour.part,
+            neighbour.faces,
+            &neighbour.elements,
+            &neighbour.motion,
+        );
         // Its hole-sense cylinders' faces, by face: axis point, direction
         // and radius, in the target's frame. Only air lies inside one; a
         // shaft's cylinder, even a D-shaft's partial one, is material.
@@ -703,7 +714,12 @@ impl Search<'_, '_> {
                         continue;
                     }
                 }
-                if let Some((lo, hi)) = meets_core(a, face, &neighbour.motion, tau) {
+                let meets = match shapes.meets_core(face.face, a, tau) {
+                    Some(super::touch::Core::Apart) => None,
+                    Some(super::touch::Core::Meets(stations)) => Some(stations),
+                    None => meets_core(a, face, &neighbour.motion, tau),
+                };
+                if let Some((lo, hi)) = meets {
                     faces.push(face.face);
                     reach = (reach.0.min(lo), reach.1.max(hi));
                 }
@@ -743,6 +759,31 @@ impl Search<'_, '_> {
         }
         Ok(())
     }
+}
+
+/// I4: the room between target shaft `a`'s free end and the closed end of
+/// neighbour hole `b` beyond it, along `a`'s axis; `None` unless the tip
+/// lies in the hole with its floor beyond.
+fn to_floor(a: &Element, b: &Element, p: &Pair, tau: f64) -> Option<f64> {
+    let along = dot(a.dir, b.dir) > 0.0;
+    let closed_at = |high: bool| {
+        // b's end that lies at a's high (or low) side.
+        let b_high = high == along;
+        if b_high {
+            b.segment + 1 == b.segments && b.finish == EndKind::Closed
+        } else {
+            b.segment == 0 && b.start == EndKind::Closed
+        }
+    };
+    let tip_high = a.segment + 1 == a.segments && a.finish == EndKind::Open;
+    let tip_low = a.segment == 0 && a.start == EndKind::Open;
+    if tip_high && closed_at(true) && a.hi <= p.hi + tau && a.hi >= p.lo {
+        return Some((p.hi - a.hi).max(0.0));
+    }
+    if tip_low && closed_at(false) && a.lo >= p.lo - tau && a.lo <= p.hi {
+        return Some((a.lo - p.lo).max(0.0));
+    }
+    None
 }
 
 /// U3: what is known of an element, before an unknown side runs on.

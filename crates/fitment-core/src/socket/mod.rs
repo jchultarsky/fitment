@@ -3,15 +3,20 @@
 
 mod axial;
 mod block;
+mod check;
 mod combine;
 mod geo;
+mod merge;
 mod model;
 mod overlap;
 mod planar;
+mod review;
 mod rules;
 mod touch;
 
 use serde::{Deserialize, Serialize};
+
+pub use review::{CarryOver, ReviewError, StaleReason, StaleReview};
 
 pub use model::{
     Basis, BoreSpan, Cause, CauseFaces, Depth, Envelope, Extracted, Fit, Flag, LeftOut,
@@ -40,7 +45,7 @@ pub const SOCKET_FORMAT_VERSION: u32 = 1;
 
 /// The version of the socket rules: it rises whenever a socket rule,
 /// constant, order or field could change any socket (R20).
-pub const SOCKET_RULES_VERSION: u32 = 2;
+pub const SOCKET_RULES_VERSION: u32 = 3;
 
 /// The least contact tolerance, in mm (Z3).
 pub(crate) const CONTACT_MM: f64 = 0.01;
@@ -55,12 +60,21 @@ pub(crate) const PARALLEL_SINE_REL: f64 = 0.01;
 /// (check 39).
 pub(crate) const MAX_RELATIONS: u64 = 10_000_000;
 
+/// Lengths within this of each other merge occurrences (9.1), in mm.
+pub(crate) const MERGE_MM: f64 = 1e-6;
+
+/// Directions and angles within this merge occurrences (9.1).
+pub(crate) const MERGE_SINE: f64 = 1e-9;
+
 /// The constants of these rules.
 fn constants() -> SocketConstants {
     SocketConstants {
         contact_mm: CONTACT_MM,
         near_mm: NEAR_MM,
         parallel_sine_rel: PARALLEL_SINE_REL,
+        merge_mm: MERGE_MM,
+        merge_sine: MERGE_SINE,
+        max_occurrences: crate::assembly::MAX_OCCURRENCES as u64,
         max_relations: MAX_RELATIONS,
     }
 }
@@ -100,7 +114,7 @@ pub struct SocketDocument {
     #[serde(deserialize_with = "Option::deserialize")]
     digest: Option<String>,
     review: Vec<ReviewEntry>,
-    stale_reviews: Vec<ReviewEntry>,
+    stale_reviews: Vec<StaleReview>,
 }
 
 /// Why a socket document could not be read back.
@@ -272,6 +286,46 @@ impl SocketDocument {
         &self.review
     }
 
+    /// The decisions that could not be carried over to this extraction.
+    pub fn stale_reviews(&self) -> &[StaleReview] {
+        &self.stale_reviews
+    }
+
+    /// Applies one review decision to requirement `id` in every socket
+    /// holding it, or only in `socket`; returns how many sockets it
+    /// changed. The digest does not cover the review, so it stands.
+    ///
+    /// # Errors
+    ///
+    /// A [`ReviewError`] for an unknown id or socket, a removal without a
+    /// note, a note too long, or an id whose requirement differs between
+    /// the sockets holding it when no socket is named.
+    pub fn decide(
+        &mut self,
+        id: &str,
+        socket: Option<&str>,
+        status: ReviewStatus,
+        note: Option<&str>,
+    ) -> Result<usize, ReviewError> {
+        let Some(extracted) = &self.extracted else {
+            return Err(ReviewError::Refused);
+        };
+        review::decide(extracted, &mut self.review, id, socket, status, note)
+    }
+
+    /// Carries the decisions of `old`, a document of the same file and
+    /// target, over to this one (9.5); those that cannot be carried go to
+    /// `stale_reviews`, with `old`'s own stale ones.
+    pub fn carry_over(&mut self, old: &Self) -> CarryOver {
+        let (Some(new), Some(previous)) = (&self.extracted, &old.extracted) else {
+            return CarryOver::default();
+        };
+        let mut stale = old.stale_reviews.clone();
+        let outcome = review::carry_over(new, &mut self.review, previous, &old.review, &mut stale);
+        self.stale_reviews = stale;
+        outcome
+    }
+
     /// The assembly's notes.
     pub fn notes(&self) -> &Notes {
         &self.notes
@@ -354,22 +408,9 @@ impl SocketDocument {
                 expected.push((socket.id.clone(), requirement.id.clone()));
             }
         }
-        let listed: Vec<(String, String)> = self
-            .review
-            .iter()
-            .map(|r| (r.socket.clone(), r.requirement.clone()))
-            .collect();
-        if listed != expected {
-            return Err("the review lists other requirements than the sockets hold".to_owned());
-        }
         check_occurrences(extracted)?;
-        if self.review.iter().any(|r| {
-            r.status == ReviewStatus::Removed
-                && r.note.as_deref().is_none_or(|n| n.trim().is_empty())
-        }) {
-            return Err("a removal has no note".to_owned());
-        }
-        Ok(())
+        check::extracted(extracted)?;
+        check::review(extracted, &self.review)
     }
 }
 
@@ -541,7 +582,12 @@ fn target_of(
         complete: target.complete,
         extent: target.extent,
         anchors: {
-            let mut anchors: Vec<_> = targets.iter().map(|e| e.feature).collect();
+            // Partial cylinders appear only through their requirements.
+            let mut anchors: Vec<_> = targets
+                .iter()
+                .filter(|e| e.partial.is_none())
+                .map(|e| e.feature)
+                .collect();
             anchors.sort_by_key(|f| f.instance());
             anchors.dedup();
             anchors
@@ -630,19 +676,8 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
         });
     }
     let target_ref = target_of(listing, selection, target, &targets)?;
-    let occurrences = selection
-        .occurrences
-        .iter()
-        .enumerate()
-        .filter_map(|(k, &i)| placed_ref(listing, i, Some(format!("socket-{}", k + 1))))
-        .collect();
-    let neighbours = listing
-        .occurrences()
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| cited.contains(&o.path.instances()))
-        .filter_map(|(i, _)| placed_ref(listing, i, None))
-        .collect();
+    let sockets = merge::merge(sockets);
+    let (occurrences, neighbours) = placed_lists(listing, selection, &sockets, &cited);
     Ok(Extracted {
         target: target_ref,
         occurrences,
@@ -653,6 +688,41 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
             extent: target.extent,
         },
     })
+}
+
+/// The chosen occurrences, each naming its socket, and the neighbours the
+/// sources cite.
+fn placed_lists(
+    listing: &Listing,
+    selection: &Selection,
+    sockets: &[model::Socket],
+    cited: &BTreeSet<Vec<u64>>,
+) -> (Vec<PlacedRef>, Vec<PlacedRef>) {
+    let by_path: BTreeMap<&[u64], &str> = sockets
+        .iter()
+        .flat_map(|s| {
+            s.occurrences
+                .iter()
+                .map(move |o| (o.as_slice(), s.id.as_str()))
+        })
+        .collect();
+    let socket_of = |path: &[u64]| by_path.get(path).map(|id| (*id).to_owned());
+    let occurrences = selection
+        .occurrences
+        .iter()
+        .filter_map(|&i| {
+            let path = listing.occurrences().get(i)?.path.instances();
+            placed_ref(listing, i, socket_of(&path))
+        })
+        .collect();
+    let neighbours = listing
+        .occurrences()
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| cited.contains(&o.path.instances()))
+        .filter_map(|(i, _)| placed_ref(listing, i, None))
+        .collect();
+    (occurrences, neighbours)
 }
 
 /// The neighbours of target occurrence `index`, moved into its frame, with

@@ -192,6 +192,102 @@ fn every_corpus_assembly_reads_as_its_construction_says() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// P2, P4 and P5: each `_rot` variant's sockets are its base's, each
+/// occurrence placed by VARIANT ∘ the base's; each `_tgt` variant's are its
+/// base's moved by TILT, the frame its targets are modelled in.
+#[test]
+fn every_variant_has_its_base_s_sockets() {
+    use common::variants::{canonical, differ, moved, sorted, stripped};
+    let Some(dir) = corpus() else {
+        return;
+    };
+    let cases = manifest(&dir)["cases"].as_array().unwrap().clone();
+    let read = |case: &Value| fs::read(dir.join(case["file"].as_str().unwrap())).unwrap();
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for case in cases.iter().filter(|c| c["expect"]["variant"].is_object()) {
+        let variant = &case["expect"]["variant"];
+        let base = cases.iter().find(|c| c["id"] == variant["of"]).unwrap();
+        let m: [[f64; 4]; 3] =
+            [0, 1, 2].map(|i| [0, 1, 2, 3].map(|j| variant["motion"][i][j].as_f64().unwrap()));
+        let (ours, theirs) = (read(base), read(case));
+        for target in base["expect"]["sockets"].as_object().unwrap().keys() {
+            let doc = |bytes: &[u8]| {
+                let document =
+                    fitment_core::SocketDocument::extract(bytes, Some(target), None).unwrap();
+                document.extracted().unwrap().clone()
+            };
+            let (base_doc, variant_doc) = (doc(&ours), doc(&theirs));
+            // What the part's box bounds (U3's unknown ends, U1's partial
+            // cylinders) depends on the frame the part is modelled in: in a
+            // `_tgt` variant only the rest is compared.
+            let framed = |r: &&fitment_core::Requirement| {
+                let value = serde_json::to_value(r).unwrap();
+                let flags = value["flags"].as_array().unwrap().clone();
+                let kind = value["requires"]["kind"].as_str().unwrap_or("").to_owned();
+                variant["kind"] == "tgt"
+                    && (kind.starts_with("partial")
+                        || flags.iter().any(|f| {
+                            f == "extent_unknown"
+                                || f == "target_undecided"
+                                || f == "partial_neighbour"
+                        }))
+            };
+            let shape = |sockets: &[fitment_core::Socket], tilt: bool| {
+                let mut value = serde_json::json!(
+                    sockets
+                        .iter()
+                        .map(|s| serde_json::json!({
+                            "requirements": s.requirements.iter().filter(|r| !framed(r)).collect::<Vec<_>>(),
+                            "left_out": s.left_out,
+                            "occurrences": s.occurrences.len(),
+                        }))
+                        .collect::<Vec<_>>()
+                );
+                if tilt {
+                    moved(&mut value, &m);
+                }
+                canonical(&mut value);
+                stripped(&mut value);
+                sorted(&mut value);
+                value
+            };
+            let tilt = variant["kind"] == "tgt";
+            let where_ = format!("{} {target}", case["id"].as_str().unwrap());
+            if let Some(d) = differ(
+                &shape(&base_doc.sockets, tilt),
+                &shape(&variant_doc.sockets, false),
+                1e-9,
+                &where_,
+            ) {
+                failures.push(d);
+            }
+            if variant["kind"] == "rot" {
+                // Each placement is VARIANT ∘ the base's.
+                for (x, y) in base_doc.occurrences.iter().zip(&variant_doc.occurrences) {
+                    let (r, t) = (x.transform.rotation(), x.transform.translation());
+                    let (r2, t2) = (y.transform.rotation(), y.transform.translation());
+                    for i in 0..3 {
+                        for j in 0..3 {
+                            let want: f64 = (0..3).map(|k| m[i][k] * r[k][j]).sum();
+                            if (want - r2[i][j]).abs() > 1e-9 {
+                                failures.push(format!("{where_}: a rotation is not VARIANT's"));
+                            }
+                        }
+                        let want: f64 = (0..3).map(|k| m[i][k] * t[k]).sum::<f64>() + m[i][3];
+                        if (want - t2[i]).abs() > 1e-9 {
+                            failures.push(format!("{where_}: a translation is not VARIANT's"));
+                        }
+                    }
+                }
+            }
+            compared += 1;
+        }
+    }
+    assert!(compared > 0, "no variant was compared");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// Coverage is checked, not claimed (design, section 13.1): every rule
 /// and gate check the corpus manifest lists has a case that cites it, a
 /// Rust test that exists, or a reason it is deferred; and every rule a case

@@ -167,13 +167,20 @@ pub(crate) fn reaches_interior(s: &[P2], r: &[P2], tau: f64, pairs: &mut u64) ->
         for (j, c) in r.iter().enumerate() {
             *pairs += 1;
             let d = r[(j + 1) % r.len()];
-            let (o1, o2, o3, o4) = (
-                orient(*a, b, *c),
-                orient(*a, b, d),
-                orient(*c, d, *a),
-                orient(*c, d, b),
-            );
-            if o1 * o2 < 0.0 && o3 * o4 < 0.0 {
+            // Each end beyond τ on its side of the other segment's line: a
+            // crossing by rounding alone is none.
+            let side = |p: P2, q: P2, x: P2| {
+                let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+                let length = (dx * dx + dy * dy).sqrt();
+                if length > 0.0 {
+                    orient(p, q, x) / length
+                } else {
+                    0.0
+                }
+            };
+            let (o1, o2) = (side(*a, b, *c), side(*a, b, d));
+            let (o3, o4) = (side(*c, d, *a), side(*c, d, b));
+            if o1 * o2 < 0.0 && o3 * o4 < 0.0 && [o1, o2, o3, o4].iter().all(|o| o.abs() > tau) {
                 return true;
             }
         }
@@ -244,7 +251,7 @@ fn segments_meet(a: P2, b: P2, c: P2, d: P2) -> bool {
 }
 
 /// True if `p` lies inside `polygon` (winding).
-fn inside(p: P2, polygon: &[P2]) -> bool {
+pub(crate) fn inside(p: P2, polygon: &[P2]) -> bool {
     let mut winding = 0i64;
     for (i, a) in polygon.iter().enumerate() {
         let b = polygon[(i + 1) % polygon.len()];
