@@ -30,6 +30,15 @@ check "contains async code" \
 check "declares a static item (global state)" \
   grep -rnE "(^|[^'[:alnum:]_])static[[:space:]]+(mut[[:space:]]+)?[A-Z_]" "$src"
 
+# stepq stays a private dependency, named in two files only, so a stepq
+# release is a change in one place and its types never reach the public API.
+check "names stepq outside gate.rs and features/step.rs" \
+  sh -c "grep -rlE '(^|[^[:alnum:]_])stepq::|use[[:space:]]+stepq' '$src' | grep -vxE '$src/(gate|features/step)\.rs' | grep ."
+
+# tests/data holds STEP files that must never ship.
+check "would publish a STEP file" \
+  sh -c "cargo package --list -p fitment-core --locked --allow-dirty | grep -iE '\.(stp|step|p21)\$'"
+
 cargo deny --manifest-path crates/fitment-core/Cargo.toml --config deny/core.toml check bans
 python3 tools/core-deps.py
 

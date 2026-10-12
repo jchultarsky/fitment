@@ -168,7 +168,9 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "fitment-core",
  "predicates",
+ "serde_json",
 ]
 
 [[package]]

@@ -22,11 +22,13 @@ path = "src/main.rs"
 # The CLI never depends on stepq directly (deny.toml) and never on an async
 # runtime: the server is a separate package.
 [dependencies]
+fitment-core = { workspace = true }
 clap = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

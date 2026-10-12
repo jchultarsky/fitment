@@ -141,7 +141,9 @@ How `fitment-core`'s rules are enforced, each by CI on its own:
    `assert!`) are not lints; reviewers look for them.
 4. **Source checks.** `tools/check-core.sh` fails on any use of the `fs`,
    `net`, `env`, `process`, `thread` or `os` modules, on async code and on
-   `static` items, which clippy cannot ban as a whole.
+   `static` items, which clippy cannot ban as a whole. It also fails if a
+   file other than `gate.rs` and `features/step.rs` names stepq, so stepq
+   stays a private dependency, and if the package would ship a STEP file.
 5. **D1.** `deny.toml` bans Open CASCADE and C++ bridge crates everywhere.
 
 An `#[allow]` for one of these needs a comment saying why, and will be
@@ -153,6 +155,27 @@ questioned in review.
 `include_str!`, because its bans apply to its tests too. Any test that
 reads or writes files at run time (fixtures, the corpus, golden files)
 lives in `crates/fitment/tests`.
+
+The small unit parts in `crates/fitment-core/tests/data` are the only
+committed STEP files; the package's `include` list keeps them out of
+releases.
+
+### Golden files
+
+`crates/fitment/tests/golden.rs` runs `fitment features` on every unit
+part and compares the output byte for byte with
+`crates/fitment/tests/golden/features/<part>.json`. A change in output is
+a change in what the catalog stores, so it must raise `EXTRACTOR_VERSION`
+in `fitment-core`. Then:
+
+```console
+$ FITMENT_BLESS=1 cargo test -p fitment --test golden
+```
+
+Blessing writes missing goldens and removes goldens whose input is gone.
+It rewrites a changed golden only if the new output's `extractor_version`
+is higher, and it refuses to run in CI. Goldens freeze bytes; they do not
+prove them right, which is what the construction-checked tests are for.
 
 ## Commit and PR conventions
 

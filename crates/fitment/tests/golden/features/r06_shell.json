@@ -1,0 +1,39 @@
+{
+  "format": "fitment.features",
+  "format_version": 1,
+  "extractor_version": 1,
+  "extraction": {
+    "identity_mm": 1e-6,
+    "parallel_sine": 1e-9,
+    "vertex_side_mm": 0.001,
+    "lever_min_mm": 1.0,
+    "sweep_rad": 1e-9,
+    "walk_max": 8,
+    "gate_slack_mm": 1e-6,
+    "gate_slack_rel": 1e-6,
+    "range_mm": 1000000.0
+  },
+  "header": {
+    "schema": "ap214",
+    "schema_identifiers": [
+      "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+    ],
+    "originating_system": "Open CASCADE 7.9",
+    "preprocessor_version": "Open CASCADE STEP processor 7.9",
+    "implementation_level": "2;1"
+  },
+  "status": "refused",
+  "refusals": [
+    {
+      "code": "no_solid",
+      "instance": null,
+      "message": "the part's shape holds no manifold_solid_brep or brep_with_voids"
+    },
+    {
+      "code": "unread_shape_item",
+      "instance": 15,
+      "message": "#15 (SHELL_BASED_SURFACE_MODEL) is in the part's shape but is not read; a canonical part's shape is one solid, plus curve and point sets"
+    }
+  ],
+  "part": null
+}
