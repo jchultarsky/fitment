@@ -221,8 +221,8 @@ SHAPE_REPRESENTATION_RELATIONSHIP() );
 #199 = PRODUCT_DEFINITION_SHAPE('','',#200);
 #200 = PRODUCT_DEFINITION('design','',#201,#204);
 #201 = PRODUCT_DEFINITION_FORMATION('','',#202);
-#202 = PRODUCT('Open CASCADE STEP translator 7.9 1.2',
-  'Open CASCADE STEP translator 7.9 1.2','',(#203));
+#202 = PRODUCT('r04_assembly',
+  'r04_assembly','',(#203));
 #203 = PRODUCT_CONTEXT('',#2,'mechanical');
 #204 = PRODUCT_DEFINITION_CONTEXT('part definition',#2,'design');
 #205 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#206),#356);

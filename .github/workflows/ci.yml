@@ -51,11 +51,6 @@ jobs:
       - uses: astral-sh/setup-uv@v10.1.0
       # Every test part, with answers from the construction alone.
       - run: tools/gen-corpus.py corpus/out
-      # The committed unit set is exactly what the pinned generator writes.
-      - name: Unit set matches the generator
-        run: |
-          tools/gen-corpus.py --unit-set "$RUNNER_TEMP/unit"
-          diff -r "$RUNNER_TEMP/unit" crates/fitment-core/tests/data
       # Open CASCADE 8.0.1, a kernel the generator does not use, reads every
       # part as its construction says: this catches generator bugs.
       - run: tools/verify-occt.py manifest corpus/out
@@ -68,6 +63,17 @@ jobs:
           path: corpus/out
           retention-days: 7
           if-no-files-found: error
+
+  unit-set:
+    name: unit set matches the generator
+    # Its own job, so that a byte difference between platforms (the set is
+    # generated locally) shows here without holding back every test job.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+      - run: tools/gen-corpus.py --unit-set "$RUNNER_TEMP/unit"
+      - run: diff -r "$RUNNER_TEMP/unit" crates/fitment-core/tests/data
 
   test:
     name: test (${{ matrix.os }})
