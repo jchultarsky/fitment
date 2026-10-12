@@ -240,6 +240,25 @@ fn one_occurrence_is_chosen_by_its_path() {
 }
 
 #[test]
+fn the_table_shows_seats_and_grips() {
+    fitment()
+        .args(["socket", "--part", "BRACKET", "--format", "table"])
+        .arg(unit_assembly("s01_bolted.stp"))
+        .assert()
+        .success()
+        .stdout(contains("8 mm thick, 5 holes through"))
+        .stdout(contains("1 faces, 4 contacts"))
+        .stdout(contains("left out hole-"));
+    // A counterbore's floor carries the head's ring.
+    fitment()
+        .args(["socket", "--part", "BLOCK", "--format", "table"])
+        .arg(unit_assembly("s02_cbore.stp"))
+        .assert()
+        .success()
+        .stdout(contains("ring Ø6.6..Ø10"));
+}
+
+#[test]
 fn socket_of_a_missing_file_exits_1() {
     fitment()
         .args(["socket", "--part", "BRACKET", "no-such-file.stp"])

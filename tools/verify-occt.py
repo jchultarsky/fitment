@@ -1396,7 +1396,8 @@ def seat_problems(where, socket, m, target, others, tally):
     within the band, sharing area with it, is in a seat."""
     problems = []
     ours = planar_faces(target)
-    planes, apexes = {}, {}
+    theirs = [g for o in others for g in planar_faces(o)]
+    planes, apexes, seat_faces = {}, {}, {}
     for requirement in socket["requirements"]:
         q = requirement["requires"]
         if q["kind"] == "seat":
@@ -1405,10 +1406,25 @@ def seat_problems(where, socket, m, target, others, tally):
             offset = dot(n, apply(m, [c * q["offset_mm"] for c in q["normal"]]))
             planes[q["plane"]] = (n, offset)
             faces = faces_on(ours, n, offset)
+            seat_faces[q["plane"]] = faces
             if not faces:
                 problems.append(f"{where} {requirement['id']}: the part has no face on that plane")
-            elif not any(distance(f[0], o) <= NEAR + 1e-6 for f in faces for o in others):
-                problems.append(f"{where} {requirement['id']}: nothing within {NEAR} mm of it")
+                continue
+            # An opposed face of another solid within the band, sharing area
+            # with one of the seat's faces; the gaps' signs give the flags.
+            gaps = [dot(n, sub(gp, f[2])) for f in faces for g, gn, gp, gb in theirs
+                    if dot(gn, n) <= -COS_LIMIT and abs(dot(n, sub(gp, f[2]))) <= NEAR
+                    and f[3].Distance(gb) <= NEAR + 1e-6 and common_area(f[0], g, n, dot(n, sub(gp, f[2]))) > 1e-6]
+            if not gaps:
+                problems.append(f"{where} {requirement['id']}: no opposed face shares area with it within {NEAR} mm")
+                continue
+            tau = max(0.01, requirement["floor_mm"])
+            derived = ({"near_gap"} if any(g > tau for g in gaps) else set()) | \
+                ({"interference"} if any(g < -tau for g in gaps) else set())
+            stated = set(requirement["flags"]) & {"near_gap", "interference"}
+            if derived != stated:
+                problems.append(f"{where} {requirement['id']}: flagged {sorted(stated)}, Open CASCADE measures gaps "
+                                f"{[round(g, 6) for g in gaps]}")
         elif q["kind"] == "conical_seat":
             tally["conical seats"] += 1
             apexes[q["cone"]] = apply(m, q["apex_mm"])
@@ -1417,10 +1433,11 @@ def seat_problems(where, socket, m, target, others, tally):
             for face in explore(target, TopAbs_FACE):
                 surface = Surface(as_face(face))
                 if surface.GetType() == Kind.GeomAbs_Cone:
-                    apex = xyz(surface.Cone().Apex())
-                    found = found or math.dist(apex, apexes[q["cone"]]) <= 1e-5
+                    cone = surface.Cone()
+                    found = found or (math.dist(xyz(cone.Apex()), apexes[q["cone"]]) <= 1e-5
+                                      and abs(2 * abs(cone.SemiAngle()) - q["included_angle_rad"]) <= 1e-9)
             if not found:
-                problems.append(f"{where} {requirement['id']}: the part has no cone with that apex")
+                problems.append(f"{where} {requirement['id']}: the part has no cone with that apex and angle")
     for requirement in socket["requirements"]:
         q = requirement["requires"]
         if q["kind"] != "grip":
@@ -1437,8 +1454,22 @@ def seat_problems(where, socket, m, target, others, tally):
         separation = abs(dot(n, point) - offset)
         if abs(separation - q["length_mm"]) > 1e-5:
             problems.append(f"{where} {requirement['id']}: {q['length_mm']} long, Open CASCADE measures {separation}")
+    # L1, the other direction: two seats of opposed planes whose faces share
+    # area along the normal have a grip.
+    gripped = {tuple(sorted(r["requires"]["seats"])) for r in socket["requirements"]
+               if r["requires"]["kind"] == "grip"}
+    ids = sorted(planes)
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            (na, oa), (nb, ob) = planes[a], planes[b]
+            if dot(na, nb) > -COS_LIMIT:
+                continue
+            tally["seat pairs"] += 1
+            overlap = any(common_area(fa[0], fb[0], na, dot(na, sub(fb[2], fa[2]))) > 1e-6
+                          for fa in seat_faces.get(a, []) for fb in seat_faces.get(b, []))
+            if overlap and tuple(sorted([a, b])) not in gripped:
+                problems.append(f"{where}: seats {a} and {b} face each other over common area, and no grip holds them")
     # The other direction: every opposed face within the band that shares area.
-    theirs = [g for o in others for g in planar_faces(o)]
     for face, n, point, box in ours:
         offset = dot(n, point)
         if any(dot(p[0], n) >= 1 - 1e-9 and abs(p[1] - offset) <= 1e-5 for p in planes.values()):
@@ -1531,7 +1562,7 @@ def socket_main(argv):
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
     tally = {"cases": 0, "others": 0, "bore spans": 0, "shaft spans": 0, "left out holes": 0, "seats": 0,
-             "conical seats": 0, "grips": 0, "faces off every seat": 0}
+             "conical seats": 0, "grips": 0, "seat pairs": 0, "faces off every seat": 0}
     problems = []
     for case in manifest["cases"]:
         if case.get("kind") != "assembly" or "sockets" not in case["expect"]:

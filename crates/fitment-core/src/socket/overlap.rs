@@ -146,7 +146,42 @@ pub(crate) fn contained(inner: &[P2], outer: &[P2], tau: f64, pairs: &mut u64) -
     inner.iter().all(|p| inside(*p, outer))
 }
 
-fn distance_to_segment(p: P2, a: P2, b: P2) -> f64 {
+/// True if polygon `s` (possibly a segment) reaches the interior of
+/// polygon `r`, more than `tau` inside its boundary: a vertex of `s` deep
+/// inside `r`, a vertex of `r` deep inside `s`, or an edge of `s` properly
+/// crossing an edge of `r`. Touching along or at `r`'s boundary is not.
+pub(crate) fn reaches_interior(s: &[P2], r: &[P2], tau: f64, pairs: &mut u64) -> bool {
+    if r.len() < 3 || s.is_empty() {
+        return false;
+    }
+    let deep = |p: P2, polygon: &[P2]| {
+        inside(p, polygon)
+            && (0..polygon.len())
+                .all(|i| distance_to_segment(p, polygon[i], polygon[(i + 1) % polygon.len()]) > tau)
+    };
+    if s.iter().any(|p| deep(*p, r)) || (s.len() >= 3 && r.iter().any(|p| deep(*p, s))) {
+        return true;
+    }
+    for (i, a) in s.iter().enumerate() {
+        let b = s[(i + 1) % s.len()];
+        for (j, c) in r.iter().enumerate() {
+            *pairs += 1;
+            let d = r[(j + 1) % r.len()];
+            let (o1, o2, o3, o4) = (
+                orient(*a, b, *c),
+                orient(*a, b, d),
+                orient(*c, d, *a),
+                orient(*c, d, b),
+            );
+            if o1 * o2 < 0.0 && o3 * o4 < 0.0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn distance_to_segment(p: P2, a: P2, b: P2) -> f64 {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let length = dx * dx + dy * dy;
     let t = if length > 0.0 {

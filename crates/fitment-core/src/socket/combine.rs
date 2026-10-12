@@ -853,8 +853,8 @@ fn grips(part: &Part, faces: &[TargetFace<'_>], seats: &[Requirement]) -> Vec<Re
 }
 
 /// L2: a conical seat and an opposed plane seat give a grip from the
-/// cone's apex to the plane: the cone opens away from the plane, and its
-/// apex lies behind it.
+/// cone's apex to the plane, the cone opening away from the plane; its
+/// length is signed, negative where the apex lies beyond the plane.
 fn cone_grips(part: &Part, seats: &[Requirement], conical: &[Requirement]) -> Vec<Requirement> {
     let cos_limit = (1.0 - super::PARALLEL_SINE_REL * super::PARALLEL_SINE_REL).sqrt();
     let mut out = Vec::new();
@@ -880,7 +880,9 @@ fn cone_grips(part: &Part, seats: &[Requirement], conical: &[Requirement]) -> Ve
             };
             let n = normal.to_array();
             let behind = offset_mm - super::geo::dot(n, apex);
-            if super::geo::dot(n, mouth) > -cos_limit || behind <= super::CONTACT_MM {
+            // Signed: negative where the apex lies beyond the plane (a
+            // countersink through a thin plate).
+            if super::geo::dot(n, mouth) > -cos_limit {
                 continue;
             }
             let requires = Requires::Grip {
