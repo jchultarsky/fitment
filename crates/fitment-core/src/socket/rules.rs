@@ -655,12 +655,14 @@ impl Search<'_, '_> {
             return Ok(());
         };
         let tau = CONTACT_MM.max(neighbour.floor);
-        // Its cylinders' faces, by face: axis point, direction and radius,
-        // in the target's frame.
+        // Its hole-sense cylinders' faces, by face: axis point, direction
+        // and radius, in the target's frame. Only air lies inside one; a
+        // shaft's cylinder, even a D-shaft's partial one, is material.
         let round: BTreeMap<u64, (V, V, f64)> = neighbour
             .part
             .cylinders
             .iter()
+            .filter(|c| c.sense == crate::features::Sense::Hole)
             .flat_map(|c| {
                 let axis = (
                     neighbour.motion.point(c.axis.point_mm.to_array()),

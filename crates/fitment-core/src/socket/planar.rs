@@ -1,6 +1,5 @@
-//! Contacts between plane faces (C1 to C5), conical seats (Q1) and
-//! curved faces touching a target plane that no rule reads (C6), for one
-//! target occurrence (`docs/research/m3-socket.md`, 7.7 and 7.8).
+//! Contacts between plane faces (C1 to C5) and conical seats (Q1), for
+//! one target occurrence (`docs/research/m3-socket.md`, 7.7 and 7.8).
 
 // a, b, n, p, t: faces, normals, points and indices, as the design names them.
 #![allow(clippy::many_single_char_names)]
@@ -12,7 +11,7 @@ use super::model::Flag;
 use super::overlap::{self, P2};
 use super::rules::{Neighbour, TooMany};
 use super::{CONTACT_MM, MAX_RELATIONS, NEAR_MM, PARALLEL_SINE_REL};
-use crate::features::{FeatureId, Outline, Part, Sense};
+use crate::features::{FeatureId, Outline, Part};
 
 /// One plane face of the target, in its own frame.
 pub(crate) struct TargetFace<'p> {
@@ -58,8 +57,8 @@ pub(crate) struct ConeSeat {
 pub(crate) struct PlaneFound {
     pub(crate) contacts: Vec<Contact>,
     pub(crate) cones: Vec<ConeSeat>,
-    /// Target planes curved neighbour faces touch with no rule to read
-    /// them (C6), with those faces.
+    /// Target features neighbour faces may touch with no rule to read
+    /// them (C6, `touch.rs`), with those faces.
     pub(crate) unread_contacts: BTreeMap<FeatureId, BTreeSet<u64>>,
 }
 
@@ -124,6 +123,40 @@ fn moved_holes(
         .collect()
 }
 
+/// C1's gap of neighbour plane face `face` (outward `normal` and `offset`
+/// in the target's frame) from `target`, along the target's normal: at
+/// the target's points and the neighbour's vertices, the smallest in size;
+/// 0 where the planes cross between them (a block tilted within the
+/// window, resting on one edge).
+fn gap_of(
+    target: &TargetFace<'_>,
+    face: &crate::features::PlaneFace,
+    normal: V,
+    offset: f64,
+    motion: &Motion,
+) -> f64 {
+    let denominator = dot(normal, target.normal);
+    let mut gaps: Vec<f64> = gap_points(target)
+        .into_iter()
+        .map(|p| (offset - dot(normal, p)) / denominator)
+        .collect();
+    if let Outline::Known { loops } = &face.outline {
+        gaps.extend(loops.iter().flat_map(|l| l.segments.iter()).map(|s| {
+            let p = match s {
+                crate::features::Segment::Line { from_mm, .. }
+                | crate::features::Segment::Arc { from_mm, .. } => from_mm.to_array(),
+            };
+            dot(motion.point(p), target.normal) - target.offset
+        }));
+    }
+    if gaps.iter().any(|g| *g < 0.0) && gaps.iter().any(|g| *g > 0.0) {
+        return 0.0;
+    }
+    gaps.into_iter()
+        .min_by(|a, b| a.abs().total_cmp(&b.abs()))
+        .unwrap_or(f64::INFINITY)
+}
+
 /// Points of the target face to measure a gap at: its outline's vertices,
 /// or its anchor when the outline is unknown.
 fn gap_points(face: &TargetFace<'_>) -> Vec<V> {
@@ -153,14 +186,12 @@ impl Count {
     }
 }
 
-/// C1 to C5, Q1 and C6 between the target and every neighbour in reach.
-/// `explained` holds, per neighbour, the faces the axial rules read (C6
-/// leaves them out); `pairs` is check 39's count, across the extraction.
+/// C1 to C5 and Q1 between the target and every neighbour in reach;
+/// `pairs` is check 39's count, across the extraction.
 pub(crate) fn relate(
     target: &Part,
     faces: &[TargetFace<'_>],
     neighbours: &[Neighbour<'_>],
-    explained: &BTreeMap<usize, BTreeSet<u64>>,
     pairs: &mut u64,
 ) -> Result<PlaneFound, TooMany> {
     let mut found = PlaneFound::default();
@@ -181,14 +212,7 @@ pub(crate) fn relate(
                 }
                 for face in &plane.faces {
                     let offset = face.offset_mm + dot(normal, neighbour.motion.point([0.0; 3]));
-                    // The gap along the target's normal, at its points: the
-                    // smallest in size, the side with more contacts.
-                    let denominator = dot(normal, target.normal);
-                    let gap = gap_points(target)
-                        .into_iter()
-                        .map(|p| (offset - dot(normal, p)) / denominator)
-                        .min_by(|a, b| a.abs().total_cmp(&b.abs()))
-                        .unwrap_or(f64::INFINITY);
+                    let gap = gap_of(target, face, normal, offset, &neighbour.motion);
                     if gap.is_nan() || gap.abs() > band {
                         continue;
                     }
@@ -249,17 +273,6 @@ pub(crate) fn relate(
             }
         }
         cones(target, neighbour, n, tau, &mut found, &mut count)?;
-        unread_contacts(
-            faces,
-            neighbour,
-            n,
-            tau,
-            explained,
-            &found.contacts,
-            &found.cones,
-            &mut found.unread_contacts,
-            &mut count,
-        )?;
     }
     *pairs = count.0;
     Ok(found)
@@ -285,14 +298,24 @@ fn cones(
             let axis = neighbour.motion.dir(theirs.axis.direction.to_array());
             let sine = norm(cross(axis, ours.axis.direction.to_array()));
             let angle = libm::sin((ours.semi_angle_rad - theirs.semi_angle_rad).abs());
-            if norm(sub(apex, ours.apex_mm.to_array())) > tau
+            // Apexes apart along the axis move the surfaces by that times
+            // the sine of the semi-angle: a shallow taper sits deep.
+            let offset = sub(apex, ours.apex_mm.to_array());
+            let axis_ours = ours.axis.direction.to_array();
+            let along = dot(offset, axis_ours);
+            let lateral = norm(sub(offset, scale(axis_ours, along)));
+            if lateral > tau
+                || (along * libm::sin(ours.semi_angle_rad)).abs() > tau
                 || sine > PARALLEL_SINE_REL
                 || angle > PARALLEL_SINE_REL
             {
                 continue;
             }
+            // The range both cover; with theirs unknown, the target's own,
+            // which holds wherever they touch.
             let radii = match (ours.radii_mm, theirs.radii_mm) {
                 (Some([a, b]), Some([c, d])) if a.max(c) <= b.min(d) => Some([a.max(c), b.min(d)]),
+                (Some(own), _) => Some(own),
                 _ => None,
             };
             found.cones.push(ConeSeat {
@@ -305,183 +328,6 @@ fn cones(
         }
     }
     Ok(())
-}
-
-/// C6: a convex curved neighbour face (a shaft, a convex cone or torus)
-/// whose box reaches a target plane face within `tau` and may lie over its
-/// region, where no rule reads it: neither an axial rule (`explained`) nor
-/// a plane contact of the same neighbour with that face. Hole-sense faces
-/// press nothing: their material lies beyond them. Plane neighbour faces
-/// are C1's; `other` faces are U4's.
-#[allow(clippy::too_many_arguments)]
-fn unread_contacts(
-    faces: &[TargetFace<'_>],
-    neighbour: &Neighbour<'_>,
-    n: usize,
-    tau: f64,
-    explained: &BTreeMap<usize, BTreeSet<u64>>,
-    contacts: &[Contact],
-    cones: &[ConeSeat],
-    out: &mut BTreeMap<FeatureId, BTreeSet<u64>>,
-    count: &mut Count,
-) -> Result<(), TooMany> {
-    let mut convex: BTreeSet<u64> = BTreeSet::new();
-    // A shaft's cylinder or cone, by face: its axis and largest radius.
-    let mut round: BTreeMap<u64, (V, V, f64)> = BTreeMap::new();
-    for c in &neighbour.part.cylinders {
-        if c.sense == Sense::Shaft {
-            convex.extend(c.faces.iter().copied());
-            for f in &c.faces {
-                round.insert(
-                    *f,
-                    (
-                        c.axis.point_mm.to_array(),
-                        c.axis.direction.to_array(),
-                        c.radius_mm,
-                    ),
-                );
-            }
-        }
-    }
-    for c in &neighbour.part.cones {
-        if c.sense == Sense::Shaft {
-            convex.extend(c.faces.iter().copied());
-            if let Some([_, r]) = c.radii_mm {
-                for f in &c.faces {
-                    round.insert(
-                        *f,
-                        (c.axis.point_mm.to_array(), c.axis.direction.to_array(), r),
-                    );
-                }
-            }
-        }
-    }
-    for t in &neighbour.part.tori {
-        if t.convex {
-            convex.extend(t.faces.iter().copied());
-        }
-    }
-    let read = explained.get(&n);
-    // Q1 reads the cones it seats.
-    let seated: BTreeSet<u64> = cones
-        .iter()
-        .filter(|c| c.neighbour == n)
-        .filter_map(|c| {
-            neighbour
-                .part
-                .cones
-                .iter()
-                .find(|x| x.id == c.neighbour_cone)
-        })
-        .flat_map(|c| c.faces.iter().copied())
-        .collect();
-    for face in neighbour.faces {
-        if !convex.contains(&face.face)
-            || read.is_some_and(|r| r.contains(&face.face))
-            || seated.contains(&face.face)
-        {
-            continue;
-        }
-        let Some((low, high)) = face.bounds else {
-            continue;
-        };
-        for target in faces {
-            count.add(1)?;
-            if contacts
-                .iter()
-                .any(|c| c.neighbour == n && c.face == target.face)
-            {
-                continue;
-            }
-            if let Some(axis) = round.get(&face.face) {
-                if passes_through(target, neighbour, *axis, tau, count)? {
-                    continue;
-                }
-            }
-            if box_reaches(target, neighbour, (low, high), tau) {
-                out.entry(target.plane).or_default().insert(face.face);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// C6: true if a shaft's cylinder or cone, square to the target face,
-/// has its whole cross-section in one of the face's holes: it passes
-/// through without touching the face.
-fn passes_through(
-    target: &TargetFace<'_>,
-    neighbour: &Neighbour<'_>,
-    (point, dir, radius): (V, V, f64),
-    tau: f64,
-    count: &mut Count,
-) -> Result<bool, TooMany> {
-    let (p, d) = (neighbour.motion.point(point), neighbour.motion.dir(dir));
-    let square = dot(d, target.normal).abs();
-    if square < 1.0 - PARALLEL_SINE_REL * PARALLEL_SINE_REL / 2.0 {
-        return Ok(false);
-    }
-    let t = (target.offset - dot(p, target.normal)) / dot(d, target.normal);
-    let crossing = super::geo::add(p, scale(d, t));
-    let footprint = overlap::flatten(
-        &overlap::disc(crossing, target.normal, radius),
-        target.origin,
-        target.u,
-        target.w,
-    );
-    let mut pairs = 0;
-    let through = target
-        .holes
-        .iter()
-        .any(|h| overlap::contained(&footprint, h, tau, &mut pairs));
-    count.add(pairs)?;
-    Ok(through)
-}
-
-/// C6: true if a neighbour face's box, moved into the target's frame,
-/// reaches the target face's plane within `tau` and may lie over its
-/// region.
-fn box_reaches(
-    target: &TargetFace<'_>,
-    neighbour: &Neighbour<'_>,
-    (low, high): (V, V),
-    tau: f64,
-) -> bool {
-    let (mut s, mut uv) = (
-        (f64::INFINITY, f64::NEG_INFINITY),
-        [[f64::INFINITY, f64::NEG_INFINITY]; 2],
-    );
-    for i in 0..8 {
-        let corner: V = [
-            if i & 1 == 0 { low[0] } else { high[0] },
-            if i & 2 == 0 { low[1] } else { high[1] },
-            if i & 4 == 0 { low[2] } else { high[2] },
-        ];
-        let p = neighbour.motion.point(corner);
-        let along = dot(p, target.normal);
-        s = (s.0.min(along), s.1.max(along));
-        let d = sub(p, target.origin);
-        for (k, axis) in [target.u, target.w].into_iter().enumerate() {
-            let x = dot(d, axis);
-            uv[k] = [uv[k][0].min(x), uv[k][1].max(x)];
-        }
-    }
-    // Outside the face (beyond its outward normal) and reaching it.
-    if s.0 > target.offset + tau || s.1 < target.offset - tau {
-        return false;
-    }
-    target.polygon.as_ref().is_none_or(|polygon| {
-        let (lo, hi) = polygon.iter().fold(
-            ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]),
-            |(lo, hi), p| {
-                (
-                    [lo[0].min(p[0]), lo[1].min(p[1])],
-                    [hi[0].max(p[0]), hi[1].max(p[1])],
-                )
-            },
-        );
-        (0..2).all(|k| uv[k][0] <= hi[k] + tau && lo[k] - tau <= uv[k][1])
-    })
 }
 
 /// True if two target faces' regions may overlap when one is projected

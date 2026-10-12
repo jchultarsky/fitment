@@ -394,7 +394,18 @@ fn table(document: &SocketDocument) -> String {
                     .join(", "),
                 _ => String::new(),
             };
-            lines.push(format!("  -  {:<36} {what}", requirement.id));
+            // Its flags, as the document names them: near_gap, abutting, …
+            let flags: Vec<String> = requirement
+                .flags
+                .iter()
+                .filter_map(|f| serde_json::to_value(f).ok()?.as_str().map(str::to_owned))
+                .collect();
+            let flags = if flags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", flags.join(", "))
+            };
+            lines.push(format!("  -  {:<36} {what}{flags}", requirement.id));
         }
         for left in &socket.left_out {
             lines.push(format!(

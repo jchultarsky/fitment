@@ -397,15 +397,16 @@ impl Requirement {
     /// False for the kinds every candidate fails, the original included,
     /// until review removes them (Y4): `unresolved`, `partial_bore`,
     /// `partial_shaft`, a bore or shaft flagged `target_undecided`, a bore
-    /// flagged `open_at_unknown_end`, and a seat with a contact whose basis
-    /// is unknown.
+    /// flagged `open_at_unknown_end`, a seat with a contact whose basis
+    /// is unknown, and a conical seat whose radial range is unknown.
     pub fn verifiable(&self) -> bool {
         match &self.requires {
             Requires::Unresolved { .. }
             | Requires::PartialBore { .. }
             | Requires::PartialShaft { .. } => false,
             Requires::Seat { contacts, .. } => contacts.iter().all(|c| c.basis != Basis::Unknown),
-            Requires::Grip { .. } | Requires::ConicalSeat { .. } => true,
+            Requires::Grip { .. } => true,
+            Requires::ConicalSeat { radii_mm, .. } => radii_mm.is_some(),
             Requires::Bore { .. } | Requires::Shaft { .. } => !self
                 .flags
                 .iter()

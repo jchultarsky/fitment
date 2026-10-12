@@ -779,7 +779,88 @@ fn close(a: f64, b: &Value) -> bool {
 }
 
 /// One seat, grip, conical seat or partial cylinder against one expected.
-fn planar_one(requirement: &fitment_core::Requirement, expect: &Value) -> bool {
+/// Occurrence paths to their products' ids.
+type Names = std::collections::BTreeMap<Vec<u64>, String>;
+
+/// A seat's touchers against the expected (product, gap, flags), one to
+/// one.
+fn touchers_match(contacts: &[fitment_core::SeatContact], expect: &Value, names: &Names) -> bool {
+    let Some(wanted) = expect["touchers"].as_array() else {
+        return true;
+    };
+    let mut left: Vec<&Value> = wanted.iter().collect();
+    for toucher in contacts.iter().flat_map(|c| c.by.iter()) {
+        let product = names.get(&toucher.neighbour).map_or("", String::as_str);
+        let mut flags: Vec<String> = toucher
+            .flags
+            .iter()
+            .filter_map(|f| serde_json::to_value(f).ok()?.as_str().map(str::to_owned))
+            .collect();
+        flags.sort();
+        let found = left.iter().position(|w| {
+            w["product"] == product
+                && close(toucher.gap_mm, &w["gap"])
+                && strings(&w["flags"]) == flags
+        });
+        match found {
+            Some(i) => {
+                left.swap_remove(i);
+            }
+            None => return false,
+        }
+    }
+    left.is_empty()
+}
+
+/// One seat against one expected.
+fn seat_one(
+    requirement: &fitment_core::Requirement,
+    (normal, offset_mm, contacts, rings): (
+        &fitment_core::Dir3,
+        f64,
+        &[fitment_core::SeatContact],
+        &[fitment_core::Ring],
+    ),
+    expect: &Value,
+    names: &Names,
+) -> bool {
+    let n = normal.to_array();
+    let (Some(e), Some(p)) = (point(&expect["normal"]), point(&expect["point"])) else {
+        return false;
+    };
+    let by: usize = contacts.iter().map(|c| c.by.len()).sum();
+    if !touchers_match(contacts, expect, names) {
+        return false;
+    }
+    let mut basis: Vec<String> = contacts
+        .iter()
+        .filter_map(|c| {
+            serde_json::to_value(c.basis)
+                .ok()?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect();
+    basis.sort();
+    let mut found_rings: Vec<[f64; 2]> = rings
+        .iter()
+        .map(|r| [r.inner_diameter_mm, r.outer_diameter_mm])
+        .collect();
+    found_rings.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    let wanted_rings: Vec<&Value> = expect["rings"].as_array().into_iter().flatten().collect();
+    (0..3).all(|i| (n[i] - e[i]).abs() <= 1e-9)
+        && (n[0] * p[0] + n[1] * p[1] + n[2] * p[2] - offset_mm).abs() <= POINT_TOL
+        && expect["by"].as_u64() == u64::try_from(by).ok()
+        && basis == strings(&expect["basis"])
+        && flag_names(requirement) == strings(&expect["flags"])
+        && found_rings.len() == wanted_rings.len()
+        && found_rings
+            .iter()
+            .zip(&wanted_rings)
+            .all(|(f, w)| close(f[0], &w[0]) && close(f[1], &w[1]))
+}
+
+fn planar_one(requirement: &fitment_core::Requirement, expect: &Value, names: &Names) -> bool {
     use fitment_core::Requires;
     match &requirement.requires {
         Requires::Seat {
@@ -788,40 +869,12 @@ fn planar_one(requirement: &fitment_core::Requirement, expect: &Value) -> bool {
             contacts,
             rings,
             ..
-        } => {
-            let n = normal.to_array();
-            let (Some(e), Some(p)) = (point(&expect["normal"]), point(&expect["point"])) else {
-                return false;
-            };
-            let by: usize = contacts.iter().map(|c| c.by.len()).sum();
-            let mut basis: Vec<String> = contacts
-                .iter()
-                .filter_map(|c| {
-                    serde_json::to_value(c.basis)
-                        .ok()?
-                        .as_str()
-                        .map(str::to_owned)
-                })
-                .collect();
-            basis.sort();
-            let mut found_rings: Vec<[f64; 2]> = rings
-                .iter()
-                .map(|r| [r.inner_diameter_mm, r.outer_diameter_mm])
-                .collect();
-            found_rings.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
-            let wanted_rings: Vec<&Value> =
-                expect["rings"].as_array().into_iter().flatten().collect();
-            (0..3).all(|i| (n[i] - e[i]).abs() <= 1e-9)
-                && (n[0] * p[0] + n[1] * p[1] + n[2] * p[2] - offset_mm).abs() <= POINT_TOL
-                && expect["by"].as_u64() == u64::try_from(by).ok()
-                && basis == strings(&expect["basis"])
-                && flag_names(requirement) == strings(&expect["flags"])
-                && found_rings.len() == wanted_rings.len()
-                && found_rings
-                    .iter()
-                    .zip(&wanted_rings)
-                    .all(|(f, w)| close(f[0], &w[0]) && close(f[1], &w[1]))
-        }
+        } => seat_one(
+            requirement,
+            (normal, *offset_mm, contacts, rings),
+            expect,
+            names,
+        ),
         Requires::Grip {
             length_mm, holes, ..
         } => {
@@ -831,9 +884,21 @@ fn planar_one(requirement: &fitment_core::Requirement, expect: &Value) -> bool {
         Requires::ConicalSeat {
             apex_mm,
             included_angle_rad,
+            axis,
+            radii_mm,
             ..
         } => {
-            point(&expect["apex"]).is_some_and(|a| near(apex_mm.to_array(), a))
+            let d = axis.direction.to_array();
+            let along = point(&expect["axis"])
+                .is_some_and(|e| (d[0] * e[0] + d[1] * e[1] + d[2] * e[2]).abs() >= 1.0 - 1e-9);
+            let radii = match (radii_mm, expect["radii"].as_array()) {
+                (Some([a, b]), Some(w)) => w.len() == 2 && close(*a, &w[0]) && close(*b, &w[1]),
+                (None, None) => true,
+                _ => false,
+            };
+            along
+                && radii
+                && point(&expect["apex"]).is_some_and(|a| near(apex_mm.to_array(), a))
                 && expect["angle"]
                     .as_f64()
                     .is_some_and(|a| (a - included_angle_rad).abs() <= 1e-9)
@@ -844,6 +909,7 @@ fn planar_one(requirement: &fitment_core::Requirement, expect: &Value) -> bool {
             clear_diameter_mm,
             from_mm,
             to_mm,
+            sweep_rad,
             ..
         }
         | Requires::PartialShaft {
@@ -852,6 +918,7 @@ fn planar_one(requirement: &fitment_core::Requirement, expect: &Value) -> bool {
             clear_diameter_mm,
             from_mm,
             to_mm,
+            sweep_rad,
             ..
         } => {
             let kind = if matches!(requirement.requires, Requires::PartialBore { .. }) {
@@ -872,8 +939,10 @@ fn planar_one(requirement: &fitment_core::Requirement, expect: &Value) -> bool {
                     Some(clear) => close(*clear, &expect["clear"]),
                     None => expect["clear"].is_null(),
                 }
-                && ((near(ends.0, from) && near(ends.1, to))
-                    || (near(ends.0, to) && near(ends.1, from)))
+                && from_mm <= to_mm
+                && near(ends.0, from)
+                && near(ends.1, to)
+                && close(*sweep_rad, &expect["sweep"])
                 && flag_names(requirement) == strings(&expect["flags"])
         }
         _ => false,
@@ -882,7 +951,7 @@ fn planar_one(requirement: &fitment_core::Requirement, expect: &Value) -> bool {
 
 /// A socket's seats, grips, conical seats and partial cylinders against
 /// the expected ones, one to one and in full.
-fn planar_matches(socket: &fitment_core::Socket, expect: &Value) -> Option<String> {
+fn planar_matches(socket: &fitment_core::Socket, expect: &Value, names: &Names) -> Option<String> {
     use fitment_core::Requires;
     for (key, is) in [
         (
@@ -908,7 +977,7 @@ fn planar_matches(socket: &fitment_core::Socket, expect: &Value) -> Option<Strin
             return Some(format!("{} {key}, expected {}", found.len(), left.len()));
         }
         for requirement in found {
-            match left.iter().position(|w| planar_one(requirement, w)) {
+            match left.iter().position(|w| planar_one(requirement, w, names)) {
                 Some(i) => {
                     left.swap_remove(i);
                 }
@@ -928,7 +997,7 @@ fn planar_matches(socket: &fitment_core::Socket, expect: &Value) -> Option<Strin
 fn socket_matches(
     part: &fitment_core::Part,
     socket: &fitment_core::Socket,
-    at: Option<[f64; 3]>,
+    (at, names): (Option<[f64; 3]>, &Names),
     expect: &Value,
 ) -> Option<String> {
     use fitment_core::Requires;
@@ -937,8 +1006,20 @@ fn socket_matches(
             return Some(format!("its occurrence is at {at:?}, expected {wanted:?}"));
         }
     }
-    if let Some(problem) = planar_matches(socket, expect) {
+    if let Some(problem) = planar_matches(socket, expect, names) {
         return Some(problem);
+    }
+    // Y4: the requirements every candidate fails, the original included.
+    let unverifiable = socket
+        .requirements
+        .iter()
+        .filter(|r| !r.verifiable())
+        .count();
+    if expect["unverifiable"].as_u64() != u64::try_from(unverifiable).ok() {
+        return Some(format!(
+            "{unverifiable} unverifiable, expected {}",
+            expect["unverifiable"]
+        ));
     }
     let axial: Vec<&fitment_core::Requirement> = socket
         .requirements
@@ -1059,6 +1140,19 @@ pub fn sockets(bytes: &[u8], listing: &Listing, expect: &Value) -> Vec<String> {
             failures.push(format!("{name}: not an accepted part"));
             continue;
         };
+        let names: Names = listing
+            .occurrences()
+            .iter()
+            .filter_map(|o| {
+                let product = listing
+                    .definitions()
+                    .get(o.definition)?
+                    .definition
+                    .product
+                    .as_ref()?;
+                Some((o.path.instances(), product.id.clone()?))
+            })
+            .collect();
         // V2: the target's extent, as its part reads.
         if extracted.target.extent != part.extent {
             failures.push(format!("{name}: the socket's extent is not its part's"));
@@ -1088,11 +1182,11 @@ pub fn sockets(bytes: &[u8], listing: &Listing, expect: &Value) -> Vec<String> {
                 .map(|o| o.transform.translation());
             let reasons: Vec<String> = left
                 .iter()
-                .filter_map(|w| socket_matches(part, socket, at, w))
+                .filter_map(|w| socket_matches(part, socket, (at, &names), w))
                 .collect();
             match left
                 .iter()
-                .position(|w| socket_matches(part, socket, at, w).is_none())
+                .position(|w| socket_matches(part, socket, (at, &names), w).is_none())
             {
                 Some(i) => {
                     left.swap_remove(i);

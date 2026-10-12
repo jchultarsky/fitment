@@ -9,6 +9,7 @@ mod model;
 mod overlap;
 mod planar;
 mod rules;
+mod touch;
 
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +26,7 @@ use crate::assembly::{
     AssemblyRead, ComponentRead, DefinitionKind, Listing, SelectError, Selection, Source,
     read_assembly,
 };
-use crate::features::{CylinderClass, Extraction, Part, Status};
+use crate::features::{CylinderClass, Extraction, FeatureId, Part, Status};
 use crate::gate::{self, Refusal, RefusalCode};
 use crate::sha256::sha256_hex;
 use geo::Motion;
@@ -462,6 +463,55 @@ fn placed_ref(listing: &Listing, index: usize, socket: Option<String>) -> Option
     })
 }
 
+/// Every accepted definition's axial elements, once, by definition.
+fn definition_elements(listing: &Listing) -> BTreeMap<usize, Vec<axial::Element>> {
+    listing
+        .definitions()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, _)| Some((i, axial::elements(accepted_part(listing, i)?))))
+        .collect()
+}
+
+/// What the plane rules read one target occurrence against.
+struct Planes<'a, 'l> {
+    target: &'a Part,
+    targets: &'a [axial::Element],
+    boxes: &'a [crate::features::extent::FaceBox],
+    neighbours: &'a [Neighbour<'l>],
+}
+
+impl Planes<'_, '_> {
+    /// C1 to C6, H1, L1, L2 and Q1: the seats, grips, conical seats and
+    /// unresolved contacts; `TooMany` past check 39's count.
+    fn requirements(
+        &self,
+        found: &rules::Found,
+        (own, paths): (&[u64], &[Vec<u64>]),
+        pairs: &mut u64,
+    ) -> Result<Vec<Requirement>, rules::TooMany> {
+        let faces = planar::target_faces(self.target);
+        let mut plane_found = planar::relate(self.target, &faces, self.neighbours, pairs)?;
+        let read = touch::Read {
+            targets: self.targets,
+            axial: found,
+            contacts: &plane_found.contacts,
+            cones: &plane_found.cones,
+            rings: &found.rings,
+        };
+        plane_found.unread_contacts =
+            touch::relate(self.target, self.boxes, self.neighbours, &read, pairs)?;
+        Ok(combine::planar(
+            self.target,
+            &faces,
+            &plane_found,
+            &found.rings,
+            own,
+            paths,
+        ))
+    }
+}
+
 /// The target's record (V2): its definition, frame, solid, floors,
 /// extent and the features its requirements may anchor to.
 fn target_of(
@@ -510,13 +560,7 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
         .iter()
         .map(|e| axial::placed(e, &Motion::IDENTITY, target.extent.as_ref()))
         .collect();
-    // Every definition's elements, once.
-    let elements: BTreeMap<usize, Vec<axial::Element>> = listing
-        .definitions()
-        .iter()
-        .enumerate()
-        .filter_map(|(i, _)| Some((i, axial::elements(accepted_part(listing, i)?))))
-        .collect();
+    let elements = definition_elements(listing);
     let too_many = || {
         Refusal::new(
             RefusalCode::TooManyRelations,
@@ -549,28 +593,32 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
         let own = occurrence.path.instances();
         let (mut requirements, left_out) =
             combine::requirements(target, &targets, &found, &own, &paths);
-        // C6 leaves out the faces the axial rules read.
-        let mut explained: BTreeMap<usize, BTreeSet<u64>> = BTreeMap::new();
-        for relation in &found.relations {
-            explained
-                .entry(relation.neighbour)
-                .or_default()
-                .extend(relation.faces.iter().copied());
-        }
-        let faces = planar::target_faces(target);
-        let plane_found = planar::relate(target, &faces, &neighbours, &explained, &mut pairs)
-            .map_err(|_| too_many())?;
-        requirements.extend(combine::planar(
+        let boxes = listing
+            .definitions()
+            .get(selection.definition)
+            .map_or(&[][..], |d| d.faces.as_slice());
+        let planes = Planes {
             target,
-            &faces,
-            &plane_found,
-            &found.rings,
-            &own,
-            &paths,
-        ));
+            targets: &targets,
+            boxes,
+            neighbours: &neighbours,
+        };
+        requirements.extend(
+            planes
+                .requirements(&found, (&own, &paths), &mut pairs)
+                .map_err(|_| too_many())?,
+        );
         requirements.extend(unread_neighbours(listing, &neighbours, &indices));
         let mut requirements = combine::merge_same(requirements);
         combine::order(&mut requirements);
+        // A3: a feature some requirement anchors (C6's on a shaft) is not
+        // left out.
+        let anchored: BTreeSet<FeatureId> =
+            requirements.iter().filter_map(combine::anchor).collect();
+        let left_out: Vec<LeftOut> = left_out
+            .into_iter()
+            .filter(|l| !anchored.contains(&l.feature))
+            .collect();
         for requirement in &requirements {
             cited.extend(requirement.sources.iter().map(|s| s.neighbour.clone()));
         }
