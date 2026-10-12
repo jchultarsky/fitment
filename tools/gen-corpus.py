@@ -1393,6 +1393,11 @@ def fix_assembly(path: Path):
     lines by their length, so a case written alone would otherwise differ."""
     Writer.fix_time(path)
     f = Part21(path.read_text(encoding="latin-1"))
+    # No whitespace outside strings: where Open CASCADE wrapped a line
+    # depends on how wide the platform wrote its numbers.
+    for n, value in f.inst.items():
+        f.inst[n] = "".join(part if i % 2 else re.sub(r"\s+", "", part)
+                            for i, part in enumerate(re.split(r"('[^']*')", value)))
     k = iter(range(1, 10 ** 6))
     for n in f.find("NEXT_ASSEMBLY_USAGE_OCCURRENCE"):
         f.inst[n] = re.sub(r"^NEXT_ASSEMBLY_USAGE_OCCURRENCE\('[^']*','[^']*'",
