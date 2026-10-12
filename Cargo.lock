@@ -177,6 +177,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "stepq",
  "thiserror",
 ]
 
@@ -377,6 +378,15 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "stepq"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8575aba22f5fcc855655bd08bf67e1f5c28a94a8020e0ae431411aac2da1ba23"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]

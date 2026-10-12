@@ -23,6 +23,8 @@ wildcards = "deny"
 allow = [
   # fitment-core itself
   { crate = "fitment-core", reason = "the crate under check" },
+  # STEP reading, without its CLI (see `features` below)
+  { crate = "stepq", reason = "reads STEP files: structure, placements, geometry, units, PMI" },
   # errors
   { crate = "thiserror", reason = "error types" },
   { crate = "thiserror-impl", reason = "thiserror's derive" },
@@ -39,4 +41,9 @@ allow = [
   { crate = "quote", reason = "derive macros" },
   { crate = "syn", reason = "derive macros" },
   { crate = "unicode-ident", reason = "derive macros" },
+]
+# stepq's default feature is its CLI (clap, anyhow). fitment-core reads STEP
+# through the library only; a sibling crate turning `cli` on would add both.
+features = [
+  { crate = "stepq", deny = ["default", "cli"], reason = "the library only; the CLI belongs to stepq's binary" },
 ]
