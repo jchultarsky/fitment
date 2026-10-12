@@ -257,3 +257,256 @@ fn every_assembly_fixture_gives_its_pinned_parts_list() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// One target's socket, summarised for a regression pin (design, 14.3):
+/// status, occurrences, sockets after merging, requirements by kind, spans
+/// by fit, features left out and unverifiable requirements.
+fn socket_summary(document: &fitment_core::SocketDocument) -> Value {
+    let Some(extracted) = document.extracted() else {
+        return serde_json::json!({ "status": "refused" });
+    };
+    let mut kinds = std::collections::BTreeMap::<String, u64>::new();
+    let mut fits = std::collections::BTreeMap::<String, u64>::new();
+    let mut left_out = 0;
+    let mut unverifiable = 0;
+    for socket in &extracted.sockets {
+        left_out += socket.left_out.len();
+        for requirement in &socket.requirements {
+            let value = serde_json::to_value(requirement).unwrap();
+            let kind = value["requires"]["kind"].as_str().unwrap().to_owned();
+            *kinds.entry(kind).or_default() += 1;
+            for span in value["requires"]["spans"].as_array().into_iter().flatten() {
+                *fits
+                    .entry(span["fit"].as_str().unwrap().to_owned())
+                    .or_default() += 1;
+            }
+            if !requirement.verifiable() {
+                unverifiable += 1;
+            }
+        }
+    }
+    serde_json::json!({
+        "status": "accepted",
+        "occurrences": extracted.occurrences.len(),
+        "sockets": extracted.sockets.len(),
+        "requirements": kinds,
+        "fits": fits,
+        "left_out": left_out,
+        "unverifiable": unverifiable,
+    })
+}
+
+/// Every pinned socket target of every assembly fixture gives its pinned
+/// summary, and its document reads back (design, 14.3). Regression pins,
+/// not truth: `tools/pin-sockets.py` re-pins them, in a PR that says why.
+#[test]
+fn every_pinned_socket_target_gives_its_pinned_summary() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("manifest.json")).unwrap()).unwrap();
+    let pinned: Vec<&Value> = manifest["fixtures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f.get("sockets").is_some())
+        .collect();
+    assert!(!pinned.is_empty(), "no socket is pinned");
+    if pinned
+        .iter()
+        .any(|f| !root.join(f["path"].as_str().unwrap()).is_file())
+    {
+        let required = std::env::var_os("FITMENT_REQUIRE_FIXTURES").is_some_and(|v| v == "1");
+        assert!(
+            !required,
+            "FITMENT_REQUIRE_FIXTURES=1 but fixtures are missing"
+        );
+        eprintln!("skipped: run tools/fetch-fixtures.sh core");
+        return;
+    }
+    let mut failures = Vec::new();
+    for fixture in pinned {
+        let path = fixture["path"].as_str().unwrap();
+        let bytes = fs::read(root.join(path)).unwrap();
+        for (target, pin) in fixture["sockets"].as_object().unwrap() {
+            let document = match fitment_core::SocketDocument::extract(&bytes, Some(target), None) {
+                Ok(document) => document,
+                Err(error) => {
+                    failures.push(format!("{path} {target}: {error}"));
+                    continue;
+                }
+            };
+            if let Err(error) = fitment_core::SocketDocument::from_json(&document.to_json()) {
+                failures.push(format!("{path} {target}: does not read back: {error}"));
+            }
+            let found = socket_summary(&document);
+            if &found != pin {
+                failures.push(format!("{path} {target}: {found}, pinned {pin}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Spans and grips as (kind, fit, diameter, length), and axis distances.
+type Core = (BTreeSet<(String, String, i64, i64)>, Vec<i64>);
+
+/// What one export's target requires, scaled to millimetres of AS1: each
+/// span as (kind, fit, diameter, length) and each grip's length, in
+/// hundredths, as a set; and the distances between its bores' axes.
+fn as1_core(bytes: &[u8], part: &str, scale: f64) -> Core {
+    #[allow(clippy::cast_possible_truncation)]
+    let hundredths = |x: f64| (x / scale * 100.0).round() as i64;
+    let document = fitment_core::SocketDocument::extract(bytes, Some(part), None).unwrap();
+    let extracted = document.extracted().unwrap();
+    let mut core = BTreeSet::new();
+    let mut axes = Vec::new();
+    for socket in &extracted.sockets {
+        for requirement in &socket.requirements {
+            let value = serde_json::to_value(&requirement.requires).unwrap();
+            let kind = value["kind"].as_str().unwrap().to_owned();
+            for span in value["spans"].as_array().into_iter().flatten() {
+                let diameter = span["hole_diameter_mm"]
+                    .as_f64()
+                    .or_else(|| span["shaft_diameter_mm"].as_f64())
+                    .unwrap();
+                let length = span["to_mm"].as_f64().unwrap() - span["from_mm"].as_f64().unwrap();
+                core.insert((
+                    kind.clone(),
+                    span["fit"].as_str().unwrap().to_owned(),
+                    hundredths(diameter),
+                    hundredths(length),
+                ));
+            }
+            if kind == "grip" {
+                let length = value["length_mm"].as_f64().unwrap().abs();
+                core.insert((kind.clone(), String::new(), 0, hundredths(length)));
+            }
+            if kind == "bore" && socket.id == "socket-1" {
+                let point: Vec<f64> =
+                    serde_json::from_value(value["axis"]["point_mm"].clone()).unwrap();
+                let direction: Vec<f64> =
+                    serde_json::from_value(value["axis"]["direction"].clone()).unwrap();
+                axes.push((point, direction));
+            }
+        }
+    }
+    let mut distances = Vec::new();
+    for (i, (p, d)) in axes.iter().enumerate() {
+        for (q, _) in axes.iter().skip(i + 1) {
+            let v: Vec<f64> = (0..3).map(|k| q[k] - p[k]).collect();
+            let along: f64 = (0..3).map(|k| v[k] * d[k]).sum();
+            let across: f64 = (0..3)
+                .map(|k| (v[k] - along * d[k]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            distances.push(hundredths(across));
+        }
+    }
+    distances.sort_unstable();
+    (core, distances)
+}
+
+/// Design 14.2: AS1's ac, md, ug and pe exports (pe ÷ 25.4) share a core:
+/// what each part requires, and the bolt holes' equilateral triangle of
+/// side 15√3 = 25.98 mm. The exports are not one geometry; their known
+/// differences are named.
+#[test]
+fn as1_exports_share_their_core() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let exports = [
+        (
+            "ac",
+            "steptools/as1-ac-214.stp",
+            ["PLATE", "L-BRACKET", "BOLT", "NUT", "ROD"],
+            1.0,
+        ),
+        (
+            "md",
+            "steptools/as1-md-214.stp",
+            ["PLATE", "LBRACKET", "BOLT", "NUT", "ROD"],
+            1.0,
+        ),
+        (
+            "ug",
+            "steptools/as1-ug-214.stp",
+            ["plate", "l_bracket", "bolt", "nut", "rod"],
+            1.0,
+        ),
+        (
+            "pe",
+            "nist-edm/as1_pe.stp",
+            ["PLATE", "L-BRACKET", "BOLT", "NUT", "ROD"],
+            25.4,
+        ),
+    ];
+    if exports
+        .iter()
+        .any(|(_, path, _, _)| !root.join(path).is_file())
+    {
+        let required = std::env::var_os("FITMENT_REQUIRE_FIXTURES").is_some_and(|v| v == "1");
+        assert!(
+            !required,
+            "FITMENT_REQUIRE_FIXTURES=1 but fixtures are missing"
+        );
+        eprintln!("skipped: run tools/fetch-fixtures.sh core");
+        return;
+    }
+    let span = |kind: &str, fit: &str, diameter: i64, length: i64| {
+        (kind.to_owned(), fit.to_owned(), diameter, length)
+    };
+    let grip = |length: i64| ("grip".to_owned(), String::new(), 0, length);
+    let ltl = "line_to_line";
+    // What every export requires, part by part (ac's).
+    let shared: [BTreeSet<_>; 5] = [
+        [span("bore", ltl, 1000, 2000), grip(2000)].into(),
+        [span("bore", ltl, 1000, 1000), grip(1000)].into(),
+        [span("shaft", ltl, 1000, 3300)].into(),
+        [span("bore", ltl, 1000, 300)].into(),
+        [span("shaft", ltl, 1000, 1300)].into(),
+    ];
+    // The known differences.
+    let differs = |export: &str, part: usize| -> Option<BTreeSet<_>> {
+        match (export, part) {
+            // No nuts on pe's bolts: no grip on the plate, and the bolts
+            // engage 30 mm, not 33.
+            ("pe", 0) => Some([span("bore", ltl, 1000, 2000)].into()),
+            ("pe", 2) => Some([span("shaft", ltl, 1000, 3000)].into()),
+            // md's and ug's rod nuts stand 12 mm off the uprights: the rod
+            // is held in two spans, not one.
+            ("md" | "ug", 4) => Some(
+                [
+                    span("shaft", ltl, 1000, 300),
+                    span("shaft", ltl, 1000, 1000),
+                ]
+                .into(),
+            ),
+            _ => None,
+        }
+    };
+    let mut failures = Vec::new();
+    for (export, path, parts, scale) in exports {
+        let bytes = fs::read(root.join(path)).unwrap();
+        for (k, part) in parts.iter().enumerate() {
+            let (core, distances) = as1_core(&bytes, part, scale);
+            let wanted = differs(export, k).unwrap_or_else(|| shared[k].clone());
+            if core != wanted {
+                failures.push(format!("{export} {part}: {core:?}, expected {wanted:?}"));
+            }
+            // The bolt holes' triangle: three sides of 25.98 on each
+            // bracket, six on the plate (the rod hole lies elsewhere in
+            // each export).
+            let sides = distances.iter().filter(|d| **d == 2598).count();
+            let triangle = match k {
+                0 => 6,
+                1 => 3,
+                _ => 0,
+            };
+            if sides != triangle {
+                failures.push(format!(
+                    "{export} {part}: {sides} sides of 25.98, expected {triangle}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

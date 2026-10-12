@@ -567,7 +567,8 @@ RULES.update({
     "P7": {"tests": ["crates/fitment-core/src/geom.rs::a_reflection_or_shear_is_not_a_rigid_transform"]},
     "P3": {},
     "P4": {}, "P5": {}, "P6": {},
-    "P8": {"deferred": "M3 PR 6 builds s22 with the exports' frames; `_tgt` covers a target modelled in a frame of its own"},
+    "P8": {"deferred": "M3 PR 7 builds s22, its answers from the frames Open CASCADE writes; `_tgt` covers a target "
+                       "modelled in a frame of its own"},
     "Z1": {"tests": [f"{M3_CORE}/assemblies.rs::a_placement_floor_is_the_largest_its_path_states"]},
     "Z2": {"tests": [f"crates/fitment-core/src/socket/mod.rs::each_structural_rule_refuses_an_edit_with_its_digest_recomputed"]},
     "Z3": {}, "Z4": {}, "Z5": {},
@@ -1818,6 +1819,29 @@ def build_assemblies(w: Writer, which):
            asm_expect(s02, select=[{"part": "BLOCK", "result": "BLOCK", "occurrences": 1, "matched_by": "product_id"}],
                       sockets=sockets02))
 
+    # s10: s02 with the screw placed by a mapped item (a text edit): its CDSR, relationship and transformation
+    # go, and a MAPPED_ITEM in the root's shape representation maps the screw's representation from its
+    # origin to a copy of the root-side frame (both fresh frames, no plain items of either representation).
+    # The sockets are s02's.
+    def mapped(f: Part21):
+        usage = usage_of(f, "SCREW")
+        cdsr, relationship, idt = placement_of(f, usage)
+        _, child_item, child_rep = component_item(f, usage)
+        parent_item = next(i for i in f.refs(idt) if i != child_item)
+        parent_rep = next(r for r in f.refs(relationship) if r not in (idt, child_rep))
+        target, origin = f.add(f.inst[parent_item]), f.add(f.inst[child_item])
+        rep_map = f.add(f"REPRESENTATION_MAP(#{origin},#{child_rep})")
+        item = f.add(f"MAPPED_ITEM('',#{rep_map},#{target})")
+        f.inst[parent_rep] = re.sub(rf"#{parent_item}\b", f"#{parent_item},#{item}", f.inst[parent_rep], count=1)
+        for n in (cdsr, relationship, idt):
+            del f.inst[n]
+
+    # Open CASCADE 8.0.1 places the screw twice over (at z 17), fresh origin and target or not: the oracle
+    # reads it for its leaves alone, and corpus.rs checks it against the construction.
+    a.case("s10_mapped", s02, "s02 with the screw placed by a mapped item", ["P2", "P3"], False,
+           {"from": "s02", "xcaf_reads_otherwise": "applies the mapped item's transformation twice"},
+           asm_expect(s02, sockets=sockets02), edit=mapped)
+
     # s03: a plate on four dowels in a base: holes 5.97 (press), 6.2 (clearance), 6 and 6.015 (line to line at tau).
     xs = (-30, -10, 10, 30)
     holes03 = (5.97, 6.2, 6.0, 6.015)
@@ -2320,6 +2344,28 @@ def build_assemblies(w: Writer, which):
     a.case("s48_dshaft", s48, "a D-shaft line to line in a bushing", ["U1", "B8", "I2"], False,
            {"bushing": "10 x 30 x 30, dia 10 along x at z 20", "dshaft": "dia 10 x 60 from x -30, flat 1 mm deep from x 15",
             "base": "60 x 60 x 10, top at z 0"}, asm_expect(s48, sockets=sockets48))
+
+    # s49: a dia 40 / 30 tube sunk 0.5 mm into a block's dia 30 hole, and a dia 30 / 10 spacer line to line in
+    # the tube's bore, clear of the block. Seen from the spacer, the tube's outside is wider than the spacer's bore, but the tube's
+    # bore clears the spacer's outside: no interference. The block has no round outside to clear the tube's
+    # bore against, and the tube really is in its material: an interference.
+    block49 = cut(box(-25, -25, 0, 50, 50, 10), cyl((0, 0, -1), UP, 15, 12))
+    s49 = Node("s49_ring").add(Leaf("BLOCK", block49))
+    s49.add(Leaf("TUBE", cut(cyl((0, 0, 9.5), UP, 20, 10.5), cyl((0, 0, 8), UP, 15, 13))))
+    s49.add(Leaf("SPACER", cut(cyl((0, 0, 12), UP, 15, 8), cyl((0, 0, 11), UP, 5, 10))))
+    sockets49 = {
+        # The spacer's bore continues the block's hole across the gap (J2): pinned, nothing in it.
+        "SPACER": [e_socket([e_axial("shaft", (0, 0, 12), Z, [(0, 8, 30, None, "line_to_line", True)],
+                                     flags=["thread_not_confirmed"]),
+                             e_axial("bore", (0, 0, 12), Z, [(0, 8, 10, None, "not_read", True)], open_at=[0])])],
+        "BLOCK": [e_socket([e_axial("bore", (0, 0, 0), Z, [(9.5, 10, 30, 40, "interference", True)], open_at=[10],
+                                    flags=["thread_not_confirmed"])],
+                           seats=[e_seat((0, 0, 10), Z, flags=["interference"],
+                                         touchers=[("TUBE", -0.5, ["interference"])])])],
+    }
+    a.case("s49_ring", s49, "a spacer in a tube's bore, the tube sunk into a block", ["B3", "I2", "J2", "C5"], False,
+           {"block": "50 x 50 x 10, dia 30 through", "tube": "dia 40 / 30, z 9.5 to 20",
+            "spacer": "dia 30 / 10, z 12 to 20"}, asm_expect(s49, sockets=sockets49))
 
     # s47: a dia 6 rod lying across a plate's top face: a curved face on a flat, which no rule reads (C6).
     s47 = Node("s47_rod_on_flat").add(Leaf("PLATE", box(-30, -20, -10, 60, 40, 10)))

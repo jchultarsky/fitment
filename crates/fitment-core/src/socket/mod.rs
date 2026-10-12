@@ -45,7 +45,7 @@ pub const SOCKET_FORMAT_VERSION: u32 = 1;
 
 /// The version of the socket rules: it rises whenever a socket rule,
 /// constant, order or field could change any socket (R20).
-pub const SOCKET_RULES_VERSION: u32 = 3;
+pub const SOCKET_RULES_VERSION: u32 = 4;
 
 /// The least contact tolerance, in mm (Z3).
 pub(crate) const CONTACT_MM: f64 = 0.01;
