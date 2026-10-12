@@ -341,7 +341,7 @@ pub(crate) struct Travel<'t> {
 impl Travel<'_> {
     /// The signed angle a circular edge use sweeps about its circle's axis
     /// `z`, in [−2π, 2π]: counterclockwise is positive. A closed edge
-    /// sweeps the whole circle.
+    /// sweeps the whole circle, 2π or −2π as it runs.
     pub(crate) fn sweep(&self, centre: P, z: P) -> f64 {
         if self.closed {
             if self.along { TAU } else { -TAU }

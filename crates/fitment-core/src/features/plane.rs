@@ -42,8 +42,8 @@ pub struct PlaneFace {
     pub face: u64,
     /// Its plane surface's `#id`.
     pub surface: u64,
-    /// Its own offset along the plane's normal, from the location its
-    /// surface states.
+    /// Its own offset along the plane's normal, measured on its own plane
+    /// at its first vertex.
     pub offset_mm: f64,
     /// Its net area, or `None` if its outline is unknown.
     #[serde(deserialize_with = "Option::deserialize")]

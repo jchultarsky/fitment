@@ -14,6 +14,7 @@ mod other;
 mod outline;
 mod plane;
 mod primary;
+mod readback;
 mod step;
 pub(crate) mod topo;
 

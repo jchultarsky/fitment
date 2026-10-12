@@ -123,6 +123,11 @@ fn each_part_is_accepted_or_refused_as_its_construction_says() {
                 "{name}: {:?}",
                 document.refusals()
             );
+            assert_eq!(
+                FeaturesDocument::from_json(&document.to_json()).as_ref(),
+                Ok(&document),
+                "{name}: the document does not read back"
+            );
             let part = document.part().unwrap();
             if let Some(features) = expect.get("features") {
                 check_planes(name, part, features);

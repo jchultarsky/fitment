@@ -15,6 +15,12 @@ use fitment_core::{
 const P01_THROUGH: &[u8] = include_bytes!("data/p01_through.stp");
 const P05_CBORE: &[u8] = include_bytes!("data/p05_cbore.stp");
 const P21_PLANES: &[u8] = include_bytes!("data/p21_planes.stp");
+const P26_ALL_BSPLINE: &[u8] = include_bytes!("data/p26_all_bspline.stp");
+
+/// A stepped block whose upper top, at z = 10.0005, states a normal 9e-10
+/// off +z and a location 555,585 mm away along its plane: there the plane
+/// passes z = 10. Written by hand for the review of PR 4.
+const LEVER_STEP: &[u8] = include_bytes!("edits/lever_step.stp");
 
 /// `input` with each `from` replaced by its `to`; each must occur once.
 fn edit(input: &[u8], edits: &[(&str, &str)]) -> Vec<u8> {
@@ -173,22 +179,104 @@ fn a_stated_outer_bound_that_is_not_the_outer_loop_is_a_note() {
 fn a_document_whose_features_break_the_partition_is_not_read() {
     let document = FeaturesDocument::read(P01_THROUGH);
     let mut value: serde_json::Value = serde_json::from_str(&document.to_json()).unwrap();
-    // The hole's face also listed as a second cylinder.
-    let mut copy = value["part"]["cylinders"][0].clone();
-    copy["id"] = "cylinder-188".into();
-    copy["faces"] = serde_json::json!([188, 187]);
-    value["part"]["cylinders"]
-        .as_array_mut()
-        .unwrap()
-        .push(copy);
+    // The hole's face listed again, as a well-formed other face, so that
+    // only the partition can refuse it.
+    value["part"]["other_faces"] = serde_json::json!([{
+        "id": "other-187", "solid": "solid-15", "shell": 0, "face": 187,
+        "surface": 199, "entity": "CYLINDRICAL_SURFACE", "reason": "no_rule"
+    }]);
     let text = serde_json::to_string(&value).unwrap();
-    assert!(matches!(
-        FeaturesDocument::from_json(&text),
-        Err(FormatError::Invalid(_))
-    ));
+    let Err(FormatError::Invalid(message)) = FeaturesDocument::from_json(&text) else {
+        panic!("a face in two features was read back");
+    };
+    assert!(message.contains("8 faces, 7 distinct"), "{message}");
     // And the round trip of the real one holds.
     assert_eq!(
         FeaturesDocument::from_json(&document.to_json()).unwrap(),
         document
     );
+}
+
+#[test]
+fn a_document_whose_outline_does_not_close_is_not_read() {
+    let document = FeaturesDocument::read(P01_THROUGH);
+    let mut value: serde_json::Value = serde_json::from_str(&document.to_json()).unwrap();
+    let top = value["part"]["planes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["id"] == "plane-88")
+        .unwrap();
+    top["faces"][0]["outline"]["loops"][0]["segments"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    let text = serde_json::to_string(&value).unwrap();
+    assert!(matches!(
+        FeaturesDocument::from_json(&text),
+        Err(FormatError::Invalid(_))
+    ));
+}
+
+#[test]
+fn other_faces_are_listed_by_id_whatever_order_the_shell_lists_them() {
+    let reordered = edit(
+        P26_ALL_BSPLINE,
+        &[(
+            "#16 = CLOSED_SHELL('',(#17,#53,",
+            "#16 = CLOSED_SHELL('',(#53,#17,",
+        )],
+    );
+    let document = FeaturesDocument::read(&reordered);
+    let ids: Vec<u64> = document
+        .part()
+        .unwrap()
+        .other_faces
+        .iter()
+        .map(|o| o.face)
+        .collect();
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "{ids:?}");
+    assert_eq!(
+        FeaturesDocument::from_json(&document.to_json()).unwrap(),
+        document
+    );
+}
+
+#[test]
+fn a_mapped_item_that_carries_the_solid_out_of_range_is_refused() {
+    let far = edit(
+        P01_THROUGH,
+        &[(
+            "#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15),#204);",
+            "#10 = SHAPE_REPRESENTATION('',(#11,#9000),#204);\
+             #9000 = MAPPED_ITEM('',#9001,#9002);\
+             #9001 = REPRESENTATION_MAP(#11,#9006);\
+             #9006 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15),#204);\
+             #9002 = AXIS2_PLACEMENT_3D('',#9003,#9004,#9005);\
+             #9003 = CARTESIAN_POINT('',(1.E17,1.E17,0.));\
+             #9004 = DIRECTION('',(0.,0.,1.));\
+             #9005 = DIRECTION('',(1.,0.,0.));",
+        )],
+    );
+    let refused = read_part(&far).unwrap_err();
+    assert!(
+        refused
+            .refusals()
+            .iter()
+            .all(|r| r.code == fitment_core::RefusalCode::OutOfRange)
+    );
+}
+
+#[test]
+fn a_step_hidden_by_a_far_plane_location_is_two_planes() {
+    let part = read_part(LEVER_STEP).unwrap();
+    let mut tops: Vec<f64> = part
+        .planes
+        .iter()
+        .filter(|p| p.normal.to_array()[2] > 0.99)
+        .map(|p| p.offset_mm)
+        .collect();
+    tops.sort_by(f64::total_cmp);
+    assert_eq!(tops.len(), 2, "{tops:?}");
+    assert!((tops[1] - tops[0] - 0.0005).abs() < 1e-6, "{tops:?}");
 }

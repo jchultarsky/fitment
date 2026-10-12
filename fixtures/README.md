@@ -15,8 +15,9 @@ redistribution terms, which is why nothing here is committed or uploaded
 as a CI artifact.
 
 `manifest.json` pins what fitment makes of each core file: `accepted`
-with its number of planes, or `refused` with its reasons (each code once,
-in order). `crates/fitment/tests/fixtures.rs` checks every file against
-it, and that every accepted file's faces are each in exactly one feature.
-The pins are regression pins, not truth: they change only in a pull
-request that says why.
+with its numbers of planes and of unknown plane outlines, or `refused`
+with its reasons (each code once, in order).
+`crates/fitment/tests/fixtures.rs` checks every file against it, and that
+every accepted file's faces are each in exactly one feature. The pins are
+regression pins, not truth: they change only in a pull request that says
+why.

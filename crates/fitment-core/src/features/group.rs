@@ -16,10 +16,11 @@ pub(crate) const PARALLEL_SINE: f64 = 1e-9;
 /// The smallest lever arm of an angular test, in mm.
 pub(crate) const LEVER_MIN_MM: f64 = 1.0;
 
-/// The bins direction classes are looked up in: much wider than
-/// [`PARALLEL_SINE`], so that two normals in one class lie in neighbouring
-/// bins.
-const BINS_PER_UNIT: f64 = 1e6;
+/// The bins direction classes are looked up in: twice [`PARALLEL_SINE`]
+/// wide, so that two normals in one class lie in neighbouring bins, and a
+/// bin holds only a few classes however many a file states (a bin much
+/// wider made grouping quadratic on a jittered grid; review of PR 4).
+const BINS_PER_UNIT: f64 = 1.0 / (2.0 * PARALLEL_SINE);
 
 /// A face's outward normal, if it is a plane face.
 pub(crate) fn outward(face: &Face) -> Option<P> {
@@ -29,12 +30,30 @@ pub(crate) fn outward(face: &Face) -> Option<P> {
     }
 }
 
-/// The location a plane face's surface states, if it is one.
-fn plane_location(face: &Face) -> Option<P> {
-    match &face.surface {
-        Surface::Plane { location, .. } => Some(*location),
-        _ => None,
-    }
+/// A point of plane face `face` on its own plane, and the largest distance
+/// from it to the face's vertices: its first vertex projected onto the
+/// plane the face states, or its stated location if it has no vertex. A
+/// plane's stated location may lie anywhere on
+/// it, up to 1e6 mm away; offsets and angles are measured here instead, so
+/// that a normal within [`PARALLEL_SINE`] of another cannot hide a step of
+/// up to 1e-3 mm between them (review of PR 4).
+pub(crate) fn anchor(topo: &Topo, face: &Face) -> Option<(P, f64)> {
+    let Surface::Plane { location, z, .. } = &face.surface else {
+        return None;
+    };
+    let points: Vec<P> = topo
+        .face_vertices(face)
+        .into_iter()
+        .filter_map(|v| topo.vertices.get(v).map(|v| v.point))
+        .collect();
+    // A face with no vertex, which no valid solid has, keeps its location.
+    let first = points.first().copied().unwrap_or(*location);
+    let q = sub(first, scale(*z, dot(sub(first, *location), *z)));
+    let extent = points
+        .iter()
+        .map(|p| length(sub(*p, q)))
+        .fold(0.0, f64::max);
+    Some((q, extent))
 }
 
 /// One plane: faces of one shell, coplanar, with one outward normal.
@@ -48,20 +67,26 @@ pub(crate) struct PlaneGroup {
 /// Groups the plane faces (section 7.2): first into direction classes,
 /// each compared with its smallest-`#id` face only, then into runs of
 /// offsets along the class normal within [`IDENTITY_MM`] of the run's first
-/// face. Planes come sorted by their smallest face `#id`.
+/// face. A face joins a class only if its normal's sine to the class's,
+/// times the face's extent from its [`anchor`], is within [`IDENTITY_MM`]
+/// too, and its offset is measured at its anchor. Planes come sorted by their smallest face `#id`.
 pub(crate) fn planes(topo: &Topo) -> Vec<PlaneGroup> {
-    let mut faces: Vec<(usize, P)> = topo
+    let mut faces: Vec<(usize, P, P, f64)> = topo
         .faces
         .iter()
         .enumerate()
-        .filter_map(|(index, face)| outward(face).map(|n| (index, n)))
+        .filter_map(|(index, face)| {
+            let (q, extent) = anchor(topo, face)?;
+            Some((index, outward(face)?, q, extent))
+        })
         .collect();
-    faces.sort_by_key(|&(index, _)| topo.faces.get(index).map(|f| f.instance));
+    faces.sort_by_key(|&(index, ..)| topo.faces.get(index).map(|f| f.instance));
+    let anchors: BTreeMap<usize, P> = faces.iter().map(|&(i, _, q, _)| (i, q)).collect();
 
     // Direction classes, by shell: normal, faces.
     let mut classes: Vec<(usize, P, Vec<usize>)> = Vec::new();
     let mut bins: BTreeMap<(usize, [i64; 3]), Vec<usize>> = BTreeMap::new();
-    for (index, n) in faces {
+    for (index, n, _, extent) in faces {
         let Some(shell) = topo.faces.get(index).map(|f| f.shell) else {
             continue;
         };
@@ -73,9 +98,10 @@ pub(crate) fn planes(topo: &Topo) -> Vec<PlaneGroup> {
             .collect();
         candidates.sort_unstable();
         let found = candidates.into_iter().find(|&c| {
-            classes
-                .get(c)
-                .is_some_and(|(_, m, _)| length(cross(*m, n)) <= PARALLEL_SINE && dot(*m, n) > 0.0)
+            classes.get(c).is_some_and(|(_, m, _)| {
+                let sine = length(cross(*m, n));
+                sine <= PARALLEL_SINE && sine * extent <= IDENTITY_MM && dot(*m, n) > 0.0
+            })
         });
         if let Some((_, _, members)) = found.and_then(|c| classes.get_mut(c)) {
             members.push(index);
@@ -91,7 +117,7 @@ pub(crate) fn planes(topo: &Topo) -> Vec<PlaneGroup> {
             .iter()
             .filter_map(|&index| {
                 let face = topo.faces.get(index)?;
-                Some((dot(normal, plane_location(face)?), face.instance, index))
+                Some((dot(normal, *anchors.get(&index)?), face.instance, index))
             })
             .collect();
         offsets.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));

@@ -136,6 +136,8 @@ fn every_corpus_part_is_accepted_or_refused_as_its_construction_says() {
                 document["status"],
                 output.status.code()
             ));
+        } else if let Some(problem) = common::reads_back(&output.stdout) {
+            failures.push(format!("{name}: {problem}"));
         } else if status == "accepted" {
             failures.extend(
                 features(&document["part"], &expect["features"])

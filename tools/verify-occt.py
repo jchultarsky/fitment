@@ -620,7 +620,13 @@ def bound_faces(path):
     # by identity; the list keeps each binding alive.
     entities = [model.Value(rank) for rank in range(1, model.NbEntities() + 1)]
     by_rank = {id(entity): rank for rank, entity in enumerate(entities, 1)}
-    ids = {rank: id_ for id_, rank in file_ranks(path).items()}
+    ranks = file_ranks(path)
+    if len(ranks) != len(entities):
+        # Instances that do not start a line, or #n= in a comment, would
+        # shift every later rank: say so rather than misbind.
+        raise OSError(f"{path}: {len(ranks)} instances start a line, but Open CASCADE reads "
+                      f"{len(entities)}; the oracle binds #ids only in files with one instance per line")
+    ids = {rank: id_ for id_, rank in ranks.items()}
     reader.TransferRoots()
     transfers = reader.WS().TransferReader()
     solids, faces, unbound = [], {}, 0
@@ -684,9 +690,14 @@ def check_features(path, binary, tally):
     offset = part["solids"][0]["max_vertex_offset_mm"]
     for plane in part["planes"]:
         n = plane["normal"]
+        problems += check_plane(path, plane)
         for face in plane["faces"]:
-            facts = faces.get(face["face"]) and plane_facts(faces[face["face"]])
+            if face["face"] not in faces:
+                continue  # reported as not bound above
+            facts = plane_facts(faces[face["face"]])
             if facts is None:
+                problems.append(f"{path}: face #{face['face']} is in {plane['id']}, but Open CASCADE "
+                                f"reads it on a {BRepAdaptor_Surface(faces[face['face']]).GetType()}")
                 continue
             normal, location, area = facts
             tally["plane faces"] += 1
@@ -709,6 +720,25 @@ def check_features(path, binary, tally):
             else:
                 problems.append(f"{where}: area {face['area_mm2']}, Open CASCADE {area}, "
                                 f"beyond {exact + slack:.3g} mm2")
+    return problems
+
+
+def check_plane(path, plane):
+    """A plane's own values against its faces': its offset within its
+    spread of each face's, the spread within 1e-6 mm, and its area the sum
+    of theirs, or null when any is."""
+    problems, where = [], f"{path}: {plane['id']}"
+    if not 0 <= plane["spread_mm"] <= LINEAR:
+        problems.append(f"{where}: spread {plane['spread_mm']}")
+    for face in plane["faces"]:
+        if abs(plane["offset_mm"] - face["offset_mm"]) > plane["spread_mm"] + 1e-12:
+            problems.append(f"{where}: offset {plane['offset_mm']}, face #{face['face']}'s {face['offset_mm']}")
+    areas = [face["area_mm2"] for face in plane["faces"]]
+    if None in areas:
+        if plane["area_mm2"] is not None:
+            problems.append(f"{where}: area {plane['area_mm2']} with an unknown face outline")
+    elif plane["area_mm2"] is None or abs(plane["area_mm2"] - sum(areas)) > AREA_REL * max(sum(areas), 1.0):
+        problems.append(f"{where}: area {plane['area_mm2']}, its faces' sum {sum(areas)}")
     return problems
 
 

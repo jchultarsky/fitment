@@ -295,6 +295,7 @@ fn check_part(part: &Part) -> Result<(), FormatError> {
     }
     check_solid(solid)?;
     check_partition(part, solid)?;
+    super::readback::check(part, solid).map_err(FormatError::Invalid)?;
     let largest = solid
         .units
         .uncertainty
