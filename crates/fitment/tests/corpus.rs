@@ -148,3 +148,55 @@ fn every_corpus_part_is_accepted_or_refused_as_its_construction_says() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// Coverage is checked, not claimed (design, section 13.1): every rule
+/// and gate check the corpus manifest lists has a case that cites it, a
+/// Rust test that exists, or a reason it is deferred; and every rule a case
+/// cites is listed.
+#[test]
+fn every_rule_has_a_case_a_test_or_a_reason() {
+    let Some(dir) = corpus() else {
+        return;
+    };
+    let manifest = manifest(&dir);
+    let rules = manifest["rule_ids"]
+        .as_object()
+        .expect("the corpus manifest lists its rule_ids");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut failures = Vec::new();
+    for (id, entry) in rules {
+        let cases = entry["cases"].as_array().map_or(0, Vec::len);
+        let tests: Vec<&str> = entry["tests"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let deferred = entry["deferred"].as_str().is_some_and(|r| !r.is_empty());
+        if cases == 0 && tests.is_empty() && !deferred {
+            failures.push(format!("{id}: no case, no test and no reason"));
+        }
+        for test in tests {
+            let Some((file, name)) = test.split_once("::") else {
+                failures.push(format!("{id}: '{test}' is not file::function"));
+                continue;
+            };
+            let text = fs::read_to_string(root.join(file)).unwrap_or_default();
+            if !text.contains(&format!("fn {name}(")) {
+                failures.push(format!("{id}: no test {name} in {file}"));
+            }
+        }
+    }
+    for case in manifest["cases"].as_array().unwrap() {
+        for rule in case["rules"].as_array().unwrap() {
+            let rule = rule.as_str().unwrap();
+            if !rules.contains_key(rule) {
+                failures.push(format!(
+                    "{}: cites {rule}, which rule_ids does not list",
+                    case["id"]
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
