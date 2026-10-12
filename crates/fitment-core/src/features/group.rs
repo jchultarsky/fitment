@@ -230,28 +230,11 @@ pub(crate) fn find(root: &mut [usize], mut i: usize) -> usize {
     }
 }
 
-/// The extent of face `index` along unit `axis`, from its own vertices.
-fn extent(topo: &Topo, index: usize, axis: P) -> f64 {
-    let Some(face) = topo.faces.get(index) else {
-        return 0.0;
-    };
-    let stations: Vec<f64> = topo
-        .face_vertices(face)
-        .into_iter()
-        .filter_map(|v| topo.vertices.get(v))
-        .map(|v| dot(v.point, axis))
-        .collect();
-    let low = stations.iter().copied().fold(f64::INFINITY, f64::min);
-    let high = stations.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    if high >= low { high - low } else { 0.0 }
-}
-
-/// The lever arm of faces `a` and `b` about unit `axis` (section 5.2): the
-/// larger of their extents along it, and at least [`LEVER_MIN_MM`].
-fn lever(topo: &Topo, a: usize, b: usize, axis: P) -> f64 {
-    extent(topo, a, axis)
-        .max(extent(topo, b, axis))
-        .max(LEVER_MIN_MM)
+/// The lever arm of faces `a` and `b` (section 5.2): the larger of their
+/// extents along their axes, and at least [`LEVER_MIN_MM`].
+fn lever(topo: &Topo, a: usize, b: usize) -> f64 {
+    let extent = |i: usize| topo.faces.get(i).map_or(0.0, |f| f.extent);
+    extent(a).max(extent(b)).max(LEVER_MIN_MM)
 }
 
 /// True if unit axes `z1` and `z2` agree within ε at lever arm `lever`;
@@ -297,7 +280,7 @@ pub(crate) fn one_cylinder(topo: &Topo, a: usize, b: usize, tolerance: f64) -> b
     (r1 - r2).abs() <= tolerance
         && radial(*p1, *p2, *z2).0 <= tolerance
         && radial(*p2, *p1, *z1).0 <= tolerance
-        && length(cross(*z1, *z2)) * lever(topo, a, b, *z1) <= tolerance
+        && length(cross(*z1, *z2)) * lever(topo, a, b) <= tolerance
 }
 
 /// A cone's apex: `location − (radius / tan α) z`.
@@ -331,7 +314,7 @@ pub(crate) fn same_cone(topo: &Topo, a: usize, b: usize) -> bool {
     else {
         return false;
     };
-    let arm = lever(topo, a, b, *z1);
+    let arm = lever(topo, a, b);
     sense(topo, a) == sense(topo, b)
         && length(sub(apex(*p1, *z1, *r1, *s1), apex(*p2, *z2, *r2, *s2))) <= IDENTITY_MM
         && dot(*z1, *z2) > 0.0

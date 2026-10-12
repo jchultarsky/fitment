@@ -4,7 +4,8 @@
 //! never committed. `fixtures/manifest.json` pins what fitment's gate makes
 //! of each one. Each file must give exactly its pinned result and exit
 //! code, and never a panic or an `internal` refusal; an accepted one must
-//! have its pinned numbers of planes and of unknown plane outlines, and
+//! have its pinned numbers of planes, of unknown plane outlines and of
+//! full cylinders, and
 //! every face in exactly one primary
 //! feature (design, section 6). Every STEP file
 //! fetched outside the manual `ocp` set must be pinned. Without the files
@@ -127,6 +128,18 @@ fn accepted(part: &Value, fixture: &Value) -> impl Iterator<Item = String> {
         problems.push(format!(
             "{unknown} unknown outlines, pinned {}",
             fixture["unknown_outlines"]
+        ));
+    }
+    let full = part["cylinders"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["class"]["kind"] == "full" || c["class"]["kind"] == "full_one_end_irregular")
+        .count();
+    if Some(full as u64) != fixture["full_cylinders"].as_u64() {
+        problems.push(format!(
+            "{full} full cylinders, pinned {}",
+            fixture["full_cylinders"]
         ));
     }
     problems.extend(common::expect::partition(part));

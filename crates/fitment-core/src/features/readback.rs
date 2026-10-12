@@ -7,10 +7,10 @@
 use std::collections::BTreeSet;
 use std::f64::consts::TAU;
 
-use super::cylinder::CylinderClass;
+use super::cylinder::{CylinderClass, UndecidedReason};
 use super::outline::{Outline, OutlineLoop, Segment};
 use super::{FeatureId, FeatureKind, Part, SolidInfo};
-use crate::geom::Point3;
+use crate::geom::{Dir3, Point3};
 
 /// Relative slack on sums read back: a sum is recomputed in the order it
 /// was written, but the check should not depend on that.
@@ -103,37 +103,63 @@ pub(super) fn check(part: &Part, solid: &SolidInfo) -> Checked {
     Ok(())
 }
 
-/// Each cylinder's stations ascend, its class is in range, its near misses
-/// are other cylinders of the part, and only a full one has wall openings.
+/// Each cylinder keeps what rule F writes: stations that ascend from 0,
+/// as many as its class has; the canonical sign on its axis; a sweep within
+/// 2π; near misses that are other cylinders of the part, sorted, each
+/// naming it back; and wall openings only when full.
 fn cylinders(part: &Part, ids: &BTreeSet<FeatureId>) -> Checked {
+    let mut pairs: Vec<(FeatureId, FeatureId)> = Vec::new();
     for cylinder in &part.cylinders {
         let id = cylinder.id;
-        let sorted = cylinder.stations_mm.windows(2).all(|w| w[0] < w[1]);
-        let class = match &cylinder.class {
-            CylinderClass::FullBySeam { proven_extent_mm } => {
-                proven_extent_mm[0] == 0.0 && proven_extent_mm[1] > 0.0
-            }
+        let stations = &cylinder.stations_mm;
+        let counted = match &cylinder.class {
+            CylinderClass::Partial { sweep_rad: None }
+            | CylinderClass::Undecided {
+                reason: UndecidedReason::NoEndCircle,
+            } => stations.is_empty(),
+            CylinderClass::Full { .. } => stations.len() >= 2,
             CylinderClass::Partial {
                 sweep_rad: Some(sweep),
-            } => *sweep >= 0.0 && *sweep <= TAU,
-            _ => true,
+            } => !stations.is_empty() && *sweep >= 0.0 && *sweep <= TAU,
+            CylinderClass::FullOneEndIrregular { .. } | CylinderClass::Undecided { .. } => {
+                !stations.is_empty()
+            }
         };
-        let near = cylinder
-            .near_misses
-            .iter()
-            .all(|n| *n != id && n.kind() == FeatureKind::Cylinder && ids.contains(n));
-        let openings = cylinder.wall_openings == 0
-            || matches!(
-                cylinder.class,
-                CylinderClass::Full { .. } | CylinderClass::FullOneEndIrregular { .. }
-            );
-        if !(sorted && class && near && openings) {
+        let ascending =
+            stations.first().is_none_or(|s| *s == 0.0) && stations.windows(2).all(|w| w[0] < w[1]);
+        let near = cylinder.near_misses.windows(2).all(|w| w[0] < w[1])
+            && cylinder
+                .near_misses
+                .iter()
+                .all(|n| *n != id && n.kind() == FeatureKind::Cylinder && ids.contains(n));
+        pairs.extend(cylinder.near_misses.iter().map(|&n| (id, n)));
+        let openings = cylinder.wall_openings == 0 || cylinder.class.is_full();
+        if !(counted && ascending && near && openings && canonical(cylinder.axis.direction)) {
             return Err(format!(
-                "cylinder '{id}' has unsorted stations, a class out of range, a near miss that is not another cylinder of the part, or wall openings while not full"
+                "cylinder '{id}' breaks a rule of its class, stations, axis sign, near misses or wall openings"
             ));
         }
     }
+    let mut mirrored: Vec<(FeatureId, FeatureId)> = pairs.iter().map(|&(a, b)| (b, a)).collect();
+    pairs.sort_unstable();
+    mirrored.sort_unstable();
+    if pairs != mirrored {
+        return Err("a near miss is not named back".to_owned());
+    }
     Ok(())
+}
+
+/// True if `d` has the canonical sign of section 9.4: its largest absolute
+/// component positive, ties broken in the order x, y, z.
+fn canonical(d: Dir3) -> bool {
+    let d = d.to_array();
+    let mut largest = 0;
+    for (i, c) in d.iter().enumerate() {
+        if d.get(largest).is_some_and(|l| c.abs() > l.abs()) {
+            largest = i;
+        }
+    }
+    d.get(largest).is_some_and(|c| *c > 0.0)
 }
 
 /// True if two optional values are both absent, or agree within

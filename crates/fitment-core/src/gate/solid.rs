@@ -402,6 +402,7 @@ fn copy(solid: &Solid, points: Vec<[f64; 3]>, surfaces: Vec<Surface>, curves: Ve
                 surface,
                 sense: solid.face_sense(index),
                 same_sense: f.same_sense,
+                extent: 0.0,
                 bounds: f
                     .bounds
                     .iter()
@@ -421,6 +422,7 @@ fn copy(solid: &Solid, points: Vec<[f64; 3]>, surfaces: Vec<Surface>, curves: Ve
         edges,
         vertices,
     }
+    .measure()
 }
 
 /// A bound's loop in traversal order (design, section 5.3): its oriented

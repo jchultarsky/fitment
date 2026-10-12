@@ -14,6 +14,21 @@ const P11_FILLET_SLOT: &[u8] = include_bytes!("data/p11_fillet_slot.stp");
 const P20_SPLIT_SURFACES: &[u8] = include_bytes!("data/p20_split_surfaces.stp");
 const P25_ANGLED: &[u8] = include_bytes!("data/p25_angled.stp");
 
+/// A D-shaped prism whose cylinder face spans 0.6 rad, bounded by lines
+/// written as B-splines, with a slit along the axis that its loop uses
+/// twice, as a seam would be. Written for the review of PR 5.
+const SLIT_STRIP: &[u8] = include_bytes!("edits/slit_strip.stp");
+
+/// A round bar of radius 5 cut by the plane z = 5 − x: its wall rises from
+/// a full circle at z = 0 to an ellipse whose one vertex touches it.
+/// Written for the review of PR 5.
+const HOOF: &[u8] = include_bytes!("edits/hoof.stp");
+
+/// A cylinder whose bottom circle is two edges between two vertices at one
+/// point: a whole turn and an arc of no length. Written for the review of
+/// PR 5.
+const ZERO_ARC: &[u8] = include_bytes!("edits/zero_arc.stp");
+
 /// `input` with each `from` replaced by its `to`; each must occur once.
 fn edit(input: &[u8], edits: &[(&str, &str)]) -> Vec<u8> {
     let mut text = std::str::from_utf8(input).unwrap().to_owned();
@@ -69,23 +84,20 @@ fn a_fillet_and_slot_ends_are_partial_with_their_sweeps() {
 }
 
 #[test]
-fn a_hole_with_no_end_circle_is_full_by_its_seam() {
-    // A Ø6 hole tilted 30°: both ends are ellipses, which no rule reads,
-    // but the seam proves the face wraps around the axis where it runs.
+fn a_hole_with_no_end_circle_is_undecided_whatever_its_seam() {
+    // A Ø6 hole tilted 30°: both ends are ellipses, which no rule reads. Its
+    // seam is used twice by one loop, but so is a slit, and without the
+    // curves on the surface the seam proves no wrap (review of PR 5).
     let part = read_part(P25_ANGLED).unwrap();
     let [hole] = &part.cylinders[..] else {
         panic!("p25 has {} cylinders", part.cylinders.len());
     };
-    let CylinderClass::FullBySeam {
-        proven_extent_mm, ..
-    } = hole.class
-    else {
-        panic!("{:?}", hole.class);
-    };
-    // The seam spans the plate's 20 mm thickness, over cos 30°, less the
-    // ellipses' reach: at least the 20 mm the axis crosses the plate.
-    assert!(proven_extent_mm[1] > 20.0, "{proven_extent_mm:?}");
+    assert_eq!(
+        hole.class,
+        read_class("{\"kind\": \"undecided\", \"reason\": \"no_end_circle\"}")
+    );
     assert_eq!(hole.stations_mm, Vec::<f64>::new());
+    assert_eq!(hole.sense, Sense::Hole);
 }
 
 #[test]
@@ -142,4 +154,33 @@ fn an_irregular_end_names_its_side() {
             ..
         }
     ));
+}
+
+#[test]
+fn a_slit_used_twice_by_one_loop_proves_no_wrap() {
+    let part = read_part(SLIT_STRIP).unwrap();
+    let [strip] = &part.cylinders[..] else {
+        panic!("{} cylinders", part.cylinders.len());
+    };
+    assert!(!strip.class.is_full(), "{:?}", strip.class);
+}
+
+#[test]
+fn a_wall_past_its_one_station_is_irregular_there_however_its_curve_ends() {
+    let part = read_part(HOOF).unwrap();
+    let [bar] = &part.cylinders[..] else {
+        panic!("{} cylinders", part.cylinders.len());
+    };
+    assert_eq!(bar.sense, Sense::Shaft);
+    assert_eq!(bar.axis.direction.to_array(), [0.0, 0.0, 1.0]);
+    assert_eq!(
+        bar.class,
+        read_class("{\"kind\": \"full_one_end_irregular\", \"irregular\": \"finish\"}")
+    );
+}
+
+#[test]
+fn an_arc_of_no_length_leaves_its_station_not_full_and_is_no_contradiction() {
+    let part = read_part(ZERO_ARC).unwrap();
+    assert!(part.cylinders.iter().all(|c| !c.class.is_full()));
 }
