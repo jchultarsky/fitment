@@ -50,6 +50,15 @@ pub enum Flag {
     /// An opening is required where the target's end is unknown (U8):
     /// unverifiable.
     OpenAtUnknownEnd,
+    /// A neighbour's partial hole holds the target shaft (I7).
+    PartialNeighbour,
+    /// A plane contact within the near band, the faces apart (C5).
+    NearGap,
+    /// A plane contact within the near band, the faces into each other
+    /// (C5).
+    Interference,
+    /// An outline in the contact is unknown (C3, C4).
+    UnknownOutline,
 }
 
 /// One span of a bore: an interval of the hole's stations and what
@@ -128,6 +137,66 @@ pub enum Cause {
     NeighbourUnread,
     /// Neighbour material crosses the target's axis at an angle (U7).
     Skew,
+    /// A curved neighbour face touches a target plane where no rule reads
+    /// the contact (C6).
+    ContactNoRule,
+}
+
+/// Where a seat's contact requires flat material (C4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Basis {
+    /// The target face's own region: the true contact lies inside it.
+    TargetFace,
+    /// Not known: the target face's outline is unknown; unverifiable.
+    Unknown,
+}
+
+/// One neighbour face in a contact.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Toucher {
+    /// The neighbour occurrence, by usage `#id`s.
+    pub neighbour: Vec<u64>,
+    /// Its face.
+    pub face: u64,
+    /// The gap along the target's normal, in mm: negative into the target.
+    pub gap_mm: f64,
+    /// Its flags, sorted.
+    pub flags: Vec<Flag>,
+}
+
+/// One target face a seat requires (C4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct SeatContact {
+    /// The target face.
+    pub face: u64,
+    /// Where flat material is required.
+    pub basis: Basis,
+    /// The target face's outline, when the basis is its region.
+    pub outline: crate::features::Outline,
+    /// The neighbour faces on it.
+    pub by: Vec<Toucher>,
+}
+
+/// A wider neighbour cylinder ending at a target hole's rim (H1), for
+/// review.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Ring {
+    /// The target hole.
+    pub hole: FeatureId,
+    /// The neighbour occurrence.
+    pub neighbour: Vec<u64>,
+    /// The ring's inner diameter: the hole's.
+    pub inner_diameter_mm: f64,
+    /// Its outer diameter: the neighbour cylinder's.
+    pub outer_diameter_mm: f64,
 }
 
 /// What a requirement asks of a candidate.
@@ -162,6 +231,86 @@ pub enum Requires {
         /// hole's floor (I4), for information.
         #[serde(deserialize_with = "Option::deserialize")]
         max_extra_mm: Option<f64>,
+    },
+    /// Flat material at a target plane, covering each contact's region
+    /// (C1 to C5, H1).
+    #[non_exhaustive]
+    Seat {
+        /// The target plane.
+        plane: FeatureId,
+        /// Its outward normal.
+        normal: crate::geom::Dir3,
+        /// Its offset, in mm.
+        offset_mm: f64,
+        /// The target faces in contact.
+        contacts: Vec<SeatContact>,
+        /// Rings of wider neighbour cylinders on its holes' rims (H1).
+        rings: Vec<Ring>,
+    },
+    /// Two opposed seats at this separation (L).
+    #[non_exhaustive]
+    Grip {
+        /// The two seats' planes, or a conical seat's cone (L2).
+        seats: Vec<FeatureId>,
+        /// Their separation, in mm.
+        length_mm: f64,
+        /// The target holes that open onto both.
+        holes: Vec<FeatureId>,
+    },
+    /// A cone on this axis with this apex and angle (Q1).
+    #[non_exhaustive]
+    ConicalSeat {
+        /// The target cone.
+        cone: FeatureId,
+        /// Its axis.
+        axis: Axis,
+        /// The shared apex.
+        apex_mm: crate::geom::Point3,
+        /// The included angle.
+        included_angle_rad: f64,
+        /// The radial range both cones cover, if known.
+        #[serde(deserialize_with = "Option::deserialize")]
+        radii_mm: Option<[f64; 2]>,
+    },
+    /// A partial concave cylinder holding a shaft (U1): M4 v1 cannot
+    /// verify it.
+    #[non_exhaustive]
+    PartialBore {
+        /// The target cylinder.
+        cylinder: FeatureId,
+        /// Its axis.
+        axis: Axis,
+        /// Its diameter.
+        diameter_mm: f64,
+        /// What occupies it passes this.
+        #[serde(deserialize_with = "Option::deserialize")]
+        clear_diameter_mm: Option<f64>,
+        /// The largest arc its stations cover.
+        sweep_rad: f64,
+        /// Where the occupant starts, along the axis.
+        from_mm: f64,
+        /// Where it ends.
+        to_mm: f64,
+    },
+    /// A partial convex cylinder inside a neighbour hole (U1): M4 v1
+    /// cannot verify it.
+    #[non_exhaustive]
+    PartialShaft {
+        /// The target cylinder.
+        cylinder: FeatureId,
+        /// Its axis.
+        axis: Axis,
+        /// Its diameter.
+        diameter_mm: f64,
+        /// The largest it may be.
+        #[serde(deserialize_with = "Option::deserialize")]
+        clear_diameter_mm: Option<f64>,
+        /// The largest arc its stations cover.
+        sweep_rad: f64,
+        /// Where the hole starts holding it.
+        from_mm: f64,
+        /// Where it stops.
+        to_mm: f64,
     },
     /// Something no rule reads: never verified, fails until removed in
     /// review.
@@ -246,12 +395,17 @@ pub struct Requirement {
 
 impl Requirement {
     /// False for the kinds every candidate fails, the original included,
-    /// until review removes them (Y4): `unresolved`, a bore or shaft
-    /// flagged `target_undecided`, and a bore flagged
-    /// `open_at_unknown_end`.
+    /// until review removes them (Y4): `unresolved`, `partial_bore`,
+    /// `partial_shaft`, a bore or shaft flagged `target_undecided`, a bore
+    /// flagged `open_at_unknown_end`, and a seat with a contact whose basis
+    /// is unknown.
     pub fn verifiable(&self) -> bool {
         match &self.requires {
-            Requires::Unresolved { .. } => false,
+            Requires::Unresolved { .. }
+            | Requires::PartialBore { .. }
+            | Requires::PartialShaft { .. } => false,
+            Requires::Seat { contacts, .. } => contacts.iter().all(|c| c.basis != Basis::Unknown),
+            Requires::Grip { .. } | Requires::ConicalSeat { .. } => true,
             Requires::Bore { .. } | Requires::Shaft { .. } => !self
                 .flags
                 .iter()

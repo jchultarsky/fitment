@@ -60,6 +60,12 @@ pub(crate) struct Element {
     pub(crate) lo_unknown: bool,
     pub(crate) hi_unknown: bool,
     pub(crate) undecided: bool,
+    /// The largest arc a partial cylinder's stations cover (U1, I7);
+    /// `None` for a full cylinder.
+    pub(crate) partial: Option<f64>,
+    /// The planes the stack's open ends open onto (H1).
+    pub(crate) start_into: Option<FeatureId>,
+    pub(crate) finish_into: Option<FeatureId>,
     /// The stack's ends, at its lowest and highest station.
     pub(crate) start: EndKind,
     pub(crate) finish: EndKind,
@@ -81,6 +87,37 @@ fn end_kind(end: Option<&StackEnd>) -> (EndKind, Option<f64>) {
         Some(StackEnd::Bottom { .. } | StackEnd::Root { .. }) => (EndKind::Closed, None),
         _ => (EndKind::Unknown, None),
     }
+}
+
+/// The plane a hole's open end opens onto: square to its axis, through
+/// its rim. M2 names the face the walk lands on, which for a washer's
+/// hole is its outside cylinder across the annulus.
+fn opens_into(
+    end: Option<&StackEnd>,
+    planes: &BTreeMap<FeatureId, &crate::features::Plane>,
+    stack: &Stack<'_>,
+) -> Option<FeatureId> {
+    let Some(StackEnd::Opening { rim_mm, .. }) = end else {
+        return None;
+    };
+    plane_at(planes, stack, *rim_mm)
+}
+
+/// The plane square to `stack`'s axis through its station `at`, if one.
+fn plane_at(
+    planes: &BTreeMap<FeatureId, &crate::features::Plane>,
+    stack: &Stack<'_>,
+    at: f64,
+) -> Option<FeatureId> {
+    let point = add(stack.point, scale(stack.dir, at));
+    planes
+        .values()
+        .find(|plane| {
+            let n = plane.normal.to_array();
+            dot(n, stack.dir).abs() >= 1.0 - 1e-9
+                && (dot(n, point) - plane.offset_mm).abs() <= super::CONTACT_MM
+        })
+        .map(|plane| plane.id)
 }
 
 fn end_face(end: Option<&StackEnd>) -> Option<FeatureId> {
@@ -156,9 +193,66 @@ pub(crate) fn elements(part: &Part) -> Vec<Element> {
         }));
     let cylinders: BTreeMap<FeatureId, &crate::features::Cylinder> =
         part.cylinders.iter().map(|c| (c.id, c)).collect();
+    let planes: BTreeMap<FeatureId, &crate::features::Plane> =
+        part.planes.iter().map(|p| (p.id, p)).collect();
     let mut out = Vec::new();
     for stack in stacks {
-        out.extend(stack_elements(part, &cylinders, &faces, &stack));
+        out.extend(stack_elements(part, &cylinders, &planes, &faces, &stack));
+    }
+    out.extend(loose_elements(part));
+    out
+}
+
+/// The cylinders in no stack: partial ones (U1) and undecided ones (U2),
+/// bounded by the part's extent along their axes, or not at all.
+fn loose_elements(part: &Part) -> Vec<Element> {
+    let mut out = Vec::new();
+    for cylinder in &part.cylinders {
+        let CylinderClass::Partial { sweep_rad } = cylinder.class else {
+            continue;
+        };
+        if cylinder.shell != 0 {
+            continue;
+        }
+        let point = cylinder.axis.point_mm.to_array();
+        let dir = cylinder.axis.direction.to_array();
+        // Its stations do not bound it (an axial edge or an unread curve
+        // may run past them): the part's extent along its axis does.
+        let (lo, hi) = match part.extent.as_ref() {
+            Some(extent) => along(extent, point, dir),
+            None => (f64::NEG_INFINITY, f64::INFINITY),
+        };
+        out.push(Element {
+            feature: cylinder.id,
+            side: if cylinder.sense == Sense::Hole {
+                Side::Hole
+            } else {
+                Side::Shaft
+            },
+            segment: 0,
+            segments: 1,
+            point,
+            dir,
+            radius: cylinder.radius_mm,
+            lo,
+            hi,
+            own_lo: lo,
+            own_hi: hi,
+            known_lo: lo,
+            known_hi: hi,
+            lo_unknown: true,
+            hi_unknown: true,
+            undecided: false,
+            partial: Some(sweep_rad.unwrap_or(0.0)),
+            start_into: None,
+            finish_into: None,
+            start: EndKind::Unknown,
+            finish: EndKind::Unknown,
+            start_rim: None,
+            finish_rim: None,
+            faces: cylinder.faces.clone(),
+            wall: cylinder.faces.clone(),
+        });
     }
     for cylinder in &part.cylinders {
         if !matches!(cylinder.class, CylinderClass::Undecided { .. }) {
@@ -193,6 +287,9 @@ pub(crate) fn elements(part: &Part) -> Vec<Element> {
             lo_unknown: true,
             hi_unknown: true,
             undecided: true,
+            partial: None,
+            start_into: None,
+            finish_into: None,
             start: EndKind::Unknown,
             finish: EndKind::Unknown,
             start_rim: None,
@@ -230,6 +327,7 @@ fn range(stations: &[f64]) -> (f64, f64) {
 fn stack_elements(
     part: &Part,
     cylinders: &BTreeMap<FeatureId, &crate::features::Cylinder>,
+    planes: &BTreeMap<FeatureId, &crate::features::Plane>,
     faces: &BTreeMap<FeatureId, Vec<u64>>,
     stack: &Stack<'_>,
 ) -> Vec<Element> {
@@ -301,6 +399,17 @@ fn stack_elements(
                 lo_unknown,
                 hi_unknown,
                 undecided: false,
+                partial: None,
+                start_into: if first {
+                    opens_into(stack.ends.first(), planes, stack)
+                } else {
+                    None
+                },
+                finish_into: if last {
+                    opens_into(stack.ends.get(1), planes, stack)
+                } else {
+                    None
+                },
                 start,
                 finish,
                 start_rim,
@@ -310,6 +419,7 @@ fn stack_elements(
             }
         })
         .collect();
+    steps(&mut out, planes, stack);
     let zones = Zones(transition_ranges(part, stack));
     stretch(&mut out, stack.side, &zones);
     for element in &mut out {
@@ -381,6 +491,37 @@ impl Zones {
                 (Some((_, high)), Side::Shaft) => high <= radius + slack,
                 (None, _) => false,
             })
+    }
+}
+
+/// H1 inside a stack: where one segment ends and the next begins at one
+/// station, an annulus plane among the transitions there is the plane
+/// each opens onto (a counterbore's floor).
+fn steps(
+    elements: &mut [Element],
+    planes: &BTreeMap<FeatureId, &crate::features::Plane>,
+    stack: &Stack<'_>,
+) {
+    for i in 1..elements.len() {
+        let (before, after) = elements.split_at_mut(i);
+        let (Some(a), Some(b)) = (before.last_mut(), after.first_mut()) else {
+            continue;
+        };
+        if a.hi_unknown || b.lo_unknown || (b.lo - a.hi).abs() > super::CONTACT_MM {
+            continue;
+        }
+        let at = add(stack.point, scale(stack.dir, a.hi));
+        let step = stack.transitions.iter().find(|id| {
+            planes.get(id).is_some_and(|plane| {
+                let n = plane.normal.to_array();
+                dot(n, stack.dir).abs() >= 1.0 - 1e-9
+                    && (dot(n, at) - plane.offset_mm).abs() <= super::CONTACT_MM
+            })
+        });
+        if let Some(step) = step {
+            a.finish_into = Some(*step);
+            b.start_into = Some(*step);
+        }
     }
 }
 

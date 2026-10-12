@@ -764,6 +764,166 @@ fn left_out_matches(socket: &fitment_core::Socket, expect: &Value) -> Option<Str
     None
 }
 
+fn flag_names(requirement: &fitment_core::Requirement) -> Vec<String> {
+    let mut out: Vec<String> = requirement
+        .flags
+        .iter()
+        .filter_map(|f| serde_json::to_value(f).ok()?.as_str().map(str::to_owned))
+        .collect();
+    out.sort();
+    out
+}
+
+fn close(a: f64, b: &Value) -> bool {
+    b.as_f64().is_some_and(|b| (a - b).abs() <= POINT_TOL)
+}
+
+/// One seat, grip, conical seat or partial cylinder against one expected.
+fn planar_one(requirement: &fitment_core::Requirement, expect: &Value) -> bool {
+    use fitment_core::Requires;
+    match &requirement.requires {
+        Requires::Seat {
+            normal,
+            offset_mm,
+            contacts,
+            rings,
+            ..
+        } => {
+            let n = normal.to_array();
+            let (Some(e), Some(p)) = (point(&expect["normal"]), point(&expect["point"])) else {
+                return false;
+            };
+            let by: usize = contacts.iter().map(|c| c.by.len()).sum();
+            let mut basis: Vec<String> = contacts
+                .iter()
+                .filter_map(|c| {
+                    serde_json::to_value(c.basis)
+                        .ok()?
+                        .as_str()
+                        .map(str::to_owned)
+                })
+                .collect();
+            basis.sort();
+            let mut found_rings: Vec<[f64; 2]> = rings
+                .iter()
+                .map(|r| [r.inner_diameter_mm, r.outer_diameter_mm])
+                .collect();
+            found_rings.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+            let wanted_rings: Vec<&Value> =
+                expect["rings"].as_array().into_iter().flatten().collect();
+            (0..3).all(|i| (n[i] - e[i]).abs() <= 1e-9)
+                && (n[0] * p[0] + n[1] * p[1] + n[2] * p[2] - offset_mm).abs() <= POINT_TOL
+                && expect["by"].as_u64() == u64::try_from(by).ok()
+                && basis == strings(&expect["basis"])
+                && flag_names(requirement) == strings(&expect["flags"])
+                && found_rings.len() == wanted_rings.len()
+                && found_rings
+                    .iter()
+                    .zip(&wanted_rings)
+                    .all(|(f, w)| close(f[0], &w[0]) && close(f[1], &w[1]))
+        }
+        Requires::Grip {
+            length_mm, holes, ..
+        } => {
+            close(*length_mm, &expect["length"])
+                && expect["holes"].as_u64() == u64::try_from(holes.len()).ok()
+        }
+        Requires::ConicalSeat {
+            apex_mm,
+            included_angle_rad,
+            ..
+        } => {
+            point(&expect["apex"]).is_some_and(|a| near(apex_mm.to_array(), a))
+                && expect["angle"]
+                    .as_f64()
+                    .is_some_and(|a| (a - included_angle_rad).abs() <= 1e-9)
+        }
+        Requires::PartialBore {
+            axis,
+            diameter_mm,
+            clear_diameter_mm,
+            from_mm,
+            to_mm,
+            ..
+        }
+        | Requires::PartialShaft {
+            axis,
+            diameter_mm,
+            clear_diameter_mm,
+            from_mm,
+            to_mm,
+            ..
+        } => {
+            let kind = if matches!(requirement.requires, Requires::PartialBore { .. }) {
+                "partial_bore"
+            } else {
+                "partial_shaft"
+            };
+            let (p, d) = (axis.point_mm.to_array(), axis.direction.to_array());
+            let at = |s: f64| [p[0] + s * d[0], p[1] + s * d[1], p[2] + s * d[2]];
+            let ends = (at(*from_mm), at(*to_mm));
+            let (Some(from), Some(to)) = (point(&expect["from"]), point(&expect["to"])) else {
+                return false;
+            };
+            expect["kind"] == kind
+                && same_line(p, d, expect)
+                && close(*diameter_mm, &expect["diameter"])
+                && match clear_diameter_mm {
+                    Some(clear) => close(*clear, &expect["clear"]),
+                    None => expect["clear"].is_null(),
+                }
+                && ((near(ends.0, from) && near(ends.1, to))
+                    || (near(ends.0, to) && near(ends.1, from)))
+                && flag_names(requirement) == strings(&expect["flags"])
+        }
+        _ => false,
+    }
+}
+
+/// A socket's seats, grips, conical seats and partial cylinders against
+/// the expected ones, one to one and in full.
+fn planar_matches(socket: &fitment_core::Socket, expect: &Value) -> Option<String> {
+    use fitment_core::Requires;
+    for (key, is) in [
+        (
+            "seats",
+            (|r: &Requires| matches!(r, Requires::Seat { .. })) as fn(&Requires) -> bool,
+        ),
+        ("grips", |r| matches!(r, Requires::Grip { .. })),
+        ("cones", |r| matches!(r, Requires::ConicalSeat { .. })),
+        ("partials", |r| {
+            matches!(
+                r,
+                Requires::PartialBore { .. } | Requires::PartialShaft { .. }
+            )
+        }),
+    ] {
+        let found: Vec<&fitment_core::Requirement> = socket
+            .requirements
+            .iter()
+            .filter(|r| is(&r.requires))
+            .collect();
+        let mut left: Vec<&Value> = expect[key].as_array().into_iter().flatten().collect();
+        if found.len() != left.len() {
+            return Some(format!("{} {key}, expected {}", found.len(), left.len()));
+        }
+        for requirement in found {
+            match left.iter().position(|w| planar_one(requirement, w)) {
+                Some(i) => {
+                    left.swap_remove(i);
+                }
+                None => {
+                    return Some(format!(
+                        "{} matches no expected {key}: {:?}",
+                        requirement.id, requirement.requires
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// One expected socket against one socket: `None` if they agree.
 fn socket_matches(
     part: &fitment_core::Part,
@@ -776,6 +936,9 @@ fn socket_matches(
         if !at.is_some_and(|a| near(a, wanted)) {
             return Some(format!("its occurrence is at {at:?}, expected {wanted:?}"));
         }
+    }
+    if let Some(problem) = planar_matches(socket, expect) {
+        return Some(problem);
     }
     let axial: Vec<&fitment_core::Requirement> = socket
         .requirements
@@ -839,14 +1002,20 @@ fn socket_matches(
 /// A requirement's place in section 9.2's order, from its id alone.
 fn order_key(requirement: &fitment_core::Requirement) -> (bool, u64, u8) {
     let (kind, anchor) = requirement.id.split_once(':').unwrap_or_default();
+    // A grip's anchor is the smaller of its two.
     let number = anchor
-        .rsplit('-')
-        .next()
-        .and_then(|n| n.parse().ok())
+        .split('+')
+        .filter_map(|a| a.rsplit('-').next()?.parse().ok())
+        .min()
         .unwrap_or(u64::MAX);
     let rank = match kind {
         "bore" => 0,
         "shaft" => 1,
+        "seat" => 2,
+        "conical_seat" => 3,
+        "grip" => 4,
+        "partial_bore" => 5,
+        "partial_shaft" => 6,
         _ => 9,
     };
     (anchor.starts_with("part-"), number, rank)
