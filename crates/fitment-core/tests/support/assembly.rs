@@ -9,7 +9,7 @@ use fitment_core::{AssemblyRead, DefinitionKind, Listing, PartsDocument, read_as
 use serde_json::Value;
 
 /// The assembly gate checks built so far (`m3-socket.md`, 4.1).
-pub const BUILT_CHECK: u64 = 35;
+pub const BUILT_CHECK: u64 = 38;
 
 /// How far a transform entry may differ from the construction's (P9): its
 /// values are rounded to 9 decimals, and Open CASCADE writes 12 to 15
@@ -79,6 +79,9 @@ pub fn check(case: &Value, bytes: &[u8]) -> Vec<String> {
     };
     failures.extend(parts(listing, listing_expect));
     failures.extend(gate(&read, &expect["assembly_gate"]));
+    failures.extend(notes(&read, &expect["notes"]));
+    failures.extend(floors(listing, &expect["floors"]));
+    failures.extend(components(listing, &expect["components"]));
     failures.extend(transforms(listing, &expect["occurrences"]));
     for (k, try_) in expect["select"]
         .as_array()
@@ -152,6 +155,88 @@ fn parts(listing: &Listing, expect: &Value) -> Vec<String> {
     failures
 }
 
+fn notes(read: &AssemblyRead, expect: &Value) -> Vec<String> {
+    let mut found: Vec<String> = read
+        .notes()
+        .iter()
+        .filter_map(|n| serde_json::to_value(n.code).ok())
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    found.dedup();
+    let wanted = strings(expect);
+    if found == wanted {
+        Vec::new()
+    } else {
+        vec![format!("notes {found:?}, expected {wanted:?}")]
+    }
+}
+
+/// Z1: every leaf occurrence of an accepted part carries the uncertainty
+/// its part's context and its placement path state.
+fn floors(listing: &Listing, expect: &Value) -> Vec<String> {
+    let (Some(part), Some(placement)) =
+        (expect["part_mm"].as_f64(), expect["placement_mm"].as_f64())
+    else {
+        return vec!["no expected floors".to_owned()];
+    };
+    let accepted = |o: &fitment_core::Occurrence| {
+        matches!(
+            listing
+                .definitions()
+                .get(o.definition)
+                .and_then(|d| d.read.as_ref()),
+            Some(fitment_core::ComponentRead::Accepted(_))
+        )
+    };
+    listing
+        .occurrences()
+        .iter()
+        .filter(|o| accepted(o))
+        .filter(|o| {
+            o.part_uncertainty_mm.to_bits() != part.to_bits()
+                || o.placement_uncertainty_mm.to_bits() != placement.to_bits()
+        })
+        .map(|o| {
+            format!(
+                "{}: floors {} and {}, expected {part} and {placement}",
+                o.path.display(listing.path_form()),
+                o.part_uncertainty_mm,
+                o.placement_uncertainty_mm
+            )
+        })
+        .collect()
+}
+
+/// What some components read as: their counts of holes and shafts.
+fn components(listing: &Listing, expect: &Value) -> Vec<String> {
+    let Some(wanted) = expect.as_object() else {
+        return Vec::new();
+    };
+    let mut failures = Vec::new();
+    for (product, counts) in wanted {
+        let read = listing
+            .definitions()
+            .iter()
+            .find(|d| d.definition.product.as_ref().and_then(|p| p.id.as_deref()) == Some(product))
+            .and_then(|d| d.read.as_ref());
+        let Some(fitment_core::ComponentRead::Accepted(part)) = read else {
+            failures.push(format!("{product}: not read as an accepted part"));
+            continue;
+        };
+        let found = (part.holes.len() as u64, part.shafts.len() as u64);
+        let expected = (
+            counts["holes"].as_u64().unwrap_or(u64::MAX),
+            counts["shafts"].as_u64().unwrap_or(u64::MAX),
+        );
+        if found != expected {
+            failures.push(format!(
+                "{product}: (holes, shafts) {found:?}, expected {expected:?}"
+            ));
+        }
+    }
+    failures
+}
+
 fn gate(read: &AssemblyRead, expect: &Value) -> Vec<String> {
     let found = codes(read.gate_refusals());
     let wanted = if expect["result"] == "accepted" {
@@ -161,11 +246,21 @@ fn gate(read: &AssemblyRead, expect: &Value) -> Vec<String> {
     } else {
         strings(&expect["refusals"])
     };
-    if found == wanted {
-        Vec::new()
-    } else {
-        vec![format!("assembly gate {found:?}, expected {wanted:?}")]
+    let mut failures = Vec::new();
+    if found != wanted {
+        failures.push(format!("assembly gate {found:?}, expected {wanted:?}"));
     }
+    // The kind of failure, which a component's refusal names.
+    if let Some(kind) = expect["kind"].as_str() {
+        if !read
+            .gate_refusals()
+            .iter()
+            .any(|r| r.message.contains(kind))
+        {
+            failures.push(format!("assembly gate: no refusal names {kind}"));
+        }
+    }
+    failures
 }
 
 /// Every leaf occurrence's transform, one to one per product, as

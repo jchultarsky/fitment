@@ -537,8 +537,52 @@ fn cone(topo: &Topo, solid: FeatureId, group: &[usize]) -> Result<Cone, Refusal>
         },
         apex_mm: point(apex, *instance)?,
         semi_angle_rad: num(*semi_angle, *instance)?,
+        radii_mm: cone_radii(topo, group, *location, *z),
         spread_mm: num(spread, *instance)?,
     })
+}
+
+/// The smallest and largest distance from the axis through `location`
+/// along unit `z` of the boundaries of the faces in `group`: their
+/// vertices, and the radius of each circle edge about the axis. A line on
+/// a cone face is a ruling, whose distance from the axis is extreme at its
+/// ends. `None` if an edge is a circle about another axis, or a curve not
+/// read.
+fn cone_radii(topo: &Topo, group: &[usize], location: [f64; 3], z: [f64; 3]) -> Option<[f64; 2]> {
+    let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut take = |r: f64| {
+        low = low.min(r);
+        high = high.max(r);
+    };
+    for face in group.iter().filter_map(|&i| topo.faces.get(i)) {
+        for vertex in topo.face_vertices(face) {
+            take(radial(topo.vertices.get(vertex)?.point, location, z).0);
+        }
+        for travels in topo.travels(face) {
+            for travel in travels {
+                match travel.curve {
+                    super::topo::Curve::Line { .. } => {}
+                    super::topo::Curve::Circle {
+                        centre,
+                        z: n,
+                        radius,
+                        ..
+                    } => {
+                        let (off_axis, _) = radial(*centre, location, z);
+                        let tilt = length(super::topo::cross(*n, z));
+                        if off_axis > group::IDENTITY_MM || tilt > group::PARALLEL_SINE {
+                            return None;
+                        }
+                        take(*radius);
+                    }
+                    super::topo::Curve::Other { .. } => return None,
+                }
+            }
+        }
+    }
+    let low = finite(low)?;
+    let high = finite(high)?;
+    (low <= high).then_some([low, high])
 }
 
 fn torus(topo: &Topo, solid: FeatureId, group: &[usize]) -> Result<Torus, Refusal> {

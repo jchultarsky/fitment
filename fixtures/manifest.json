@@ -1,14 +1,14 @@
 {
  "comment": "fitment's gate result for each fixture of the core set (tools/fetch-fixtures.sh core). The first results came from the D2 census (docs/research/m2-features.md, section 4.2); they are regression pins, re-pinned only in a pull request that says why.",
- "oracle": {"accepted": 24, "refused": 21, "plane faces": 1521, "areas": 1436, "areas within the vertex offsets": 24, "unknown outlines": 61, "cylinders": 1650, "full cylinders": 544, "cylinders full only in Open CASCADE": 0, "holes probed": 396, "shafts probed": 12},
+ "oracle": {"accepted": 24, "refused": 21, "plane faces": 1521, "areas": 1436, "areas within the vertex offsets": 24, "unknown outlines": 61, "cylinders": 1650, "full cylinders": 544, "cylinders full only in Open CASCADE": 0, "holes probed": 396, "shafts probed": 12, "extents": 9},
  "fixtures": [
-  {"path": "nist-edm/as1_pe.stp", "features": "refused", "reasons": ["assembly"]},
+  {"path": "nist-edm/as1_pe.stp", "features": "refused", "reasons": ["assembly"], "parts": {"leaves": 5, "leaf_occurrences": 12, "refused_leaves": 0, "assembly_gate": [], "notes": []}},
   {"path": "nist-edm/clevis21.stp", "features": "accepted", "planes": 16, "unknown_outlines": 0, "full_cylinders": 12, "holes": {"blind": 6}, "shafts": {}},
   {"path": "nist-edm/gear.stp", "features": "accepted", "planes": 27, "unknown_outlines": 0, "full_cylinders": 2, "holes": {}, "shafts": {"unknown": 2}},
-  {"path": "nist-edm/moon_buggy_asm.stp", "features": "refused", "reasons": ["assembly"]},
-  {"path": "nist-edm/vaccase_asm_solid.stp", "features": "refused", "reasons": ["assembly"]},
+  {"path": "nist-edm/moon_buggy_asm.stp", "features": "refused", "reasons": ["assembly"], "parts": {"leaves": 12, "leaf_occurrences": 19, "refused_leaves": 0, "assembly_gate": [], "notes": []}},
+  {"path": "nist-edm/vaccase_asm_solid.stp", "features": "refused", "reasons": ["assembly"], "parts": {"leaves": 8, "leaf_occurrences": 14, "refused_leaves": 0, "assembly_gate": [], "notes": []}},
   {"path": "nist-edm/valve.stp", "features": "accepted", "planes": 17, "unknown_outlines": 0, "full_cylinders": 13, "holes": {"blind": 8, "through": 1}, "shafts": {"root_free": 2, "unknown": 2}},
-  {"path": "nist-edm/weldment_asm_solid.stp", "features": "refused", "reasons": ["assembly"]},
+  {"path": "nist-edm/weldment_asm_solid.stp", "features": "refused", "reasons": ["assembly"], "parts": {"leaves": 33, "leaf_occurrences": 108, "refused_leaves": 0, "assembly_gate": [], "notes": []}},
   {"path": "nist/NIST-PMI-STEP-Files/AP203 geometry only/nist_ctc_01_asme1_rd.stp", "features": "accepted", "planes": 60, "unknown_outlines": 0, "full_cylinders": 10, "holes": {"blind": 2, "through": 8}, "shafts": {}},
   {"path": "nist/NIST-PMI-STEP-Files/AP203 geometry only/nist_ctc_02_asme1_rc.stp", "features": "refused", "reasons": ["unread_shape_item"]},
   {"path": "nist/NIST-PMI-STEP-Files/AP203 geometry only/nist_ctc_03_asme1_rc.stp", "features": "accepted", "planes": 63, "unknown_outlines": 0, "full_cylinders": 15, "holes": {"through": 15}, "shafts": {}},
@@ -42,10 +42,10 @@
   {"path": "nist/NIST-PMI-STEP-Files/nist_stc_08_asme1_ap242-e3.stp", "features": "refused", "reasons": ["unread_shape_item"]},
   {"path": "nist/NIST-PMI-STEP-Files/nist_stc_09_asme1_ap242-e3.stp", "features": "accepted", "planes": 48, "unknown_outlines": 0, "full_cylinders": 29, "holes": {"through": 29}, "shafts": {}},
   {"path": "nist/NIST-PMI-STEP-Files/nist_stc_10_asme1_ap242-e2.stp", "features": "accepted", "planes": 54, "unknown_outlines": 1, "full_cylinders": 42, "holes": {"blind": 8, "through": 8, "unknown": 14}, "shafts": {}},
-  {"path": "steptools/as1-ac-214.stp", "features": "refused", "reasons": ["assembly"]},
-  {"path": "steptools/as1-ec-214.stp", "features": "refused", "reasons": ["assembly"]},
-  {"path": "steptools/as1-md-214.stp", "features": "refused", "reasons": ["assembly"]},
-  {"path": "steptools/as1-tc-214.stp", "features": "refused", "reasons": ["assembly"]},
-  {"path": "steptools/as1-ug-214.stp", "features": "refused", "reasons": ["assembly"]}
+  {"path": "steptools/as1-ac-214.stp", "features": "refused", "reasons": ["assembly"], "parts": {"leaves": 5, "leaf_occurrences": 18, "refused_leaves": 0, "assembly_gate": [], "notes": []}},
+  {"path": "steptools/as1-ec-214.stp", "features": "refused", "reasons": ["assembly"], "parts": {"leaves": 5, "leaf_occurrences": 18, "refused_leaves": 0, "assembly_gate": [], "notes": []}},
+  {"path": "steptools/as1-md-214.stp", "features": "refused", "reasons": ["assembly"], "parts": {"leaves": 5, "leaf_occurrences": 18, "refused_leaves": 0, "assembly_gate": [], "notes": []}},
+  {"path": "steptools/as1-tc-214.stp", "features": "refused", "reasons": ["assembly"], "parts": {"leaves": 5, "leaf_occurrences": 18, "refused_leaves": 0, "assembly_gate": [], "notes": ["assembly_uncertainty_missing"]}},
+  {"path": "steptools/as1-ug-214.stp", "features": "refused", "reasons": ["assembly"], "parts": {"leaves": 5, "leaf_occurrences": 18, "refused_leaves": 0, "assembly_gate": [], "notes": []}}
  ]
 }

@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 5,
+  "extractor_version": 6,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -70,6 +70,18 @@
     ],
     "max_uncertainty_mm": 1e-7,
     "complete": true,
+    "extent": {
+      "min_mm": [
+        181.84963456958567,
+        -41.11814145050433,
+        5.858634903303667
+      ],
+      "max_mm": [
+        237.9932454341443,
+        14.698402745510334,
+        40.80689756545233
+      ]
+    },
     "face_counts": {
       "plane": 7,
       "cylindrical": 2,

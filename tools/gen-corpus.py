@@ -551,22 +551,23 @@ RULES.update({
     "m3.4.1#33": {"tests": [f"{M3_CORE}/assemblies.rs::a_cycle_is_an_unreadable_placement"]},
     "m3.4.1#34": {"tests": [f"{M3_CORE}/assemblies.rs::a_diamond_past_the_occurrence_limit_is_refused"]},
     "m3.4.1#35": {"tests": [f"{M3_CORE}/assemblies.rs::material_in_an_assembly_s_own_shape_is_refused"]},
-    "m3.4.1#36": {"deferred": "M3 PR 2 reads the components"},
-    "m3.4.1#37": {"deferred": "M3 PR 2 reads the components"},
-    "m3.4.1#38": {"deferred": "M3 PR 2 reads the components"},
+    "m3.4.1#36": {"tests": [f"{M3_CORE}/assemblies.rs::a_snippet_assembly_reads"]},
+    "m3.4.1#37": {},
+    "m3.4.1#38": {"tests": [f"{M3_CORE}/assemblies.rs::a_placement_far_out_of_range_is_refused"]},
     "m3.4.1#39": {"deferred": "M3 PR 3 builds the relation search"},
     "T1": {}, "T2": {"tests": [f"{M3_CORE}/assemblies.rs::a_definition_instance_selects_unless_an_id_reads_the_same"]},
     "T3": {}, "T4": {}, "T5": {}, "T6": {"deferred": "M3 PR 3: the socket command's exit code for a selection error"},
     "O1": {}, "O2": {}, "O3": {"tests": [f"{M3_CORE}/assemblies.rs::a_path_segment_that_names_two_usages_is_refused"]},
     "O4": {}, "O5": {}, "O6": {},
     "P2": {}, "P9": {},
-    "P1": {"deferred": "M3 PR 2 reads each component's Part once"},
+    "P1": {},
     "P7": {"tests": ["crates/fitment-core/src/geom.rs::a_reflection_or_shear_is_not_a_rigid_transform"]},
-    "P3": {"deferred": "M3 PR 2 reads the components and checks their frames"},
+    "P3": {},
     "P4": {"deferred": "M3 PR 3 moves features"}, "P5": {"deferred": "M3 PR 3 moves features"},
     "P6": {"deferred": "M3 PR 3 compares placed axes"},
     "P8": {"deferred": "M3 PR 3 builds s22"},
-    **{f"Z{k}": {"deferred": "M3 PR 2 (Z1) and PR 3 (the rest)"} for k in range(1, 8)},
+    "Z1": {},
+    **{f"Z{k}": {"deferred": "M3 PR 3 relates features"} for k in range(2, 8)},
     **{f"{letter}{k}": {"deferred": f"M3 PR {pr}"} for letter, n, pr in [
         ("N", 5, 3), ("X", 6, 3), ("B", 8, 3), ("I", 7, 3), ("J", 3, 3), ("U", 8, 3), ("A", 3, 3),
         ("H", 2, 4), ("Q", 2, 4), ("C", 6, 4), ("L", 2, 4), ("Y", 4, 3), ("V", 2, 3)]
@@ -1464,14 +1465,23 @@ def bolted(name, bracket=None, bolt=None, nut=None):
     return sub
 
 
-def asm_expect(root, select=(), listing_result=None, gate=None):
+# The length uncertainty Open CASCADE 7.9 writes in every context it makes.
+OCC_UNCERTAINTY_MM = 1e-7
+
+
+def asm_expect(root, select=(), listing_result=None, gate=None, notes=(), components=None):
     """The answers of an assembly case: its parts list, every leaf
-    occurrence's transform, the selections to try, and the assembly gate."""
+    occurrence's transform, the selections to try, the assembly gate, its
+    notes, the floors (every context Open CASCADE writes states 1e-7 mm)
+    and, where given, what some components read as."""
     expect = {"listing": listing_result or {"result": "accepted", "path_form": "usage_id", "parts": listing(root)},
               "assembly_gate": gate or {"result": "accepted"},
-              "select": list(select)}
+              "select": list(select), "notes": list(notes),
+              "floors": {"part_mm": OCC_UNCERTAINTY_MM, "placement_mm": OCC_UNCERTAINTY_MM}}
     if expect["listing"]["result"] == "accepted":
         expect["occurrences"] = occurrences(root)
+    if components is not None:
+        expect["components"] = components
     return expect
 
 
@@ -1550,7 +1560,7 @@ def build_assemblies(w: Writer, which):
     for x, y in PTS:
         s01.add(bolt, m_tr((x, y, 8)))
         s01.add(nut, m_tr((x, y, -10)))
-    a.case("s01_bolted", s01, "a bracket bolted to a plate with four hex bolts and nuts", ["T3", "T5", "O1", "O4", "O5", "O6",
+    a.case("s01_bolted", s01, "a bracket bolted to a plate with four hex bolts and nuts", ["T3", "T5", "O1", "O4", "O5", "O6", "Z1",
            "P2", "m3.4.1#32", "m3.4.1#33", "m3.4.1#35"], True,
            {"plate": [100, 60, 10], "bracket": [80, 50, 8], "holes": 6.6, "pts": PTS,
             "bolt": {"af": 10, "head": 4, "d": 6, "length": 25, "at_z": 8}, "nut": {"af": 10, "h": 5, "d": 5, "at_z": -10}},
@@ -1565,7 +1575,8 @@ def build_assemblies(w: Writer, which):
                {"occurrence_of": "BRACKET", "result": "BRACKET", "occurrences": 1, "matched_by": "occurrence"},
                {"part": "BRACKET", "occurrence": "nowhere", "error": "occurrence_not_found"},
                {"error": "nothing_selected"},
-           ]))
+           ], components={"BRACKET": {"holes": 5, "shafts": 0}, "PLATE": {"holes": 4, "shafts": 0},
+                          "NUT": {"holes": 1, "shafts": 0}, "BOLT": {"holes": 0, "shafts": 1}}))
 
     # s02: a counterbored block on a base, a socket head cap screw into the base's dia 5 blind hole.
     s02 = Node("s02_cbore")
@@ -1601,7 +1612,7 @@ def build_assemblies(w: Writer, which):
     lb = bolted("LB_ASSEM")
     s08x = Node("s08x_nested").add(long_plate, m_tr((50, 0, 0))).add(lb).add(lb, turned)
     a.case("s08x_nested", s08x, "one sub-assembly product used twice: one definition, two paths",
-           ["O1", "O3", "O4", "T1"], True,
+           ["O1", "O3", "O4", "T1", "P1"], True,
            {"plate": "220 x 60 x 10 at x 50", "LB_ASSEM": "bracket, 4 bolts, 4 nuts", "second": "turned 180 about z, x + 100"},
            asm_expect(s08x, select=[
                {"part": "BRACKET", "result": "BRACKET", "occurrences": 2, "matched_by": "product_id"},
@@ -1718,6 +1729,59 @@ def build_assemblies(w: Writer, which):
 
     a.case("r28_quantified", s02, "s02 with the screw usage quantified, quantity 4", ["m3.4.1#33"], False, {"from": "s02"},
            asm_expect(s02, listing_result=refused33("quantified")), edit=quantified)
+
+    def flip_face(child_name, pick):
+        """Flips the same_sense of one face of `child_name`'s solid, `pick`
+        choosing among its advanced faces by surface entity."""
+
+        def edit(f: Part21):
+            product = next(n for n in f.find("PRODUCT(") if f.inst[n].startswith(f"PRODUCT('{child_name}'"))
+            # The solid's faces come after its product's records in Open
+            # CASCADE's output, before the next product's.
+            later = sorted(n for n in f.find("PRODUCT(") if n > product)
+            end = later[0] if later else max(f.inst) + 1
+            face = next(n for n in f.find("ADVANCED_FACE") if product < n < end
+                        and f.inst[f.refs(n)[-1]].startswith(pick))
+            f.inst[face] = flip_sense(f.inst[face])
+        return edit
+
+    def refused36(kind):
+        return {"result": "refused", "check": 36, "refusals": ["component_refused"], "kind": kind}
+
+    a.case("r23_component_refused", s02, "s02 with one cylinder face of the screw flipped (a text edit)",
+           ["m3.4.1#36"], False, {"from": "s02"},
+           asm_expect(s02, gate=refused36("face_orientation")), edit=flip_face("SCREW", "CYLINDRICAL_SURFACE"))
+    a.case("r27_target_refused", s01, "s01 with one plane face of the bracket flipped (a text edit)",
+           ["m3.4.1#36"], False, {"from": "s01"},
+           asm_expect(s01, gate=refused36("face_orientation")), edit=flip_face("BRACKET", "PLANE"))
+
+    def other_frame(f: Part21):
+        """The screw's usage places a second shape representation of the
+        screw, which holds only a frame: its solid is not listed from it."""
+        usage = usage_of(f, "SCREW")
+        cdsr, relationship, idt = placement_of(f, usage)
+        _, item, rep = component_item(f, usage)
+        context = f.refs(rep)[-1]
+        origin = f.add("CARTESIAN_POINT('',(0.,0.,0.))")
+        frame = f.add(f"AXIS2_PLACEMENT_3D('',#{origin},$,$)")
+        empty = f.add(f"SHAPE_REPRESENTATION('',(#{frame}),#{context})")
+        child = f.refs(usage)[1]
+        pds = next(n for n in f.find("PRODUCT_DEFINITION_SHAPE") if f.refs(n) == [child])
+        f.add(f"SHAPE_DEFINITION_REPRESENTATION(#{pds},#{empty})")
+        f.inst[relationship] = re.sub(rf"#{rep}\b", f"#{empty}", f.inst[relationship], count=1)
+        f.inst[idt] = re.sub(rf"#{item}\b", f"#{frame}", f.inst[idt], count=1)
+
+    a.case("r29_solid_frame", s02, "s02 with the screw placed through a second, empty shape representation",
+           ["m3.4.1#37", "P3"], False, {"from": "s02"},
+           asm_expect(s02, gate={"result": "refused", "check": 37, "refusals": ["solid_frame_unplaced"]}),
+           edit=other_frame)
+
+    s24 = Node("s24_coincident").add(Leaf("PLATE", a_plate())).add(bracket)
+    for x, y in PTS:
+        s24.add(bolt, m_tr((x, y, 8)))
+    s24.add(bolt, m_tr((PTS[0][0], PTS[0][1], 8)))
+    a.case("s24_coincident", s24, "a plate and bracket with a bolt placed twice at one place", [], False,
+           {"from": "s01, without nuts, one bolt twice"}, asm_expect(s24, notes=["coincident_occurrences"]))
 
     two = [Node("ROOT_A").add(Leaf("PLATE", a_plate())), Node("ROOT_B").add(bolt, m_tr((0, 0, 8)))]
     path = None

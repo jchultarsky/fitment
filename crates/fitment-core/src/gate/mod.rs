@@ -104,6 +104,12 @@ pub enum RefusalCode {
     /// An assembly's own shape holds more than curve and point sets, or
     /// cannot be read whole (check 35).
     AssemblyShapeItem,
+    /// A component (a leaf definition) is not a canonical part (check 36).
+    ComponentRefused,
+    /// An occurrence places a representation its part's solid is not
+    /// listed from, so its features would be placed in an unknown frame
+    /// (check 37).
+    SolidFrameUnplaced,
 }
 
 impl RefusalCode {
@@ -144,6 +150,8 @@ impl RefusalCode {
             Self::PlacementUnreadable => "placement_unreadable",
             Self::TooManyOccurrences => "too_many_occurrences",
             Self::AssemblyShapeItem => "assembly_shape_item",
+            Self::ComponentRefused => "component_refused",
+            Self::SolidFrameUnplaced => "solid_frame_unplaced",
         }
     }
 }
@@ -738,6 +746,8 @@ mod tests {
             PlacementUnreadable,
             TooManyOccurrences,
             AssemblyShapeItem,
+            ComponentRefused,
+            SolidFrameUnplaced,
         ];
         assert!(
             all.windows(2).all(|pair| pair[0] < pair[1]),

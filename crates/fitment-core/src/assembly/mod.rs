@@ -14,13 +14,13 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::features::{DefinitionRef, FileHeader};
+use crate::features::{DefinitionRef, FileHeader, Part};
 use crate::gate::Refusal;
 use crate::geom::Rigid;
 
 pub use parts::{
-    GateResult, PARTS_FORMAT, PARTS_FORMAT_VERSION, PartEntry, PartOccurrence, PartsDocument,
-    PartsFormatError, Source,
+    ComponentSummary, GateResult, PARTS_FORMAT, PARTS_FORMAT_VERSION, PartEntry, PartOccurrence,
+    PartsDocument, PartsFormatError, Source,
 };
 
 /// At most this many occurrences are read under one root (check 34).
@@ -46,6 +46,7 @@ pub struct AssemblyRead {
     refusals: Vec<Refusal>,
     listing: Option<Listing>,
     gate: Vec<Refusal>,
+    notes: Vec<AssemblyNote>,
 }
 
 impl AssemblyRead {
@@ -66,9 +67,14 @@ impl AssemblyRead {
         self.listing.as_ref()
     }
 
+    /// What the reading noticed that refuses nothing, sorted.
+    pub fn notes(&self) -> &[AssemblyNote] {
+        &self.notes
+    }
+
     /// Why a socket cannot be read from the file: the refusals above, or
-    /// the assembly gate's own (checks 31 and 35), sorted. Empty when the
-    /// assembly passes.
+    /// the assembly gate's own (checks 31 and 35 to 38), sorted. Empty
+    /// when the assembly passes.
     pub fn gate_refusals(&self) -> &[Refusal] {
         if self.refusals.is_empty() {
             &self.gate
@@ -102,6 +108,47 @@ pub struct ListedDefinition {
     /// Its occurrences, as indices into [`Listing::occurrences`], in path
     /// order. Their number is the definition's quantity.
     pub occurrences: Vec<usize>,
+    /// For a part, what reading it as a part gave (check 36): its
+    /// features, or why it is not a canonical part. `None` for an
+    /// assembly.
+    pub read: Option<ComponentRead>,
+}
+
+/// A component read as a part, once however often it occurs (P1).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum ComponentRead {
+    /// A canonical part, in its own frame.
+    Accepted(Box<Part>),
+    /// Why it is not one, sorted.
+    Refused(Vec<Refusal>),
+}
+
+/// Something reading an assembly noticed that refuses nothing.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct AssemblyNote {
+    /// What it is.
+    pub code: AssemblyNoteCode,
+    /// The `#id` it concerns, if one.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub instance: Option<u64>,
+    /// For people.
+    pub message: String,
+}
+
+/// The kinds of [`AssemblyNote`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum AssemblyNoteCode {
+    /// Two occurrences of one definition at the same place, within the
+    /// identity tolerance: usually a modelling slip.
+    CoincidentOccurrences,
+    /// A context on an occurrence's placement path states no length
+    /// uncertainty, so it adds nothing to the floor (Z1).
+    AssemblyUncertaintyMissing,
 }
 
 /// One usage on an occurrence's path.
@@ -196,6 +243,14 @@ pub struct Occurrence {
     pub representation: Option<u64>,
     /// The occurrence's coordinates (mm) to the root's (mm).
     pub transform: Rigid,
+    /// Its part's largest stated uncertainty, in mm; 0 for an assembly or
+    /// a refused part (Z1).
+    pub part_uncertainty_mm: f64,
+    /// Its part's solid's largest vertex offset, in mm; 0 likewise (Z1).
+    pub vertex_offset_mm: f64,
+    /// The largest length uncertainty stated by the contexts it is placed
+    /// through, the root's included; 0 if none states one (Z1).
+    pub placement_uncertainty_mm: f64,
 }
 
 /// A usage between two listed definitions.

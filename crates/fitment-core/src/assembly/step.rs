@@ -9,11 +9,12 @@ use stepq::model::{Graph, Placements, ProductStructure};
 use stepq::p21::parse;
 
 use super::{
-    AssemblyRead, DefinitionKind, ListedDefinition, ListedUsage, Listing, Occurrence,
-    OccurrencePath, PathForm, UsageRef,
+    AssemblyNote, AssemblyNoteCode, AssemblyRead, ComponentRead, DefinitionKind, ListedDefinition,
+    ListedUsage, Listing, Occurrence, OccurrencePath, PathForm, UsageRef,
 };
-use crate::features::{DefinitionRef, ProductRef, header_of};
+use crate::features::{DefinitionRef, ProductRef, header_of, part_of_definition};
 use crate::gate::{self, Refusal, RefusalCode};
+use crate::geom::Rigid;
 
 /// A refused read: no listing.
 fn refused(header: Option<crate::features::FileHeader>, refusals: Vec<Refusal>) -> AssemblyRead {
@@ -22,6 +23,7 @@ fn refused(header: Option<crate::features::FileHeader>, refusals: Vec<Refusal>) 
         refusals: gate::finish(refusals),
         listing: None,
         gate: Vec::new(),
+        notes: Vec::new(),
     }
 }
 
@@ -77,13 +79,234 @@ pub(super) fn read(step: &[u8]) -> AssemblyRead {
             refusals.extend(gate::assembly::assembly_shape(&graph, &structure, index));
         }
     }
-    let listing = listing(&structure, root, placed);
+    let (mut listing, indices) = listing(&structure, root, placed);
+    refusals.extend(components(&graph, &structure, &mut listing, &indices));
+    let mut notes = uncertainties(&graph, &mut listing);
+    notes.extend(coincident(&listing));
+    notes.sort();
+    notes.dedup();
     AssemblyRead {
         header,
         refusals: Vec::new(),
         listing: Some(listing),
         gate: gate::finish(refusals),
+        notes,
     }
+}
+
+/// Check 36, then 37 and 38: every distinct part read once (P1); every
+/// occurrence of an accepted part placing a frame its solid is listed
+/// from (P3); every placed coordinate within range. `indices` holds each
+/// listed definition's index in `structure`.
+fn components(
+    graph: &Graph<'_>,
+    structure: &ProductStructure,
+    listing: &mut Listing,
+    indices: &[usize],
+) -> Vec<Refusal> {
+    let mut refusals = Vec::new();
+    let mut frames: BTreeMap<usize, (Vec<u64>, f64)> = BTreeMap::new();
+    for (listed_index, (listed, &index)) in listing.definitions.iter_mut().zip(indices).enumerate()
+    {
+        if listed.kind != DefinitionKind::Part {
+            continue;
+        }
+        match part_of_definition(graph, structure, index) {
+            Ok(read) => {
+                frames.insert(listed_index, (read.frames, read.reach_mm));
+                listed.read = Some(ComponentRead::Accepted(Box::new(read.part)));
+            }
+            Err(found) => {
+                let found = gate::finish(found);
+                let mut codes: Vec<&str> = found.iter().map(|r| r.code.name()).collect();
+                codes.dedup();
+                let product = listed.definition.product.as_ref();
+                refusals.push(Refusal::new(
+                    RefusalCode::ComponentRefused,
+                    Some(listed.definition.instance),
+                    format!(
+                        "component #{} ('{}', {} occurrences) is not a canonical part: {}",
+                        listed.definition.instance,
+                        product.and_then(|p| p.id.as_deref()).unwrap_or(""),
+                        listed.occurrences.len(),
+                        codes.join(", ")
+                    ),
+                ));
+                listed.read = Some(ComponentRead::Refused(found));
+            }
+        }
+    }
+    for occurrence in &listing.occurrences {
+        let Some((allowed, reach)) = frames.get(&occurrence.definition) else {
+            continue;
+        };
+        let last = occurrence.path.usages().last().map(|usage| usage.instance);
+        if last.is_some()
+            && !occurrence
+                .representation
+                .is_some_and(|r| allowed.contains(&r))
+        {
+            refusals.push(Refusal::new(
+                RefusalCode::SolidFrameUnplaced,
+                last,
+                format!(
+                    "usage #{} places representation {}, which the part's solid is not listed \
+                     from ({allowed:?})",
+                    last.unwrap_or(0),
+                    occurrence
+                        .representation
+                        .map_or_else(|| "none".to_owned(), |r| format!("#{r}"))
+                ),
+            ));
+        }
+        if !in_range(&occurrence.transform, *reach) {
+            refusals.push(Refusal::new(
+                RefusalCode::OutOfRange,
+                last,
+                format!(
+                    "an occurrence placed by usage #{} carries its part beyond {} mm",
+                    last.unwrap_or(0),
+                    gate::geometry::RANGE_MM
+                ),
+            ));
+        }
+    }
+    refusals
+}
+
+/// Check 38: a part reaching `reach` mm from its origin, moved by
+/// `transform`, stays within range: a rotation keeps distances, so no
+/// placed point lies farther than `reach + |t|`.
+fn in_range(transform: &Rigid, reach: f64) -> bool {
+    let t = transform.translation();
+    let far = reach + (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+    far.is_finite() && far < gate::geometry::RANGE_MM
+}
+
+/// Z1: each occurrence's part and placement uncertainties. A placement's
+/// is the largest any context on its path states: the root's
+/// representation and each enclosing occurrence's.
+fn uncertainties(graph: &Graph<'_>, listing: &mut Listing) -> Vec<AssemblyNote> {
+    let mut notes = Vec::new();
+    let mut of_representation: BTreeMap<u64, Option<f64>> = BTreeMap::new();
+    let mut context = |representation: u64, notes: &mut Vec<AssemblyNote>| -> f64 {
+        let stated = *of_representation
+            .entry(representation)
+            .or_insert_with(|| gate::assembly::context_uncertainty(graph, representation));
+        if stated.is_none() {
+            notes.push(AssemblyNote {
+                code: AssemblyNoteCode::AssemblyUncertaintyMissing,
+                instance: Some(representation),
+                message: format!(
+                    "the context of representation #{representation} states no length uncertainty"
+                ),
+            });
+        }
+        stated.unwrap_or(0.0)
+    };
+    // Occurrences are sorted by path, so an enclosing occurrence comes
+    // before those inside it: its own placement floor is known by then.
+    let mut by_path: BTreeMap<Vec<u64>, f64> = BTreeMap::new();
+    for index in 0..listing.occurrences.len() {
+        let Some(occurrence) = listing.occurrences.get(index) else {
+            continue;
+        };
+        let instances = occurrence.path.instances();
+        let enclosing = instances.split_last().map(|(_, parent)| parent.to_vec());
+        let inherited = enclosing
+            .and_then(|p| by_path.get(&p).copied())
+            .unwrap_or(0.0);
+        let is_assembly = listing
+            .definitions
+            .get(occurrence.definition)
+            .is_some_and(|d| d.kind == DefinitionKind::Assembly);
+        let own = match (is_assembly, occurrence.representation) {
+            (true, Some(representation)) => context(representation, &mut notes),
+            _ => 0.0,
+        };
+        let (part, offset) = match listing
+            .definitions
+            .get(occurrence.definition)
+            .and_then(|d| d.read.as_ref())
+        {
+            Some(ComponentRead::Accepted(part)) => (
+                part.max_uncertainty_mm,
+                part.solids.first().map_or(0.0, |s| s.max_vertex_offset_mm),
+            ),
+            _ => (0.0, 0.0),
+        };
+        by_path.insert(instances, inherited.max(own));
+        if let Some(occurrence) = listing.occurrences.get_mut(index) {
+            occurrence.placement_uncertainty_mm = inherited;
+            occurrence.part_uncertainty_mm = part;
+            occurrence.vertex_offset_mm = offset;
+        }
+    }
+    notes
+}
+
+/// Two occurrences of one definition at one place (within `IDENTITY_MM`),
+/// found through a grid of their translations, so the work stays linear.
+fn coincident(listing: &Listing) -> Vec<AssemblyNote> {
+    let tolerance = gate::geometry::IDENTITY_MM;
+    let cell = |x: f64| (x / tolerance).floor();
+    let mut grid: BTreeMap<(usize, [i64; 3]), Vec<usize>> = BTreeMap::new();
+    let mut notes = Vec::new();
+    for (index, occurrence) in listing.occurrences.iter().enumerate() {
+        let t = occurrence.transform.translation();
+        // Saturating: a cell index far out of i64's range is still one cell.
+        #[allow(clippy::cast_possible_truncation)]
+        let key = [cell(t[0]) as i64, cell(t[1]) as i64, cell(t[2]) as i64];
+        let mut found = None;
+        'cells: for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let near = [key[0] + dx, key[1] + dy, key[2] + dz];
+                    for &other in grid
+                        .get(&(occurrence.definition, near))
+                        .into_iter()
+                        .flatten()
+                    {
+                        if same_place(
+                            &listing.occurrences[other].transform,
+                            &occurrence.transform,
+                            tolerance,
+                        ) {
+                            found = Some(other);
+                            break 'cells;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(other) = found {
+            let first = &listing.occurrences[other];
+            notes.push(AssemblyNote {
+                code: AssemblyNoteCode::CoincidentOccurrences,
+                instance: occurrence.path.usages().last().map(|u| u.instance),
+                message: format!(
+                    "occurrences {} and {} of one definition are at the same place",
+                    first.path.display(PathForm::Instance),
+                    occurrence.path.display(PathForm::Instance)
+                ),
+            });
+        } else {
+            grid.entry((occurrence.definition, key))
+                .or_default()
+                .push(index);
+        }
+    }
+    notes
+}
+
+/// True if two transforms agree entry by entry within `tolerance`.
+fn same_place(a: &Rigid, b: &Rigid, tolerance: f64) -> bool {
+    let (ra, rb) = (a.rotation(), b.rotation());
+    let (ta, tb) = (a.translation(), b.translation());
+    (0..3).all(|i| {
+        (ta[i] - tb[i]).abs() <= tolerance
+            && (0..3).all(|j| (ra[i][j] - rb[i][j]).abs() <= tolerance)
+    })
 }
 
 /// O2: usage ids are the written form only if every usage has one that
@@ -112,7 +335,7 @@ fn listing(
     structure: &ProductStructure,
     root: usize,
     placed: Vec<gate::assembly::Placed>,
-) -> Listing {
+) -> (Listing, Vec<usize>) {
     let definitions = structure.definitions();
     let usages = structure.usages();
     // Structure index to listing index, by `#id`.
@@ -148,6 +371,7 @@ fn listing(
                     DefinitionKind::Assembly
                 },
                 occurrences: Vec::new(),
+                read: None,
             })
         })
         .collect();
@@ -169,6 +393,9 @@ fn listing(
                 definition: *index_of.get(&placed.occurrence.definition)?,
                 representation: placed.occurrence.representation,
                 transform: placed.transform,
+                part_uncertainty_mm: 0.0,
+                vertex_offset_mm: 0.0,
+                placement_uncertainty_mm: 0.0,
             })
         })
         .collect();
@@ -188,11 +415,12 @@ fn listing(
             })
         })
         .collect();
-    Listing {
+    let listing = Listing {
         root: index_of.get(&root).copied().unwrap_or(0),
         definitions: listed,
         occurrences,
         usages: listed_usages,
         path_form: path_form(structure),
-    }
+    };
+    (listing, reached.into_values().collect())
 }

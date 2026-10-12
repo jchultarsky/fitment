@@ -75,16 +75,58 @@ fn part(graph: &Graph<'_>, info: &Info) -> Result<Part, Vec<Refusal>> {
     if !refusals.is_empty() {
         return Err(refusals);
     }
-    let Some(definition) = structure.definitions().first() else {
+    if structure.definitions().is_empty() {
         return Err(vec![Refusal::new(
             RefusalCode::Internal,
             None,
             "the gate passed a file with no definition",
         )]);
+    }
+    part_of_definition(graph, &structure, 0).map(|read| read.part)
+}
+
+/// The shape representations solid `item` is listed from, sorted.
+fn frames(shape: &stepq::model::DefinitionShape, item: u64) -> Vec<u64> {
+    let mut frames: Vec<u64> = shape
+        .solids
+        .iter()
+        .filter(|listed| listed.item == item)
+        .map(|listed| listed.shape_representation)
+        .collect();
+    frames.sort_unstable();
+    frames.dedup();
+    frames
+}
+
+/// A definition read as a part, with what reading an assembly needs
+/// besides its document.
+pub(crate) struct DefinitionRead {
+    pub(crate) part: Part,
+    /// The shape representations the solid is listed from: the frames an
+    /// assembly usage may place the part through (check 37).
+    pub(crate) frames: Vec<u64>,
+    /// The largest distance from the part's origin of anything its solid
+    /// states, in mm: check 38 bounds a placed coordinate by it.
+    pub(crate) reach_mm: f64,
+}
+
+/// Gate stages 3 to 6 and the features of definition `index` of
+/// `structure`: the part a file holding only that definition would give.
+pub(crate) fn part_of_definition(
+    graph: &Graph<'_>,
+    structure: &ProductStructure,
+    index: usize,
+) -> Result<DefinitionRead, Vec<Refusal>> {
+    let Some(definition) = structure.definitions().get(index) else {
+        return Err(vec![Refusal::new(
+            RefusalCode::Internal,
+            None,
+            "a definition index is out of range",
+        )]);
     };
 
-    // Stage 3: the shape. Index 0 is in range: there is one definition.
-    let shape = structure.shape(graph, 0);
+    // Stage 3: the shape.
+    let shape = structure.shape(graph, index);
     let solid = gate::shape(graph, &shape)?;
     let item = solid.item;
     let transform = match &solid.transform {
@@ -139,7 +181,9 @@ fn part(graph: &Graph<'_>, info: &Info) -> Result<Part, Vec<Refusal>> {
         });
     }
 
-    Ok(Part {
+    let frames = frames(&shape, item.item);
+    let reach_mm = super::extent::reach(&moved);
+    let part = Part {
         definition: DefinitionRef {
             instance: definition.instance,
             product: definition.product.as_ref().map(|product| ProductRef {
@@ -164,6 +208,7 @@ fn part(graph: &Graph<'_>, info: &Info) -> Result<Part, Vec<Refusal>> {
         }],
         max_uncertainty_mm: finite(facts.max_uncertainty_mm),
         complete: primary.complete,
+        extent: super::extent::of(&moved, finite(facts.max_vertex_offset_mm)),
         face_counts: primary.face_counts,
         planes: primary.planes,
         cylinders: primary.cylinders,
@@ -174,5 +219,10 @@ fn part(graph: &Graph<'_>, info: &Info) -> Result<Part, Vec<Refusal>> {
         shafts: primary.shafts,
         other_items: others.into_values().collect(),
         notes: primary.notes,
+    };
+    Ok(DefinitionRead {
+        part,
+        frames,
+        reach_mm,
     })
 }

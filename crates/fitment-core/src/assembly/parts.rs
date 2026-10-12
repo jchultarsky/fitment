@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::{DefinitionKind, PathForm, read_assembly};
+use super::{AssemblyNote, ComponentRead, DefinitionKind, PathForm, read_assembly};
 use crate::EXTRACTOR_VERSION;
 use crate::features::{DefinitionRef, FileHeader, Status};
 use crate::gate::Refusal;
@@ -68,6 +68,31 @@ pub struct PartOccurrence {
     pub label: Vec<Option<String>>,
     /// The occurrence's coordinates (mm) to the root's (mm).
     pub transform: Rigid,
+    /// Its part's largest stated uncertainty, in mm (Z1).
+    pub part_uncertainty_mm: f64,
+    /// Its part's solid's largest vertex offset, in mm (Z1).
+    pub vertex_offset_mm: f64,
+    /// The largest uncertainty the contexts it is placed through state,
+    /// in mm (Z1).
+    pub placement_uncertainty_mm: f64,
+}
+
+/// What reading a part gave, in brief (check 36).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct ComponentSummary {
+    /// Accepted, or refused with reasons.
+    pub gate: GateResult,
+    /// Its holes, if accepted.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub holes: Option<u64>,
+    /// Its shafts, if accepted.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub shafts: Option<u64>,
+    /// Its `complete`, if accepted.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub complete: Option<bool>,
 }
 
 /// A definition reached from the root.
@@ -83,6 +108,9 @@ pub struct PartEntry {
     pub quantity: u64,
     /// Every occurrence, by path.
     pub occurrences: Vec<PartOccurrence>,
+    /// For a part, what reading it gave; `None` for an assembly.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub component: Option<ComponentSummary>,
 }
 
 /// A parts document: every definition of an assembly with its
@@ -108,6 +136,64 @@ pub struct PartsDocument {
     #[serde(deserialize_with = "Option::deserialize")]
     path_form: Option<PathForm>,
     parts: Vec<PartEntry>,
+    notes: Vec<AssemblyNote>,
+}
+
+/// A part carries its read and an assembly none; an accepted read its
+/// counts, a refused one its reasons.
+fn check_component(part: &PartEntry) -> Result<(), String> {
+    let instance = part.definition.instance;
+    match (part.kind, &part.component) {
+        (DefinitionKind::Assembly, None) => Ok(()),
+        (DefinitionKind::Part, Some(summary)) => {
+            let refusals = &summary.gate.refusals;
+            let sorted = refusals.windows(2).all(|pair| pair[0] < pair[1]);
+            let counts = [
+                summary.holes.is_some(),
+                summary.shafts.is_some(),
+                summary.complete.is_some(),
+            ];
+            let consistent = match summary.gate.status {
+                Status::Accepted => refusals.is_empty() && counts.iter().all(|c| *c),
+                Status::Refused => !refusals.is_empty() && counts.iter().all(|c| !*c),
+            };
+            if sorted && consistent {
+                Ok(())
+            } else {
+                Err(format!(
+                    "#{instance}: its read's status, counts and reasons disagree"
+                ))
+            }
+        }
+        _ => Err(format!(
+            "#{instance}: a part carries its read, an assembly none"
+        )),
+    }
+}
+
+/// A component's read, in brief.
+fn summary(read: &ComponentRead) -> ComponentSummary {
+    let count = |n: usize| Some(u64::try_from(n).unwrap_or(u64::MAX));
+    match read {
+        ComponentRead::Accepted(part) => ComponentSummary {
+            gate: GateResult {
+                status: Status::Accepted,
+                refusals: Vec::new(),
+            },
+            holes: count(part.holes.len()),
+            shafts: count(part.shafts.len()),
+            complete: Some(part.complete),
+        },
+        ComponentRead::Refused(refusals) => ComponentSummary {
+            gate: GateResult {
+                status: Status::Refused,
+                refusals: refusals.clone(),
+            },
+            holes: None,
+            shafts: None,
+            complete: None,
+        },
+    }
 }
 
 /// Why a parts document could not be read back.
@@ -159,6 +245,7 @@ impl PartsDocument {
                 root: None,
                 path_form: None,
                 parts: Vec::new(),
+                notes: Vec::new(),
             };
         };
         let gate = read.gate_refusals().to_vec();
@@ -182,8 +269,12 @@ impl PartsDocument {
                             .map(|usage| usage.id.clone())
                             .collect(),
                         transform: occurrence.transform,
+                        part_uncertainty_mm: occurrence.part_uncertainty_mm,
+                        vertex_offset_mm: occurrence.vertex_offset_mm,
+                        placement_uncertainty_mm: occurrence.placement_uncertainty_mm,
                     })
                     .collect(),
+                component: listed.read.as_ref().map(summary),
             })
             .collect();
         Self {
@@ -207,7 +298,13 @@ impl PartsDocument {
                 .map(|listed| listed.definition.clone()),
             path_form: Some(listing.path_form()),
             parts,
+            notes: read.notes().to_vec(),
         }
+    }
+
+    /// What the reading noticed that refuses nothing, sorted.
+    pub fn notes(&self) -> &[AssemblyNote] {
+        &self.notes
     }
 
     /// The file it was read from.
@@ -391,8 +488,20 @@ impl PartsDocument {
         let mut kinds: BTreeMap<&[u64], DefinitionKind> = BTreeMap::new();
         let mut labels: BTreeMap<u64, &Option<String>> = BTreeMap::new();
         let (mut segments, mut bytes) = (0usize, 0usize);
+        if !self.notes.windows(2).all(|pair| pair[0] < pair[1]) {
+            return Err("notes are not sorted, or repeat".to_owned());
+        }
         for part in &self.parts {
+            check_component(part)?;
             for occurrence in &part.occurrences {
+                let floors = [
+                    occurrence.part_uncertainty_mm,
+                    occurrence.vertex_offset_mm,
+                    occurrence.placement_uncertainty_mm,
+                ];
+                if !floors.iter().all(|f| f.is_finite() && *f >= 0.0) {
+                    return Err(format!("{:?}: an uncertainty is negative", occurrence.path));
+                }
                 if kinds.insert(&occurrence.path, part.kind).is_some() {
                     return Err(format!("the path {:?} occurs twice", occurrence.path));
                 }
