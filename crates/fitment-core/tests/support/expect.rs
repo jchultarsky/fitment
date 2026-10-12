@@ -234,6 +234,17 @@ fn unknown_problem(s: &Value, want: &Value, point: &[f64], direction: &[f64]) ->
     if found != wanted {
         return Some(format!("{}: ends {found:?}, wanted {wanted:?}", s["id"]));
     }
+    // Why the end is unknown, where the construction says.
+    if let Some(reason) = want.get("unknown_reason") {
+        let given = s["ends"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|e| e["kind"] == "unknown" && e["reason"] == *reason);
+        if !given {
+            return bad("unknown for another reason");
+        }
+    }
     // The manifest's point is where the hole is entered: the opening's
     // rim lies there.
     let entry = numbers(&want["axis_line_point"]);

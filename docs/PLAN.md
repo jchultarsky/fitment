@@ -11,7 +11,10 @@ M0 was completed on 9 Oct 2026, M1 on 11 Oct 2026 and M2 on 12 Oct 2026: `fitmen
 
 ```text
 Read docs/PLAN.md, sections "How it works", "Soundness rules", "Matching method"
-(step 2) and "Milestones", and docs/ARCHITECTURE.md. We are at fitment's milestone
+(step 2), "Choosing the part to replace" (and decision D11) and "Milestones";
+docs/ARCHITECTURE.md; and docs/research/m2-features.md sections 4.5, 7.4 and 9.6,
+which bind M3 (the assembly gate, unknown outlines, unknown ends and undecided
+cylinders). We are at fitment's milestone
 M3: socket extraction from an assembly, and the reviewable socket file printed by
 `fitment socket asm.stp --part X`.
 1. Propose the socket types, the extraction rules and the generated test assemblies
@@ -108,9 +111,9 @@ One Cargo workspace grows one crate per milestone on top of stepq (decision 11);
 | Component | Where | Responsibility | Reuse |
 | --- | --- | --- | --- |
 | STEP reading | stepq (extended) | Parsing, product structure, placements, geometry values, units, properties, PMI | Exists; six additions in M1 (0.6.0) |
-| Matcher | `fitment-core` (M0) | Features, socket, signature, alignment, verification, evidence; a `FitVerifier` trait. No storage, no network, enforced by CI. The only crate that depends on stepq. | New |
+| Matcher | `fitment-core` (M0) | Canonical gate and features (M2), socket, signature, alignment, verification, evidence; a `FitVerifier` trait. No storage, no network, enforced by CI. The only crate that depends on stepq. | New |
 | CLI | `fitment`, binary `fitment` (M0) | `features`, `socket`, `match`, later `catalog`. Proves the matcher before any server exists. | stepq's CLI pattern |
-| Catalog | `fitment-catalog` (M5), synchronous | File store, feature index, canonical gate, CRUD, re-index when the extractor version changes | Vectera's lessons only |
+| Catalog | `fitment-catalog` (M5), synchronous | File store, feature index, applies the canonical gate (built in M2, in `fitment-core`), CRUD, re-index when the extractor version changes | Vectera's lessons only |
 | API | `fitment-server` (M6), the only async crate | REST over catalog and matcher. Ingest and matching run as jobs. | Vectera's auth, ported |
 | Fit verifier | Optional crate, pure Rust, plus a helper script | Body clearance against the neighbors. The crate implements `FitVerifier` and drives a pinned Open CASCADE helper in a separate process; a crash, timeout or warning there means "not verified", never a pass | New; stepq's Open CASCADE oracle stack (D1) |
 | Viewer | Later | Shows the socket and a candidate in 3D. Needs tessellation, which stepq will not do. | Check Vectera |
@@ -137,7 +140,7 @@ The rule to keep, reworded: stepq reads what the file states and never computes 
 
 None of this changes output: the additions only read, so unchanged entities are still written byte for byte. No new dependency is needed.
 
-Documents that state the old rule and need editing: `README.md` ("What it will not do"), `CLAUDE.md` (hard rules), `docs/ARCHITECTURE.md` (non-goals) and `ROADMAP.md` ("Not planned").
+The documents that stated the old rule were edited in M1: `README.md` ("What it will not do"), `CLAUDE.md` (hard rules), `docs/ARCHITECTURE.md` (non-goals) and `ROADMAP.md` ("Not planned").
 
 Test oracle, as elsewhere in stepq: compare the placements and cylinder axes stepq reads with what Open CASCADE reports for the same fixtures, by extending `tools/verify-occt.py`.
 
@@ -157,7 +160,7 @@ The user names a part by its part number, and every occurrence of it is replaced
 A candidate is never compared with the original part. It is tested against the socket, in seven steps.
 
 1. **Features of one part**, read without a kernel:
-    - Edge-connected faces with the same sense on one stated `cylindrical_surface` are one cylinder; coaxial cylinders that do not touch stay separate. `face_sense` (`same_sense` composed with the shell's orientation) false marks a hole and true a shaft, because a cylinder's surface normal points away from its axis and a face normal points out of the material; the gate checks it against the loops.
+    - Edge-connected faces with the same sense on `cylindrical_surface`s with the same axis line and radius (within 1e-6 mm) are one cylinder, whether they share one surface entity or not; coaxial cylinders that do not touch stay separate. `face_sense` (`same_sense` composed with the shell's orientation) false marks a hole and true a shaft, because a cylinder's surface normal points away from its axis and a face normal points out of the material; the gate checks it against the loops wherever they decide it (a whole shell written inside out passes, R11 in the M2 design).
     - Only a full circle is a hole. The arcs at each end must sum to 360°; a partial concave cylinder is a fillet or a slot end.
     - The extent along the axis comes from the centres of the stated end circles. It gives the depth, and what closes the end gives through or blind.
     - Two coaxial radii joined by a flat ring are a counterbore. A coaxial `conical_surface` is a countersink or a drill point.

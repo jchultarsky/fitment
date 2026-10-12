@@ -6,10 +6,22 @@
 
 use fitment_core::{Bottom, HoleKind, ShaftKind, StackEnd, UnknownReason, read_part};
 
+/// `input` with each `from` replaced by its `to`; each must occur once.
+fn edit(input: &[u8], edits: &[(&str, &str)]) -> Vec<u8> {
+    let mut text = std::str::from_utf8(input).unwrap().to_owned();
+    for (from, to) in edits {
+        assert_eq!(text.matches(from).count(), 1, "{from}");
+        text = text.replacen(from, to, 1);
+    }
+    text.into_bytes()
+}
+
 /// A conical washer: a Ø6 bore 2 mm long through a cone that falls from
 /// the bore's top back to its outer rim. Its faces run back along the bore's
 /// axis, which the cone rule once read as material beyond: the bore came
 /// out blind with an annular bottom on the rim.
+const P01_THROUGH: &[u8] = include_bytes!("data/p01_through.stp");
+
 const BELLEVILLE: &[u8] = include_bytes!("edits/belleville.stp");
 
 /// A Ø10 flat-bottomed hole with a 90° conical dimple of radius 3 in its
@@ -74,4 +86,27 @@ fn a_point_of_two_cones_measures_its_tip_to_the_apex() {
         panic!("{:?}", hole.ends[0]);
     };
     assert!((tip_length_mm - 5.5).abs() < 1e-6, "{tip_length_mm}");
+}
+
+#[test]
+fn stations_come_from_circle_centres_not_vertices() {
+    // E1: the top circle's one vertex moved 0.005 mm up the axis, within a
+    // stated uncertainty of 0.01 mm. A station read from the vertex would
+    // make the hole 8.005 long; from the circle's centre it stays 8.
+    let moved = edit(
+        P01_THROUGH,
+        &[
+            ("LENGTH_MEASURE(1.E-07)", "LENGTH_MEASURE(1.E-02)"),
+            (
+                "#112 = CARTESIAN_POINT('',(16.7,15.,8.));",
+                "#112 = CARTESIAN_POINT('',(16.7,15.,8.005));",
+            ),
+        ],
+    );
+    let part = read_part(&moved).unwrap();
+    let [hole] = &part.holes[..] else {
+        panic!("{} holes", part.holes.len());
+    };
+    assert_eq!(hole.kind, HoleKind::Through);
+    assert_eq!(hole.length_mm, Some(8.0));
 }

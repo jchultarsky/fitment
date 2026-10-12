@@ -7,7 +7,8 @@ verdict with its evidence.
 
 > **Status: milestone M2 done.** [`read_part`] reads one part from a
 > STEP file through the canonical gate and returns its planes, cylinders,
-> cones, tori, holes and shafts; [`FeaturesDocument`] is its JSON form.
+> cones, tori, faces no rule reads, holes and shafts;
+> [`FeaturesDocument`] is its JSON form.
 > Sockets and matching arrive in milestones M3 and M4; see the
 > [plan](https://github.com/jchultarsky/fitment/blob/main/docs/PLAN.md).
 

@@ -65,18 +65,24 @@ schema    ap214   Open CASCADE 7.9
 part      #5 'p05_cbore'   frame #10
 solid-15    MANIFOLD_SOLID_BREP
 faces     9 (7 planar, 2 cylindrical, 0 conical, 0 toroidal, 0 other)   complete true
+plane-17        normal (-1, 0, 0) offset 0   area 600   1 face(s)
+plane-57        normal (0, -1, 0) offset 0   area 600   1 face(s)
 plane-88        normal (0, 0, 1) offset 15   area 1504.9668   1 face(s)
+plane-123       normal (0, 1, 0) offset 40   area 600   1 face(s)
+plane-147       normal (0, 0, -1) offset 0   area 1565.7881   1 face(s)
+plane-175       normal (1, 0, 0) offset 40   area 600   1 face(s)
 plane-237       normal (0, 0, 1) offset 8.5   area 60.8212   1 face(s)
-...
 cylinder-187    hole Ø11 full   axis (0, 0, 1) through (20, 20, 8.5)
 cylinder-212    hole Ø6.6 full   axis (0, 0, 1) through (20, 20, 0)
 hole-187        through Ø6.6/Ø11 length 15   opening@0 → opening@15
 ```
 
 It exits 0 for a part, 3 for a file it refuses (the reasons go to stderr
-and into the JSON), and 1 on an error. Where a rule cannot decide, such as
-a hole ending on a curve stepq does not read, the feature says `unknown`
-rather than guessing.
+and into the JSON), 1 on an error and 2 on a usage error. Where a rule
+cannot decide, it says so rather than guessing: a hole whose wall ends on
+a curve stepq does not read is an `undecided` cylinder and no hole, a
+hole whose end the rules cannot read has an `unknown` end, and a plane
+with an unread edge has an `unknown` outline.
 
 ## Planned interface
 

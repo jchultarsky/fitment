@@ -896,3 +896,109 @@ fn relocate(end: StackEnd, shift: &dyn Fn(f64) -> Option<f64>) -> Option<StackEn
         StackEnd::Irregular {} => StackEnd::Irregular {},
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::FeatureKind;
+    use crate::features::cylinder::Sense;
+    use crate::geom::{Dir3, Point3};
+
+    fn cylinder(instance: u64, radius: f64) -> Cylinder {
+        Cylinder {
+            id: FeatureId::new(FeatureKind::Cylinder, instance),
+            solid: FeatureId::new(FeatureKind::Solid, 1),
+            shell: 0,
+            faces: vec![instance],
+            surface: instance + 1,
+            sense: Sense::Hole,
+            axis: Axis {
+                point_mm: Point3::ORIGIN,
+                direction: Dir3::from_unit([0.0, 0.0, 1.0]).unwrap_or_else(|| unreachable!()),
+            },
+            radius_mm: radius,
+            spread_mm: 0.0,
+            class: CylinderClass::Full {},
+            stations_mm: vec![0.0, 5.0],
+            wall_openings: 0,
+            near_misses: Vec::new(),
+        }
+    }
+
+    fn wall(c: &Cylinder, base: f64) -> Wall {
+        Wall {
+            id: c.id,
+            radius: c.radius_mm,
+            shaft: false,
+            point: [0.0, 0.0, base],
+            z: [0.0, 0.0, 1.0],
+        }
+    }
+
+    fn walked(at: f64, terminal: Terminal) -> Side {
+        Side::Walked(Walk {
+            outcome: Ok((true, terminal)),
+            at,
+            rim: at,
+            plane: Some(at),
+            transitions: Vec::new(),
+            cones: Vec::new(),
+        })
+    }
+
+    /// A Ø6 bore from z 0 to 5 under a Ø11 counterbore from z 5 to 10;
+    /// the counterbore's walk down ends at `back`.
+    fn counterbore(back: Terminal) -> Option<(Vec<Hole>, Vec<Shaft>)> {
+        let (bore, cbore) = (cylinder(10, 3.0), cylinder(20, 5.5));
+        let (bore_wall, cbore_wall) = (wall(&bore, 0.0), wall(&cbore, 5.0));
+        let stations = [0.0, 5.0];
+        let arcs = [Vec::new(), Vec::new()];
+        let group = |cylinder, wall| Group {
+            cylinder,
+            wall,
+            stations: &stations,
+            arcs: &arcs,
+        };
+        let groups = [group(&bore, &bore_wall), group(&cbore, &cbore_wall)];
+        let plane = FeatureId::new(FeatureKind::Plane, 30);
+        let sides = [
+            (
+                walked(0.0, Terminal::Face(plane)),
+                walked(5.0, Terminal::Step(cbore.id)),
+            ),
+            (walked(0.0, back), walked(5.0, Terminal::Face(plane))),
+        ];
+        stacks(&groups, &sides)
+    }
+
+    #[test]
+    fn mutual_steps_join_two_cylinders_in_one_stack() {
+        let (holes, _) = counterbore(Terminal::Step(FeatureId::new(FeatureKind::Cylinder, 10)))
+            .unwrap_or_default();
+        assert_eq!(holes.len(), 1);
+        let hole = &holes[0];
+        assert_eq!(hole.kind, HoleKind::Through);
+        assert_eq!(hole.segments.len(), 2);
+        assert_eq!(hole.length_mm, Some(10.0));
+    }
+
+    #[test]
+    fn a_step_the_other_cylinder_does_not_return_is_unknown() {
+        // W6: the counterbore's walk down stops on a face instead.
+        let (holes, _) =
+            counterbore(Terminal::Face(FeatureId::new(FeatureKind::Plane, 40))).unwrap_or_default();
+        assert_eq!(holes.len(), 2);
+        let bore = holes
+            .iter()
+            .find(|h| h.segments.iter().any(|s| s.cylinder.instance() == 10))
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(bore.kind, HoleKind::Unknown);
+        assert!(bore.ends.iter().any(|e| matches!(
+            e,
+            StackEnd::Unknown {
+                reason: UnknownReason::StepNotMutual,
+                ..
+            }
+        )));
+    }
+}

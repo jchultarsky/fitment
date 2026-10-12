@@ -154,6 +154,7 @@ class Hole:
     rim_end: str = "opening"  # how the entry end reads: opening, unknown
     far_end: str | None = None  # how the far end reads, if not by its kind
     kind: str | None = None  # forced kind, such as "unknown"
+    reason: str | None = None  # why an unknown end is unknown, as fitment names it
 
     def moved(self, m: Motion):
         return Hole(**{**self.__dict__, "entry": m.point(self.entry), "into": m.vector(self.into)})
@@ -161,8 +162,10 @@ class Hole:
     def expect(self):
         if self.kind == "unknown":
             # Only the axis line and diameter are stated; ends say why.
+            reason = {"unknown_reason": self.reason} if self.reason else {}
             return {
                 "kind": "unknown",
+                **reason,
                 "axis_line_point": r3(self.entry),
                 "axis_direction": r3(canonical(self.into)),
                 "diameter": r(self.segments[-1][0]),
@@ -468,8 +471,10 @@ RULES = {
                          f"{CORE}/features.rs::stage_6_refuses_a_face_or_edge_whose_geometry_is_not_geometry"]},
     "4.2#23": {},
     "4.2#24": {},
-    "4.2#25": {"tests": [f"{CORE}/features.rs::stage_6_refuses_a_plane_face_whose_sense_is_flipped",
-                         f"{CORE}/features.rs::stage_6_refuses_a_flipped_plane_face_with_an_arc_standing_across_it"]},
+    "4.2#25": {},
+    "4.2#25a": {"tests": [f"{CORE}/features.rs::stage_6_refuses_a_plane_face_whose_sense_is_flipped",
+                          f"{CORE}/features.rs::stage_6_refuses_a_flipped_plane_face_with_an_arc_standing_across_it"]},
+    "4.2#25b": {},
     "4.2#26": {"tests": [f"{CORE}/features.rs::stage_6_refuses_unreadable_and_out_of_range_geometry",
                          f"{CORE}/planes.rs::a_mapped_item_that_carries_the_solid_out_of_range_is_refused"]},
     "4.2#27": {"tests": [f"{SRC}/primary.rs::faces_on_one_cylinder_with_opposite_senses_are_a_contradiction"]},
@@ -493,35 +498,44 @@ RULES = {
     "G1": {}, "G2": {}, "G3": {}, "G4": {}, "G5": {},
     "S1": {}, "S3": {},
     "S2": {"tests": [f"{SRC}/primary.rs::faces_on_one_cylinder_with_opposite_senses_are_a_contradiction"]},
+    "F1": {"tests": [f"{CORE}/cylinders.rs::a_through_hole_is_full_between_its_two_end_circles"]},
     "F2": {"tests": [f"{SRC}/full.rs::two_arcs_around_the_circle_once_are_a_full_station",
                      f"{SRC}/full.rs::a_chain_that_sweeps_nothing_is_not_full"]},
     "F3": {"deferred": "withdrawn in review of PR 5: a seam is used twice by one loop as a slit is, and "
                        "without the curves on the surface it proves no wrap"},
+    "F4.full": {"tests": [f"{CORE}/cylinders.rs::a_through_hole_is_full_between_its_two_end_circles"]},
+    "F4.undecided": {"tests": [f"{SRC}/full.rs::end_stations_facing_away_from_the_wall_are_undecided",
+                               f"{CORE}/cylinders.rs::a_hole_with_no_end_circle_is_undecided_whatever_its_seam"]},
     "F4.partial": {}, "F4.one_irregular": {}, "F4.wall_openings": {},
     "F4.seam": {"tests": [f"{CORE}/cylinders.rs::a_slit_used_twice_by_one_loop_proves_no_wrap"]},
     "F4.one_station": {"tests": [
         f"{CORE}/cylinders.rs::a_wall_past_its_one_station_is_irregular_there_however_its_curve_ends"]},
     "F5": {},
     "8.6": {}, "8.7": {},
-    "W1": {}, "W3.cone": {}, "W3.torus": {}, "W3.plane_agreement": {},
+    "W1": {},
+    "W2": {"tests": [f"{SRC}/walk.rs::a_hole_widening_through_an_annulus_into_air_steps_to_the_wider_bore"]},
+    "W3.plane": {"tests": [f"{SRC}/walk.rs::a_hole_widening_through_an_annulus_into_air_steps_to_the_wider_bore"]},
+    "W3.other": {}, "W3.cone": {}, "W3.torus": {}, "W3.plane_agreement": {},
     "W4.annulus": {"tests": [
         f"{SRC}/walk.rs::a_hole_widening_through_an_annulus_into_air_steps_to_the_wider_bore"]},
     "W4.apex": {"tests": [f"{CORE}/holes.rs::a_point_of_two_cones_measures_its_tip_to_the_apex",
                           f"{CORE}/holes.rs::a_dimple_in_a_flat_floor_is_no_drill_point"]},
     "W4.cone": {}, "W4.disk": {}, "W4.face": {}, "W4.post": {}, "W4.sphere": {}, "W4.torus": {},
+    "W4.step": {"tests": [f"{SRC}/walk.rs::a_hole_widening_through_an_annulus_into_air_steps_to_the_wider_bore"]},
+    "W4.transition": {},
     "W5.opening": {}, "W5.bottom.flat": {}, "W5.bottom.cone_then_flat": {}, "W5.bottom.point": {},
-    "W5.bottom.annular": {}, "W5.free_end": {}, "W5.root": {}, "W5.unknown": {},
-    "W6": {},
-    "W7": {"deferred": "no part crosses eight transitions: the bound only stops a hostile walk, and every "
-                       "walk is bounded by the loop count, which a unit test would only restate"},
+    "W5.bottom.annular": {}, "W5.free_end": {}, "W5.root": {}, "W5.unknown": {}, "W5.irregular": {},
+    "W5.step": {"tests": [f"{SRC}/stack.rs::mutual_steps_join_two_cylinders_in_one_stack"]},
+    "W6": {"tests": [f"{SRC}/stack.rs::mutual_steps_join_two_cylinders_in_one_stack",
+                     f"{SRC}/stack.rs::a_step_the_other_cylinder_does_not_return_is_unknown"]},
+    "W7": {},
     "W7b": {"tests": [f"{CORE}/holes.rs::a_face_running_back_along_the_axis_says_nothing_about_the_end"]},
     "W8": {},
     "K1": {}, "K2.through": {}, "K2.blind": {},
-    "K2.enclosed": {"deferred": "a hole closed at both ends is a void, whose cylinders never join a hole (S3); "
-                                "no outer-shell part has one"},
+    "K2.enclosed": {},
     "K2.unknown": {"tests": [f"{CORE}/holes.rs::a_face_running_back_along_the_axis_says_nothing_about_the_end"]},
     "K3.counterbore": {}, "K3.countersink": {}, "K3.step_drill": {}, "K3.edge_round": {},
-    "E1": {"tests": [f"{CORE}/cylinders.rs::a_through_hole_is_full_between_its_two_end_circles"]},
+    "E1": {"tests": [f"{CORE}/holes.rs::stations_come_from_circle_centres_not_vertices"]},
     "E2": {}, "E3": {}, "E4": {},
     "9.4": {}, "9.7": {}, "13.2": {},
 }
@@ -814,7 +828,8 @@ def build(w: Writer, unit_only: bool):
     s13, x13, y13 = crossing(6)
     part("p13_cross", s13, Features([x13] + y13, planes=box_planes(0, 0, 0, 30, 30, 30)),
          "dia 8 along x crossed by dia 6 along y: the dia 6 is two cylinders, each ending in the dia 8 bore",
-         ["G5", "F4.wall_openings", "F4.one_irregular"], False, {"cube": 30, "holes": "dia 8 along x, dia 6 along y"})
+         ["G5", "F4.wall_openings", "F4.one_irregular", "W5.irregular"], False,
+         {"cube": 30, "holes": "dia 8 along x, dia 6 along y"})
     # Equal bores meet along curves that touch only at two points, so each
     # bore is two faces sharing no edge: four cylinders under G2.
     s13b = crossing(8)[0]
@@ -912,7 +927,8 @@ def build(w: Writer, unit_only: bool):
                kind="unknown", rim_end="irregular", far_end="irregular")
     part("p25_angled", cut(box(0, 0, 0, 40, 40, 20), tool(Hole(h25.entry, into25, [(6, 2 * t25 + 5)]), overshoot=5.0)),
          Features([h25], planes=box_planes(0, 0, 0, 40, 40, 20)),
-         "dia 6 through, tilted 30 deg: ends are ellipses; full by its seam (F3), length unknown", ["F3", "F4.seam"],
+         "dia 6 through, tilted 30 deg: ends are ellipses, so the cylinder is undecided and no hole is read (F3 "
+         "withdrawn)", ["F4.seam"],
          True, {"box": [0, 0, 0, 40, 40, 20], "hole": "dia 6 through (20, 20, 10), tilted 30 deg about x"})
 
     part("p26_all_bspline", BRepBuilderAPI_NurbsConvert(s01, True).Shape(), Features(planes=[], other_faces=7),
@@ -1060,7 +1076,7 @@ def build(w: Writer, unit_only: bool):
         widen = cone((20, 20, 10), DOWN, 5, 8, 3)
         return floor(cut(box(0, 0, 0, 40, 40, 30), fuse(top, widen)))
 
-    bore = Hole((20, 20, 30), DOWN, [(10, 20)], kind="unknown", far_end="unknown")
+    bore = Hole((20, 20, 30), DOWN, [(10, 20)], kind="unknown", far_end="unknown", reason="air_then_material")
     s_u1 = chamber(lambda s: cut(s, cyl((25, 20, 5), UP, 1, 2.5)))
     part("u01_undercut_floor", s_u1,
          Features([bore, Hole((25, 20, 7), DOWN, [(2, 2)])],
@@ -1077,7 +1093,7 @@ def build(w: Writer, unit_only: bool):
     l_block = cq.Workplane("XZ").polyline([(0, 0), (40, 0), (40, 20), (20, 20), (20, 10), (0, 10)]).close().extrude(-30)
     s_u3 = cut(l_block.val().wrapped, cyl((20, 15, -1), UP, 3, 11))
     part("u03_half_capped", s_u3,
-         Features([Hole((20, 15, 0), UP, [(6, 10)], kind="unknown", far_end="unknown")],
+         Features([Hole((20, 15, 0), UP, [(6, 10)], kind="unknown", far_end="unknown", reason="groups_beyond")],
                   planes=[Plane(DOWN, 0), Plane(UP, 10), Plane(UP, 20), Plane((-1, 0, 0), -20), Plane((-1, 0, 0), 0),
                           Plane((1, 0, 0), 40), Plane((0, -1, 0), 0), Plane((0, 1, 0), 30), Plane(DOWN, -10)]),
          "a dia 6 hole half open, half capped at its top: unknown whatever the face order (H1)", ["G3", "W1"], False,
@@ -1085,26 +1101,54 @@ def build(w: Writer, unit_only: bool):
     s_u4 = cut(box(0, 0, 0, 30, 30, 20), cyl((15, 15, 10), UP, 3, 11),
                BRepPrimAPI_MakeSphere(gp_Pnt(15, 15, 10), 3).Shape())
     part("u04_ball_end", s_u4,
-         Features([Hole((15, 15, 20), DOWN, [(6, 10)], kind="unknown", far_end="unknown")],
+         Features([Hole((15, 15, 20), DOWN, [(6, 10)], kind="unknown", far_end="unknown", reason="first_face")],
                   planes=box_planes(0, 0, 0, 30, 30, 20), other_faces=1),
-         "a dia 6 hole ending in a hemisphere: its bottom is unknown", ["W4.sphere"], False, {"box": [0, 0, 0, 30, 30, 20]})
+         "a dia 6 hole ending in a hemisphere: its bottom is unknown", ["W4.sphere", "W3.other"], False,
+         {"box": [0, 0, 0, 30, 30, 20]})
     # The dia 3 bore at z 6.4 spans z 4.9 to 7.9: it pierces the drill point
     # (z 5.597 to 8) but not the dia 8 wall above it, and a strip of its own
     # wall survives below the tip, so it is one through hole.
     s_u5 = cut(cut(box(0, 0, 0, 40, 40, 20), tool(h04)), cyl((-1, 20, 6.4), (1, 0, 0), 1.5, 42))
     part("u05_drill_pierced", s_u5,
-         Features([Hole((20, 20, 20), DOWN, [(8, 12)], kind="unknown", far_end="unknown"),
+         Features([Hole((20, 20, 20), DOWN, [(8, 12)], kind="unknown", far_end="unknown", reason="transition"),
                    Hole((0, 20, 6.4), (1, 0, 0), [(3, 40)], through=40)],
                   planes=box_planes(0, 0, 0, 40, 40, 20), cones=1),
-         "p04 with a dia 3 cross bore through its drill point: not a closed point (L1)", ["W4.apex"], False,
+         "p04 with a dia 3 cross bore through its drill point: not a closed point (L1)", ["W4.apex", "W4.transition"], False,
          {"from": "p04", "cross bore": "dia 3 along x at z 6.4"})
     s_u6 = cut(box(0, 0, 0, 40, 40, 20), cyl((20, 20, 12), UP, 5, 9), cyl((23, 20, 10), UP, 1, 2.5))
     part("u06_general_face", s_u6,
-         Features([Hole((20, 20, 20), DOWN, [(10, 8)], kind="unknown", far_end="unknown"),
+         Features([Hole((20, 20, 20), DOWN, [(10, 8)], kind="unknown", far_end="unknown", reason="combination"),
                    Hole((23, 20, 12), DOWN, [(2, 2)])],
                   planes=box_planes(0, 0, 0, 40, 40, 20) + [Plane(UP, 12), Plane(UP, 10)]),
          "a dia 10 blind hole whose floor also holds an off-axis dia 2 hole: its bottom is unknown (W5)", ["W5.unknown"],
          False, {"box": [0, 0, 0, 40, 40, 20]})
+
+    # A dia 10 chamber z 10 to 20 inside a block, reached only by a dia 4
+    # cross bore along x: a hole closed at both ends in the outer shell
+    # (built by the review of PR 8).
+    s39 = cut(box(0, 0, 0, 40, 40, 30), cyl((20, 20, 10), UP, 5, 10), cyl((-1, 20, 15), (1, 0, 0), 2, 42))
+    e39 = accepted(Features([Hole((0, 20, 15), (1, 0, 0), [(4, 40)], kind="unknown", far_end="irregular"),
+                             Hole((40, 20, 15), (-1, 0, 0), [(4, 40)], kind="unknown", far_end="irregular")],
+                            planes=box_planes(0, 0, 0, 40, 40, 30) + [Plane(UP, 10), Plane(DOWN, -20)]))
+    e39["features"]["holes"].insert(0, {
+        "kind": "enclosed", "axis_point": [20.0, 20.0, 10.0], "axis_direction": [0.0, 0.0, 1.0],
+        "segments": [[10.0, 0.0, 10.0]],
+        "ends": [{"kind": "bottom", "bottom": "flat", "at": 0.0}, {"kind": "bottom", "bottom": "flat", "at": 10.0}]})
+    part("p39_enclosed", s39, e39, "a chamber reached only by a cross bore: a hole closed at both ends",
+         ["K2.enclosed", "W5.bottom.flat"], False, {"box": [0, 0, 0, 40, 40, 30], "chamber": "dia 10, z 10 to 20",
+                                                  "cross bore": "dia 4 along x at (y 20, z 15)"})
+    # A dia 4 bore under ten stacked cones that widen, by turns, 1 and 0.5
+    # mm per mm: a walk crosses more than W7's eight transitions.
+    t40, r40 = cyl((20, 20, -1), UP, 2, 32), 2.0
+    for k in range(10):
+        wider = r40 + (0.5 if k % 2 else 1.0)
+        t40 = fuse(t40, BRepPrimAPI_MakeCone(gp_Ax2(gp_Pnt(20, 20, 20 + k), gp_Dir(0, 0, 1)), r40, wider, 1).Shape())
+        r40 = wider
+    part("p40_many_cones", cut(box(0, 0, 0, 40, 40, 30), fuse(t40, cyl((20, 20, 30), UP, r40, 1))),
+         Features([Hole((20, 20, 0), UP, [(4, 20)], kind="unknown", far_end="unknown", reason="too_long")],
+                  planes=box_planes(0, 0, 0, 40, 40, 30), cones=10),
+         "a bore under ten stacked cones: the walk stops at its bound", ["W7"], False,
+         {"box": [0, 0, 0, 40, 40, 30], "cones": "ten, from dia 4 at z 20, 1 mm each, widening 1 and 0.5 by turns"})
 
     # Refusals.
     w.shape(None, "r03_two_solids", roots=[compound(box(0, 0, 0, 10, 10, 10), box(20, 0, 0, 10, 10, 10))])
@@ -1161,7 +1205,7 @@ def build(w: Writer, unit_only: bool):
     f.inst[wall] = flip_sense(f.inst[wall])
     w.text(f.text(), "r12_flipped_cylinder", "p01_through")
     w.case("r12_flipped_cylinder", "p01 with its hole face's same_sense flipped (a text edit): not a dia 6.6 pin (C1)",
-           ["4.2#25"], True, {"from": "p01"}, refused(6, "face_orientation"))
+           ["4.2#25", "4.2#25b"], True, {"from": "p01"}, refused(6, "face_orientation"))
 
 
 # A number in a Part 21 file, as Open CASCADE writes them.
