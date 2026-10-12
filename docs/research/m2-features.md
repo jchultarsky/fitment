@@ -1,6 +1,6 @@
 # fitment M2: features of one part
 
-As of 2026-10-11. Status: **proposed**, for review. Nothing here is implemented yet.
+As of 2026-10-11. Status: **accepted** on 2026-10-11, with every default in section 2 (R1 to R11). Nothing here is implemented yet; section 16 is the order of work.
 
 M2 delivers `fitment features part.stp`, which prints a part's features as JSON. It is done when holes, shafts, depths and planes are correct on generated parts with known features, and non-canonical input is refused with a reason ([PLAN.md](../PLAN.md), Milestones).
 

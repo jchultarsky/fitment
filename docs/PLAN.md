@@ -251,12 +251,12 @@ For each item found, note its technology and decide: depend on it, copy it, or s
 
 ## Open decisions
 
-Seven decisions are open; D1, D3, D4 and D5 were settled on 9 Oct 2026. Each has a default that applies if nothing else is decided.
+Six decisions are open; D1, D3, D4 and D5 were settled on 9 Oct 2026, and D2 on 11 Oct 2026. Each has a default that applies if nothing else is decided.
 
 | # | Decision | Recommended default | Needed by |
 | --- | --- | --- | --- |
 | D1 | Body-fit check: use a kernel, or stop at the interface | Decided: `Match` needs a verified fit; until then `InterfaceMatch`. M7 runs Open CASCADE out of process; no Open CASCADE in official artifacts. See Decisions made, row 10. | M0 |
-| D2 | What "canonical" guarantees: exporter, application protocol, analytic surfaces, units, one solid per part | Write it as the ingest gate's checklist, from three real sample files | M2 |
+| D2 | What "canonical" guarantees: exporter, application protocol, analytic surfaces, units, one solid per part | Decided 11 Oct 2026: the gate checklist in [research/m2-features.md](research/m2-features.md), section 4. One solid, read units and topology, vertices on their surfaces, face orientation checked; B-spline faces kept as "other", never refused; exporter recorded, not gated | M2 |
 | D3 | Whether the matcher is public like stepq or private | Decided: open source. | M0 |
 | D4 | Project and crate names | Decided: fitment | M0 |
 | D5 | Catalog storage and API stack | Decided: SQLite through rusqlite, content-addressed files on disk, axum. Keeps the catalog synchronous and the `fitment` binary free of an async runtime. | M5 |
