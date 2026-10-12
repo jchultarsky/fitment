@@ -303,9 +303,6 @@ impl Search<'_, '_> {
         if p.length > tau {
             relation.beyond = (a.lo - p.lo, p.hi - a.hi);
         }
-        if fit != Fit::Clearance && !own_overlap(&mut relation, a, b, 1.0, tau) {
-            return;
-        }
         for (open, end) in [
             (relation.open_start, a.start),
             (relation.open_finish, a.finish),
@@ -320,7 +317,7 @@ impl Search<'_, '_> {
                 _ => {}
             }
         }
-        self.found.relations.push(relation);
+        self.push_split(&relation, a, b, &p, 1.0, tau);
     }
 
     /// I1 to I3: a target shaft in a neighbour hole.
@@ -348,10 +345,69 @@ impl Search<'_, '_> {
         if through_unknown(a, b, &p) {
             relation.flags.insert(Flag::ExtentUnknown);
         }
-        if fit != Fit::Clearance && !own_overlap(&mut relation, a, b, -1.0, tau) {
-            return;
+        self.push_split(&relation, a, b, &p, -1.0, tau);
+    }
+
+    /// U3 and X7: `relation`'s fit holds where both elements are known,
+    /// and a line-to-line or interference fit only where both cylinders
+    /// themselves are; past a known end, where an unknown side was run to
+    /// the part's extent, nothing is read of either: fit `not_read`,
+    /// flagged `extent_unknown` (a countersunk head past a shank's unknown
+    /// end, a flange past a bore's).
+    fn push_split(
+        &mut self,
+        relation: &Relation,
+        a: &Element,
+        b: &Element,
+        p: &Pair,
+        grow: f64,
+        tau: f64,
+    ) {
+        let known = axial::pair(&known(a), &known(b), PARALLEL_SINE_REL, grow)
+            .filter(|q| q.length > -tau)
+            .map(|q| (q.from, q.to));
+        let mut rest = Vec::new();
+        match known {
+            Some((from, to)) => {
+                if from - p.from > tau {
+                    rest.push((p.from, from));
+                }
+                if p.to - to > tau {
+                    rest.push((to, p.to));
+                }
+            }
+            None if p.length > tau => rest.push((p.from, p.to)),
+            None => {}
         }
-        self.found.relations.push(relation);
+        let mut carried = false;
+        if let Some((from, to)) = known {
+            let mut main = relation.clone();
+            if !rest.is_empty() {
+                main.span = main.span.map(|(x, y)| (x.max(from), y.min(to)));
+            }
+            let fits = main.fit == Some(Fit::Clearance) || main.fit.is_none();
+            if fits || own_overlap(&mut main, a, b, grow, tau) {
+                self.found.relations.push(main);
+                carried = true;
+            }
+        }
+        for (x, y) in rest {
+            let mut unread = relation.clone();
+            unread.rule = "U3";
+            unread.fit = Some(Fit::NotRead);
+            unread.clear = None;
+            unread.margin = None;
+            unread.span = Some((x, y));
+            unread.flags.remove(&Flag::ThreadNotConfirmed);
+            unread.flags.insert(Flag::ExtentUnknown);
+            if carried {
+                unread.open_start = false;
+                unread.open_finish = false;
+                unread.beyond = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+            }
+            carried = true;
+            self.found.relations.push(unread);
+        }
     }
 
     /// I5, I6: coaxial shafts; only those end to end ask anything.
@@ -588,6 +644,14 @@ impl Search<'_, '_> {
         }
         Ok(())
     }
+}
+
+/// U3: what is known of an element, before an unknown side runs on.
+fn known(e: &Element) -> Element {
+    let mut known = e.clone();
+    known.lo = e.known_lo;
+    known.hi = e.known_hi;
+    known
 }
 
 /// X7: an element's own cylinder, without the zones it stands for.
