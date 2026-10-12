@@ -33,19 +33,19 @@ mod tolerance;
 mod verdict;
 
 pub use assembly::{
-    AssemblyRead, Candidate, DefinitionKind, GateResult, ListedDefinition, Listing,
-    MAX_OCCURRENCES, MatchedBy, Occurrence, OccurrencePath, PARTS_FORMAT, PARTS_FORMAT_VERSION,
-    PartEntry, PartOccurrence, PartsDocument, PartsFormatError, PathForm, SelectError, Selection,
-    Source, UsageRef, read_assembly,
+    AssemblyNote, AssemblyNoteCode, AssemblyRead, Candidate, ComponentRead, ComponentSummary,
+    DefinitionKind, GateResult, ListedDefinition, Listing, MAX_OCCURRENCES, MatchedBy, Occurrence,
+    OccurrencePath, PARTS_FORMAT, PARTS_FORMAT_VERSION, PartEntry, PartOccurrence, PartsDocument,
+    PartsFormatError, PathForm, SelectError, Selection, Source, UsageRef, read_assembly,
 };
 pub use features::{
-    Axis, Bottom, Cone, Countersink, Cylinder, CylinderClass, DefinitionRef, End, Extraction,
-    FEATURES_FORMAT, FEATURES_FORMAT_VERSION, FaceCounts, FeatureId, FeatureIdError, FeatureKind,
-    FeaturesDocument, FileHeader, FormatError, Frame, Hole, HoleKind, Note, NoteCode, OtherFace,
-    OtherItem, OtherReason, Outline, OutlineLoop, OutlineProblem, Part, Plane, PlaneFace,
-    ProductRef, Refused, Segment, Sense, Shaft, ShaftKind, SolidInfo, SolidUnits, StackEnd,
-    StackSegment, StatedUncertainty, StatedUnit, Status, Torus, UndecidedReason, UnknownReason,
-    read_part,
+    Axis, Bottom, Cone, Countersink, Cylinder, CylinderClass, DefinitionRef, End, Extent,
+    Extraction, FEATURES_FORMAT, FEATURES_FORMAT_VERSION, FaceCounts, FeatureId, FeatureIdError,
+    FeatureKind, FeaturesDocument, FileHeader, FormatError, Frame, Hole, HoleKind, Note, NoteCode,
+    OtherFace, OtherItem, OtherReason, Outline, OutlineLoop, OutlineProblem, Part, Plane,
+    PlaneFace, ProductRef, Refused, Segment, Sense, Shaft, ShaftKind, SolidInfo, SolidUnits,
+    StackEnd, StackSegment, StatedUncertainty, StatedUnit, Status, Torus, UndecidedReason,
+    UnknownReason, read_part,
 };
 pub use fit::{FitStatus, Interference, NO_FIT_VERIFIER};
 pub use gate::{Refusal, RefusalCode};
@@ -58,4 +58,4 @@ pub use verdict::{Check, RejectReason, RequirementId, Verdict, VerdictKind, deci
 /// whenever the output for any input could change: a rule, a constant, an
 /// order, a field. A features document records it, and the catalog
 /// re-reads every file whose document has another (milestone M5).
-pub const EXTRACTOR_VERSION: u32 = 5;
+pub const EXTRACTOR_VERSION: u32 = 6;

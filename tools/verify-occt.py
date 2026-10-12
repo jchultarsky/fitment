@@ -832,6 +832,26 @@ def plane_facts(face):
     return normal, xyz(position.Location()), props.Mass()
 
 
+EXTENT_SLACK = 1e-6  # mm: Open CASCADE's box of analytic geometry is exact to rounding
+
+
+def check_extent(path, extent, solid, tally):
+    """fitment's extent holds Open CASCADE's box of the solid."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.AddOptimal_s(solid, box, False, False)
+    low = box.CornerMin()
+    high = box.CornerMax()
+    tally["extents"] += 1
+    found_low, found_high = xyz(low), xyz(high)
+    if any(extent["min_mm"][i] > found_low[i] + EXTENT_SLACK or extent["max_mm"][i] < found_high[i] - EXTENT_SLACK
+           for i in range(3)):
+        return [f"{path}: the extent {extent} does not hold Open CASCADE's box {found_low} to {found_high}"]
+    return []
+
+
 def check_features(path, binary, tally):
     """fitment's planes of one file against Open CASCADE's faces."""
     run = subprocess.run([str(binary), "features", str(path)], capture_output=True)
@@ -860,6 +880,8 @@ def check_features(path, binary, tally):
     if stray:
         problems.append(f"{path}: planar faces in none of fitment's planes: {stray[:5]} ({len(stray)})")
     offset = part["solids"][0]["max_vertex_offset_mm"]
+    if solids and part["extent"] is not None:
+        problems += check_extent(path, part["extent"], solids[0].solid, tally)
     if solids:
         problems += check_cylinders(path, part, solids[0], faces, tally)
         # Holes and shafts, by the manifest mode's two-sided tests on the
@@ -1226,7 +1248,7 @@ def features_main(argv):
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
     tally = {"accepted": 0, "refused": 0, "plane faces": 0, "areas": 0, "areas within the vertex offsets": 0,
              "unknown outlines": 0, "cylinders": 0, "full cylinders": 0,
-             "cylinders full only in Open CASCADE": 0, "holes probed": 0, "shafts probed": 0}
+             "cylinders full only in Open CASCADE": 0, "holes probed": 0, "shafts probed": 0, "extents": 0}
     problems = []
     for path in [p for arg in paths for p in feature_inputs(Path(arg))]:
         try:

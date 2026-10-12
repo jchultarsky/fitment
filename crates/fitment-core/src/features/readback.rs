@@ -48,6 +48,23 @@ pub(super) fn check(part: &Part, solid: &SolidInfo) -> Checked {
         }
     }
     face_counts(part)?;
+    if let Some(extent) = &part.extent {
+        let (low, high) = (extent.min_mm.to_array(), extent.max_mm.to_array());
+        if (0..3).any(|i| {
+            low[i]
+                .partial_cmp(&high[i])
+                .is_none_or(std::cmp::Ordering::is_gt)
+        }) {
+            return Err("the extent's minimum is not below its maximum".to_owned());
+        }
+    }
+    for cone in &part.cones {
+        if let Some([low, high]) = cone.radii_mm {
+            if !(0.0 <= low && low <= high && high.is_finite()) {
+                return Err(format!("cone '{}' has radii out of order", cone.id));
+            }
+        }
+    }
     for plane in &part.planes {
         if plane.spread_mm < 0.0 {
             return Err(format!("plane '{}' has a negative spread", plane.id));

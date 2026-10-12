@@ -143,5 +143,8 @@ fn table(document: &PartsDocument) -> String {
         }
         None => {}
     }
+    for note in document.notes() {
+        lines.push(format!("note: {}", printable(&note.message)));
+    }
     lines.join("\n") + "\n"
 }

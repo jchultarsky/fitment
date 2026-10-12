@@ -32,6 +32,11 @@ pub struct Cone {
     pub apex_mm: Point3,
     /// The semi-angle, between the axis and the surface.
     pub semi_angle_rad: f64,
+    /// The smallest and largest distance of its faces' boundaries from the
+    /// axis, from their vertices and coaxial circles; `None` if a boundary
+    /// edge is not a line or a circle about the axis.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub radii_mm: Option<[f64; 2]>,
     /// The largest distance of a member's apex from the reference's.
     pub spread_mm: f64,
 }

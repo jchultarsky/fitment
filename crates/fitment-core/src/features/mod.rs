@@ -9,6 +9,7 @@
 
 mod cylinder;
 mod document;
+mod extent;
 mod full;
 mod group;
 mod other;
@@ -18,7 +19,7 @@ mod primary;
 mod readback;
 mod stack;
 mod step;
-pub(crate) use step::header_of;
+pub(crate) use step::{header_of, part_of_definition};
 pub(crate) mod topo;
 mod walk;
 
@@ -32,6 +33,7 @@ use crate::gate::Refusal;
 use crate::geom::Rigid;
 
 pub use cylinder::{Axis, Cylinder, CylinderClass, End, Sense, UndecidedReason};
+pub use extent::Extent;
 pub use other::{Cone, OtherFace, OtherReason, Torus};
 pub use outline::{Outline, OutlineLoop, OutlineProblem, Segment};
 pub use plane::{Plane, PlaneFace};
@@ -106,6 +108,11 @@ pub struct Part {
     /// True if every cylinder is decided and every hole and shaft has two
     /// known ends (section 9.6): information, not a refusal.
     pub complete: bool,
+    /// A box every point of the solid lies in, or `None` when the solid
+    /// states a face or edge that cannot be bounded from what is read
+    /// (`docs/research/m3-socket.md`, R22).
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub extent: Option<Extent>,
     /// How many faces of each surface kind the solids have.
     pub face_counts: FaceCounts,
     /// The planes, by id. With the other primary features they hold every

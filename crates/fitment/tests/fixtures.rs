@@ -179,3 +179,81 @@ fn step_files(root: &Path, dir: &Path) -> Vec<String> {
     }
     found
 }
+
+/// Every assembly fixture with a `parts` pin: its leaves, their
+/// occurrences, how many are refused (check 36), the assembly gate's
+/// codes and the notes (`docs/research/m3-socket.md`, 14.3). Regression
+/// pins, not truth; and every parts document reads back.
+#[test]
+fn every_assembly_fixture_gives_its_pinned_parts_list() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("manifest.json")).unwrap()).unwrap();
+    let pinned: Vec<&Value> = manifest["fixtures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f.get("parts").is_some())
+        .collect();
+    assert!(!pinned.is_empty(), "no assembly fixture is pinned");
+    if pinned
+        .iter()
+        .any(|f| !root.join(f["path"].as_str().unwrap()).is_file())
+    {
+        let required = std::env::var_os("FITMENT_REQUIRE_FIXTURES").is_some_and(|v| v == "1");
+        assert!(
+            !required,
+            "FITMENT_REQUIRE_FIXTURES=1 but fixtures are missing"
+        );
+        eprintln!("skipped: run tools/fetch-fixtures.sh core");
+        return;
+    }
+    let mut failures = Vec::new();
+    for fixture in pinned {
+        let path = fixture["path"].as_str().unwrap();
+        let output = Command::cargo_bin("fitment")
+            .unwrap()
+            .args(["parts", "--format", "json"])
+            .arg(root.join(path))
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        if let Err(error) = fitment_core::PartsDocument::from_json(&text) {
+            failures.push(format!(
+                "{path}: the parts document does not read back: {error}"
+            ));
+            continue;
+        }
+        let document: Value = serde_json::from_str(&text).unwrap();
+        let leaves: Vec<&Value> = document["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["kind"] == "part")
+            .collect();
+        let mut gate: Vec<&str> = document["assembly_gate"]["refusals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["code"].as_str().unwrap())
+            .collect();
+        gate.dedup();
+        let notes: BTreeSet<&str> = document["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["code"].as_str().unwrap())
+            .collect();
+        let found = serde_json::json!({
+            "leaves": leaves.len(),
+            "leaf_occurrences": leaves.iter().map(|p| p["quantity"].as_u64().unwrap()).sum::<u64>(),
+            "refused_leaves": leaves.iter().filter(|p| p["component"]["gate"]["status"] == "refused").count(),
+            "assembly_gate": gate,
+            "notes": notes,
+        });
+        if found != fixture["parts"] {
+            failures.push(format!("{path}: {found}, pinned {}", fixture["parts"]));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

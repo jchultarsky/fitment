@@ -347,3 +347,18 @@ pub(crate) fn assembly_shape(
         })
         .collect()
 }
+
+/// The largest length uncertainty the context of shape representation
+/// `representation` states, in mm, or `None` if it states none or its
+/// units cannot be read (Z1: the placement path's uncertainty).
+pub(crate) fn context_uncertainty(graph: &Graph<'_>, representation: u64) -> Option<f64> {
+    let units = stepq::units::ContextUnits::of_representation(graph, representation).ok()?;
+    units
+        .uncertainty()
+        .ok()?
+        .iter()
+        .filter(|u| u.unit.kind == stepq::units::UnitKind::Length)
+        .map(|u| u.value)
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .reduce(f64::max)
+}

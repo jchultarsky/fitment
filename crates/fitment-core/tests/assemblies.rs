@@ -146,7 +146,10 @@ fn a_snippet_assembly_reads() {
     );
     let read = read_assembly(text.as_bytes());
     assert_eq!(read.refusals(), &[], "{:?}", read.refusals());
-    assert_eq!(read.gate_refusals(), &[]);
+    // The snippet's parts hold no solid: empty components refuse (R2), as
+    // a screw the exporter left out must; the parts list stands.
+    assert_eq!(codes(read.gate_refusals()), [RefusalCode::ComponentRefused]);
+    assert!(read.gate_refusals()[0].message.contains("no_solid"));
     let listing = read.listing().unwrap();
     let quantities: Vec<(String, usize)> = listing
         .definitions()
@@ -197,7 +200,10 @@ fn a_part_file_lists_one_part_and_is_not_an_assembly() {
     assert_eq!(listing.definitions()[0].kind, DefinitionKind::Part);
     assert_eq!(listing.occurrences().len(), 1);
     assert_eq!(listing.occurrences()[0].path.usages(), &[]);
-    assert_eq!(codes(read.gate_refusals()), [RefusalCode::NotAnAssembly]);
+    assert_eq!(
+        codes(read.gate_refusals()),
+        [RefusalCode::NotAnAssembly, RefusalCode::ComponentRefused]
+    );
     let document = PartsDocument::from_json(&PartsDocument::read(text.as_bytes()).to_json());
     assert!(document.is_ok(), "{document:?}");
 }
@@ -290,18 +296,27 @@ fn material_in_an_assembly_s_own_shape_is_refused() {
     assert!(read.listing().is_some());
     assert_eq!(
         codes(read.gate_refusals()),
-        [RefusalCode::AssemblyShapeItem]
+        [
+            RefusalCode::AssemblyShapeItem,
+            RefusalCode::ComponentRefused
+        ]
     );
     assert_eq!(read.gate_refusals()[0].instance, Some(901));
-    // The same item in the part's own shape is the part's affair (check
-    // 36, M3 PR 2), not the assembly's.
+    // The same item in the part's own shape is the part's affair: check
+    // 36 refuses the component for it, not check 35 the assembly.
     let in_part = snippet(
         &["ROOT", "A"],
         &[(0, 1, "u1")],
         "#900=OPEN_SHELL('',());\n#901=SHELL_BASED_SURFACE_MODEL('',(#900));\n",
         &[(1, 901)],
     );
-    assert_eq!(read_assembly(in_part.as_bytes()).gate_refusals(), &[]);
+    let read = read_assembly(in_part.as_bytes());
+    assert_eq!(codes(read.gate_refusals()), [RefusalCode::ComponentRefused]);
+    assert!(
+        read.gate_refusals()[0]
+            .message
+            .contains("unread_shape_item")
+    );
 }
 
 #[test]
@@ -526,4 +541,35 @@ fn a_parts_document_whose_tree_is_broken_is_not_read() {
         "a missing label where paths are written by id",
     );
     refuses(&|j| j["source"]["header"] = Value::Null, "no header");
+}
+
+#[test]
+fn a_placement_far_out_of_range_is_refused() {
+    // s01 with the first bolt's assembly-side frame moved 2,000 km along x.
+    let (_, bytes) = ASSEMBLIES[0];
+    let text = String::from_utf8_lossy(bytes).replace(
+        "#24 = CARTESIAN_POINT('',(-30.,-15.,8.));",
+        "#24 = CARTESIAN_POINT('',(2.E+06,-15.,8.));",
+    );
+    assert_ne!(text.as_bytes(), bytes, "the edit applies");
+    let read = read_assembly(text.as_bytes());
+    assert!(read.listing().is_some());
+    assert_eq!(codes(read.gate_refusals()), [RefusalCode::OutOfRange]);
+}
+
+#[test]
+fn every_occurrence_carries_its_floors() {
+    let (_, bytes) = ASSEMBLIES[3];
+    let read = read_assembly(bytes);
+    let listing = read.listing().unwrap();
+    for occurrence in listing.occurrences() {
+        let definition = &listing.definitions()[occurrence.definition];
+        match definition.kind {
+            DefinitionKind::Part => {
+                assert_eq!(occurrence.part_uncertainty_mm, 1e-7);
+                assert_eq!(occurrence.placement_uncertainty_mm, 1e-7);
+            }
+            DefinitionKind::Assembly => assert_eq!(occurrence.part_uncertainty_mm, 0.0),
+        }
+    }
 }
