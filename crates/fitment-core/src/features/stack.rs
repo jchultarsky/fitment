@@ -2,6 +2,8 @@
 //! 9.5): full cylinders joined by mutual steps into stacks (K), with their
 //! ends from the end walk (W) and their lengths (E).
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use super::FeatureId;
@@ -112,10 +114,13 @@ pub struct StackSegment {
     pub cylinder: FeatureId,
     /// Its diameter.
     pub diameter_mm: f64,
-    /// Where it starts along the axis, from the axis point.
-    pub from_mm: f64,
-    /// Where it ends.
-    pub to_mm: f64,
+    /// Where it starts along the axis, from the axis point, or `None` if
+    /// its wall runs past its end circles there onto curves no rule reads.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub from_mm: Option<f64>,
+    /// Where it ends, or `None` likewise.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub to_mm: Option<f64>,
 }
 
 /// One end of a hole or shaft (W5). Stations are along the axis from its
@@ -337,7 +342,8 @@ fn step(sides: &[(Side, Side)], groups: &[Group<'_>], at: At) -> Option<At> {
     let Ok((_, Terminal::Step(to))) = walk.outcome else {
         return None;
     };
-    let j = groups.iter().position(|g| g.cylinder.id == to)?;
+    // Groups are in cylinder order, as the cylinders are listed.
+    let j = groups.binary_search_by_key(&to, |g| g.cylinder.id).ok()?;
     let me = groups.get(i)?.cylinder.id;
     let (jl, jh) = sides.get(j)?;
     let back = |side: &Side| matches!(side, Side::Walked(w) if matches!(w.outcome, Ok((_, Terminal::Step(t))) if t == me));
@@ -358,33 +364,32 @@ fn chain(
     start: usize,
 ) -> (Vec<usize>, Option<(At, At)>) {
     // Every group linked to `start`, through mutual steps.
-    let mut members = vec![start];
+    let mut members = BTreeSet::from([start]);
     let mut queue = vec![start];
     while let Some(i) = queue.pop() {
         for high in [false, true] {
             if let Some((j, _)) = step(sides, groups, (i, high)) {
-                if !members.contains(&j) {
-                    members.push(j);
+                if members.insert(j) {
                     queue.push(j);
                 }
             }
         }
     }
-    members.sort_unstable();
+    let members: Vec<usize> = members.into_iter().collect();
     // A line: walk from an end that steps nowhere.
     let free = |i: usize, high: bool| step(sides, groups, (i, high)).is_none();
-    let Some(&(first, high)) = members
+    let Some((first, high)) = members
         .iter()
         .flat_map(|&i| [(i, false), (i, true)])
         .find(|&(i, high)| free(i, high))
-        .as_ref()
     else {
         return (members, None);
     };
     let mut order = vec![first];
+    let mut seen = BTreeSet::from([first]);
     let mut at = (first, !high);
     while let Some((j, entered)) = step(sides, groups, at) {
-        if order.contains(&j) {
+        if !seen.insert(j) {
             return (members, None);
         }
         order.push(j);
@@ -454,11 +459,11 @@ fn place(side: &Side, g: &Group<'_>, high: bool, map: &dyn Fn(f64) -> f64) -> Op
             },
             rim,
         ),
-        (false, false, Terminal::Disk(id) | Terminal::Apex(id, _) | Terminal::Post(id, _)) => {
+        (false, false, Terminal::Disk(id) | Terminal::Apex(id, _, _) | Terminal::Post(id, _)) => {
             anchored(
                 StackEnd::Bottom {
                     at_mm: at,
-                    bottom: bottom(walk, g, terminal, map)?,
+                    bottom: bottom(walk, terminal, map)?,
                     closed_by: id,
                 },
                 at,
@@ -467,7 +472,10 @@ fn place(side: &Side, g: &Group<'_>, high: bool, map: &dyn Fn(f64) -> f64) -> Op
         (
             true,
             true,
-            Terminal::Face(id) | Terminal::Post(id, _) | Terminal::Disk(id) | Terminal::Apex(id, _),
+            Terminal::Face(id)
+            | Terminal::Post(id, _)
+            | Terminal::Disk(id)
+            | Terminal::Apex(id, _, _),
         ) => anchored(
             StackEnd::FreeEnd {
                 at_mm: at,
@@ -505,16 +513,11 @@ fn countersink(walk: &Walk) -> Result<Option<Countersink>, NotFinite> {
 
 /// How a hole's bottom closes (W5): on a disk, flat or after a cone; at a
 /// cone's apex, a point; around a post, annular.
-fn bottom(
-    walk: &Walk,
-    g: &Group<'_>,
-    terminal: Terminal,
-    map: &dyn Fn(f64) -> f64,
-) -> Option<Bottom> {
+fn bottom(walk: &Walk, terminal: Terminal, map: &dyn Fn(f64) -> f64) -> Option<Bottom> {
     Some(match terminal {
-        Terminal::Apex(_, semi) => Bottom::Point {
+        Terminal::Apex(_, semi, apex) => Bottom::Point {
             angle_rad: finite(2.0 * semi)?,
-            tip_length_mm: finite(g.wall.radius / libm::tan(semi))?,
+            tip_length_mm: finite((apex - walk.at).abs())?,
         },
         Terminal::Post(_, radius) => Bottom::Annular {
             post_radius_mm: finite(radius)?,
@@ -601,11 +604,15 @@ fn outer_ends(
     Some((unknown(f64::NEG_INFINITY), unknown(f64::INFINITY)))
 }
 
+/// A segment along the stack's axis: its cylinder, diameter, and its two
+/// ends' stations, each `None` on an irregular side.
+type Laying = (FeatureId, f64, Option<f64>, Option<f64>);
+
 /// What a stack's groups hold, along its final axis (`sign` times the
-/// first group's): segments as (cylinder, diameter, from, to), the
-/// transitions crossed with their stations, its faces and wall openings.
+/// first group's): its segments, the transitions crossed with their
+/// stations, its faces and wall openings.
 struct Laid {
-    segments: Vec<(FeatureId, f64, f64, f64)>,
+    segments: Vec<Laying>,
     transitions: Vec<(FeatureId, f64)>,
     smallest_face: Option<u64>,
     wall_openings: u32,
@@ -631,8 +638,22 @@ fn lay(
         let stations: Vec<f64> = g.stations.iter().map(|&s| sign * map(s)).collect();
         let lo = stations.iter().copied().fold(f64::INFINITY, f64::min);
         let hi = stations.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        laid.segments
-            .push((g.cylinder.id, 2.0 * g.cylinder.radius_mm, lo, hi));
+        // The irregular side, if any, in the stack's direction: the
+        // group's own start is its low side when its axis agrees.
+        let agrees = sign * (map(1.0) - map(0.0)) > 0.0;
+        let (lo_known, hi_known) = match g.cylinder.class {
+            CylinderClass::FullOneEndIrregular { irregular, .. } => {
+                let low = (irregular == End::Start) == agrees;
+                (!low, low)
+            }
+            _ => (true, true),
+        };
+        laid.segments.push((
+            g.cylinder.id,
+            2.0 * g.cylinder.radius_mm,
+            lo_known.then_some(lo),
+            hi_known.then_some(hi),
+        ));
         let smallest = g.cylinder.faces.iter().copied().min();
         laid.smallest_face = match (laid.smallest_face, smallest) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -646,15 +667,12 @@ fn lay(
             }
         }
     }
-    laid.segments.sort_by(|x, y| x.2.total_cmp(&y.2));
+    let key = |s: &Laying| s.2.or(s.3).unwrap_or(f64::INFINITY);
+    laid.segments.sort_by(|x, y| key(x).total_cmp(&key(y)));
     laid.transitions
         .sort_by(|x, y| x.1.total_cmp(&y.1).then(x.0.cmp(&y.0)));
-    let mut seen = Vec::new();
-    laid.transitions.retain(|t| {
-        let new = !seen.contains(&t.0);
-        seen.push(t.0);
-        new
-    });
+    let mut seen = BTreeSet::new();
+    laid.transitions.retain(|t| seen.insert(t.0));
     laid
 }
 
@@ -699,7 +717,7 @@ fn build(
         || {
             laid.segments
                 .iter()
-                .map(|s| s.2)
+                .filter_map(|s| s.2.or(s.3))
                 .fold(f64::INFINITY, f64::min)
         },
         |t| sign * t,
@@ -718,8 +736,14 @@ fn build(
             Some(StackSegment {
                 cylinder,
                 diameter_mm: finite(d)?,
-                from_mm: finite(lo - base)?,
-                to_mm: finite(hi - base)?,
+                from_mm: lo
+                    .map(|t| finite(t - base).ok_or(NotFinite))
+                    .transpose()
+                    .ok()?,
+                to_mm: hi
+                    .map(|t| finite(t - base).ok_or(NotFinite))
+                    .transpose()
+                    .ok()?,
             })
         })
         .collect::<Option<Vec<_>>>()?;

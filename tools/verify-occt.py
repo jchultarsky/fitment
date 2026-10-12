@@ -483,10 +483,15 @@ def around(solid, centre, direction, distances, sign):
     return False
 
 
+def beside_wall(radius):
+    """Distances just outside a wall of `radius` where the face around it
+    is probed: within `beside`, closer for a thin wall such as a tube's."""
+    return [radius + beside(radius) * k for k in (1, 0.5, 0.25)]
+
+
 def outside_wall(radius):
-    """Distances outside a wall of `radius` where the face around it is
-    probed: just beside it, and further out past a round or fillet."""
-    return [radius + beside(radius) * k for k in (1, 0.5, 0.25, 2, 4, 8)]
+    """Those, and further out past a round, fillet or countersink."""
+    return beside_wall(radius) + [radius + beside(radius) * k for k in (2, 4, 8)]
 
 
 def scale3(v, k):
@@ -533,7 +538,11 @@ def check_hole_ends(solid, holes, problems, case):
                     problems.append(f"{label}: no countersink cone with apex at {apex}")
             if not solid.outside(add(p, d, at + sign * PROBE)):
                 problems.append(f"{label}: just past its opening at {at} is not air")
-            if not around(solid, add(p, d, at), d, outside_wall(radius), sign):
+            # Further out only past a round or countersink the walk crossed
+            # (features mode says so); otherwise beside the wall, so that a
+            # hole through a boss cannot pass on the plate around it.
+            reach = outside_wall(radius) if h.get("_far") else beside_wall(radius)
+            if not around(solid, add(p, d, at), d, reach, sign):
                 problems.append(f"{label}: the face around its opening is not at {at}")
         if h["kind"] != "blind":
             continue
@@ -576,7 +585,8 @@ def check_shaft_ends(solid, shafts, problems, case):
             ends = [(0.0, -1.0), (s["length"], 1.0)]
         else:
             # Material just below the root beside the shaft, air just above.
-            if not around(solid, p, d, outside_wall(radius), 1.0):
+            reach = outside_wall(radius) if s.get("_far") else beside_wall(radius)
+            if not around(solid, p, d, reach, 1.0):
                 problems.append(f"{label}: its root is not at station 0")
             ends = [(s["protrusion"], 1.0)]
         for at, sign in ends:
@@ -759,10 +769,12 @@ def check_features(path, binary, tally):
         problems += check_cylinders(path, part, solids[0], faces, tally)
         # Holes and shafts, by the manifest mode's two-sided tests on the
         # axis line: air past an opening, material past a bottom, and so on.
-        holes = [as_manifest_hole(h) for h in part["holes"]]
+        holes = [as_manifest_hole(h, part) for h in part["holes"]]
         shafts = [as_manifest_shaft(s) for s in part["shafts"] if s["kind"] in ("free_free", "root_free")]
-        tally["holes"] += len(holes)
-        tally["shafts"] += len(shafts)
+        tally["holes probed"] += sum(1 for h in holes if h["kind"] in ("through", "blind"))
+        tally["shafts probed"] += len(shafts)
+        problems += shaft_ends(path, part["shafts"])
+        problems += reached_through(path, part["holes"], solids[0])
         check_hole_ends(solids[0], holes, problems, str(path))
         check_shaft_ends(solids[0], shafts, problems, str(path))
     for plane in part["planes"]:
@@ -969,6 +981,49 @@ def check_plane(path, plane):
     return problems
 
 
+def reached_through(path, holes, solid):
+    """An opening whose rim lies past its wall's end was reached through
+    something: a countersink, a round, or, if neither is reported, nothing
+    that widens. Air just outside the wall halfway between them means an
+    unreported widening, such as a countersink fitment dropped."""
+    problems = []
+    for h in holes:
+        p, d = h["axis"]["point_mm"], norm(h["axis"]["direction"])
+        radius = min(s["diameter_mm"] for s in h["segments"]) / 2
+        tori = any(t.startswith("torus-") for t in h["transitions"])
+        for end in h["ends"]:
+            if end["kind"] != "opening" or end["countersink"] is not None or tori:
+                continue
+            if abs(end["rim_mm"] - end["at_mm"]) <= LINEAR:
+                continue
+            middle = add(p, d, (end["rim_mm"] + end["at_mm"]) / 2)
+            out = side(d)
+            y = cross(d, out)
+            probes = [add(middle, add(scale3(out, math.cos(a)), y, math.sin(a)), radius + beside(radius) / 4)
+                      for a in (2 * math.pi * k / 8 for k in range(8))]
+            if all(solid.outside(q) for q in probes):
+                problems.append(f"{path}: {h['id']}: its opening at {end['rim_mm']} widens past its wall's end "
+                                f"at {end['at_mm']}, but no countersink is reported")
+    return problems
+
+
+def shaft_ends(path, shafts):
+    """A rooted shaft starts at its root, and every known shaft's length or
+    protrusion spans its rims."""
+    problems = []
+    for s in shafts:
+        kinds = [e["kind"] for e in s["ends"]]
+        rims = [e.get("rim_mm") for e in s["ends"]]
+        span = s["protrusion_mm"] if s["kind"] == "root_free" else s["length_mm"]
+        wanted = {"root_free": ["root", "free_end"], "free_free": ["free_end", "free_end"],
+                  "root_root": ["root", "root"]}.get(s["kind"])
+        if wanted is None:
+            continue
+        if kinds != wanted or rims[0] != 0.0 or span is None or abs(rims[1] - span) > LINEAR:
+            problems.append(f"{path}: {s['id']}: {s['kind']} with ends {kinds} at {rims}, spanning {span}")
+    return problems
+
+
 def as_manifest_end(end):
     """A fitment hole end in the manifest's terms."""
     if end["kind"] == "opening":
@@ -992,9 +1047,13 @@ def as_manifest_end(end):
     return out
 
 
-def as_manifest_hole(hole):
-    """A fitment hole in the manifest's terms, for check_hole_ends."""
-    out = {"kind": hole["kind"], "axis_point": hole["axis"]["point_mm"],
+def as_manifest_hole(hole, part):
+    """A fitment hole in the manifest's terms, for check_hole_ends; `_far`
+    when its walks crossed a torus or a countersink, past which the face
+    around an opening may lie."""
+    tori = any(t.startswith("torus-") for t in hole["transitions"])
+    sinks = any(e.get("countersink") for e in hole["ends"])
+    out = {"kind": hole["kind"], "axis_point": hole["axis"]["point_mm"], "_far": tori or sinks,
            "axis_direction": hole["axis"]["direction"],
            "segments": [[s["diameter_mm"], s["from_mm"], s["to_mm"]] for s in hole["segments"]],
            "ends": [as_manifest_end(e) for e in hole["ends"]]}
@@ -1006,8 +1065,9 @@ def as_manifest_hole(hole):
 
 
 def as_manifest_shaft(shaft):
-    """A fitment shaft in the manifest's terms, for check_shaft_ends."""
-    out = {"kind": shaft["kind"], "axis_point": shaft["axis"]["point_mm"],
+    """A fitment shaft in the manifest's terms, for check_shaft_ends; `_far`
+    when its walks crossed a transition, such as a root fillet."""
+    out = {"kind": shaft["kind"], "axis_point": shaft["axis"]["point_mm"], "_far": bool(shaft["transitions"]),
            "axis_direction": shaft["axis"]["direction"],
            "segments": [[s["diameter_mm"], s["from_mm"], s["to_mm"]] for s in shaft["segments"]]}
     if shaft["length_mm"] is not None:
@@ -1049,7 +1109,7 @@ def features_main(paths):
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
     tally = {"accepted": 0, "refused": 0, "plane faces": 0, "areas": 0, "areas within the vertex offsets": 0,
              "unknown outlines": 0, "cylinders": 0, "full cylinders": 0,
-             "cylinders full only in Open CASCADE": 0, "holes": 0, "shafts": 0}
+             "cylinders full only in Open CASCADE": 0, "holes probed": 0, "shafts probed": 0}
     problems = []
     for path in [p for arg in paths for p in feature_inputs(Path(arg))]:
         try:
