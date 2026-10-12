@@ -1590,7 +1590,9 @@ def build_assemblies(w: Writer, which):
 
     # s08x: one sub-assembly product (bracket, bolts, nuts) used twice, as AS1 does.
     long_plate = Leaf("PLATE", a_plate(lx=220, pts=[(x - 50, y) for x, y in pts8]))
-    turned = m_rot((0, 0, 1), 180, (100, 0, 0))
+    # Exact, not through cos and sin: platforms round 1e-16 terms apart,
+    # and the committed files must be the same text everywhere.
+    turned = [[-1.0, 0.0, 0.0, 100.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
     lb = bolted("LB_ASSEM")
     s08x = Node("s08x_nested").add(long_plate, m_tr((50, 0, 0))).add(lb).add(lb, turned)
     a.case("s08x_nested", s08x, "one sub-assembly product used twice: one definition, two paths",
