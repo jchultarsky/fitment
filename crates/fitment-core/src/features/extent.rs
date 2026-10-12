@@ -217,3 +217,78 @@ pub(crate) fn reach(topo: &Topo) -> f64 {
     }
     far
 }
+
+/// A sound box of one face, or `None` if the face cannot be bounded from
+/// what is read (an `other` surface, a sphere, an edge on an unread curve).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FaceBox {
+    /// The face's `#id`.
+    pub(crate) face: u64,
+    /// Its smallest and largest x, y and z, grown by the slack.
+    pub(crate) bounds: Option<(P, P)>,
+}
+
+/// Every face's sound box, by the same argument as [`of`]: a planar,
+/// cylindrical or conical face lies in its boundary's hull (with its apex,
+/// if it holds it), a toroidal one in its torus's box.
+pub(crate) fn face_boxes(topo: &Topo, slack: f64) -> Vec<FaceBox> {
+    topo.faces
+        .iter()
+        .map(|face| FaceBox {
+            face: face.instance,
+            bounds: face_box(topo, face)
+                .map(|(low, high)| (low.map(|x| x - slack), high.map(|x| x + slack))),
+        })
+        .collect()
+}
+
+fn face_box(topo: &Topo, face: &Face) -> Option<(P, P)> {
+    let mut bounds = Bounds {
+        min: [f64::INFINITY; 3],
+        max: [f64::NEG_INFINITY; 3],
+    };
+    match &face.surface {
+        Surface::Plane { .. } | Surface::Cylinder { .. } => {}
+        Surface::Cone {
+            location,
+            z,
+            radius,
+            semi_angle,
+            ..
+        } => {
+            if holds_apex(topo, face, *location, *z) {
+                bounds.add(
+                    super::group::apex(*location, *z, *radius, *semi_angle),
+                    [0.0; 3],
+                );
+            }
+        }
+        Surface::Torus {
+            location,
+            z,
+            major,
+            minor,
+            ..
+        } => {
+            let ring = circle_reach(*z, *major);
+            bounds.add(*location, ring.map(|r| r + minor));
+        }
+        Surface::Sphere { .. } | Surface::Other { .. } => return None,
+    }
+    for vertex in topo.face_vertices(face) {
+        bounds.add(topo.vertices.get(vertex)?.point, [0.0; 3]);
+    }
+    for travels in topo.travels(face) {
+        for travel in travels {
+            match travel.curve {
+                Curve::Line { .. } => {}
+                Curve::Circle {
+                    centre, z, radius, ..
+                } => bounds.add(*centre, circle_reach(*z, *radius)),
+                Curve::Other { .. } => return None,
+            }
+        }
+    }
+    let finite = |p: P| p.iter().all(|x| x.is_finite());
+    (finite(bounds.min) && finite(bounds.max)).then_some((bounds.min, bounds.max))
+}

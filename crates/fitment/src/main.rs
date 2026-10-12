@@ -29,6 +29,12 @@ enum Command {
     ///
     /// Exit codes: 0 listed, 1 error, 2 usage, 3 refused.
     Parts(cmd::parts::Args),
+    /// Read what the neighbours of a part require of any part that
+    /// replaces it: the socket, as a reviewable JSON file.
+    ///
+    /// Exit codes: 0 extracted, 1 error, 2 usage (and a --part or
+    /// --occurrence that names no part), 3 refused.
+    Socket(cmd::socket::Args),
 }
 
 /// Exit codes shared by every command.
@@ -42,5 +48,6 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Features(args) => cmd::features::run(&args),
         Command::Parts(args) => cmd::parts::run(&args),
+        Command::Socket(args) => cmd::socket::run(&args),
     }
 }

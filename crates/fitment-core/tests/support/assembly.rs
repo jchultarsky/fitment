@@ -82,6 +82,7 @@ pub fn check(case: &Value, bytes: &[u8]) -> Vec<String> {
     failures.extend(notes(&read, &expect["notes"]));
     failures.extend(floors(listing, &expect["floors"]));
     failures.extend(components(listing, &expect["components"]));
+    failures.extend(sockets(bytes, listing, &expect["sockets"]));
     failures.extend(transforms(listing, &expect["occurrences"]));
     for (k, try_) in expect["select"]
         .as_array()
@@ -477,6 +478,389 @@ fn document(bytes: &[u8], listing: &Listing) -> Vec<String> {
                     "the parts document misstates an occurrence of #{instance}: {:?}",
                     written.path
                 ));
+            }
+        }
+    }
+    failures
+}
+
+/// How far an expected point may lie from fitment's: answers are rounded
+/// to 9 decimals.
+const POINT_TOL: f64 = 1e-6;
+
+fn point(value: &Value) -> Option<[f64; 3]> {
+    let a = value.as_array()?;
+    Some([
+        a.first()?.as_f64()?,
+        a.get(1)?.as_f64()?,
+        a.get(2)?.as_f64()?,
+    ])
+}
+
+fn near(a: [f64; 3], b: [f64; 3]) -> bool {
+    (0..3).all(|i| (a[i] - b[i]).abs() <= POINT_TOL)
+}
+
+/// True if the line through `p` along unit `d` holds the expected axis.
+fn same_line(p: [f64; 3], d: [f64; 3], expect: &Value) -> bool {
+    let (Some(q), Some(e)) = (
+        point(&expect["axis_point"]),
+        point(&expect["axis_direction"]),
+    ) else {
+        return false;
+    };
+    let off = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+    let along = off[0] * d[0] + off[1] * d[1] + off[2] * d[2];
+    let across = (0..3)
+        .map(|i| (off[i] - along * d[i]) * (off[i] - along * d[i]))
+        .sum::<f64>()
+        .sqrt();
+    let cross = [
+        d[1] * e[2] - d[2] * e[1],
+        d[2] * e[0] - d[0] * e[2],
+        d[0] * e[1] - d[1] * e[0],
+    ];
+    across <= POINT_TOL && cross.iter().all(|c| c.abs() <= 1e-9)
+}
+
+/// The rims of a target hole's open ends, as points: from its part.
+fn rims(
+    part: &fitment_core::Part,
+    hole: fitment_core::FeatureId,
+    open: fitment_core::Open,
+) -> Vec<[f64; 3]> {
+    let Some(stack) = part.holes.iter().find(|h| h.id == hole) else {
+        return Vec::new();
+    };
+    let (p, d) = (
+        stack.axis.point_mm.to_array(),
+        stack.axis.direction.to_array(),
+    );
+    let at = |end: Option<&fitment_core::StackEnd>| match end {
+        Some(fitment_core::StackEnd::Opening { rim_mm, .. }) => Some(*rim_mm),
+        _ => None,
+    };
+    let mut out = Vec::new();
+    for (wanted, end) in [
+        (open.start, stack.ends.first()),
+        (open.finish, stack.ends.get(1)),
+    ] {
+        if wanted {
+            let s = at(end).unwrap_or(f64::NAN);
+            out.push([p[0] + s * d[0], p[1] + s * d[1], p[2] + s * d[2]]);
+        }
+    }
+    out
+}
+
+fn fit_name(fit: fitment_core::Fit) -> &'static str {
+    match fit {
+        fitment_core::Fit::Clearance => "clearance",
+        fitment_core::Fit::NotRead => "not_read",
+        fitment_core::Fit::LineToLine => "line_to_line",
+        fitment_core::Fit::Interference => "interference",
+    }
+}
+
+/// A span as fitment states it: stations, diameter, clear diameter, fit
+/// and whether it is pinned.
+type Span = (f64, f64, f64, Option<f64>, fitment_core::Fit, bool);
+
+/// The spans of an axis through `p` along `d` against the expected ones,
+/// one to one.
+// p, d, a, b, x, y: an axis, a span's ends and an expected span's.
+#[allow(clippy::many_single_char_names)]
+fn spans_match(p: [f64; 3], d: [f64; 3], spans: &[Span], expected: &[Value]) -> Option<String> {
+    let at = |s: f64| [p[0] + s * d[0], p[1] + s * d[1], p[2] + s * d[2]];
+    let mut left: Vec<&Value> = expected.iter().collect();
+    for (from, to, diameter, clear, fit, pinned) in spans {
+        let (a, b) = (at(*from), at(*to));
+        let found = left.iter().position(|e| {
+            let (Some(x), Some(y)) = (point(&e["from"]), point(&e["to"])) else {
+                return false;
+            };
+            let ends = (near(a, x) && near(b, y)) || (near(a, y) && near(b, x));
+            let clear_ok = match (clear, e["clear"].as_f64()) {
+                (None, None) => true,
+                (Some(c), Some(w)) => (c - w).abs() <= POINT_TOL,
+                _ => false,
+            };
+            ends && clear_ok
+                && (diameter - e["diameter"].as_f64().unwrap_or(f64::NAN)).abs() <= POINT_TOL
+                && e["fit"] == fit_name(*fit)
+                && e["pinned"] == *pinned
+        });
+        match found {
+            Some(i) => {
+                left.swap_remove(i);
+            }
+            None => {
+                return Some(format!(
+                    "an unexpected span {from}..{to} Ø{diameter} {fit:?} clear {clear:?}"
+                ));
+            }
+        }
+    }
+    if !left.is_empty() {
+        return Some(format!("spans not found: {left:?}"));
+    }
+    None
+}
+
+/// One expected bore or shaft against one requirement: `None` if they
+/// agree, else why not.
+fn axial_matches(
+    part: &fitment_core::Part,
+    requirement: &fitment_core::Requirement,
+    expect: &Value,
+) -> Option<String> {
+    use fitment_core::Requires;
+    let (kind, feature, axis, spans, open): (&str, _, _, Vec<Span>, _) = match &requirement.requires
+    {
+        Requires::Bore {
+            hole,
+            axis,
+            spans,
+            open,
+            ..
+        } => (
+            "bore",
+            *hole,
+            axis,
+            spans
+                .iter()
+                .map(|s| {
+                    (
+                        s.from_mm,
+                        s.to_mm,
+                        s.hole_diameter_mm,
+                        s.clear_diameter_mm,
+                        s.fit,
+                        s.pinned,
+                    )
+                })
+                .collect(),
+            Some(*open),
+        ),
+        Requires::Shaft {
+            shaft, axis, spans, ..
+        } => (
+            "shaft",
+            *shaft,
+            axis,
+            spans
+                .iter()
+                .map(|s| {
+                    (
+                        s.from_mm,
+                        s.to_mm,
+                        s.shaft_diameter_mm,
+                        s.clear_diameter_mm,
+                        s.fit,
+                        s.pinned,
+                    )
+                })
+                .collect(),
+            None,
+        ),
+        _ => return Some("not a bore or shaft".to_owned()),
+    };
+    if expect["kind"] != kind {
+        return Some("another kind".to_owned());
+    }
+    let (p, d) = (axis.point_mm.to_array(), axis.direction.to_array());
+    if !same_line(p, d, expect) {
+        return Some("another axis".to_owned());
+    }
+    let flags: Vec<String> = requirement
+        .flags
+        .iter()
+        .filter_map(|f| serde_json::to_value(f).ok()?.as_str().map(str::to_owned))
+        .collect();
+    let mut wanted_flags = strings(&expect["flags"]);
+    let mut found_flags = flags.clone();
+    wanted_flags.sort();
+    found_flags.sort();
+    if found_flags != wanted_flags {
+        return Some(format!("flags {found_flags:?}, expected {wanted_flags:?}"));
+    }
+    if let Some(expected) = expect["spans"].as_array() {
+        if let Some(problem) = spans_match(p, d, &spans, expected) {
+            return Some(problem);
+        }
+    }
+    if let Some(open) = open {
+        let found = rims(part, feature, open);
+        let wanted: Vec<[f64; 3]> = expect["open"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(point)
+            .collect();
+        let all = found.len() == wanted.len()
+            && wanted.iter().all(|w| found.iter().any(|f| near(*f, *w)));
+        if !all {
+            return Some(format!("open at {found:?}, expected {wanted:?}"));
+        }
+    }
+    None
+}
+
+/// One expected socket against one socket: `None` if they agree.
+fn socket_matches(
+    part: &fitment_core::Part,
+    socket: &fitment_core::Socket,
+    expect: &Value,
+) -> Option<String> {
+    use fitment_core::Requires;
+    let axial: Vec<&fitment_core::Requirement> = socket
+        .requirements
+        .iter()
+        .filter(|r| matches!(r.requires, Requires::Bore { .. } | Requires::Shaft { .. }))
+        .collect();
+    let wanted: Vec<&Value> = expect["requirements"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .collect();
+    if axial.len() != wanted.len() {
+        return Some(format!(
+            "{} bores and shafts, expected {}",
+            axial.len(),
+            wanted.len()
+        ));
+    }
+    let mut left = wanted.clone();
+    for requirement in &axial {
+        let reasons: Vec<String> = left
+            .iter()
+            .filter_map(|w| axial_matches(part, requirement, w))
+            .collect();
+        match left
+            .iter()
+            .position(|w| axial_matches(part, requirement, w).is_none())
+        {
+            Some(i) => {
+                left.swap_remove(i);
+            }
+            None => {
+                return Some(format!(
+                    "{} matches no expected one: {reasons:?}",
+                    requirement.id
+                ));
+            }
+        }
+    }
+    let mut causes: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for requirement in &socket.requirements {
+        if let Requires::Unresolved { causes: found, .. } = &requirement.requires {
+            for cause in found {
+                let name = serde_json::to_value(cause.cause).ok()?.as_str()?.to_owned();
+                *causes.entry(name).or_default() += 1;
+            }
+        }
+    }
+    let wanted_causes: std::collections::BTreeMap<String, u64> = expect["unresolved"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0)))
+        .collect();
+    if causes != wanted_causes {
+        return Some(format!("unresolved {causes:?}, expected {wanted_causes:?}"));
+    }
+    let left_out: Vec<&Value> = expect["left_out"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .collect();
+    if socket.left_out.len() != left_out.len() {
+        return Some(format!(
+            "{} left out, expected {}",
+            socket.left_out.len(),
+            left_out.len()
+        ));
+    }
+    for left in &socket.left_out {
+        let reason = serde_json::to_value(left.reason).ok()?;
+        let ok = left_out.iter().any(|w| {
+            same_line(
+                left.axis.point_mm.to_array(),
+                left.axis.direction.to_array(),
+                w,
+            ) && (left.diameter_mm - w["diameter"].as_f64().unwrap_or(f64::NAN)).abs() <= POINT_TOL
+                && w["reason"] == reason
+        });
+        if !ok {
+            return Some(format!("{} left out unexpectedly ({reason})", left.feature));
+        }
+    }
+    None
+}
+
+/// Every expected socket of every target named, one to one.
+pub fn sockets(bytes: &[u8], listing: &Listing, expect: &Value) -> Vec<String> {
+    let Some(targets) = expect.as_object() else {
+        return Vec::new();
+    };
+    let mut failures = Vec::new();
+    for (name, wanted) in targets {
+        let document = match fitment_core::SocketDocument::extract(bytes, Some(name), None) {
+            Ok(document) => document,
+            Err(error) => {
+                failures.push(format!("socket of {name}: {error}"));
+                continue;
+            }
+        };
+        if let Err(error) = fitment_core::SocketDocument::from_json(&document.to_json()) {
+            failures.push(format!("socket of {name} does not read back: {error}"));
+        }
+        let Some(extracted) = document.extracted() else {
+            failures.push(format!(
+                "socket of {name}: refused {:?}",
+                document.refusals()
+            ));
+            continue;
+        };
+        let part = listing
+            .definitions()
+            .iter()
+            .find(|d| {
+                d.definition.product.as_ref().and_then(|p| p.id.as_deref()) == Some(name.as_str())
+            })
+            .and_then(|d| match d.read.as_ref() {
+                Some(fitment_core::ComponentRead::Accepted(part)) => Some(part.as_ref()),
+                _ => None,
+            });
+        let Some(part) = part else {
+            failures.push(format!("{name}: not an accepted part"));
+            continue;
+        };
+        let mut left: Vec<&Value> = wanted.as_array().into_iter().flatten().collect();
+        if extracted.sockets.len() != left.len() {
+            failures.push(format!(
+                "{name}: {} sockets, expected {}",
+                extracted.sockets.len(),
+                left.len()
+            ));
+            continue;
+        }
+        for socket in &extracted.sockets {
+            let reasons: Vec<String> = left
+                .iter()
+                .filter_map(|w| socket_matches(part, socket, w))
+                .collect();
+            match left
+                .iter()
+                .position(|w| socket_matches(part, socket, w).is_none())
+            {
+                Some(i) => {
+                    left.swap_remove(i);
+                }
+                None => failures.push(format!(
+                    "{name}: {} matches no expected socket: {reasons:?}",
+                    socket.id
+                )),
             }
         }
     }

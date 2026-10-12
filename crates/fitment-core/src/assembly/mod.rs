@@ -112,6 +112,8 @@ pub struct ListedDefinition {
     /// features, or why it is not a canonical part. `None` for an
     /// assembly.
     pub read: Option<ComponentRead>,
+    /// For an accepted part, each face's sound box (B8).
+    pub(crate) faces: Vec<crate::features::extent::FaceBox>,
 }
 
 /// A component read as a part, once however often it occurs (P1).

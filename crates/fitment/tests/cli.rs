@@ -179,3 +179,43 @@ fn parts_of_what_is_not_step_exits_3() {
     assert_eq!(output.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&output.stderr).contains("refused: unparseable"));
 }
+
+#[test]
+fn socket_of_a_part_prints_a_document_that_reads_back() {
+    let output = fitment()
+        .args(["socket", "--part", "BRACKET"])
+        .arg(unit_assembly("s01_bolted.stp"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let text = String::from_utf8(output.stdout).unwrap();
+    let document = fitment_core::SocketDocument::from_json(&text).unwrap();
+    assert!(document.extracted().is_some());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("BRACKET: 1 occurrences"));
+}
+
+#[test]
+fn socket_of_no_such_part_is_a_usage_error() {
+    fitment()
+        .args(["socket", "--part", "NOPE"])
+        .arg(unit_assembly("s01_bolted.stp"))
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(contains("part_not_found"));
+    fitment()
+        .arg("socket")
+        .arg(unit_assembly("s01_bolted.stp"))
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn socket_of_a_part_file_is_refused() {
+    fitment()
+        .args(["socket", "--part", "p01_through"])
+        .arg(unit_part("p01_through.stp"))
+        .assert()
+        .code(3)
+        .stderr(contains("not_an_assembly"));
+}

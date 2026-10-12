@@ -108,6 +108,8 @@ pub(crate) struct DefinitionRead {
     /// The largest distance from the part's origin of anything its solid
     /// states, in mm: check 38 bounds a placed coordinate by it.
     pub(crate) reach_mm: f64,
+    /// Each face's sound box, for the occupant rule (B8).
+    pub(crate) faces: Vec<super::extent::FaceBox>,
 }
 
 /// Gate stages 3 to 6 and the features of definition `index` of
@@ -183,6 +185,7 @@ pub(crate) fn part_of_definition(
 
     let frames = frames(&shape, item.item);
     let reach_mm = super::extent::reach(&moved);
+    let boxes = super::extent::face_boxes(&moved, finite(facts.max_vertex_offset_mm));
     let part = Part {
         definition: DefinitionRef {
             instance: definition.instance,
@@ -224,5 +227,6 @@ pub(crate) fn part_of_definition(
         part,
         frames,
         reach_mm,
+        faces: boxes,
     })
 }

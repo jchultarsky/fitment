@@ -766,3 +766,50 @@ fn two_occurrences_at_one_place_but_turned_apart_are_not_coincident() {
     assert_ne!(turned, both);
     assert_eq!(coincident(&turned), 0);
 }
+
+#[test]
+fn a_socket_document_edited_by_hand_is_not_read() {
+    let (_, bytes) = ASSEMBLIES[0];
+    let document = fitment_core::SocketDocument::extract(bytes, Some("BRACKET"), None).unwrap();
+    let text = document.to_json();
+    assert!(fitment_core::SocketDocument::from_json(&text).is_ok());
+    // A clear diameter loosened by hand: the digest no longer matches.
+    let loosened = text.replacen(
+        "\"clear_diameter_mm\": 6.0",
+        "\"clear_diameter_mm\": 5.0",
+        1,
+    );
+    assert_ne!(loosened, text, "the edit applies");
+    assert!(matches!(
+        fitment_core::SocketDocument::from_json(&loosened),
+        Err(fitment_core::SocketFormatError::Digest)
+    ));
+    // A removal without a note.
+    let removed = text.replacen("\"status\": \"unreviewed\"", "\"status\": \"removed\"", 1);
+    assert!(matches!(
+        fitment_core::SocketDocument::from_json(&removed),
+        Err(fitment_core::SocketFormatError::Invalid(_))
+    ));
+}
+
+#[test]
+fn every_committed_socket_is_deterministic() {
+    for (name, bytes) in ASSEMBLIES {
+        let read = read_assembly(bytes);
+        let listing = read.listing().unwrap();
+        for definition in listing.definitions() {
+            if definition.kind != DefinitionKind::Part {
+                continue;
+            }
+            let part = definition
+                .definition
+                .product
+                .as_ref()
+                .and_then(|p| p.id.clone())
+                .unwrap();
+            let first = fitment_core::SocketDocument::extract(bytes, Some(&part), None).unwrap();
+            let again = fitment_core::SocketDocument::extract(bytes, Some(&part), None).unwrap();
+            assert_eq!(first.to_json(), again.to_json(), "{name} {part}");
+        }
+    }
+}

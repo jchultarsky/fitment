@@ -9,7 +9,7 @@
 
 mod cylinder;
 mod document;
-mod extent;
+pub(crate) mod extent;
 mod full;
 mod group;
 mod other;
