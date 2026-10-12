@@ -46,3 +46,13 @@ pub fn partition(part: &Value) -> Option<String> {
         )
     })
 }
+
+/// Why fitment-core cannot read back the document `fitment features`
+/// printed, if it cannot: every document it writes must keep the rules
+/// `from_json` checks.
+pub fn reads_back(stdout: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(stdout);
+    fitment_core::FeaturesDocument::from_json(&text)
+        .err()
+        .map(|error| format!("its document does not read back: {error}"))
+}

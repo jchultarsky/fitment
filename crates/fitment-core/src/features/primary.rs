@@ -52,13 +52,15 @@ pub(crate) fn read(topo: &Topo, solid: FeatureId, uncertainty: f64) -> Result<Pr
         |s| matches!(s, Surface::Torus { .. }),
         group::same_torus,
     );
-    let others: Vec<usize> = (0..topo.faces.len())
+    let mut others: Vec<usize> = (0..topo.faces.len())
         .filter(|&i| {
             topo.faces.get(i).is_some_and(|f| {
                 matches!(f.surface, Surface::Sphere { .. } | Surface::Other { .. })
             })
         })
         .collect();
+    // By `#id`, as every list is: a shell may list its faces in any order.
+    others.sort_by_key(|&i| topo.faces.get(i).map(|f| f.instance));
 
     // The partition: every face in exactly one primary feature.
     let mut owner: Vec<Option<FeatureId>> = vec![None; topo.faces.len()];
@@ -210,7 +212,7 @@ fn plane(
         let Some(face) = topo.faces.get(index) else {
             return Err(internal(topo.instance, "a plane face is missing"));
         };
-        let (Surface::Plane { location, .. }, Some(normal)) = (&face.surface, group::outward(face))
+        let (Some(normal), Some((anchor, _))) = (group::outward(face), group::anchor(topo, face))
         else {
             return Err(internal(face.instance, "a plane face is not on a plane"));
         };
@@ -236,7 +238,7 @@ fn plane(
         faces.push(PlaneFace {
             face: face.instance,
             surface: face.surface.instance(),
-            offset_mm: num(dot(group.normal, *location), face.instance)?,
+            offset_mm: num(dot(group.normal, anchor), face.instance)?,
             area_mm2: read.area_mm2,
             outline: read.outline,
         });

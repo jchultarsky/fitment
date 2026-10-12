@@ -115,7 +115,16 @@ fn part(graph: &Graph<'_>, info: &Info) -> Result<Part, Vec<Refusal>> {
         count(facts.topology.faces.len()),
     );
     let moved = match &transform {
-        Some(rigid) => facts.topology.moved(rigid),
+        Some(rigid) => {
+            let moved = facts.topology.moved(rigid);
+            // Check 26 again where features are read: a mapped item's
+            // translation may carry a solid in range far out of it.
+            let refusals = gate::geometry::out_of_range(&moved);
+            if !refusals.is_empty() {
+                return Err(refusals);
+            }
+            moved
+        }
         None => facts.topology,
     };
     let primary = primary::read(&moved, solid_id, facts.max_uncertainty_mm)

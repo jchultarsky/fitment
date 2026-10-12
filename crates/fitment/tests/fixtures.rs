@@ -4,7 +4,8 @@
 //! never committed. `fixtures/manifest.json` pins what fitment's gate makes
 //! of each one. Each file must give exactly its pinned result and exit
 //! code, and never a panic or an `internal` refusal; an accepted one must
-//! have its pinned number of planes and every face in exactly one primary
+//! have its pinned numbers of planes and of unknown plane outlines, and
+//! every face in exactly one primary
 //! feature (design, section 6). Every STEP file
 //! fetched outside the manual `ocp` set must be pinned. Without the files
 //! the test passes with a note, unless `FITMENT_REQUIRE_FIXTURES=1`, which
@@ -79,17 +80,11 @@ fn every_fixture_gives_its_pinned_gate_result() {
             .as_array()
             .map(|r| r.iter().map(|c| c.as_str().unwrap()).collect())
             .unwrap_or_default();
+        if let Some(problem) = common::reads_back(&output.stdout) {
+            failures.push(format!("{path}: {problem}"));
+        }
         if document["status"] == "accepted" {
-            let planes = document["part"]["planes"].as_array().map(Vec::len);
-            if planes.map(|n| n as u64) != fixture["planes"].as_u64() {
-                failures.push(format!(
-                    "{path}: {planes:?} planes, pinned {}",
-                    fixture["planes"]
-                ));
-            }
-            if let Some(problem) = common::partition(&document["part"]) {
-                failures.push(format!("{path}: {problem}"));
-            }
+            failures.extend(accepted(&document["part"], fixture).map(|f| format!("{path}: {f}")));
         }
         if document["status"] != fixture["features"]
             || reasons != pinned
@@ -111,6 +106,31 @@ fn every_fixture_gives_its_pinned_gate_result() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// What is wrong with an accepted fixture's part: its numbers of planes
+/// and of unknown plane outlines against the pins, and the face partition.
+fn accepted(part: &Value, fixture: &Value) -> impl Iterator<Item = String> {
+    let mut problems = Vec::new();
+    let planes = part["planes"].as_array().map(Vec::len);
+    if planes.map(|n| n as u64) != fixture["planes"].as_u64() {
+        problems.push(format!("{planes:?} planes, pinned {}", fixture["planes"]));
+    }
+    let unknown = part["planes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|plane| plane["faces"].as_array().into_iter().flatten())
+        .filter(|face| face["outline"]["status"] == "unknown")
+        .count();
+    if Some(unknown as u64) != fixture["unknown_outlines"].as_u64() {
+        problems.push(format!(
+            "{unknown} unknown outlines, pinned {}",
+            fixture["unknown_outlines"]
+        ));
+    }
+    problems.extend(common::partition(part));
+    problems.into_iter()
 }
 
 /// Every `.stp` and `.step` file under `dir`, as paths relative to `root`

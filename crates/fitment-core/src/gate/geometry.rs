@@ -106,7 +106,7 @@ fn beyond(values: &[f64]) -> bool {
 
 /// Check 26: every vertex, every surface's and circle's location and
 /// radii, and every line's point lie within [`RANGE_MM`].
-fn out_of_range(topo: &Topo) -> Vec<Refusal> {
+pub(crate) fn out_of_range(topo: &Topo) -> Vec<Refusal> {
     let refusal = |instance: u64, what: &str| {
         Refusal::new(
             RefusalCode::OutOfRange,

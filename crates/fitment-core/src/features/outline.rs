@@ -101,7 +101,7 @@ pub enum Segment {
         /// Its radius.
         radius_mm: f64,
         /// The signed angle swept about the outward normal, in
-        /// (−2π, 2π]: positive counterclockwise.
+        /// [−2π, 2π]: positive counterclockwise, ±2π for a whole circle.
         sweep_rad: f64,
         /// The primary feature on the other side of the edge.
         across: FeatureId,

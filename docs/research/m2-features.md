@@ -309,7 +309,7 @@ A `Plane` is one infinite plane of the solid.
 - **`offset_mm`:** the plane is every x with `normal · x = offset_mm`.
 - **`spread_mm`:** the largest minus the smallest face offset, at most 1e-6.
 - **`area_mm2`:** the sum of its faces' areas, or `null` if any outline is unknown.
-- **`faces`:** one `PlaneFace` per face, sorted by `#id`. A `PlaneFace` records its face, surface, shell, its own offset, its net area, and an `outline`.
+- **`faces`:** one `PlaneFace` per face, sorted by `#id`. A `PlaneFace` records its face, surface, its own offset, its net area, and an `outline`.
 
 ### 7.2 Grouping
 
@@ -317,6 +317,11 @@ Faces of one solid and one shell are grouped in two stages. Planes never cross s
 
 1. **Direction class.** A face joins the class whose normal agrees with its own: `|n_c × n_f| ≤ PARALLEL_SINE` and `n_c · n_f > 0`. The class normal is that of its smallest-`#id` face. Faces are compared only with that face, so classes cannot drift by chaining. Candidate classes are found through quantized keys and the 27 neighbouring bins; the exact test decides membership.
 2. **Offset runs.** Within a class, faces are sorted by `(n_c · p_f, #id)`, and a run of offsets within `IDENTITY_MM` of its first face is one plane.
+
+As built after review of PR 4:
+
+- **Offsets are measured at the face.** A plane's stated location may lie anywhere on it, up to 1e6 mm from its face, and a normal within `PARALLEL_SINE` of the class's then moves the offset there by up to 1e-3 mm: a 0.0005 mm step read as one plane. Each face is measured at its anchor, its first vertex projected onto its own plane, and joins a class only if its normal's sine, times its extent from the anchor, is also within ε (the lever-arm rule of section 5.2).
+- **Bins are 2 × `PARALLEL_SINE` wide.** Bins 1e-6 wide held thousands of classes on a jittered grid, which made grouping quadratic (14 s for 180,000 faces).
 
 Disjoint coplanar faces, such as two boss tops, are one plane. Opposed coincident faces are never grouped; there are 391 such pairs in the 48 fixtures under 16 MB. The cost is O(F log F).
 
@@ -327,7 +332,7 @@ A polygon through sample points lies inside an arc on one side and outside it on
 - **Loops:** the outer loop first (section 5.3), then the inner loops as the face lists its bounds. Each loop records its bound `#id`, `outer`, its signed area and its segments.
 - **Segments,** in traversal order:
   - a `line` holds the edge `#id`, `from_mm` and `to_mm` (the stated vertex points), and `across`;
-  - an `arc` also holds `center_mm`, `radius_mm` and `sweep_rad`, the signed angle swept about the outward normal, in (−2π, 2π].
+  - an `arc` also holds `center_mm`, `radius_mm` and `sweep_rad`, the signed angle swept about the outward normal, in [−2π, 2π]: a whole circle sweeps 2π or −2π as the loop runs it.
   - **`across`** is the id of the primary feature on the other side of the edge. It links a plane's inner loop to the cylinder that opens there, without any geometry.
 - **Arc sweep.** For a segment `a → b` with centre c and circle axis z, φ(u → v) is the counterclockwise angle about z from `u − c` to `v − c`. It is `libm::atan2(((u−c)×(v−c))·z, (u−c)·(v−c))` moved into (0, 2π], and a closed edge has φ = 2π. The traversal runs along the circle iff `forward == edge.same_sense`. Then θ_z is φ(a → b) along, or −φ(b → a) against, and `sweep_rad = θ_z · sign(z · normal)`.
 - **Signed area,** about the outward normal n, with o the face's stated plane location:
@@ -634,7 +639,7 @@ Core refuses to read a document with another `format` or `format_version`. It re
 - **STEP references** are bare integers; feature ids are strings.
 - **Enums with data** are internally tagged with struct variants only: `kind` for shapes and classes, `status` for outcomes, matching `FitStatus`. **Fieldless enums** (`sense`, a hole's `kind`) are snake_case strings.
 - **Optional values** are written as `null`, never skipped, so every document of one version has the same keys.
-- **Reading** uses `deny_unknown_fields` and checked raw types (finite values, unit directions, chained segments, sorted ids).
+- **Reading** uses `deny_unknown_fields` and checked raw types (finite values, unit directions, chained segments, sorted ids). As built in PR 4, after review, `from_json` also refuses a part whose features break what `read_part` guarantees: a face in no primary feature or in two; a list or a feature's faces out of order, or an id not named after its smallest face; a feature of another solid or shell; face counts that differ from the lists; an outline whose first loop is not the one positive outer loop, whose segments do not chain and close, whose arcs sweep beyond ±2π, or whose `across` names no feature of the part; an area that is not its outline's, or a plane's that is not its faces' sum; unsorted notes. Every document of the unit set, the corpus and the fixtures reads back.
 
 ### 10.3 The part
 
@@ -1044,7 +1049,7 @@ Each PR comes with its tests. `EXTRACTOR_VERSION` goes up with every PR that cha
    - the `Topo` copy, with the gate's checks 22 to 26 moved onto it (section 11.1);
    - grouping, outlines, areas, and the `stated_outer_bound_differs` note;
    - cylinders, cones and tori grouped (G1, G2 and section 8.6) with their sense, axis and radii, but not yet classified; other faces;
-   - features stated in the part's frame: a solid placed by a mapped item is moved before it is read (p29 caught this);
+   - features stated in the part's frame: a solid placed by a mapped item is moved before it is read (p29 caught this), and check 26 runs again on the moved solid (a translation of 1e17 mm otherwise snapped vertices to a 16 mm grid and stated wrong areas as known);
    - the partition check, in `read_part`, in `from_json`, and on every unit part, corpus part and fixture;
    - the planes of every corpus part checked against the construction, and each accepted fixture's plane count pinned;
    - `verify-occt.py features` for planes, in CI on the corpus and the fixtures.
