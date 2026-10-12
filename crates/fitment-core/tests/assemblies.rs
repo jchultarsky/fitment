@@ -419,7 +419,11 @@ fn definitions_in_a_cycle_beside_the_root_are_refused() {
     );
     let read = read_assembly(beside.as_bytes());
     assert_eq!(codes(read.refusals()), [RefusalCode::SeveralRoots]);
-    assert!(read.refusals()[0].message.contains("not reached from the root"));
+    assert!(
+        read.refusals()[0]
+            .message
+            .contains("not reached from the root")
+    );
 }
 
 #[test]
@@ -473,7 +477,10 @@ fn the_occurrence_limit_keeps_the_usages_that_cannot_be_placed() {
     let read = read_assembly(text.as_bytes());
     assert_eq!(
         codes(read.refusals()),
-        [RefusalCode::PlacementUnreadable, RefusalCode::TooManyOccurrences]
+        [
+            RefusalCode::PlacementUnreadable,
+            RefusalCode::TooManyOccurrences
+        ]
     );
 }
 
