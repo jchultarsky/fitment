@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 4,
+  "extractor_version": 5,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -69,6 +69,7 @@
       }
     ],
     "max_uncertainty_mm": 1e-7,
+    "complete": true,
     "face_counts": {
       "plane": 7,
       "cylindrical": 2,
@@ -851,6 +852,62 @@
     "cones": [],
     "tori": [],
     "other_faces": [],
+    "holes": [
+      {
+        "id": "hole-187",
+        "solid": "solid-15",
+        "kind": "through",
+        "axis": {
+          "point_mm": [
+            207.18519104281046,
+            -12.650798627244814,
+            16.372135403898177
+          ],
+          "direction": [
+            0.36483319454001123,
+            -0.07454276336658229,
+            0.9280841107310285
+          ]
+        },
+        "segments": [
+          {
+            "cylinder": "cylinder-212",
+            "diameter_mm": 6.6,
+            "from_mm": 0.0,
+            "to_mm": 8.499999999997039
+          },
+          {
+            "cylinder": "cylinder-187",
+            "diameter_mm": 11.0,
+            "from_mm": 8.499999999997035,
+            "to_mm": 14.999999999998767
+          }
+        ],
+        "transitions": [
+          "plane-237"
+        ],
+        "ends": [
+          {
+            "kind": "opening",
+            "at_mm": 0.0,
+            "rim_mm": 0.0,
+            "opens_into": "plane-147",
+            "countersink": null
+          },
+          {
+            "kind": "opening",
+            "at_mm": 14.999999999998767,
+            "rim_mm": 14.999999999998767,
+            "opens_into": "plane-88",
+            "countersink": null
+          }
+        ],
+        "length_mm": 14.999999999998767,
+        "depth_mm": null,
+        "wall_openings": 0
+      }
+    ],
+    "shafts": [],
     "other_items": [],
     "notes": []
   }

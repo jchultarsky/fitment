@@ -32,6 +32,9 @@ pub(crate) struct Classified {
     pub(crate) z: P,
     /// The stations, as distances along `z` from `point`.
     pub(crate) stations: Vec<f64>,
+    /// The end arcs of each station, as indices into [`Topo::edges`]: where
+    /// the end walk of section 9.1 starts.
+    pub(crate) arcs: Vec<Vec<usize>>,
     pub(crate) wall_openings: u32,
 }
 
@@ -114,6 +117,8 @@ impl Frame {
 /// An end arc: a circle on the cylinder, used by one face of the group.
 struct Arc {
     edge: u64,
+    /// Its index into [`Topo::edges`].
+    index: usize,
     station: f64,
     /// The vertices it runs from and to, in its loop's direction.
     first: usize,
@@ -158,6 +163,7 @@ fn bounding(topo: &Topo, travel: &Travel<'_>, frame: &Frame) -> Bounding {
             let from = if sweep >= 0.0 { travel.from } else { travel.to };
             Bounding::Arc(Arc {
                 edge: instance,
+                index: travel.edge,
                 station: frame.station(*centre),
                 first: travel.first,
                 last: travel.last,
@@ -175,6 +181,8 @@ fn bounding(topo: &Topo, travel: &Travel<'_>, frame: &Frame) -> Bounding {
 /// What F2 finds of one station.
 struct Station {
     at: f64,
+    /// Its arcs' edges.
+    arcs: Vec<usize>,
     full: bool,
     /// The angle its arcs cover.
     cover: f64,
@@ -190,6 +198,7 @@ fn full_station(arcs: &[&Arc], radius: f64) -> Result<Station, Contradiction> {
     let sum: f64 = arcs.iter().map(|a| a.sweep).sum();
     let mut station = Station {
         at,
+        arcs: arcs.iter().map(|a| a.index).collect(),
         full: false,
         cover: cover(arcs, IDENTITY_MM / radius),
         ccw: sum > 0.0,
@@ -346,6 +355,7 @@ pub(crate) fn classify(topo: &Topo, group: &Group<'_>) -> Result<Classified, Con
         ],
         z,
         stations: at.iter().map(|s| s - base).collect(),
+        arcs: stations.into_iter().map(|s| s.arcs).collect(),
         wall_openings,
     })
 }
@@ -476,6 +486,7 @@ mod tests {
     fn arc(first: usize, last: usize, start: f64, sweep: f64) -> Arc {
         Arc {
             edge: 7,
+            index: 0,
             station: 0.0,
             first,
             last,
@@ -533,6 +544,7 @@ mod tests {
     fn full(at: f64, ccw: bool) -> Station {
         Station {
             at,
+            arcs: Vec::new(),
             full: true,
             cover: TAU,
             ccw,

@@ -73,6 +73,12 @@ each was transferred from:
     irregular; a partial sweep is within the faces' parameter bounds. A cylinder whose faces go all the
     way around between its stations but fitment does not call full is a
     false negative, tallied apart;
+  - each through or blind hole, and each pin or boss, passes the manifest
+    mode's tests on its axis line: air along each segment and just past
+    each opening, the face around each opening at its rim, material just
+    past each bottom at its station, a drill point's or countersink's cone
+    with its apex and angle, an annular bottom's post, a shaft's root and
+    free ends;
   - the solid is valid with positive volume: the only check on a shell
     written inside out (design, R11).
 
@@ -460,6 +466,39 @@ def two_sided(solid, point, direction, sign):
     return solid.inside(add(point, direction, -sign * PROBE)) and solid.outside(add(point, direction, sign * PROBE))
 
 
+def around(solid, centre, direction, distances, sign):
+    """True if, at one of `distances` from `centre` in one of eight
+    directions around the axis `direction`, material lies just before the
+    point and air just past it. One direction can fall into a neighbouring
+    feature, and one distance into an edge round or fillet that the rim
+    lies beyond, or a bore inside a hollow end."""
+    x = side(direction)
+    y = cross(direction, x)
+    for distance in distances:
+        for k in range(8):
+            angle = 2 * math.pi * k / 8
+            out = add(scale3(x, math.cos(angle)), y, math.sin(angle))
+            if two_sided(solid, add(centre, out, distance), direction, sign):
+                return True
+    return False
+
+
+def outside_wall(radius):
+    """Distances outside a wall of `radius` where the face around it is
+    probed: just beside it, and further out past a round or fillet."""
+    return [radius + beside(radius) * k for k in (1, 0.5, 0.25, 2, 4, 8)]
+
+
+def scale3(v, k):
+    return tuple(c * k for c in v)
+
+
+def beside(radius):
+    """How far outside a wall of `radius` the face around it is probed: 1 mm,
+    or half the radius on a small part, where 1 mm can leave the part."""
+    return min(BESIDE, radius / 2)
+
+
 def check_hole_ends(solid, holes, problems, case):
     for i, h in enumerate(holes):
         if h["kind"] == "unknown" and not canonical(h["axis_direction"]):
@@ -494,7 +533,7 @@ def check_hole_ends(solid, holes, problems, case):
                     problems.append(f"{label}: no countersink cone with apex at {apex}")
             if not solid.outside(add(p, d, at + sign * PROBE)):
                 problems.append(f"{label}: just past its opening at {at} is not air")
-            if not two_sided(solid, add(add(p, d, at), out, radius + BESIDE), d, sign):
+            if not around(solid, add(p, d, at), d, outside_wall(radius), sign):
                 problems.append(f"{label}: the face around its opening is not at {at}")
         if h["kind"] != "blind":
             continue
@@ -537,11 +576,11 @@ def check_shaft_ends(solid, shafts, problems, case):
             ends = [(0.0, -1.0), (s["length"], 1.0)]
         else:
             # Material just below the root beside the shaft, air just above.
-            if not two_sided(solid, add(p, out, radius + BESIDE), d, 1.0):
+            if not around(solid, p, d, outside_wall(radius), 1.0):
                 problems.append(f"{label}: its root is not at station 0")
             ends = [(s["protrusion"], 1.0)]
         for at, sign in ends:
-            if not two_sided(solid, add(add(p, d, at), out, 0.75 * radius), d, sign):
+            if not around(solid, add(p, d, at), d, [f * radius for f in (0.75, 0.9, 0.5, 0.25)], sign):
                 problems.append(f"{label}: its free end is not at station {at}")
 
 
@@ -718,6 +757,14 @@ def check_features(path, binary, tally):
     offset = part["solids"][0]["max_vertex_offset_mm"]
     if solids:
         problems += check_cylinders(path, part, solids[0], faces, tally)
+        # Holes and shafts, by the manifest mode's two-sided tests on the
+        # axis line: air past an opening, material past a bottom, and so on.
+        holes = [as_manifest_hole(h) for h in part["holes"]]
+        shafts = [as_manifest_shaft(s) for s in part["shafts"] if s["kind"] in ("free_free", "root_free")]
+        tally["holes"] += len(holes)
+        tally["shafts"] += len(shafts)
+        check_hole_ends(solids[0], holes, problems, str(path))
+        check_shaft_ends(solids[0], shafts, problems, str(path))
     for plane in part["planes"]:
         n = plane["normal"]
         problems += check_plane(path, plane)
@@ -922,6 +969,54 @@ def check_plane(path, plane):
     return problems
 
 
+def as_manifest_end(end):
+    """A fitment hole end in the manifest's terms."""
+    if end["kind"] == "opening":
+        out = {"kind": "opening", "rim": end["rim_mm"]}
+        if end["countersink"] is not None:
+            out["countersink"] = {"outer_diameter": end["countersink"]["outer_diameter_mm"],
+                                  "angle_deg": math.degrees(end["countersink"]["angle_rad"])}
+        return out
+    if end["kind"] != "bottom":
+        return {"kind": end["kind"]}
+    bottom = end["bottom"]
+    out = {"kind": "bottom", "bottom": bottom["kind"], "at": end["at_mm"]}
+    if bottom["kind"] in ("point", "cone_then_flat"):
+        out["angle_deg"] = math.degrees(bottom["angle_rad"])
+    if bottom["kind"] == "point":
+        out["tip_length"] = bottom["tip_length_mm"]
+    if bottom["kind"] in ("cone_then_flat", "annular"):
+        out["floor_at"] = bottom["floor_at_mm"]
+    if bottom["kind"] == "annular":
+        out["post_diameter"] = 2 * bottom["post_radius_mm"]
+    return out
+
+
+def as_manifest_hole(hole):
+    """A fitment hole in the manifest's terms, for check_hole_ends."""
+    out = {"kind": hole["kind"], "axis_point": hole["axis"]["point_mm"],
+           "axis_direction": hole["axis"]["direction"],
+           "segments": [[s["diameter_mm"], s["from_mm"], s["to_mm"]] for s in hole["segments"]],
+           "ends": [as_manifest_end(e) for e in hole["ends"]]}
+    if hole["length_mm"] is not None:
+        out["length"] = hole["length_mm"]
+    if hole["depth_mm"] is not None:
+        out["depth"] = hole["depth_mm"]
+    return out
+
+
+def as_manifest_shaft(shaft):
+    """A fitment shaft in the manifest's terms, for check_shaft_ends."""
+    out = {"kind": shaft["kind"], "axis_point": shaft["axis"]["point_mm"],
+           "axis_direction": shaft["axis"]["direction"],
+           "segments": [[s["diameter_mm"], s["from_mm"], s["to_mm"]] for s in shaft["segments"]]}
+    if shaft["length_mm"] is not None:
+        out["length"] = shaft["length_mm"]
+    if shaft["protrusion_mm"] is not None:
+        out["protrusion"] = shaft["protrusion_mm"]
+    return out
+
+
 def perimeter(outline):
     """The length of a known outline's loops, in mm."""
     total = 0.0
@@ -954,7 +1049,7 @@ def features_main(paths):
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
     tally = {"accepted": 0, "refused": 0, "plane faces": 0, "areas": 0, "areas within the vertex offsets": 0,
              "unknown outlines": 0, "cylinders": 0, "full cylinders": 0,
-             "cylinders full only in Open CASCADE": 0}
+             "cylinders full only in Open CASCADE": 0, "holes": 0, "shafts": 0}
     problems = []
     for path in [p for arg in paths for p in feature_inputs(Path(arg))]:
         try:

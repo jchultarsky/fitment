@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 4,
+  "extractor_version": 5,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -69,6 +69,7 @@
       }
     ],
     "max_uncertainty_mm": 1e-7,
+    "complete": false,
     "face_counts": {
       "plane": 6,
       "cylindrical": 1,
@@ -540,6 +541,8 @@
     "cones": [],
     "tori": [],
     "other_faces": [],
+    "holes": [],
+    "shafts": [],
     "other_items": [],
     "notes": []
   }

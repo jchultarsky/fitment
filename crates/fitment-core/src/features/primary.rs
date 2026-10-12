@@ -2,22 +2,29 @@
 //! cylinder, cone, torus or other face (`docs/research/m2-features.md`,
 //! section 6).
 
+use std::collections::BTreeMap;
+
 use super::cylinder::{Axis, Cylinder, CylinderClass, Sense};
 use super::full;
 use super::group::{self, PlaneGroup};
 use super::other::{Cone, OtherFace, OtherReason, Torus};
 use super::outline;
 use super::plane::{Plane, PlaneFace};
+use super::stack::{self, Hole, HoleKind, Shaft, ShaftKind};
 use super::topo::{Surface, Topo, dot, length, radial, sub};
+use super::walk;
 use super::{FaceCounts, FeatureId, FeatureKind, Note, NoteCode};
 use crate::gate::{Refusal, RefusalCode};
 use crate::geom::{Dir3, Point3, finite};
 
 /// The primary features of one solid, and the notes made reading them.
 pub(crate) struct Primary {
+    pub(crate) complete: bool,
     pub(crate) face_counts: FaceCounts,
     pub(crate) planes: Vec<Plane>,
     pub(crate) cylinders: Vec<Cylinder>,
+    pub(crate) holes: Vec<Hole>,
+    pub(crate) shafts: Vec<Shaft>,
     pub(crate) cones: Vec<Cone>,
     pub(crate) tori: Vec<Torus>,
     pub(crate) other_faces: Vec<OtherFace>,
@@ -113,13 +120,19 @@ pub(crate) fn read(topo: &Topo, solid: FeatureId, uncertainty: f64) -> Result<Pr
         read_planes.push(plane(topo, solid, group, &owner, uncertainty, &mut notes)?);
     }
     notes.sort_by_key(|note| (note.instance, note.code));
+    let read_cylinders: Vec<(Cylinder, full::Classified)> = cylinders
+        .iter()
+        .map(|g| cylinder(topo, solid, g, &owner, &near))
+        .collect::<Result<_, _>>()?;
+    let curved: Vec<&Vec<usize>> = cylinders.iter().chain(&cones).chain(&tori).collect();
+    let (holes, shafts, complete) = compound(topo, &owner, &curved, &read_cylinders)?;
     Ok(Primary {
         face_counts: face_counts(topo),
         planes: read_planes,
-        cylinders: cylinders
-            .iter()
-            .map(|g| cylinder(topo, solid, g, &owner, &near))
-            .collect::<Result<_, _>>()?,
+        cylinders: read_cylinders.into_iter().map(|(c, _)| c).collect(),
+        complete,
+        holes,
+        shafts,
         cones: cones
             .iter()
             .map(|g| cone(topo, solid, g))
@@ -134,6 +147,73 @@ pub(crate) fn read(topo: &Topo, solid: FeatureId, uncertainty: f64) -> Result<Pr
             .collect::<Result<_, _>>()?,
         notes,
     })
+}
+
+/// The holes and shafts: every full cylinder of the outer shell walks
+/// both ends (section 9.1), and mutual steps chain them into stacks (9.2).
+/// A void's cylinders never join one (S3).
+/// Also returns whether the part is complete (section 9.6): no cylinder
+/// undecided, no hole or shaft unknown.
+fn compound(
+    topo: &Topo,
+    owner: &[FeatureId],
+    curved: &[&Vec<usize>],
+    cylinders: &[(Cylinder, full::Classified)],
+) -> Result<(Vec<Hole>, Vec<Shaft>, bool), Refusal> {
+    let mut faces_of: BTreeMap<FeatureId, Vec<usize>> = BTreeMap::new();
+    for group in curved {
+        if let Some(&id) = group.first().and_then(|&f| owner.get(f)) {
+            faces_of.insert(id, (*group).clone());
+        }
+    }
+    let walls: Vec<walk::Wall> = cylinders
+        .iter()
+        .map(|(c, read)| walk::Wall {
+            id: c.id,
+            radius: c.radius_mm,
+            shaft: c.sense == Sense::Shaft,
+            point: read.point,
+            z: read.z,
+        })
+        .collect();
+    let groups: Vec<stack::Group<'_>> = cylinders
+        .iter()
+        .zip(&walls)
+        .filter(|((c, _), _)| c.class.is_full() && c.shell == 0)
+        .map(|((cylinder, read), wall)| stack::Group {
+            cylinder,
+            wall,
+            stations: &read.stations,
+            arcs: &read.arcs,
+        })
+        .collect();
+    let part = walk::Part {
+        topo,
+        owner,
+        faces: &faces_of,
+    };
+    let sides = stack::walk_all(&part, &groups).map_err(|at| {
+        Refusal::new(
+            RefusalCode::Contradiction,
+            Some(at.0),
+            format!(
+                "plane face #{} is an annulus whose sides contradict its radii: a hole widens into air and narrows into material",
+                at.0
+            ),
+        )
+    })?;
+    let (holes, shafts) = stack::stacks(&groups, &sides).ok_or_else(|| {
+        internal(
+            topo.instance,
+            "a hole or shaft has a value that is not finite",
+        )
+    })?;
+    let complete = cylinders
+        .iter()
+        .all(|(c, _)| !matches!(c.class, CylinderClass::Undecided { .. }))
+        && holes.iter().all(|h| h.kind != HoleKind::Unknown)
+        && shafts.iter().all(|s| s.kind != ShaftKind::Unknown);
+    Ok((holes, shafts, complete))
 }
 
 /// Pairs of feature ids.
@@ -322,7 +402,7 @@ fn cylinder(
     group: &[usize],
     owner: &[FeatureId],
     near: &[(FeatureId, FeatureId)],
-) -> Result<Cylinder, Refusal> {
+) -> Result<(Cylinder, full::Classified), Refusal> {
     let (faces, reference) = members(topo, group)?;
     let Some(face) = topo.faces.get(reference) else {
         return Err(internal(topo.instance, "a cylinder's face is missing"));
@@ -375,7 +455,7 @@ fn cylinder(
             ),
         )
     })?;
-    let mut class = read.class;
+    let mut class = read.class.clone();
     if let CylinderClass::Partial {
         sweep_rad: Some(sweep),
     } = &mut class
@@ -385,7 +465,7 @@ fn cylinder(
     // `near` is sorted: this cylinder's pairs are one run of it.
     let start = near.partition_point(|(a, _)| *a < id);
     let end = near.partition_point(|(a, _)| *a <= id);
-    Ok(Cylinder {
+    let cylinder = Cylinder {
         id,
         solid,
         shell: shell(topo, reference),
@@ -411,7 +491,8 @@ fn cylinder(
             .iter()
             .map(|&(_, b)| b)
             .collect(),
-    })
+    };
+    Ok((cylinder, read))
 }
 
 fn cone(topo: &Topo, solid: FeatureId, group: &[usize]) -> Result<Cone, Refusal> {
