@@ -4,8 +4,8 @@
 //! never committed. `fixtures/manifest.json` pins what fitment's gate makes
 //! of each one. Each file must give exactly its pinned result and exit
 //! code, and never a panic or an `internal` refusal; an accepted one must
-//! have its pinned numbers of planes, of unknown plane outlines and of
-//! full cylinders, and
+//! have its pinned numbers of planes, of unknown plane outlines, of full
+//! cylinders, and of holes and shafts by kind, and
 //! every face in exactly one primary
 //! feature (design, section 6). Every STEP file
 //! fetched outside the manual `ocp` set must be pinned. Without the files
@@ -141,6 +141,17 @@ fn accepted(part: &Value, fixture: &Value) -> impl Iterator<Item = String> {
             "{full} full cylinders, pinned {}",
             fixture["full_cylinders"]
         ));
+    }
+    for key in ["holes", "shafts"] {
+        let mut kinds = serde_json::Map::new();
+        for stack in part[key].as_array().into_iter().flatten() {
+            let kind = stack["kind"].as_str().unwrap_or("").to_owned();
+            let n = kinds.get(&kind).and_then(Value::as_u64).unwrap_or(0);
+            kinds.insert(kind, (n + 1).into());
+        }
+        if Value::Object(kinds.clone()) != fixture[key] {
+            problems.push(format!("{key} by kind {kinds:?}, pinned {}", fixture[key]));
+        }
     }
     problems.extend(common::expect::partition(part));
     problems.into_iter()

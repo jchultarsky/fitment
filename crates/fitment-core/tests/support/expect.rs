@@ -78,7 +78,200 @@ pub fn features(part: &Value, expect: &Value) -> Vec<String> {
     }
     problems.extend(partition(part));
     problems.extend(cylinders(part, expect));
+    problems.extend(stacks(part, expect, "holes"));
+    problems.extend(stacks(part, expect, "shafts"));
+    if part["complete"] != expect_complete(expect) {
+        problems.push(format!("complete is {}", part["complete"]));
+    }
     problems
+}
+
+/// The manifest's answer for `complete`: every stack known.
+fn expect_complete(expect: &Value) -> bool {
+    ["holes", "shafts"]
+        .iter()
+        .flat_map(|k| expect[*k].as_array().into_iter().flatten())
+        .all(|s| s["kind"] != "unknown")
+}
+
+fn close(a: &Value, b: f64) -> bool {
+    a.as_f64().is_some_and(|a| (a - b).abs() <= LENGTH_MM)
+}
+
+/// What is wrong with fitment's `end` against the manifest's `want`, a
+/// known stack's end.
+fn end_problem(end: &Value, want: &Value) -> Option<String> {
+    let bad = |what: &str| Some(format!("{what}: {end} for {want}"));
+    if end["kind"] != want["kind"] {
+        return bad("kind");
+    }
+    let num = |v: &Value| v.as_f64().unwrap_or(f64::NAN);
+    if want["kind"] == "opening" {
+        if !close(&end["rim_mm"], num(&want["rim"])) {
+            return bad("rim");
+        }
+        let sink = &end["countersink"];
+        match want.get("countersink") {
+            Some(c) => {
+                if !close(&sink["outer_diameter_mm"], num(&c["outer_diameter"]))
+                    || !close(
+                        &(sink["angle_rad"].as_f64().map(f64::to_degrees).into()),
+                        num(&c["angle_deg"]),
+                    )
+                {
+                    return bad("countersink");
+                }
+            }
+            None if !sink.is_null() => return bad("countersink"),
+            None => {}
+        }
+        return None;
+    }
+    // A bottom.
+    let bottom = &end["bottom"];
+    if !close(&end["at_mm"], num(&want["at"])) || bottom["kind"] != want["bottom"] {
+        return bad("bottom");
+    }
+    let degrees = |v: &Value| v.as_f64().map_or(f64::NAN, f64::to_degrees);
+    let ok = match want["bottom"].as_str() {
+        Some("point") => {
+            (degrees(&bottom["angle_rad"]) - num(&want["angle_deg"])).abs() <= 1e-6
+                && close(&bottom["tip_length_mm"], num(&want["tip_length"]))
+        }
+        Some("cone_then_flat") => {
+            (degrees(&bottom["angle_rad"]) - num(&want["angle_deg"])).abs() <= 1e-6
+                && close(&bottom["floor_at_mm"], num(&want["floor_at"]))
+        }
+        Some("annular") => {
+            close(&bottom["floor_at_mm"], num(&want["floor_at"]))
+                && (2.0 * num(&bottom["post_radius_mm"]) - num(&want["post_diameter"])).abs()
+                    <= LENGTH_MM
+        }
+        _ => true,
+    };
+    if ok { None } else { bad("bottom") }
+}
+
+/// Fitment's holes or shafts (`key`) one to one against the manifest's.
+fn stacks(part: &Value, expect: &Value, key: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut pool: Vec<&Value> = part[key].as_array().into_iter().flatten().collect();
+    for (i, want) in expect[key].as_array().into_iter().flatten().enumerate() {
+        let label = format!("{} {i}", &key[..key.len() - 1]);
+        let ends: Vec<&Value> = want["ends"].as_array().into_iter().flatten().collect();
+        if want["kind"] == "unknown" && ends.iter().filter(|e| **e == "irregular").count() == 2 {
+            // Both ends irregular: the cylinder is undecided, and no stack
+            // is read (the withdrawn rule F3).
+            continue;
+        }
+        if let Some(at) = pool.iter().position(|s| stack_problem(s, want).is_none()) {
+            pool.remove(at);
+        } else {
+            let why = pool
+                .iter()
+                .find_map(|s| stack_problem(s, want))
+                .unwrap_or_else(|| "none read".to_owned());
+            problems.push(format!("{label}: no match for {want}; nearest: {why}"));
+        }
+    }
+    for extra in pool {
+        problems.push(format!("a {key} the construction has not: {}", extra["id"]));
+    }
+    problems
+}
+
+/// What is wrong with fitment's stack `s` against the manifest's `want`.
+fn stack_problem(s: &Value, want: &Value) -> Option<String> {
+    let bad = |what: &str| Some(format!("{}: {what}", s["id"]));
+    if s["kind"] != want["kind"] {
+        return bad("kind");
+    }
+    let point = numbers(&s["axis"]["point_mm"]);
+    let direction = numbers(&s["axis"]["direction"]);
+    if want["kind"] == "unknown" {
+        let first = &s["segments"][0];
+        let diameter = first["diameter_mm"].as_f64().unwrap_or(f64::NAN);
+        if (diameter - want["diameter"].as_f64().unwrap_or(f64::NAN)).abs() > LENGTH_MM
+            || !same_line(
+                &numbers(&want["axis_line_point"]),
+                &numbers(&want["axis_direction"]),
+                &point,
+                &direction,
+            )
+        {
+            return bad("diameter or axis line");
+        }
+        let mut wanted: Vec<&str> = want["ends"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        if dot(&direction, &numbers(&want["axis_direction"])) < 0.0 {
+            wanted.reverse();
+        }
+        let found: Vec<&str> = s["ends"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e["kind"].as_str())
+            .collect();
+        return (found != wanted)
+            .then(|| format!("{}: ends {found:?}, wanted {wanted:?}", s["id"]));
+    }
+    if apart(&direction, &numbers(&want["axis_direction"]), false) > DIRECTION
+        || point
+            .iter()
+            .zip(numbers(&want["axis_point"]))
+            .any(|(a, b)| (a - b).abs() > LENGTH_MM)
+    {
+        return bad("axis");
+    }
+    let segments: Vec<Vec<f64>> = s["segments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|g| {
+            vec![
+                g["diameter_mm"].as_f64().unwrap_or(f64::NAN),
+                g["from_mm"].as_f64().unwrap_or(f64::NAN),
+                g["to_mm"].as_f64().unwrap_or(f64::NAN),
+            ]
+        })
+        .collect();
+    let wanted: Vec<Vec<f64>> = want["segments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(numbers)
+        .collect();
+    if segments.len() != wanted.len()
+        || segments
+            .iter()
+            .zip(&wanted)
+            .any(|(a, b)| a.iter().zip(b).any(|(x, y)| (x - y).abs() > LENGTH_MM))
+    {
+        return bad("segments");
+    }
+    for (field, key) in [
+        ("length_mm", "length"),
+        ("depth_mm", "depth"),
+        ("protrusion_mm", "protrusion"),
+    ] {
+        if let Some(w) = want.get(key).and_then(Value::as_f64) {
+            if !close(&s[field], w) {
+                return bad(field);
+            }
+        }
+    }
+    if let Some(ends) = want["ends"].as_array() {
+        for (end, w) in s["ends"].as_array().into_iter().flatten().zip(ends) {
+            if let Some(problem) = end_problem(end, w) {
+                return Some(format!("{}: {problem}", s["id"]));
+            }
+        }
+    }
+    None
 }
 
 fn planes(part: &Value, expect: &Value) -> Vec<String> {

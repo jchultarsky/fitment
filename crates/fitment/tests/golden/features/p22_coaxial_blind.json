@@ -1,7 +1,7 @@
 {
   "format": "fitment.features",
   "format_version": 1,
-  "extractor_version": 4,
+  "extractor_version": 5,
   "extraction": {
     "identity_mm": 1e-6,
     "parallel_sine": 1e-9,
@@ -69,6 +69,7 @@
       }
     ],
     "max_uncertainty_mm": 1e-7,
+    "complete": true,
     "face_counts": {
       "plane": 10,
       "cylindrical": 4,
@@ -1081,6 +1082,193 @@
     "cones": [],
     "tori": [],
     "other_faces": [],
+    "holes": [
+      {
+        "id": "hole-209",
+        "solid": "solid-15",
+        "kind": "blind",
+        "axis": {
+          "point_mm": [
+            10.0,
+            10.0,
+            6.0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "segments": [
+          {
+            "cylinder": "cylinder-209",
+            "diameter_mm": 6.0,
+            "from_mm": 0.0,
+            "to_mm": 4.0
+          }
+        ],
+        "transitions": [],
+        "ends": [
+          {
+            "kind": "bottom",
+            "at_mm": 0.0,
+            "bottom": {
+              "kind": "flat"
+            },
+            "closed_by": "plane-309"
+          },
+          {
+            "kind": "opening",
+            "at_mm": 4.0,
+            "rim_mm": 4.0,
+            "opens_into": "plane-88",
+            "countersink": null
+          }
+        ],
+        "length_mm": null,
+        "depth_mm": 4.0,
+        "wall_openings": 0
+      },
+      {
+        "id": "hole-234",
+        "solid": "solid-15",
+        "kind": "blind",
+        "axis": {
+          "point_mm": [
+            30.0,
+            10.0,
+            6.0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "segments": [
+          {
+            "cylinder": "cylinder-234",
+            "diameter_mm": 6.0,
+            "from_mm": 0.0,
+            "to_mm": 4.0
+          }
+        ],
+        "transitions": [],
+        "ends": [
+          {
+            "kind": "bottom",
+            "at_mm": 0.0,
+            "bottom": {
+              "kind": "flat"
+            },
+            "closed_by": "plane-309"
+          },
+          {
+            "kind": "opening",
+            "at_mm": 4.0,
+            "rim_mm": 4.0,
+            "opens_into": "plane-88",
+            "countersink": null
+          }
+        ],
+        "length_mm": null,
+        "depth_mm": 4.0,
+        "wall_openings": 0
+      },
+      {
+        "id": "hole-259",
+        "solid": "solid-15",
+        "kind": "blind",
+        "axis": {
+          "point_mm": [
+            10.0,
+            10.0,
+            4.0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            -1.0
+          ]
+        },
+        "segments": [
+          {
+            "cylinder": "cylinder-259",
+            "diameter_mm": 6.0,
+            "from_mm": 0.0,
+            "to_mm": 4.0
+          }
+        ],
+        "transitions": [],
+        "ends": [
+          {
+            "kind": "bottom",
+            "at_mm": 0.0,
+            "bottom": {
+              "kind": "flat"
+            },
+            "closed_by": "plane-327"
+          },
+          {
+            "kind": "opening",
+            "at_mm": 4.0,
+            "rim_mm": 4.0,
+            "opens_into": "plane-158",
+            "countersink": null
+          }
+        ],
+        "length_mm": null,
+        "depth_mm": 4.0,
+        "wall_openings": 0
+      },
+      {
+        "id": "hole-284",
+        "solid": "solid-15",
+        "kind": "blind",
+        "axis": {
+          "point_mm": [
+            30.02,
+            10.0,
+            4.0
+          ],
+          "direction": [
+            0.0,
+            0.0,
+            -1.0
+          ]
+        },
+        "segments": [
+          {
+            "cylinder": "cylinder-284",
+            "diameter_mm": 6.0,
+            "from_mm": 0.0,
+            "to_mm": 4.0
+          }
+        ],
+        "transitions": [],
+        "ends": [
+          {
+            "kind": "bottom",
+            "at_mm": 0.0,
+            "bottom": {
+              "kind": "flat"
+            },
+            "closed_by": "plane-327"
+          },
+          {
+            "kind": "opening",
+            "at_mm": 4.0,
+            "rim_mm": 4.0,
+            "opens_into": "plane-158",
+            "countersink": null
+          }
+        ],
+        "length_mm": null,
+        "depth_mm": 4.0,
+        "wall_openings": 0
+      }
+    ],
+    "shafts": [],
     "other_items": [],
     "notes": []
   }

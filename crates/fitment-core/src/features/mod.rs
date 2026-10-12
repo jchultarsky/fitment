@@ -16,8 +16,10 @@ mod outline;
 mod plane;
 mod primary;
 mod readback;
+mod stack;
 mod step;
 pub(crate) mod topo;
+mod walk;
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -32,6 +34,9 @@ pub use cylinder::{Axis, Cylinder, CylinderClass, End, Sense, UndecidedReason};
 pub use other::{Cone, OtherFace, OtherReason, Torus};
 pub use outline::{Outline, OutlineLoop, OutlineProblem, Segment};
 pub use plane::{Plane, PlaneFace};
+pub use stack::{
+    Bottom, Countersink, Hole, HoleKind, Shaft, ShaftKind, StackEnd, StackSegment, UnknownReason,
+};
 
 pub use document::{
     Extraction, FEATURES_FORMAT, FEATURES_FORMAT_VERSION, FeaturesDocument, FileHeader,
@@ -97,6 +102,9 @@ pub struct Part {
     /// The largest length uncertainty the solids' contexts state, in mm:
     /// the matcher's tolerance floor.
     pub max_uncertainty_mm: f64,
+    /// True if every cylinder is decided and every hole and shaft has two
+    /// known ends (section 9.6): information, not a refusal.
+    pub complete: bool,
     /// How many faces of each surface kind the solids have.
     pub face_counts: FaceCounts,
     /// The planes, by id. With the other primary features they hold every
@@ -110,6 +118,10 @@ pub struct Part {
     pub tori: Vec<Torus>,
     /// The faces no rule reads, by id.
     pub other_faces: Vec<OtherFace>,
+    /// The holes, by id: compound features over the cylinders.
+    pub holes: Vec<Hole>,
+    /// The shafts, by id.
+    pub shafts: Vec<Shaft>,
     /// Items of the part's shape that are not solids: curve and point
     /// sets, sorted by `#id`.
     pub other_items: Vec<OtherItem>,

@@ -4,11 +4,12 @@
 //! one is not read, so no consumer sees, for example, a known outline
 //! whose loops do not close.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 
-use super::cylinder::{CylinderClass, UndecidedReason};
+use super::cylinder::{Cylinder, CylinderClass, Sense, UndecidedReason};
 use super::outline::{Outline, OutlineLoop, Segment};
+use super::stack::{HoleKind, ShaftKind};
 use super::{FeatureId, FeatureKind, Part, SolidInfo};
 use crate::geom::{Dir3, Point3};
 
@@ -93,6 +94,7 @@ pub(super) fn check(part: &Part, solid: &SolidInfo) -> Checked {
         }
     }
     cylinders(part, &ids)?;
+    stacks(part, &ids)?;
     if !part
         .notes
         .windows(2)
@@ -145,6 +147,90 @@ fn cylinders(part: &Part, ids: &BTreeSet<FeatureId>) -> Checked {
     mirrored.sort_unstable();
     if pairs != mirrored {
         return Err("a near miss is not named back".to_owned());
+    }
+    Ok(())
+}
+
+/// Holes and shafts keep what the stacks write: sorted ids named after
+/// their smallest face; segments in order, each a cylinder of the part of
+/// the right sense, none in two stacks; two ends; transitions the part
+/// has; and the lengths its kind has, and no others.
+fn stacks(part: &Part, ids: &BTreeSet<FeatureId>) -> Checked {
+    let cylinders: BTreeMap<FeatureId, &Cylinder> =
+        part.cylinders.iter().map(|c| (c.id, c)).collect();
+    let mut used = BTreeSet::new();
+    let holes = part.holes.iter().map(|h| {
+        let lengths = match h.kind {
+            HoleKind::Through => h.length_mm.is_some() && h.depth_mm.is_none(),
+            HoleKind::Blind => h.depth_mm.is_some() && h.length_mm.is_none(),
+            _ => h.length_mm.is_none() && h.depth_mm.is_none(),
+        };
+        (
+            h.id,
+            FeatureKind::Hole,
+            Sense::Hole,
+            &h.segments,
+            &h.ends,
+            &h.transitions,
+            lengths,
+        )
+    });
+    let shafts = part.shafts.iter().map(|s| {
+        let lengths = match s.kind {
+            ShaftKind::RootFree => s.protrusion_mm.is_some() && s.length_mm.is_none(),
+            ShaftKind::FreeFree | ShaftKind::RootRoot => {
+                s.length_mm.is_some() && s.protrusion_mm.is_none()
+            }
+            _ => s.length_mm.is_none() && s.protrusion_mm.is_none(),
+        };
+        (
+            s.id,
+            FeatureKind::Shaft,
+            Sense::Shaft,
+            &s.segments,
+            &s.ends,
+            &s.transitions,
+            lengths,
+        )
+    });
+    let mut last: Option<FeatureId> = None;
+    for (id, kind, sense, segments, ends, transitions, lengths) in holes.chain(shafts) {
+        if last.is_some_and(|l| l.kind() == kind && l >= id) {
+            return Err(format!("the {} features are not sorted by id", kind.name()));
+        }
+        last = Some(id);
+        let mut smallest: Option<u64> = None;
+        for segment in segments {
+            let Some(cylinder) = cylinders.get(&segment.cylinder) else {
+                return Err(format!(
+                    "'{id}' names '{}', which is no cylinder of the part",
+                    segment.cylinder
+                ));
+            };
+            if cylinder.sense != sense || !used.insert(segment.cylinder) {
+                return Err(format!(
+                    "'{id}' holds '{}', of the other sense or already in a stack",
+                    segment.cylinder
+                ));
+            }
+            let first = cylinder.faces.first().copied();
+            smallest = match (smallest, first) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+        let ordered = segments.windows(2).all(|w| w[0].from_mm <= w[1].from_mm);
+        let named = id.kind() == kind && smallest == Some(id.instance());
+        if !(ordered
+            && named
+            && lengths
+            && ends.len() == 2
+            && transitions.iter().all(|t| ids.contains(t)))
+        {
+            return Err(format!(
+                "'{id}' breaks a rule of its segments, name, ends, transitions or lengths"
+            ));
+        }
     }
     Ok(())
 }
