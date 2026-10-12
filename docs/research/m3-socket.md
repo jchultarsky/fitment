@@ -1,6 +1,6 @@
 # fitment M3: the socket of a part in an assembly
 
-As of 2026-10-12. Status: **proposal**, for review. Nothing here is implemented; section 15 is the order of work.
+As of 2026-10-12. Status: **accepted** on 2026-10-12, with every default in section 2 (R1 to R24). Nothing here is implemented yet; section 15 is the order of work.
 
 M3 delivers `fitment socket asm.stp --part X`, which reads an assembly and writes what the neighbours of part X require of any part that replaces it, as a JSON file the user reviews. It is done when generated assemblies and the AS1 fixture give the expected requirements, and holes with nothing on their axis are left out ([PLAN.md](../PLAN.md), Milestones).
 
