@@ -51,7 +51,7 @@ impl Extraction {
         vertex_side_mm: super::full::VERTEX_SIDE_MM,
         lever_min_mm: super::group::LEVER_MIN_MM,
         sweep_rad: super::full::SWEEP_RAD,
-        walk_max: 8,
+        walk_max: super::walk::WALK_MAX,
         gate_slack_mm: crate::gate::geometry::GATE_SLACK_MM,
         gate_slack_rel: crate::gate::geometry::GATE_SLACK_REL,
         range_mm: crate::gate::geometry::RANGE_MM,

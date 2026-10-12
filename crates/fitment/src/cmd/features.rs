@@ -27,11 +27,20 @@ enum Format {
 }
 
 /// `text` with every control character escaped, so that text from a file
-/// cannot start a new line or move the terminal: one reason, one line.
+/// cannot start a new line or move the terminal: one reason, one line. The
+/// Unicode line and paragraph separators and the bidirectional controls
+/// are escaped too: they split or reorder lines in some terminals and log
+/// viewers.
 fn printable(text: &str) -> String {
+    let unsafe_format = |c: char| {
+        matches!(
+            c,
+            '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+    };
     text.chars()
         .flat_map(|c| {
-            let escaped: Vec<char> = if c.is_control() {
+            let escaped: Vec<char> = if c.is_control() || unsafe_format(c) {
                 c.escape_default().collect()
             } else {
                 vec![c]

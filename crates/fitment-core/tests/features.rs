@@ -568,6 +568,32 @@ fn stage_4_refuses_a_shell_in_two_pieces() {
 }
 
 #[test]
+fn stage_3_refuses_a_placement_that_is_not_rigid() {
+    // Check 12: a mapped item scaling the solid by 2 is not a placement.
+    let scaled = p01_with(
+        "#11,#9010",
+        "#9003=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15),#204);\
+         #9004=REPRESENTATION_MAP(#11,#9003);#9010=MAPPED_ITEM('',#9004,#9005);\
+         #9005=CARTESIAN_TRANSFORMATION_OPERATOR_3D('','',$,#9006,$,#9007,2.,$);\
+         #9006=DIRECTION('',(1.,0.,0.));#9007=CARTESIAN_POINT('',(0.,0.,0.));",
+    );
+    assert_eq!(
+        distinct_codes(&scaled),
+        [RefusalCode::SolidPlacementUnreadable]
+    );
+}
+
+#[test]
+fn stage_5_refuses_a_solid_whose_context_cannot_be_read() {
+    // Check 17: the representation's context is a point.
+    let pointed = p01_edit(
+        "#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15),#204);",
+        "#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15),#12);",
+    );
+    assert_eq!(distinct_codes(&pointed), [RefusalCode::UnitsUnreadable]);
+}
+
+#[test]
 fn stage_5_refuses_missing_units() {
     let no_angle = p01_edit("((#205,#206,#207))", "((#205,#207))");
     assert_eq!(

@@ -1094,7 +1094,17 @@ def perimeter(outline):
 
 
 def feature_inputs(path):
-    """The STEP files a features PATH names."""
+    """The STEP files a features PATH names; a path that names none is an
+    error, so that a mistyped path cannot pass with nothing checked."""
+    if not path.exists():
+        sys.exit(f"{path}: no such file or directory")
+    found = step_files(path)
+    if not found:
+        sys.exit(f"{path}: no STEP files")
+    return found
+
+
+def step_files(path):
     if path.is_file():
         return [path]
     manifest = path / "manifest.json"
@@ -1107,11 +1117,18 @@ def feature_inputs(path):
                   and "ocp" not in p.relative_to(path).parts)
 
 
-def features_main(paths):
-    pinned = None
-    if paths[:1] == ["--expect"] and len(paths) >= 3:
-        pinned = json.loads(Path(paths[1]).read_text(encoding="utf-8")).get("oracle")
-        paths = paths[2:]
+def features_main(argv):
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="verify-occt.py features")
+    parser.add_argument("--expect", metavar="MANIFEST", help="a JSON file whose `oracle` entry pins the tallies")
+    parser.add_argument("paths", nargs="+", metavar="PATH")
+    args = parser.parse_args(argv)
+    pinned, paths = None, args.paths
+    if args.expect is not None:
+        pinned = json.loads(Path(args.expect).read_text(encoding="utf-8")).get("oracle")
+        if not isinstance(pinned, dict):
+            sys.exit(f"{args.expect} has no `oracle` entry of tallies to expect")
     binary = Path(os.environ.get("FITMENT", Path(__file__).resolve().parent.parent / "target/release/fitment"))
     if not binary.is_file():
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
