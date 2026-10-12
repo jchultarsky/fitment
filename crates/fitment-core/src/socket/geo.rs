@@ -46,6 +46,12 @@ pub(crate) struct Motion {
 }
 
 impl Motion {
+    /// No motion.
+    pub(crate) const IDENTITY: Self = Self {
+        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        translation: [0.0; 3],
+    };
+
     /// `inner` then the inverse of `outer`: from a frame `inner` places in
     /// the root, into the frame `outer` places there.
     pub(crate) fn between(inner: &Rigid, outer: &Rigid) -> Option<Self> {

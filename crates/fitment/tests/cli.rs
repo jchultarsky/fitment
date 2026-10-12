@@ -207,7 +207,110 @@ fn socket_of_no_such_part_is_a_usage_error() {
         .arg("socket")
         .arg(unit_assembly("s01_bolted.stp"))
         .assert()
-        .code(2);
+        .code(2)
+        .stdout("");
+}
+
+#[test]
+fn a_selection_error_names_the_candidates() {
+    fitment()
+        .args(["socket", "--part", "bolt"])
+        .arg(unit_assembly("s01_bolted.stp"))
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(contains("#752 'BOLT' (BOLT), 4 occurrences, first at 3"));
+}
+
+#[test]
+fn one_occurrence_is_chosen_by_its_path() {
+    fitment()
+        .args(["socket", "--occurrence", "3", "--format", "table"])
+        .arg(unit_assembly("s01_bolted.stp"))
+        .assert()
+        .success()
+        .stdout(contains("shaft:shaft-985"))
+        .stderr(contains("BOLT: 1 occurrences"));
+    fitment()
+        .args(["socket", "--part", "BRACKET", "--occurrence", "3"])
+        .arg(unit_assembly("s01_bolted.stp"))
+        .assert()
+        .code(2)
+        .stdout("");
+}
+
+#[test]
+fn socket_of_a_missing_file_exits_1() {
+    fitment()
+        .args(["socket", "--part", "BRACKET", "no-such-file.stp"])
+        .assert()
+        .code(1)
+        .stdout("");
+}
+
+/// A fresh directory for one test, with s01 copied into it.
+fn scratch(test: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("fitment-cli-{}-{test}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(unit_assembly("s01_bolted.stp"), dir.join("s01.stp")).unwrap();
+    dir
+}
+
+#[test]
+fn the_output_never_replaces_the_assembly() {
+    let dir = scratch("input");
+    let input = dir.join("s01.stp");
+    let before = std::fs::read(&input).unwrap();
+    fitment()
+        .args(["socket", "--part", "BRACKET", "-o"])
+        .arg(&input)
+        .arg(&input)
+        .assert()
+        .code(2)
+        .stderr(contains("it is the assembly being read"));
+    assert_eq!(std::fs::read(&input).unwrap(), before);
+}
+
+#[test]
+fn the_output_replaces_only_this_part_s_socket_unless_forced() {
+    let dir = scratch("output");
+    let input = dir.join("s01.stp");
+    let out = dir.join("bracket.socket.json");
+    std::fs::write(&out, "notes\n").unwrap();
+    let run = |part: &str, force: bool| {
+        let mut command = fitment();
+        command
+            .args(["socket", "--part", part])
+            .arg(&input)
+            .arg("-o")
+            .arg(&out);
+        if force {
+            command.arg("--force");
+        }
+        command.assert()
+    };
+    run("BRACKET", false)
+        .code(2)
+        .stderr(contains("not a fitment.socket document"));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "notes\n");
+    run("BRACKET", true).success().stdout("");
+    let written = std::fs::read_to_string(&out).unwrap();
+    assert!(fitment_core::SocketDocument::from_json(&written).is_ok());
+    // Its own socket, extracted again, may be replaced; another part's
+    // may not.
+    run("BRACKET", false).success();
+    run("PLATE", false)
+        .code(2)
+        .stderr(contains("the socket of another part"));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), written);
+    // No temporary file is left behind.
+    let names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

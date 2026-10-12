@@ -58,6 +58,9 @@ pub(crate) struct Relation {
     pub(crate) unoccupied_only: bool,
     pub(crate) open_start: bool,
     pub(crate) open_finish: bool,
+    /// How far a B relation's shaft runs past the target element's start
+    /// and finish; negative short of them.
+    pub(crate) beyond: (f64, f64),
     pub(crate) flags: BTreeSet<Flag>,
     pub(crate) floor: f64,
 }
@@ -80,6 +83,7 @@ impl Relation {
             unoccupied_only: false,
             open_start: false,
             open_finish: false,
+            beyond: (f64::NEG_INFINITY, f64::NEG_INFINITY),
             flags: BTreeSet::new(),
             floor,
         }
@@ -151,29 +155,39 @@ fn through_unknown(a: &Element, b: &Element, p: &Pair) -> bool {
         || (p.hi < a.hi && hi_unknown)
 }
 
+/// A neighbour hole beyond a rim: (gap, neighbour, element, pair).
+type Beyond = (f64, usize, usize, Pair);
+
 struct Search<'s, 'a> {
     targets: &'s [Element],
     neighbours: &'s [Neighbour<'a>],
-    pairs: u64,
+    /// Check 39's count, across every occurrence of the extraction.
+    pairs: &'s mut u64,
+    /// The neighbour features each (target element, neighbour) B relation
+    /// reads, for B8.
+    read: BTreeMap<(usize, usize), BTreeSet<FeatureId>>,
     found: Found,
-    /// The nearest hole beyond each open rim: (target element, start?) to
+    /// The holes beyond each open rim: (target element, start?) to
     /// (gap, neighbour, element, pair).
-    nearest: BTreeMap<(usize, bool), (f64, usize, usize, Pair)>,
+    beyond: BTreeMap<(usize, bool), Vec<Beyond>>,
 }
 
 /// Every relation between the target's `targets` (in its own frame) and
-/// `neighbours`, and the unknowns; `TooMany` past check 39's count.
+/// `neighbours`, and the unknowns; `TooMany` once `pairs`, check 39's
+/// count, passes its limit.
 pub(crate) fn relate(
     targets: &[Element],
     neighbours: &[Neighbour<'_>],
     planes: &[(Motion, &Part)],
+    pairs: &mut u64,
 ) -> Result<Found, TooMany> {
     let mut search = Search {
         targets,
         neighbours,
-        pairs: 0,
+        pairs,
+        read: BTreeMap::new(),
         found: Found::default(),
-        nearest: BTreeMap::new(),
+        beyond: BTreeMap::new(),
     };
     for (n, neighbour) in neighbours.iter().enumerate() {
         for (t, a) in targets.iter().enumerate() {
@@ -184,6 +198,15 @@ pub(crate) fn relate(
         }
     }
     search.continuations(planes)?;
+    for r in &search.found.relations {
+        if let (true, Some(f)) = (r.rule.starts_with('B'), r.feature) {
+            search
+                .read
+                .entry((r.target, r.neighbour))
+                .or_default()
+                .insert(f);
+        }
+    }
     for (n, neighbour) in neighbours.iter().enumerate() {
         if neighbour.near {
             search.occupants(n)?;
@@ -194,8 +217,8 @@ pub(crate) fn relate(
 
 impl Search<'_, '_> {
     fn count(&mut self) -> Result<(), TooMany> {
-        self.pairs += 1;
-        if self.pairs > MAX_RELATIONS {
+        *self.pairs += 1;
+        if *self.pairs > MAX_RELATIONS {
             Err(TooMany)
         } else {
             Ok(())
@@ -277,6 +300,12 @@ impl Search<'_, '_> {
         let last = a.segment + 1 == a.segments;
         relation.open_start = a.segment == 0 && p.lo < a.lo - tau;
         relation.open_finish = last && p.hi > a.hi + tau;
+        if p.length > tau {
+            relation.beyond = (a.lo - p.lo, p.hi - a.hi);
+        }
+        if fit != Fit::Clearance && !own_overlap(&mut relation, a, b, 1.0, tau) {
+            return;
+        }
         for (open, end) in [
             (relation.open_start, a.start),
             (relation.open_finish, a.finish),
@@ -319,6 +348,9 @@ impl Search<'_, '_> {
         if through_unknown(a, b, &p) {
             relation.flags.insert(Flag::ExtentUnknown);
         }
+        if fit != Fit::Clearance && !own_overlap(&mut relation, a, b, -1.0, tau) {
+            return;
+        }
         self.found.relations.push(relation);
     }
 
@@ -335,7 +367,7 @@ impl Search<'_, '_> {
         }
     }
 
-    /// J1, J2 candidates: the nearest neighbour hole beyond each open rim.
+    /// J1, J2 candidates: the neighbour holes beyond each open rim.
     fn continuation(&mut self, t: usize, a: &Element, n: usize, e: usize, b: &Element, tau: f64) {
         let Some(p) = axial::pair(a, b, PARALLEL_SINE_REL, 0.0) else {
             return;
@@ -367,46 +399,86 @@ impl Search<'_, '_> {
             let Some(gap) = gap.filter(|g| g.is_finite()) else {
                 continue;
             };
-            let slot = self.nearest.entry((t, start)).or_insert((gap, n, e, p));
-            if gap < slot.0 {
-                *slot = (gap, n, e, p);
-            }
+            self.beyond
+                .entry((t, start))
+                .or_default()
+                .push((gap, n, e, p));
         }
     }
 
-    /// J1 to J3, from the nearest holes found.
+    /// J1 to J3: the nearest hole beyond each rim that nothing blocks. A
+    /// blocked hole does not block a farther one: J3's disc is as narrow
+    /// as the narrower hole, and a farther one may be wider.
     fn continuations(&mut self, planes: &[(Motion, &Part)]) -> Result<(), TooMany> {
-        let nearest = std::mem::take(&mut self.nearest);
-        for ((t, start), (gap, n, e, p)) in nearest {
-            let (Some(a), Some(neighbour)) = (self.targets.get(t), self.neighbours.get(n)) else {
-                continue;
-            };
-            let Some(b) = neighbour.elements.get(e) else {
-                continue;
-            };
-            let tau = CONTACT_MM.max(neighbour.floor);
-            let rim = if start { a.start_rim } else { a.finish_rim }.unwrap_or(0.0);
-            if gap > tau {
-                let (from, to) = if start {
-                    (rim - gap, rim)
-                } else {
-                    (rim, rim + gap)
-                };
-                let radius = a.radius.min(b.radius) + p.e_max + tau;
-                if self.blocked(a, from, to, radius, tau, planes)? {
-                    self.found.blocked.insert(a.feature);
-                    continue;
+        let beyond = std::mem::take(&mut self.beyond);
+        for ((t, start), mut candidates) in beyond {
+            candidates.sort_by(|x, y| x.0.total_cmp(&y.0).then((x.1, x.2).cmp(&(y.1, y.2))));
+            let mut blocked = false;
+            for (gap, n, e, p) in candidates {
+                blocked = self.continuation_to(t, start, gap, n, e, &p, planes)?;
+                if !blocked {
+                    break;
                 }
             }
-            let mut relation = self.relation(t, if gap > tau { "J2" } else { "J1" }, n, b, &p);
-            relation.gap = finite(gap);
-            relation.fit = Some(Fit::NotRead);
-            relation.unoccupied_only = true;
-            relation.open_start = start;
-            relation.open_finish = !start;
-            self.found.relations.push(relation);
+            if blocked {
+                if let Some(a) = self.targets.get(t) {
+                    self.found.blocked.insert(a.feature);
+                }
+            }
         }
         Ok(())
+    }
+
+    /// J1 or J2 from target element `t`'s rim to neighbour `n`'s element
+    /// `e`, unless J3 blocks it (`true`). J's pin is provenance only when a
+    /// B relation's shaft runs from inside the target hole past the rim
+    /// and into this hole (J1's "occupies both").
+    #[allow(clippy::too_many_arguments)]
+    fn continuation_to(
+        &mut self,
+        t: usize,
+        start: bool,
+        gap: f64,
+        n: usize,
+        e: usize,
+        p: &Pair,
+        planes: &[(Motion, &Part)],
+    ) -> Result<bool, TooMany> {
+        let (Some(a), Some(neighbour)) = (self.targets.get(t), self.neighbours.get(n)) else {
+            return Ok(false);
+        };
+        let Some(b) = neighbour.elements.get(e) else {
+            return Ok(false);
+        };
+        let tau = CONTACT_MM.max(neighbour.floor);
+        let rim = if start { a.start_rim } else { a.finish_rim }.unwrap_or(0.0);
+        if gap > tau {
+            let (from, to) = if start {
+                (rim - gap, rim)
+            } else {
+                (rim, rim + gap)
+            };
+            let radius = a.radius.min(b.radius) + p.e_max + tau;
+            if self.blocked(a, from, to, radius, tau, planes)? {
+                return Ok(true);
+            }
+        }
+        let spanned = self.found.relations.iter().any(|r| {
+            r.target == t
+                && r.rule.starts_with('B')
+                && r.rule != "B8"
+                && if start { r.beyond.0 } else { r.beyond.1 } > gap + tau
+        });
+        let mut relation = self.relation(t, if gap > tau { "J2" } else { "J1" }, n, b, p);
+        relation.gap = finite(gap);
+        if !spanned {
+            relation.fit = Some(Fit::NotRead);
+            relation.unoccupied_only = true;
+        }
+        relation.open_start = start;
+        relation.open_finish = !start;
+        self.found.relations.push(relation);
+        Ok(false)
     }
 
     /// J3: a plane face with a known outline lies across `a`'s axis
@@ -462,25 +534,23 @@ impl Search<'_, '_> {
             if a.side != Side::Hole || a.hi - a.lo <= 2.0 * tau || a.radius <= tau {
                 continue;
             }
-            let read: BTreeSet<u64> = self
-                .found
-                .relations
+            let features = self.read.get(&(t, n));
+            let read: BTreeSet<u64> = neighbour
+                .elements
                 .iter()
-                .filter(|r| r.target == t && r.neighbour == n && r.rule.starts_with('B'))
-                .filter_map(|r| r.feature)
-                .flat_map(|f| {
-                    neighbour
-                        .elements
-                        .iter()
-                        .filter(move |e| e.feature == f)
-                        .flat_map(|e| e.faces.iter().copied())
-                })
+                .filter(|e| features.is_some_and(|f| f.contains(&e.feature)))
+                .flat_map(|e| e.faces.iter().copied())
                 .collect();
             let mut faces = Vec::new();
+            let mut reach = (f64::INFINITY, f64::NEG_INFINITY);
             for face in neighbour.faces {
                 self.count()?;
-                if !read.contains(&face.face) && meets_core(a, face, &neighbour.motion, tau) {
+                if read.contains(&face.face) {
+                    continue;
+                }
+                if let Some((lo, hi)) = meets_core(a, face, &neighbour.motion, tau) {
                     faces.push(face.face);
+                    reach = (reach.0.min(lo), reach.1.max(hi));
                 }
             }
             if faces.is_empty() {
@@ -490,8 +560,27 @@ impl Search<'_, '_> {
             let mut relation = Relation::new(t, "B8", n, neighbour.floor);
             relation.faces = faces;
             relation.fit = Some(Fit::NotRead);
-            relation.span = Some((a.lo, a.hi));
+            relation.span = Some((a.own_lo, a.own_hi));
             relation.flags.insert(Flag::OccupantUnread);
+            // Material that runs on past a rim needs that end open. A face
+            // with no box says nothing of where it is.
+            relation.open_start = a.segment == 0 && reach.0.is_finite() && reach.0 < a.lo - tau;
+            relation.open_finish =
+                a.segment + 1 == a.segments && reach.1.is_finite() && reach.1 > a.hi + tau;
+            for (open, end) in [
+                (relation.open_start, a.start),
+                (relation.open_finish, a.finish),
+            ] {
+                match (open, end) {
+                    (true, EndKind::Closed) => {
+                        relation.flags.insert(Flag::Conflict);
+                    }
+                    (true, EndKind::Unknown) => {
+                        relation.flags.insert(Flag::OpenAtUnknownEnd);
+                    }
+                    _ => {}
+                }
+            }
             if neighbour.selected {
                 relation.flags.insert(Flag::SelfPaired);
             }
@@ -501,12 +590,45 @@ impl Search<'_, '_> {
     }
 }
 
+/// X7: an element's own cylinder, without the zones it stands for.
+fn own(e: &Element) -> Element {
+    let mut own = e.clone();
+    own.lo = e.own_lo;
+    own.hi = e.own_hi;
+    own
+}
+
+/// X7: a line-to-line or interference fit holds only where both
+/// cylinders themselves overlap; within a stretched transition or end zone
+/// it is a cone or step bearing, which the seat rules read (Q, C). Clips
+/// `relation` to the cylinders' overlap and returns true, or, with none,
+/// keeps it as B6's provenance if it opens a rim (true) or drops it.
+fn own_overlap(relation: &mut Relation, a: &Element, b: &Element, grow: f64, tau: f64) -> bool {
+    match axial::pair(&own(a), &own(b), PARALLEL_SINE_REL, grow) {
+        Some(q) if q.length > tau => {
+            relation.span = Some((q.from, q.to));
+            true
+        }
+        _ => {
+            relation.rule = "B6";
+            relation.fit = None;
+            relation.span = None;
+            relation.clear = None;
+            relation.margin = None;
+            relation.flags.remove(&Flag::ThreadNotConfirmed);
+            relation.flags.remove(&Flag::Conflict);
+            relation.open_start || relation.open_finish
+        }
+    }
+}
+
 /// True if the face's box, moved into the target's frame, may meet the
-/// open core of hole element `a`: radius `r − τ`, stations shrunk by `τ`.
-/// A face with no box may meet anything.
-fn meets_core(a: &Element, face: &FaceBox, motion: &Motion, tau: f64) -> bool {
+/// open core of hole element `a`: radius `r − τ`, stations shrunk by `τ`;
+/// if so, the stations the box spans. A face with no box may meet
+/// anything, anywhere.
+fn meets_core(a: &Element, face: &FaceBox, motion: &Motion, tau: f64) -> Option<(f64, f64)> {
     let Some((low, high)) = face.bounds else {
-        return true;
+        return Some((f64::NEG_INFINITY, f64::INFINITY));
     };
     let (u, w) = perpendiculars(a.dir);
     let mut s_range = (f64::INFINITY, f64::NEG_INFINITY);
@@ -525,7 +647,7 @@ fn meets_core(a: &Element, face: &FaceBox, motion: &Motion, tau: f64) -> bool {
         w_range = widen(w_range, dot(d, w));
     }
     if s_range.1 <= a.lo + tau || s_range.0 >= a.hi - tau {
-        return false;
+        return None;
     }
     // The distance from the axis to the box's footprint across it: no
     // more than to the hull of the moved box, so "may meet" errs toward
@@ -539,7 +661,7 @@ fn meets_core(a: &Element, face: &FaceBox, motion: &Motion, tau: f64) -> bool {
             0.0
         }
     };
-    norm([nearest(u_range), nearest(w_range), 0.0]) < a.radius - tau
+    (norm([nearest(u_range), nearest(w_range), 0.0]) < a.radius - tau).then_some(s_range)
 }
 
 /// True if two boxes, the second grown by `by`, meet.

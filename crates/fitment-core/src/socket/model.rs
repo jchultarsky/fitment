@@ -244,6 +244,22 @@ pub struct Requirement {
     pub sources: Vec<SourceRef>,
 }
 
+impl Requirement {
+    /// False for the kinds every candidate fails, the original included,
+    /// until review removes them (Y4): `unresolved`, a bore or shaft
+    /// flagged `target_undecided`, and a bore flagged
+    /// `open_at_unknown_end`.
+    pub fn verifiable(&self) -> bool {
+        match &self.requires {
+            Requires::Unresolved { .. } => false,
+            Requires::Bore { .. } | Requires::Shaft { .. } => !self
+                .flags
+                .iter()
+                .any(|f| matches!(f, Flag::TargetUndecided | Flag::OpenAtUnknownEnd)),
+        }
+    }
+}
+
 /// Why a target feature is left out (A1, A2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

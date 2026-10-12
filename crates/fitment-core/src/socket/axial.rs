@@ -45,6 +45,13 @@ pub(crate) struct Element {
     /// is unknown, until clipped.
     pub(crate) lo: f64,
     pub(crate) hi: f64,
+    /// The cylinder's own stations. `lo` and `hi` reach past them over the
+    /// transitions and end zones the element stands for (X7): a hole's
+    /// narrower neighbouring segment, or a shaft's wider one, covers a
+    /// transition, and an end segment reaches its rim. A chamfer, cone or
+    /// fillet there lies inside a hole's or outside a shaft's cylinder.
+    pub(crate) own_lo: f64,
+    pub(crate) own_hi: f64,
     /// True on a side whose extent is not known (U3).
     pub(crate) lo_unknown: bool,
     pub(crate) hi_unknown: bool,
@@ -143,9 +150,11 @@ pub(crate) fn elements(part: &Part) -> Vec<Element> {
             transitions: &s.transitions,
             ends: &s.ends,
         }));
+    let cylinders: BTreeMap<FeatureId, &crate::features::Cylinder> =
+        part.cylinders.iter().map(|c| (c.id, c)).collect();
     let mut out = Vec::new();
     for stack in stacks {
-        out.extend(stack_elements(part, &faces, &stack));
+        out.extend(stack_elements(&cylinders, &faces, &stack));
     }
     for cylinder in &part.cylinders {
         if !matches!(cylinder.class, CylinderClass::Undecided { .. }) {
@@ -173,6 +182,8 @@ pub(crate) fn elements(part: &Part) -> Vec<Element> {
             radius: cylinder.radius_mm,
             lo,
             hi,
+            own_lo: lo,
+            own_hi: hi,
             lo_unknown: true,
             hi_unknown: true,
             undecided: true,
@@ -211,7 +222,7 @@ fn range(stations: &[f64]) -> (f64, f64) {
 }
 
 fn stack_elements(
-    part: &Part,
+    cylinders: &BTreeMap<FeatureId, &crate::features::Cylinder>,
     faces: &BTreeMap<FeatureId, Vec<u64>>,
     stack: &Stack<'_>,
 ) -> Vec<Element> {
@@ -237,7 +248,7 @@ fn stack_elements(
     all_faces.sort_unstable();
     all_faces.dedup();
     let count = stack.segments.len();
-    stack
+    let mut out: Vec<Element> = stack
         .segments
         .iter()
         .enumerate()
@@ -246,28 +257,26 @@ fn stack_elements(
             // A side with no stated end runs past its end circles onto
             // curves no rule reads: the cylinder's stations bound what is
             // known of it.
-            let known = part
-                .cylinders
-                .iter()
-                .find(|c| c.id == segment.cylinder)
-                .map_or((0.0, 0.0), |c| {
-                    let along = |s: f64| {
-                        station(
-                            add(
-                                c.axis.point_mm.to_array(),
-                                scale(c.axis.direction.to_array(), s),
-                            ),
-                            stack.point,
-                            stack.dir,
-                        )
-                    };
-                    let (a, b) = range(&c.stations_mm);
-                    (along(a).min(along(b)), along(a).max(along(b)))
-                });
+            let known = cylinders.get(&segment.cylinder).map_or((0.0, 0.0), |c| {
+                let along = |s: f64| {
+                    station(
+                        add(
+                            c.axis.point_mm.to_array(),
+                            scale(c.axis.direction.to_array(), s),
+                        ),
+                        stack.point,
+                        stack.dir,
+                    )
+                };
+                let (a, b) = range(&c.stations_mm);
+                (along(a).min(along(b)), along(a).max(along(b)))
+            });
             let first = index == 0;
             let last = index + 1 == count;
             let lo_unknown = segment.from_mm.is_none() || (first && start == EndKind::Unknown);
             let hi_unknown = segment.to_mm.is_none() || (last && finish == EndKind::Unknown);
+            let lo = segment.from_mm.unwrap_or(known.0);
+            let hi = segment.to_mm.unwrap_or(known.1);
             Element {
                 feature: stack.feature,
                 side: stack.side,
@@ -276,8 +285,10 @@ fn stack_elements(
                 point: stack.point,
                 dir: stack.dir,
                 radius: segment.diameter_mm / 2.0,
-                lo: segment.from_mm.unwrap_or(known.0),
-                hi: segment.to_mm.unwrap_or(known.1),
+                lo,
+                hi,
+                own_lo: lo,
+                own_hi: hi,
                 lo_unknown,
                 hi_unknown,
                 undecided: false,
@@ -289,7 +300,42 @@ fn stack_elements(
                 wall,
             }
         })
-        .collect()
+        .collect();
+    stretch(&mut out, stack.side);
+    out
+}
+
+/// X7: each transition between two segments goes to a hole's narrower
+/// segment or a shaft's wider one, and each end segment reaches its rim.
+fn stretch(elements: &mut [Element], side: Side) {
+    for i in 1..elements.len() {
+        let (before, after) = elements.split_at_mut(i);
+        let (Some(a), Some(b)) = (before.last_mut(), after.first_mut()) else {
+            continue;
+        };
+        if a.hi_unknown || b.lo_unknown || b.lo <= a.hi {
+            continue;
+        }
+        let a_takes = match side {
+            Side::Hole => a.radius <= b.radius,
+            Side::Shaft => a.radius >= b.radius,
+        };
+        if a_takes {
+            a.hi = b.lo;
+        } else {
+            b.lo = a.hi;
+        }
+    }
+    if let Some(first) = elements.first_mut() {
+        if let (false, Some(rim)) = (first.lo_unknown, first.start_rim) {
+            first.lo = first.lo.min(rim);
+        }
+    }
+    if let Some(last) = elements.last_mut() {
+        if let (false, Some(rim)) = (last.hi_unknown, last.finish_rim) {
+            last.hi = last.hi.max(rim);
+        }
+    }
 }
 
 /// `element` moved by `motion`, its unknown sides opened to infinity and
@@ -316,9 +362,11 @@ pub(crate) fn placed(element: &Element, motion: &Motion, extent: Option<&Extent>
     });
     if element.lo_unknown {
         moved.lo = bound.map_or(f64::NEG_INFINITY, |b| b.0.min(element.lo));
+        moved.own_lo = moved.lo;
     }
     if element.hi_unknown {
         moved.hi = bound.map_or(f64::INFINITY, |b| b.1.max(element.hi));
+        moved.own_hi = moved.hi;
     }
     moved
 }

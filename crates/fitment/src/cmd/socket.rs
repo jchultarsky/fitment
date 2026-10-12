@@ -2,7 +2,7 @@
 //! any part that replaces it, as a `fitment.socket` document.
 
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::ValueEnum;
@@ -31,6 +31,10 @@ pub struct Args {
     /// Write the document here instead of printing it.
     #[arg(short = 'o', long = "output")]
     output: Option<PathBuf>,
+    /// Replace OUT even when it holds something other than this part's
+    /// socket in this file.
+    #[arg(long, requires = "output")]
+    force: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -116,6 +120,16 @@ pub fn run(args: &Args) -> ExitCode {
         Format::Table => table(&document),
     };
     if let Some(output) = &args.output {
+        if let Some(problem) = (!args.force)
+            .then(|| foreign(output, &args.file, &document))
+            .flatten()
+        {
+            note(&format!(
+                "error: {}: left unchanged: {problem} (--force replaces it)",
+                printable(&output.display().to_string())
+            ));
+            return ExitCode::from(2);
+        }
         if document.status() == Status::Refused {
             note(&format!(
                 "fitment: {}: left unchanged: the assembly was refused",
@@ -151,13 +165,48 @@ impl PartialEq for Format {
     }
 }
 
-/// Writes `bytes` to a temporary file beside `path`, then renames it.
-fn write_atomically(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
+/// Why OUT must not be replaced (9.5): it is the input, or it exists and
+/// is not a socket document for the same file and target. `None` if it
+/// may be.
+fn foreign(output: &Path, input: &Path, document: &SocketDocument) -> Option<&'static str> {
+    if let (Ok(a), Ok(b)) = (output.canonicalize(), input.canonicalize()) {
+        if a == b {
+            return Some("it is the assembly being read");
+        }
+    }
+    let bytes = match std::fs::read(output) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(_) => return Some("it cannot be read as a file"),
+    };
+    let Ok(old) = std::str::from_utf8(&bytes)
+        .map_err(|_| ())
+        .and_then(|text| SocketDocument::from_json(text).map_err(|_| ()))
+    else {
+        return Some("it is not a fitment.socket document");
+    };
+    if old.source().sha256 != document.source().sha256 {
+        return Some("it is the socket of another file");
+    }
+    let target = |d: &SocketDocument| d.extracted().map(|e| e.target.definition.instance);
+    match (target(&old), target(document)) {
+        (Some(a), Some(b)) if a != b => Some("it is the socket of another part"),
+        _ => None,
+    }
+}
+
+/// Writes `bytes` to a temporary file beside `path`, then renames it; the
+/// temporary file is removed if either step fails.
+fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
+    temporary.push(format!(".{}.tmp", std::process::id()));
     let temporary = PathBuf::from(temporary);
-    std::fs::write(&temporary, bytes)?;
-    std::fs::rename(&temporary, path)
+    let written =
+        std::fs::write(&temporary, bytes).and_then(|()| std::fs::rename(&temporary, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 /// One line on stderr: occurrences, sockets, requirements, left out, and a
@@ -182,13 +231,29 @@ fn summary(path: &str, document: &SocketDocument) {
         extracted.sockets.len()
     ));
     for socket in &extracted.sockets {
-        for requirement in &socket.requirements {
-            if matches!(requirement.requires, Requires::Unresolved { .. }) {
-                note(&format!(
-                    "warning: {}: {}: no rule reads it; every candidate fails it until it is removed in review",
-                    socket.id, requirement.id
-                ));
-            }
+        if socket.requirements.is_empty() {
+            note(&format!(
+                "warning: {}: no requirement; every candidate is rejected for it",
+                socket.id
+            ));
+        }
+        let floor = socket
+            .requirements
+            .iter()
+            .map(|r| r.floor_mm)
+            .fold(0.0, f64::max);
+        if floor > 0.01 {
+            note(&format!(
+                "warning: {}: read only to within {} mm",
+                socket.id,
+                mm(floor)
+            ));
+        }
+        for requirement in socket.requirements.iter().filter(|r| !r.verifiable()) {
+            note(&format!(
+                "warning: {}: {}: no candidate can be checked against it; every candidate fails it until it is removed in review",
+                socket.id, requirement.id
+            ));
         }
     }
 }

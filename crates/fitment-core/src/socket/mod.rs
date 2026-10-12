@@ -16,6 +16,8 @@ pub use model::{
     ShaftSpan, Socket, SocketConstants, SourceRef, Target,
 };
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::EXTRACTOR_VERSION;
 use crate::assembly::{
     AssemblyRead, ComponentRead, DefinitionKind, Listing, SelectError, Selection, Source,
@@ -368,6 +370,7 @@ impl SocketDocument {
         if listed != expected {
             return Err("the review lists other requirements than the sockets hold".to_owned());
         }
+        check_occurrences(extracted)?;
         if self.review.iter().any(|r| {
             r.status == ReviewStatus::Removed
                 && r.note.as_deref().is_none_or(|n| n.trim().is_empty())
@@ -376,6 +379,58 @@ impl SocketDocument {
         }
         Ok(())
     }
+}
+
+/// Each occurrence is in exactly one socket, the one it names; every
+/// source's occurrence belongs to its socket; every neighbour a source
+/// names is listed, and every listed neighbour is cited (9.4).
+fn check_occurrences(extracted: &Extracted) -> Result<(), String> {
+    let mut placed: Vec<(&[u64], &str)> = extracted
+        .occurrences
+        .iter()
+        .map(|o| (o.path.as_slice(), o.socket.as_deref().unwrap_or("")))
+        .collect();
+    let mut grouped: Vec<(&[u64], &str)> = extracted
+        .sockets
+        .iter()
+        .flat_map(|s| s.occurrences.iter().map(|o| (o.as_slice(), s.id.as_str())))
+        .collect();
+    placed.sort_unstable();
+    grouped.sort_unstable();
+    if placed != grouped || placed.windows(2).any(|w| w[0].0 == w[1].0) {
+        return Err("the occurrences and the sockets that group them disagree".to_owned());
+    }
+    let listed: BTreeSet<&[u64]> = extracted
+        .neighbours
+        .iter()
+        .map(|n| n.path.as_slice())
+        .collect();
+    let mut cited = BTreeSet::new();
+    for socket in &extracted.sockets {
+        for requirement in &socket.requirements {
+            for source in &requirement.sources {
+                if !socket.occurrences.contains(&source.occurrence) {
+                    return Err(format!(
+                        "a source of '{}' in {} is of an occurrence outside it",
+                        requirement.id, socket.id
+                    ));
+                }
+                if !source.neighbour.is_empty() {
+                    if !listed.contains(source.neighbour.as_slice()) {
+                        return Err(format!(
+                            "a source of '{}' in {} names an unlisted neighbour",
+                            requirement.id, socket.id
+                        ));
+                    }
+                    cited.insert(source.neighbour.as_slice());
+                }
+            }
+        }
+    }
+    if cited.len() != listed.len() || listed.len() != extracted.neighbours.len() {
+        return Err("a listed neighbour is cited by no source, or listed twice".to_owned());
+    }
+    Ok(())
 }
 
 /// The floor of an occurrence's own uncertainties (Z1).
@@ -416,47 +471,16 @@ fn placed_ref(listing: &Listing, index: usize, socket: Option<String>) -> Option
     })
 }
 
-/// The sockets of the chosen occurrences, or check 39's refusal.
-fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted, Refusal> {
+/// The target's record (V2): its definition, frame, solid, floors,
+/// extent and the features its requirements may anchor to.
+fn target_of(
+    listing: &Listing,
+    selection: &Selection,
+    target: &Part,
+    targets: &[axial::Element],
+) -> Result<model::Target, Refusal> {
     let internal = |m: &str| Refusal::new(RefusalCode::Internal, None, m);
-    let target = accepted_part(listing, selection.definition)
-        .ok_or_else(|| internal("the chosen part was not read"))?;
-    let targets = axial::elements(target);
-    let mut sockets = Vec::new();
-    let mut cited = std::collections::BTreeSet::new();
-    for (k, &index) in selection.occurrences.iter().enumerate() {
-        let occurrence = listing
-            .occurrences()
-            .get(index)
-            .ok_or_else(|| internal("a chosen occurrence is missing"))?;
-        let (neighbours, indices, planes) = neighbours(listing, selection, index, target)?;
-        let plane_refs: Vec<(Motion, &Part)> = planes.iter().map(|(m, p)| (*m, *p)).collect();
-        let found = rules::relate(&targets, &neighbours, &plane_refs).map_err(|_| {
-            Refusal::new(
-                RefusalCode::TooManyRelations,
-                None,
-                format!(
-                    "more than {MAX_RELATIONS} candidate pairs: fitment examines at most that many"
-                ),
-            )
-        })?;
-        let paths: Vec<Vec<u64>> = neighbours.iter().map(|n| n.path.clone()).collect();
-        let own = occurrence.path.instances();
-        let (mut requirements, left_out) =
-            combine::requirements(target, &targets, &found, &own, &paths);
-        requirements.extend(unread_neighbours(listing, &neighbours, &indices));
-        combine::order(&mut requirements);
-        for requirement in &requirements {
-            cited.extend(requirement.sources.iter().map(|s| s.neighbour.clone()));
-        }
-        sockets.push(model::Socket {
-            id: format!("socket-{}", k + 1),
-            occurrences: vec![own],
-            requirements,
-            left_out,
-        });
-    }
-    let target_ref = model::Target {
+    Ok(model::Target {
         definition: listing
             .definitions()
             .get(selection.definition)
@@ -481,7 +505,72 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
             anchors.dedup();
             anchors
         },
+    })
+}
+
+/// The sockets of the chosen occurrences, or check 39's refusal.
+fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted, Refusal> {
+    let internal = |m: &str| Refusal::new(RefusalCode::Internal, None, m);
+    let target = accepted_part(listing, selection.definition)
+        .ok_or_else(|| internal("the chosen part was not read"))?;
+    // U3: a side of a target stack with no known end runs to the part's
+    // extent, as a neighbour's does.
+    let targets: Vec<axial::Element> = axial::elements(target)
+        .iter()
+        .map(|e| axial::placed(e, &Motion::IDENTITY, target.extent.as_ref()))
+        .collect();
+    // Every definition's elements, once.
+    let elements: BTreeMap<usize, Vec<axial::Element>> = listing
+        .definitions()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, _)| Some((i, axial::elements(accepted_part(listing, i)?))))
+        .collect();
+    let too_many = || {
+        Refusal::new(
+            RefusalCode::TooManyRelations,
+            None,
+            format!(
+                "more than {MAX_RELATIONS} candidate pairs: fitment examines at most that many"
+            ),
+        )
     };
+    let mut pairs = 0;
+    let mut sockets = Vec::new();
+    let mut cited = std::collections::BTreeSet::new();
+    for (k, &index) in selection.occurrences.iter().enumerate() {
+        let occurrence = listing
+            .occurrences()
+            .get(index)
+            .ok_or_else(|| internal("a chosen occurrence is missing"))?;
+        let around = Around {
+            listing,
+            selection,
+            elements: &elements,
+            index,
+            target,
+        };
+        let (neighbours, indices, planes) = around.neighbours(&mut pairs)?.ok_or_else(too_many)?;
+        let plane_refs: Vec<(Motion, &Part)> = planes.iter().map(|(m, p)| (*m, *p)).collect();
+        let found = rules::relate(&targets, &neighbours, &plane_refs, &mut pairs)
+            .map_err(|_| too_many())?;
+        let paths: Vec<Vec<u64>> = neighbours.iter().map(|n| n.path.clone()).collect();
+        let own = occurrence.path.instances();
+        let (mut requirements, left_out) =
+            combine::requirements(target, &targets, &found, &own, &paths);
+        requirements.extend(unread_neighbours(listing, &neighbours, &indices));
+        combine::order(&mut requirements);
+        for requirement in &requirements {
+            cited.extend(requirement.sources.iter().map(|s| s.neighbour.clone()));
+        }
+        sockets.push(model::Socket {
+            id: format!("socket-{}", k + 1),
+            occurrences: vec![own],
+            requirements,
+            left_out,
+        });
+    }
+    let target_ref = target_of(listing, selection, target, &targets)?;
     let occurrences = selection
         .occurrences
         .iter()
@@ -511,58 +600,78 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
 /// their listing indices; and every occurrence's planes for J3, the
 /// target's own included.
 #[allow(clippy::type_complexity)]
-fn neighbours<'l>(
+/// What one selected occurrence's neighbours are read from.
+struct Around<'l, 's> {
     listing: &'l Listing,
-    selection: &Selection,
+    selection: &'s Selection,
+    elements: &'s BTreeMap<usize, Vec<axial::Element>>,
     index: usize,
-    target: &Part,
-) -> Result<(Vec<Neighbour<'l>>, Vec<usize>, Vec<(Motion, &'l Part)>), Refusal> {
-    let internal = |m: &str| Refusal::new(RefusalCode::Internal, None, m);
-    let here = listing
-        .occurrences()
-        .get(index)
-        .ok_or_else(|| internal("a chosen occurrence is missing"))?;
-    let target_box = target.extent;
-    let mut out = Vec::new();
-    let mut indices = Vec::new();
-    let mut planes = Vec::new();
-    for (j, there) in listing.occurrences().iter().enumerate() {
-        let Some(part) = accepted_part(listing, there.definition) else {
-            continue;
-        };
-        let motion = Motion::between(&there.transform, &here.transform)
-            .ok_or_else(|| internal("a placement could not be composed"))?;
-        planes.push((motion, part));
-        if j == index {
-            continue;
-        }
-        let floor = floor_of(here).max(floor_of(there));
-        let near = match (&target_box, &part.extent) {
-            (Some(t), Some(e)) => {
-                rules::boxes_meet(t, rules::moved_box(e, &motion), rules::reach(floor))
+    target: &'l Part,
+}
+
+/// One occurrence's neighbours, the indices of their occurrences, and
+/// every placed part with its motion (for J3); `None` once `pairs`, check
+/// 39's count, passes its limit, each neighbour counting one.
+type Gathered<'l> = (Vec<Neighbour<'l>>, Vec<usize>, Vec<(Motion, &'l Part)>);
+
+impl<'l> Around<'l, '_> {
+    fn neighbours(&self, pairs: &mut u64) -> Result<Option<Gathered<'l>>, Refusal> {
+        let internal = |m: &str| Refusal::new(RefusalCode::Internal, None, m);
+        let listing = self.listing;
+        let here = listing
+            .occurrences()
+            .get(self.index)
+            .ok_or_else(|| internal("a chosen occurrence is missing"))?;
+        let selected: BTreeSet<usize> = self.selection.occurrences.iter().copied().collect();
+        let target_box = self.target.extent;
+        let mut out = Vec::new();
+        let mut indices = Vec::new();
+        let mut planes = Vec::new();
+        for (j, there) in listing.occurrences().iter().enumerate() {
+            let (Some(part), Some(elements)) = (
+                accepted_part(listing, there.definition),
+                self.elements.get(&there.definition),
+            ) else {
+                continue;
+            };
+            *pairs += 1;
+            if *pairs > MAX_RELATIONS {
+                return Ok(None);
             }
-            _ => true,
-        };
-        let faces = listing
-            .definitions()
-            .get(there.definition)
-            .map_or(&[][..], |d| d.faces.as_slice());
-        out.push(Neighbour {
-            path: there.path.instances(),
-            part,
-            faces,
-            motion,
-            elements: axial::elements(part)
-                .iter()
-                .map(|e| axial::placed(e, &motion, part.extent.as_ref()))
-                .collect(),
-            floor,
-            selected: selection.occurrences.contains(&j),
-            near,
-        });
-        indices.push(j);
+            let motion = Motion::between(&there.transform, &here.transform)
+                .ok_or_else(|| internal("a placement could not be composed"))?;
+            planes.push((motion, part));
+            if j == self.index {
+                continue;
+            }
+            let floor = floor_of(here).max(floor_of(there));
+            let near = match (&target_box, &part.extent) {
+                (Some(t), Some(e)) => {
+                    rules::boxes_meet(t, rules::moved_box(e, &motion), rules::reach(floor))
+                }
+                _ => true,
+            };
+            let faces = listing
+                .definitions()
+                .get(there.definition)
+                .map_or(&[][..], |d| d.faces.as_slice());
+            out.push(Neighbour {
+                path: there.path.instances(),
+                part,
+                faces,
+                motion,
+                elements: elements
+                    .iter()
+                    .map(|e| axial::placed(e, &motion, part.extent.as_ref()))
+                    .collect(),
+                floor,
+                selected: selected.contains(&j),
+                near,
+            });
+            indices.push(j);
+        }
+        Ok(Some((out, indices, planes)))
     }
-    Ok((out, indices, planes))
 }
 
 /// U4: one `unresolved` per neighbour definition in reach whose faces or
