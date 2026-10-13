@@ -2342,8 +2342,9 @@ def build_assemblies(w: Writer, which):
                              seats=[e_seat((0, 0, 13), Z, by=2, rings=[(18, 22)])])],
         "BEARING": [e_socket([e_axial("bore", (0, 0, 0), Z, [(0, 7, 8, 8, "line_to_line", True)], open_at=[0, 7],
                                       flags=["thread_not_confirmed"]),
+                              # Its lower end bears on the seat's step to dia 18 (I4).
                               e_axial("shaft", (0, 0, 0), Z, [(0, 7, 22, None, "line_to_line", True)],
-                                      flags=["thread_not_confirmed"])],
+                                      flags=["thread_not_confirmed"], max_extra=0)],
                              seats=[e_seat((0, 0, 0), (0, 0, -1))], at=(0, 0, 13))],
     }
     a.case("s04_bearing", s04, "a bearing in a housing's seat, on a shaft", ["B2", "B7", "I2", "I5", "C1", "H1"], False,
@@ -2531,7 +2532,7 @@ def build_assemblies(w: Writer, which):
                                    seats=[e_seat((0, 0, 0), (1, 0, 0)), e_seat((0, 0, 0), (0, 0, -1))])]}))
 
     # s22: a block meant to rest flipped (mirrored in z = 4, then up 8) on a pedestal, round a pin through the
-    # pedestal's dia 6 hole at (5, 0). Open CASCADE 8.0.1 writes that mirror as its shift alone (P8): the file
+    # pedestal's dia 6 hole at (5, 0). Open CASCADE 7.9.3 writes that mirror as its shift alone (P8): the file
     # places the block unturned, 16 mm up, 8 mm above the pedestal. The answers are the file's: the pin runs
     # through the block's dia 6.6 hole, and nothing seats it. The generator checks Open CASCADE still writes so.
     block22 = cut(box(-10, -5, 0, 20, 10, 8), cyl((5, 0, -1), UP, 3.3, 10))
@@ -2554,16 +2555,23 @@ def build_assemblies(w: Writer, which):
     # further, to the step; the dia 3.5 one passes the step, 9 to the floor (I4).
     def stepped(x):
         return [cyl((x, 0, -10), UP, 3.1, 11), cyl((x, 0, -15), UP, 2, 6)]
-    base54 = cut(box(-25, -15, -20, 50, 30, 20), *stepped(-10), *stepped(10))
+    base54 = cut(box(-25, -15, -20, 50, 30, 20), *stepped(-10), *stepped(10), cyl((0, 0, -10), UP, 3.1, 11))
     block54 = fuse(box(-20, -10, 0, 40, 20, 8), cyl((-10, 0, -6), UP, 3, 7), cyl((10, 0, -6), UP, 1.75, 7))
     s54 = Node("s54_stepped").add(Leaf("BASE", base54)).add(Leaf("BLOCK", block54))
+    # And a loose dia 6 pin, both ends free, buried in a third, plain blind hole at x 0: 0.5 off its floor.
+    s54.add(Leaf("PIN", cyl((0, 0, -9.5), UP, 3, 8)))
     a.case("s54_stepped", s54, "pins ending in the wider segment of stepped blind holes", ["I4", "I1"], False,
            {"base": "50 x 30 x 20, top at z 0; at x -10 and 10: dia 6.2 to z -10, dia 4 to z -15",
-            "block": "40 x 20 x 8 on it, with pins dia 6 at x -10 and dia 3.5 at x 10 to z -6"},
+            "block": "40 x 20 x 8 on it, with pins dia 6 at x -10 and dia 3.5 at x 10 to z -6",
+            "pin": "dia 6, z -9.5 to -1.5, in a dia 6.2 hole to z -10 at x 0"},
            asm_expect(s54, sockets={"BLOCK": [e_socket(
                [e_axial("shaft", (-10, 0, 0), (0, 0, -1), [(0, 6, 6, 6.2, "clearance", False)], max_extra=4),
                 e_axial("shaft", (10, 0, 0), (0, 0, -1), [(0, 6, 3.5, 6.2, "clearance", False)], max_extra=9)],
-               seats=[e_seat((0, 0, 0), (0, 0, -1))])]}))
+               seats=[e_seat((0, 0, 0), (0, 0, -1))])],
+               # Both its ends free: the lower meets the floor (I4).
+               "PIN": [e_socket([e_axial("shaft", (0, 0, -9.5), Z, [(0, 8, 6, 6.2, "clearance", False)], max_extra=0.5)],
+                                seats=[e_seat((0, 0, -9.5), (0, 0, -1), flags=["near_gap"],
+                                              touchers=[("BASE", 0.5, ["near_gap"])])])]}))
 
     # s47: a dia 6 rod lying across a plate's top face: a curved face on a flat, which no rule reads (C6).
     s47 = Node("s47_rod_on_flat").add(Leaf("PLATE", box(-30, -20, -10, 60, 40, 10)))

@@ -808,15 +808,34 @@ impl Search<'_, '_> {
 /// stack's closed end. `None` unless the tip lies in `b` and the stack is
 /// closed beyond it, or narrows.
 fn to_floor(a: &Element, b: &Element, p: &Pair, tau: f64, elements: &[Element]) -> Option<f64> {
-    let tip_high = a.segment + 1 == a.segments && a.finish == EndKind::Open;
-    let tip_low = a.segment == 0 && a.start == EndKind::Open;
-    let high = if tip_high && a.hi <= p.hi + tau && a.hi >= p.lo {
-        true
-    } else if tip_low && a.lo >= p.lo - tau && a.lo <= p.hi {
-        false
-    } else {
-        return None;
-    };
+    let tip_high = a.segment + 1 == a.segments
+        && a.finish == EndKind::Open
+        && a.hi <= p.hi + tau
+        && a.hi >= p.lo;
+    let tip_low = a.segment == 0 && a.start == EndKind::Open && a.lo >= p.lo - tau && a.lo <= p.hi;
+    // A pin with both ends free in one hole: whichever end meets a floor.
+    let high = tip_high
+        .then(|| floor_beyond(a, b, p, tau, elements, true))
+        .flatten();
+    let low = tip_low
+        .then(|| floor_beyond(a, b, p, tau, elements, false))
+        .flatten();
+    match (high, low) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, y) => x.or(y),
+    }
+}
+
+/// I4 beyond one tip of `a` (its high one, or its low): `b`'s next
+/// segments on that side, to the first too narrow or the closed end.
+fn floor_beyond(
+    a: &Element,
+    b: &Element,
+    p: &Pair,
+    tau: f64,
+    elements: &[Element],
+    high: bool,
+) -> Option<f64> {
     // Beyond the tip: on a's high side, b's next segments when b runs the
     // same way, its previous ones when it runs against.
     let forward = high == (dot(a.dir, b.dir) > 0.0);

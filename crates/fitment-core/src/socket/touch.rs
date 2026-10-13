@@ -650,8 +650,10 @@ fn plane_cylinder(
             return Ok(false);
         }
         // Within the slab |h| ≤ τ, its cross-sections lie in an ellipse
-        // about where its axis crosses: semi-axes r across, and r / cos θ
-        // along its lean, grown by the crossing's slide over the slab.
+        // about where its axis crosses: semi-axes r across and r / cos θ
+        // along its lean, each section's centre sliding τ tan θ along the
+        // lean. The sliding sections lie in the ellipse grown in both
+        // semi-axes by the factor 1 + τ sin θ / r, which holds them all.
         // Through one of the face's holes, it touches nothing, in whatever
         // frame its box is taken.
         if !footprint(plane, cylinder, tau, count)? {
@@ -665,9 +667,10 @@ fn plane_cylinder(
             perpendiculars(*normal).0
         };
         let long = (radius + tau * sine) / along.abs();
+        let short = radius + tau * sine;
         return in_region(
             plane,
-            &overlap::ellipse(crossing, *normal, lean, long, *radius),
+            &overlap::ellipse(crossing, *normal, lean, long, short),
             tau,
             count,
         );
