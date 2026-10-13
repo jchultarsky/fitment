@@ -2595,6 +2595,29 @@ def build_assemblies(w: Writer, which):
                                     "BLOCK": [e_socket([], seats=[e_seat((0, 0, 0), (0, 0, -1), by=144)])]}),
            variants=False)
 
+    # s56: a dia 8 / 4 tube 1000 mm above a plate's dia 4 hole, its axis leaning 0.009 off the hole's: within X1's
+    # window, it continues the hole (J2) however far. The searches look along a cone about each axis, not a
+    # cylinder (PR 7b's review).
+    lean56 = (0.009, 0, math.sqrt(1 - 0.009 ** 2))
+    tube56 = cut(cyl((0, 0, 1000), lean56, 4, 10), cyl((-lean56[0], 0, 1000 - lean56[2]), lean56, 2, 12))
+    s56 = Node("s56_far_lean").add(Leaf("PLATE", cut(box(-20, -20, 0, 40, 40, 10), cyl((0, 0, -1), UP, 2, 12))))
+    s56.add(Leaf("TUBE", tube56))
+    a.case("s56_far_lean", s56, "a leaning tube 1000 mm along a hole's axis continues it", ["J2", "N4"], False,
+           {"plate": "40 x 40 x 10, dia 4", "tube": "dia 8 / 4 x 10 from (0, 0, 1000), leaning 0.009 toward x"},
+           asm_expect(s56, sockets={"PLATE": [e_socket([e_axial("bore", (0, 0, 0), Z, [(0, 10, 4, None, "not_read", True)],
+                                                                open_at=[10])])]}))
+
+    # s57: a dia 40 disc with a dia 8 hole, tilted 0.5 degrees on a 10 mm block: C1's gap is the least over the
+    # disc's outline, its hole's vertices among them (PR 7b's review: the index keeps their hull).
+    disc57 = cut(cyl((0, 0, 0), UP, 20, 2), cyl((-10, 0, -1), UP, 4, 4))
+    s57 = Node("s57_tilted_disc").add(Leaf("BLOCK", box(-5, -5, -10, 10, 10, 10)))
+    s57.add(Leaf("DISC", disc57), m_rot((0, 1, 0), -0.5, (0, 0, 10 * math.sin(math.radians(0.5)))))
+    a.case("s57_tilted_disc", s57, "a holed disc tilted half a degree on a block", ["C1", "C5"], False,
+           {"block": "10 x 10 x 10, top at z 0", "disc": "dia 40 x 2, dia 8 hole at (-10, 0), turned -0.5 degrees "
+            "about y and lifted 10 sin 0.5 degrees"},
+           asm_expect(s57, sockets={"BLOCK": [e_socket([], seats=[e_seat(
+               (0, 0, 0), Z, flags=["near_gap"], touchers=[("DISC", 4 * math.sin(math.radians(0.5)), ["near_gap"])])])]}))
+
     # s47: a dia 6 rod lying across a plate's top face: a curved face on a flat, which no rule reads (C6).
     s47 = Node("s47_rod_on_flat").add(Leaf("PLATE", box(-30, -20, -10, 60, 40, 10)))
     s47.add(Leaf("ROD", cyl((-20, 0, 3), (1, 0, 0), 3, 40)))

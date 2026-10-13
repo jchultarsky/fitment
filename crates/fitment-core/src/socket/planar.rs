@@ -155,17 +155,11 @@ fn gap_of(
             | crate::features::Segment::Arc { from_mm, .. } => from_mm.to_array(),
         };
         let at = |p: V| dot(motion.point(p), target.normal) - target.offset;
-        match neighbour.index {
-            // The outer loop's vertices, and the points of the hole loops
-            // near the target (N4): a hole far from it says nothing of the
-            // gap there.
-            Some(index) => {
-                let outer = loops.iter().find(|l| l.outer).into_iter();
-                gaps.extend(outer.flat_map(|l| l.segments.iter()).map(|s| at(from(s))));
-                for hole in index.holes_near(face.face, neighbour.region.as_ref()) {
-                    gaps.extend(hole.iter().map(|p| at(*p)));
-                }
-            }
+        match neighbour.index.and_then(|x| x.hulls.get(&face.face)) {
+            // The hull of every loop's vertices: the gap is affine across
+            // the plane, so its least and greatest, and so its sign and
+            // least size, are those over all of them.
+            Some(hull) => gaps.extend(hull.iter().map(|p| at(*p))),
             None => gaps.extend(
                 loops
                     .iter()

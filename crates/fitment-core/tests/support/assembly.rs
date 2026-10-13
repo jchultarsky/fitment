@@ -846,8 +846,13 @@ fn touchers_match(
         .map(|t| (t.neighbour.clone(), t.face))
         .collect();
     // One neighbour face may lie on several target faces (a block on a
-    // tiled plate): listed under each contact it touches.
-    if union != listed {
+    // tiled plate): listed under each contact it touches, once.
+    let once = contacts.iter().all(|c| {
+        let unique: std::collections::BTreeSet<(&Vec<u64>, u64)> =
+            c.by.iter().map(|t| (&t.neighbour, t.face)).collect();
+        unique.len() == c.by.len()
+    });
+    if union != listed || !once {
         return false;
     }
     // Every occurrence of the socket has its touchers.

@@ -53,6 +53,57 @@ pub(crate) struct Index {
     pub(crate) holes: BTreeMap<u64, (Vec<Vec<V>>, Tree)>,
     /// The faces sharing an edge with each plane face, both ways.
     pub(crate) adjacent: BTreeMap<u64, BTreeSet<u64>>,
+    /// Each plane face's loops' vertices, outer and holes, cut to their
+    /// convex hull: an affine function (C1's gap) takes its least and
+    /// greatest there, as over all of them.
+    pub(crate) hulls: BTreeMap<u64, Vec<V>>,
+}
+
+/// The vertices of `points`' convex hull in the plane of normal `n`
+/// (Andrew's monotone chain); collinear points left out.
+fn hull(points: &[V], normal: V) -> Vec<V> {
+    let (across, up) = super::geo::perpendiculars(normal);
+    let mut flat: Vec<(f64, f64, usize)> = points
+        .iter()
+        .enumerate()
+        .map(|(k, p)| (super::geo::dot(*p, across), super::geo::dot(*p, up), k))
+        .collect();
+    flat.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    if flat.len() < 3 {
+        return flat
+            .iter()
+            .filter_map(|f| points.get(f.2).copied())
+            .collect();
+    }
+    let turn = |o: (f64, f64, usize), a: (f64, f64, usize), b: (f64, f64, usize)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let mut chain: Vec<(f64, f64, usize)> = Vec::new();
+    for pass in [false, true] {
+        let start = chain.len();
+        let ordered: Vec<(f64, f64, usize)> = if pass {
+            flat.iter().rev().copied().collect()
+        } else {
+            flat.clone()
+        };
+        for p in ordered {
+            while chain.len() >= start + 2 {
+                let (Some(a), Some(b)) = (chain.get(chain.len() - 2), chain.last()) else {
+                    break;
+                };
+                if turn(*a, *b, p) > 0.0 {
+                    break;
+                }
+                chain.pop();
+            }
+            chain.push(p);
+        }
+        chain.pop();
+    }
+    chain
+        .iter()
+        .filter_map(|f| points.get(f.2).copied())
+        .collect()
 }
 
 fn polygon_box(points: &[V]) -> Option<Aabb> {
@@ -71,10 +122,22 @@ impl Index {
     pub(crate) fn of(part: &Part, boxes: &[FaceBox], elements: &[Element]) -> Self {
         let mut at = BTreeMap::new();
         let mut holes = BTreeMap::new();
+        let mut hulls = BTreeMap::new();
         for (i, plane) in part.planes.iter().enumerate() {
             let n = plane.normal.to_array();
             for (j, f) in plane.faces.iter().enumerate() {
                 at.insert(f.face, FaceAt::Plane(i, j));
+                if let crate::features::Outline::Known { loops } = &f.outline {
+                    let vertices: Vec<V> = loops
+                        .iter()
+                        .flat_map(|l| l.segments.iter())
+                        .map(|s| match s {
+                            crate::features::Segment::Line { from_mm, .. }
+                            | crate::features::Segment::Arc { from_mm, .. } => from_mm.to_array(),
+                        })
+                        .collect();
+                    hulls.insert(f.face, hull(&vertices, n));
+                }
                 let polygons = overlap::hole_polygons(&f.outline, n);
                 let tree = Tree::new(polygons.iter().map(|p| polygon_box(p)).collect());
                 holes.insert(f.face, (polygons, tree));
@@ -101,6 +164,7 @@ impl Index {
             at,
             holes,
             adjacent: super::touch::adjacent(part),
+            hulls,
         }
     }
 
