@@ -3,25 +3,26 @@
 As of 2026-10-12 · Julian Chultarsky
 Living copy of this plan: https://claude.ai/code/artifact/b5f9353c-62ad-4f43-868d-9b7b5eebbb27
 
-Given an assembly and one part in it that is no longer available, the system suggests catalog parts whose interfaces match. It is named `fitment`, will be published as open source, and is deterministic, written in Rust and built on stepq. fitment reads the features of one part from a STEP file (M2): `fitment features part.stp` gates the file as canonical or refuses it with reasons, and prints its planes, cylinders, holes and shafts as `features.v1` JSON. Sockets and matching are next. A throwaway spike confirmed that holes, placements and a socket can be read with stepq's public API.
+Given an assembly and one part in it that is no longer available, the system suggests catalog parts whose interfaces match. It is named `fitment`, will be published as open source, and is deterministic, written in Rust and built on stepq. fitment reads the features of one part from a STEP file (M2): `fitment features part.stp` gates the file as canonical or refuses it with reasons, and prints its planes, cylinders, holes and shafts as `features.v1` JSON. It reads the socket of a part in an assembly (M3): `fitment socket asm.stp --part X` writes what the part's neighbours require of any replacement as a reviewable `fitment.socket` JSON file, and `fitment review` records the user's decisions in it. Matching is next. A throwaway spike confirmed that holes, placements and a socket can be read with stepq's public API.
 
 ## Resume here
 
-M0 was completed on 9 Oct 2026, M1 on 11 Oct 2026 and M2 on 12 Oct 2026: `fitment features` reads one part, as designed in [research/m2-features.md](research/m2-features.md) and mapped in [ARCHITECTURE.md](ARCHITECTURE.md). Work continues at M3, in this repository. Open it in Code mode, with ../stepq added, and paste:
+M0 was completed on 9 Oct 2026, M1 on 11 Oct 2026, M2 on 12 Oct 2026 and M3 on 12 Oct 2026: `fitment features` reads one part and `fitment socket` reads a part's socket from an assembly, as designed in [research/m2-features.md](research/m2-features.md) and [research/m3-socket.md](research/m3-socket.md) and mapped in [ARCHITECTURE.md](ARCHITECTURE.md). Work continues at M4, in this repository. Open it in Code mode, with ../stepq added, and paste:
 
 ```text
 Read docs/PLAN.md, sections "How it works", "Soundness rules", "Matching method"
-(step 2), "Choosing the part to replace" (and decision D11) and "Milestones";
-docs/ARCHITECTURE.md; and docs/research/m2-features.md sections 4.5, 7.4 and 9.6,
-which bind M3 (the assembly gate, unknown outlines, unknown ends and undecided
-cylinders). We are at fitment's milestone
-M3: socket extraction from an assembly, and the reviewable socket file printed by
-`fitment socket asm.stp --part X`.
-1. Propose the socket types, the extraction rules and the generated test assemblies
-   in docs/research/m3-socket.md, then stop for my review.
+(steps 3 to 7 and its paragraph on tolerances), decisions D6 to D9 and
+"Milestones"; docs/ARCHITECTURE.md; and docs/research/m3-socket.md sections
+6.2 (the floor and tolerances), 8 (what each requirement states) and 9 (the
+socket document and its review), which bind M4. We are at fitment's milestone
+M4: signature, alignment, verification and evidence; `fitment match socket.json
+candidates/*.stp`; the known-answer corpus and its harness.
+1. Propose the signature, alignment, verification and verdict types and the
+   corpus of good and bad candidates in docs/research/m4-match.md, then stop for
+   my review.
 2. Implement them one PR at a time, each with tests and two adversarial reviews.
-Done when generated assemblies and the AS1 fixture give the expected requirements,
-and holes with nothing on their axis are left out.
+Done when the known-bad set gives zero false positives and the false-negative
+rate is reported.
 ```
 
 The project is named `fitment` and will be published as open source. stepq is at [github.com/jchultarsky/stepq](https://github.com/jchultarsky/stepq); it was at 0.4.1 when this plan was written and is at 0.6.0 since M1.
@@ -146,10 +147,10 @@ Test oracle, as elsewhere in stepq: compare the placements and cylinder axes ste
 
 ## Choosing the part to replace
 
-The user names a part by its part number, and every occurrence of it is replaced. This is the recommended default (D11) and is not yet confirmed.
+The user names a part by its part number, and every occurrence of it is replaced. This was the recommended default (D11), confirmed by M3's design (section 5).
 
 - `fitment parts asm.stp` lists the parts in an assembly: id, name and quantity, read from `PRODUCT.id`, `PRODUCT.name` and the usage occurrences.
-- `--part <id>` selects by `PRODUCT.id`, usually the part number, with the name as a fallback. A value that matches no part, or more than one, is refused with the candidates listed.
+- `--part <id>` selects by `PRODUCT.id`, usually the part number, with the name as a fallback, or by a definition's `#<n>`. A value that matches no part, or more than one, is refused with the candidates listed.
 - A part used several times has one socket per occurrence. A candidate must fit every one. Sockets that are identical apart from their position are merged.
 - `--occurrence <path>` narrows the choice to one occurrence, addressed by its path through the assembly tree.
 - The first version accepts only a leaf part, not a sub-assembly.
@@ -167,14 +168,15 @@ A candidate is never compared with the original part. It is tested against the s
     - A plane is kept with its outward normal and its outline from the loop vertices and each edge's line or circle, exactly.
     - Every other surface is recorded as "other" with its type.
 2. **Socket from the assembly.** Every occurrence is placed in the assembly frame, then the target part is tested against each neighbor:
-    - Coaxial and overlapping along the axis, neighbor shaft smaller than the target hole: a clearance fit. The hole must be at least the shaft's diameter and, under the strict policy (D6), no larger than the original.
+    - Parallel, with cross-sections meeting over an axial overlap, neighbor shaft smaller than the target hole: a clearance fit, its bound the shaft's diameter plus twice the offset. The hole must be at least the shaft's diameter and, under the strict policy (D6), no larger than the original.
     - Coaxial and overlapping, neighbor shaft larger than the hole: a threaded or press fit, inferred. The hole diameter is pinned.
-    - Coaxial, not overlapping, neighbor hole: the hole continues into the neighbor, a bolted joint. The axis is required.
+    - Coaxial, not overlapping, neighbor hole: the hole continues into the neighbor, a bolted joint. The axis is required, also beyond a gap, unless a plane face of known outline blocks the line between them; with no fastener read, the hole is pinned.
     - Coaxial, not overlapping, a larger neighbor cylinder ending at the target's face: a head or shoulder bears there. A seating plane and a clear ring around the hole are required.
     - Coplanar faces with opposed normals whose outlines overlap: a seating plane at that offset. Two opposed seating planes on one axis fix the grip length.
-    - A target hole with nothing on its axis is not a requirement.
+    - A target hole with nothing on its axis is left out and listed for review; never while an unread face could be in it, and material that is not a read shaft pins the hole.
     - The space the target occupies is kept as the envelope for the fit verifier.
-    - The socket is written as a JSON file the user reviews and can edit.
+    - The socket is written as a JSON file the user reviews: each requirement can be kept or removed with a note; values cannot be edited.
+    - Unread faces on the target or a neighbour, and contacts no rule reads, are `unresolved` requirements that fail until removed in review.
 3. **Signature.** Per part, values that survive any rigid motion: the hole list (diameter, through or blind, depth, stack type), distances between parallel hole axes, angles between the others, and plane-to-axis offsets. Values are quantized at the tolerance and looked up with neighboring bins, so a value on a bin edge is not missed.
 4. **Shortlist.** Candidates whose signature contains the socket's. Extra holes on a candidate are allowed.
 5. **Alignment.** The candidate sits in its own frame. Each pair of candidate holes that matches two socket axes in diameter and spacing gives a placement, tried in both axis directions. A seating plane fixes the slide along the axes. A symmetric part gives several valid placements; one is enough.
@@ -184,7 +186,7 @@ A candidate is never compared with the original part. It is tested against the s
     - Without a verifier, the CLI says `InterfaceMatch: interface verified; body fit not checked (no fit verifier in this build)`.
     - `Match`, `InterfaceMatch` and `Reject` have separate exit codes. `--require-fit` treats `InterfaceMatch` as a failure.
 
-Tolerances are one linear and one angular value, held in a named policy stored with each result. The floor is the largest stated uncertainty of the contexts involved; uncertainty is stated per representation context and varies by exporter (Pro/E's "closure" reaches 0.672 mm), so the policy for it is fitment's to set. Lengths are converted to millimetres before any comparison.
+Tolerances are one linear and one angular value, held in a named policy stored with each result. The floor is the largest stated uncertainty of the contexts involved, including the placement path's (R17 in M3's design); uncertainty is stated per representation context and varies by exporter (Pro/E's "closure" reaches 0.672 mm), so the policy for it is fitment's to set. Lengths are converted to millimetres before any comparison.
 
 ## Metadata from STEP only
 
@@ -230,11 +232,11 @@ M2 to M4 carry all the technical risk, so the catalog and API (M5, M6) do not st
 | M0 | Repository and workspace, this plan in `docs/`, the Vectera audit, decision D1 | The audit is written and D1 is recorded |
 | M1 | stepq 0.6: units, geometry values, placements, topology, solids of a definition, PMI to faces (six PRs; [design](research/m1-stepq-read.md)). Done 11 Oct 2026 | stepq's placements and cylinder axes equal Open CASCADE's on the fixtures; the four documents are updated; stepq 0.6.0 is published |
 | M2 | Matcher crate: features of one part; `features part.stp` prints JSON ([design](research/m2-features.md)). Done 12 Oct 2026 | Holes, shafts, depths and planes are correct on generated parts with known features; non-canonical input is refused with a reason |
-| M3 | Socket extraction and the reviewable socket file; `socket asm.stp --part X` ([design](research/m3-socket.md)) | Generated assemblies and the AS1 fixture give the expected requirements; holes with nothing on their axis are left out |
+| M3 | Socket extraction and the reviewable socket file; `socket asm.stp --part X` ([design](research/m3-socket.md)). Done 12 Oct 2026 | Generated assemblies and the AS1 fixture give the expected requirements; holes with nothing on their axis are left out |
 | M4 | Signature, alignment, verification, evidence; `match`; the corpus and its harness | Zero false positives on the known-bad set; the false-negative rate is reported. A false positive is `Match` on any bad case, or any pass on a bad interface. `InterfaceMatch` on the colliding-body case is correct until M7 |
 | M5 | Catalog: store, index, canonical gate, CRUD, re-index | Ingest, list, get, replace and delete work from the CLI; a match reads only the index |
 | M6 | REST API with jobs | The M4 corpus passes end to end through the API |
-| M7 | Fit verifier: Open CASCADE in a separate helper process (D1) | On the corpus, colliding candidates end as `Reject`, or as `InterfaceMatch` with fit not verified, never as `Match`; the original part passes its own fit check |
+| M7 | Fit verifier: Open CASCADE in a separate helper process (D1); it also tests the candidate's placed copies against each other (V1 in M3's design) | On the corpus, colliding candidates end as `Reject`, or as `InterfaceMatch` with fit not verified, never as `Match`; the original part passes its own fit check |
 | M8 | Viewer, per the Vectera audit | A socket and a candidate can be inspected in 3D |
 
 The corpus for M4 is generated the way the spike's was: a script builds an assembly and candidates with known answers. Each bad candidate breaks one thing: a hole shifted, a wrong diameter, a missing hole, a wrong thickness, a blind hole where a through hole is needed, a body that collides.
@@ -253,7 +255,7 @@ For each item found, note its technology and decide: depend on it, copy it, or s
 
 ## Open decisions
 
-Six decisions are open; D1, D3, D4 and D5 were settled on 9 Oct 2026, and D2 on 11 Oct 2026. Each has a default that applies if nothing else is decided.
+Five decisions are open; D1, D3, D4 and D5 were settled on 9 Oct 2026, D2 on 11 Oct 2026 and D11 on 12 Oct 2026. Each has a default that applies if nothing else is decided.
 
 | # | Decision | Recommended default | Needed by |
 | --- | --- | --- | --- |
@@ -267,7 +269,7 @@ Six decisions are open; D1, D3, D4 and D5 were settled on 9 Oct 2026, and D2 on 
 | D8 | Real ground truth: obsolete parts with the replacement someone accepted | Collect any that exist; use the generated corpus until then | M4 |
 | D9 | Default tolerances | Start at 0.01 mm and 0.01°, tune on the corpus | M4 |
 | D10 | Property names that carry thread and material | Read them off real sample files | M5 |
-| D11 | How the user names the part to replace | By part number, all occurrences; see Choosing the part to replace | M3 |
+| D11 | How the user names the part to replace | Decided 12 Oct 2026: by part number (or name, or `#<n>`), all occurrences, merged where they ask the same; see Choosing the part to replace | M3 |
 
 D1 was the one decision that changes what the system can honestly claim. It was answered on 9 Oct 2026 after the research in [research/d1-body-fit.md](research/d1-body-fit.md). Without a fit check, a candidate with the right interface and a body that collides is reported as an interface match, never a match. In-process bindings, monstertruck, and meshes checked with parry3d were each rejected as a source of `Match`, because each can wrongly pass a candidate. That research also defines what a sound fit check must test.
 

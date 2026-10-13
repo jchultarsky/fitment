@@ -342,6 +342,13 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         if deferred && (cases > 0 || !tests.is_empty()) {
             failures.push(format!("{id}: deferred, yet a case or test covers it"));
         }
+        // M2 and M3 are closed: nothing waits on a PR of theirs.
+        if entry["deferred"]
+            .as_str()
+            .is_some_and(|r| r.contains("M2 PR") || r.contains("M3 PR"))
+        {
+            failures.push(format!("{id}: deferred to a PR of a closed milestone"));
+        }
         for test in tests {
             let Some((file, name)) = test.split_once("::") else {
                 failures.push(format!("{id}: '{test}' is not file::function"));

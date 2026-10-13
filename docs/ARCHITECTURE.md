@@ -2,8 +2,8 @@
 
 How fitment is put together, and the rules every change keeps. The design
 of each part is in [PLAN.md](PLAN.md) and, for reading features (milestone
-M2), in [research/m2-features.md](research/m2-features.md); this page is
-the map.
+M2) and sockets (M3), in [research/m2-features.md](research/m2-features.md)
+and [research/m3-socket.md](research/m3-socket.md); this page is the map.
 
 ## Crates
 
@@ -18,9 +18,10 @@ fitment (CLI) ──> fitment-core ──> stepq (private: no type of it is publ
   against `deny/core.toml`. It never panics on input: `unwrap`, `expect`
   and `panic!` are denied, and an invariant a step finds broken is an
   `internal` refusal, not a crash.
-- **stepq stays behind two walls.** Only `src/gate/` and
-  `src/features/step.rs` name it, which a CI grep checks; everything else
-  works on fitment's own copy of the solid (`features/topo.rs`). A stepq
+- **stepq stays behind walls.** Only `src/gate/`, `src/features/step.rs`
+  and `src/assembly/step.rs` name it, which `tools/check-core.sh` checks;
+  everything else works on fitment's own copy of the solid
+  (`features/topo.rs`) and of the product structure (`assembly/`). A stepq
   release is then a one-crate change.
 - **`fitment`** is the command line: it reads the file, calls the core,
   and prints. It never names stepq.
@@ -62,6 +63,44 @@ A file the gate refuses produces a document with `status: refused` and its
 reasons, never features. Each stage that refuses skips the later ones,
 which need what it establishes.
 
+## Reading an assembly
+
+```text
+STEP bytes
+  │ stepq: product structure and placements           assembly/step.rs
+  ▼
+Assembly gate, checks 31 to 38: one root and no      gate/assembly.rs
+  │   cycle, every usage placed and rigid, at most
+  │   100,000 occurrences, no material in an
+  │   assembly's own shape, components that pass M2's
+  │   gate (36 refuses the whole assembly), frames and
+  │   ranges; parts listed with their quantities and
+  │   occurrences                                      assembly/parts.rs
+  ▼
+Selection: --part by id or name, --occurrence          assembly/mod.rs
+  ▼
+Each leaf definition read once, as a part (above)
+  ▼
+Per chosen occurrence, its neighbours in its frame:    socket/mod.rs, place.rs, index.rs
+  │   search trees by box and along hole axes (N4)
+  ▼
+Axial rules: bores, shafts, continuations, unread      socket/axial.rs, rules.rs, block.rs
+  │   occupants, partial cylinders, skew pairs
+  ▼
+Plane rules: seats, grips, conical seats, rings;       socket/planar.rs, overlap.rs, touch.rs
+  │   contacts no rule reads (C6)
+  ▼
+Requirements per occurrence, then merged sockets       socket/combine.rs, merge.rs
+  ▼
+fitment.socket document (JSON), its digest, the        socket/model.rs, check.rs, review.rs
+review and its carry-over
+```
+
+Every pair a search returns counts toward check 39 (at most 10⁷); past it
+the socket is refused rather than read slowly. A document that breaks a
+structural rule, even with its digest recomputed, is refused on reading
+(`check.rs`).
+
 ## Soundness: refuse, or say unknown, but never guess
 
 fitment may miss a match. It must never claim one. Reading features keeps
@@ -76,7 +115,9 @@ the same rule:
   when a cylinder is undecided or a hole or shaft has an irregular or
   unknown end; an unknown outline does not affect it, so a consumer checks
   each outline's status. M3 and M4 treat unknowns as unverified (design,
-  section 9.6).
+  section 9.6): a socket states what it cannot read as `unresolved`
+  requirements, flagged unverifiable, which every candidate fails until a
+  reviewer removes them.
 - **Never state a wrong known value.** Every rule that was found to guess
   in review was withdrawn or made to say `unknown` instead: the seam proof
   (F3), a walk that turns back along its axis (W7b), a drill point after a
@@ -88,10 +129,12 @@ the same rule:
   frozen at the first publish (M4), changed freely before then, together
   with the extractor version.
 - **`EXTRACTOR_VERSION`** rises with every change that could change any
-  output: a rule, a constant, an order, a field. A document records it,
-  and the catalog (M5) re-reads every file whose document has another.
-  Golden files can only be re-blessed when it has risen
-  (`FITMENT_BLESS=1`; never under `CI`).
+  features output: a rule, a constant, an order, a field. A document
+  records it, and the catalog (M5) re-reads every file whose document has
+  another. **`SOCKET_RULES_VERSION`** does the same for sockets, and
+  `fitment.socket` (`SOCKET_FORMAT_VERSION`) is frozen at the first
+  publish like `features.v1`. Golden files can only be re-blessed when a
+  version they record has risen (`FITMENT_BLESS=1`; never under `CI`).
 - **The extraction constants** (`Extraction`, design section 5.2) are
   written into every document and are the ones the code uses: the struct
   takes its values from the modules' own constants.
@@ -122,6 +165,8 @@ A STEP file is untrusted. Beyond the gate's checks, every rule is meant to
 be linear or `n log n` in the size of the file: reviews built files with
 tens of thousands of faces sharing one edge, one plane, one cylinder or
 one face full of holes, and each quadratic path they found was removed.
+For sockets, `tests/hostile.rs` reads 10,008 bolts and refuses 36,008
+coincident ones by check 39, and s55 is a plate of 3,600 coplanar tiles.
 Coordinates beyond 1e6 mm are refused before any arithmetic depends on
 them, and every bound is tested so that NaN fails it.
 
@@ -133,10 +178,12 @@ them, and every bound is tested so that NaN fails it.
 | Unit set | `crates/fitment-core/tests/data`, `tests/parts.rs` | 24 generated parts (under 300 KB) checked against their construction on every OS |
 | Review reproducers | `crates/fitment-core/tests/edits`, `tests/{planes,cylinders,holes}.rs` | Each input a review used to break a rule, with the answer it must give |
 | Gate edits | `tests/features.rs` | Hand-edited STEP for the gate's checks, stage by stage |
-| Generated corpus | `tools/gen-corpus.py`, `crates/fitment/tests/corpus.rs` | 132 cases in CI, answers from the construction alone: 41 of the 43 positive parts also with pcurves (`_pc`; the text edits p20 and p29 have none), and 39 in a second skew frame (`_rot`; nor have p32 and p33, whose answers are patched by hand) |
-| Goldens | `crates/fitment/tests/golden` | The exact bytes of each unit part's document |
-| Fixtures | `tools/fetch-fixtures.sh`, `fixtures/manifest.json`, `tests/fixtures.rs` | 45 public STEP files: pinned gate results and counts of planes, outlines, cylinders, holes and shafts |
-| Oracle | `tools/verify-occt.py` | Open CASCADE 8.0.1, a kernel the generator does not use: `manifest` checks the construction; `features` checks fitment's planes, cylinders, holes and shafts, with the fixtures' tallies pinned |
+| Unit assemblies | `crates/fitment-core/tests/assemblies`, `tests/assemblies.rs`, `tests/review.rs` | s01, s02, s03 and s08x, and the assembly gate's and review's checks as snippets and text edits |
+| Hostile inputs | `tests/hostile.rs` | Assemblies grown from s08x: 10,008 bolts read, 36,008 coincident ones refused by check 39, 1,000 nuts on one axis |
+| Generated corpus | `tools/gen-corpus.py`, `crates/fitment/tests/corpus.rs` | Parts and assemblies with answers from the construction alone: parts also with pcurves (`_pc`) and in a skew frame (`_rot`); every assembly with sockets also under a skew root (`_rot`), with its targets in a tilted frame (`_tgt`), with pcurves (`_pc`) and with its components in reverse order (`_perm`) |
+| Goldens | `crates/fitment/tests/golden` | The exact bytes of each unit part's `features` document, and of each unit assembly's `parts` and `socket` documents; on three operating systems, the determinism check |
+| Fixtures | `tools/fetch-fixtures.sh`, `fixtures/manifest.json`, `tests/fixtures.rs` | 45 public STEP files: pinned gate results and counts of planes, outlines, cylinders, holes and shafts; sockets pinned for chosen targets of the assemblies, and AS1's exports compared |
+| Oracle | `tools/verify-occt.py` | Open CASCADE 8.0.1, a kernel the generator does not use: `manifest` checks the construction; `features` checks fitment's planes, cylinders, holes and shafts; `socket` checks every socket against the solids, both ways (spans, seats, touchers, grips, floors, touching faces, occupied holes), with the fixtures' tallies pinned; `mutations` edits fitment's sockets nine ways and requires each edit to meet a disagreement |
 
 The test parts' answers come from the generator's arguments, never from
 reading a written file; the oracle catches a generator whose part is not
@@ -148,6 +195,9 @@ fitment's own tests.
 
 - Canonical gate, rules G, S, F, W, K, E, the JSON format, the test parts:
   [research/m2-features.md](research/m2-features.md).
+- Assembly gate, sockets, rules T, O, P, Z, N, X, B, I, J, H, Q, C, L, U,
+  Y, A, V, review, the test assemblies and the socket oracle:
+  [research/m3-socket.md](research/m3-socket.md).
 - Milestones, matching method and verdicts: [PLAN.md](PLAN.md).
 - stepq's reading of STEP: its own repository and
   [research/m1-stepq-read.md](research/m1-stepq-read.md).
