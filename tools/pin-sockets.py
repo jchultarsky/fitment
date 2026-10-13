@@ -67,9 +67,9 @@ def main():
         print(path, json.dumps(pins))
         by_path[path]["sockets"] = pins
     if "--write" in sys.argv[1:]:
-        # The manifest's own layout: one line per fixture.
-        lines = ["{", f' "comment": {json.dumps(manifest["comment"])},', f' "oracle": {json.dumps(manifest["oracle"])},',
-                 ' "fixtures": [', ",\n".join("  " + json.dumps(f) for f in manifest["fixtures"]), " ]", "}"]
+        # The manifest's own layout: each other entry on a line, in order, then one line per fixture.
+        lines = ["{"] + [f" {json.dumps(k)}: {json.dumps(v)}," for k, v in manifest.items() if k != "fixtures"]
+        lines += [' "fixtures": [', ",\n".join("  " + json.dumps(f) for f in manifest["fixtures"]), " ]", "}"]
         manifest_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
