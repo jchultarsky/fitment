@@ -2111,9 +2111,14 @@ def socket_main(argv):
     for problem in problems:
         print(problem, file=sys.stderr)
     if pinned is not None:
-        if pinned != tally:
-            changed = {k: (pinned.get(k), tally.get(k)) for k in sorted(set(pinned) | set(tally))
-                       if pinned.get(k) != tally.get(k)}
+        # Counts of sampled distances near τ can tip by one between
+        # platforms' floating point: checked, printed, not pinned.
+        sampled = {"touching faces"}
+        firm = {k: v for k, v in tally.items() if k not in sampled}
+        pinned = {k: v for k, v in pinned.items() if k not in sampled}
+        if pinned != firm:
+            changed = {k: (pinned.get(k), firm.get(k)) for k in sorted(set(pinned) | set(firm))
+                       if pinned.get(k) != firm.get(k)}
             problems.append(f"the tallies differ from the pinned `socket_oracle` ones (pinned, now): {changed}")
             print(problems[-1], file=sys.stderr)
     elif any(v and "unbound" in k for k, v in tally.items()):
