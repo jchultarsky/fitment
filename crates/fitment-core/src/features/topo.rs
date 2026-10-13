@@ -4,7 +4,7 @@
 //! `#id`. Every value is in millimetres and radians.
 //!
 //! The gate's geometry checks and every feature rule read this copy, so no
-//! module but `gate/` and `features/step.rs` sees a stepq value
+//! module but `gate/`, `features/step.rs` and `assembly/step.rs` sees a stepq value
 //! (`docs/research/m2-features.md`, section 11.1). The vector arithmetic
 //! and the loop geometry both share live here too, so that the gate's
 //! orientation check and the plane outlines measure loops the same way.

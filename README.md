@@ -103,6 +103,7 @@ NUT                      NUT                      part             4      #1032 
 s01_bolted               s01_bolted               assembly         1         #5  (root)
 assembly gate: accepted
 $ fitment socket --format table s01_bolted.stp --part BRACKET
+fitment: s01_bolted.stp: BRACKET: 1 occurrences, 1 sockets, 7 requirements (7 unreviewed), 1 left out
 socket-1  1 occurrences
   -        seat:plane-467                       1 faces, 4 contacts
   -        grip:plane-467+plane-570             8 mm thick, 5 holes through

@@ -312,6 +312,15 @@ fn every_variant_has_its_base_s_sockets() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// The rules left deferred when M3 closed: `4.2#30` (internal, a bug),
+/// `F3` (withdrawn), `Z7` (holds by construction), `Y4.original_run` (M4)
+/// and `V1` (M7).
+const DEFERRED: [&str; 5] = ["4.2#30", "F3", "Z7", "Y4.original_run", "V1"];
+
+/// The rules that yield a requirement every candidate fails (design 8.4,
+/// Y4): each needs a case that shows it, not a test alone (13.1).
+const UNVERIFIABLE: [&str; 10] = ["U1", "U2", "U4", "U5", "U6", "U7", "U8", "C4", "C6", "Q1"];
+
 /// Coverage is checked, not claimed (design, section 13.1): every rule
 /// and gate check the corpus manifest lists has a case that cites it, a
 /// Rust test that exists, or a reason it is deferred; and every rule a case
@@ -342,12 +351,18 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         if deferred && (cases > 0 || !tests.is_empty()) {
             failures.push(format!("{id}: deferred, yet a case or test covers it"));
         }
-        // M2 and M3 are closed: nothing waits on a PR of theirs.
-        if entry["deferred"]
-            .as_str()
-            .is_some_and(|r| r.contains("M2 PR") || r.contains("M3 PR"))
-        {
-            failures.push(format!("{id}: deferred to a PR of a closed milestone"));
+        if UNVERIFIABLE.contains(&id.as_str()) && cases == 0 {
+            failures.push(format!(
+                "{id}: yields an unverifiable requirement, and no case shows it"
+            ));
+        }
+        // M2 and M3 are closed: only these may wait, each for a reason
+        // outside them (a bug's code, a withdrawn rule, a property of the
+        // construction, a later milestone).
+        if deferred && !DEFERRED.contains(&id.as_str()) {
+            failures.push(format!(
+                "{id}: deferred, and not among the deferrals M3 closed with"
+            ));
         }
         for test in tests {
             let Some((file, name)) = test.split_once("::") else {

@@ -69,17 +69,17 @@ which need what it establishes.
 STEP bytes
   │ stepq: product structure and placements           assembly/step.rs
   ▼
-Assembly gate, checks 31 to 38: one root and no      gate/assembly.rs
+Assembly gate, checks 31 to 35: one root and no      gate/assembly.rs
   │   cycle, every usage placed and rigid, at most
   │   100,000 occurrences, no material in an
-  │   assembly's own shape, components that pass M2's
-  │   gate (36 refuses the whole assembly), frames and
-  │   ranges; parts listed with their quantities and
-  │   occurrences                                      assembly/parts.rs
+  │   assembly's own shape
   ▼
-Selection: --part by id or name, --occurrence          assembly/mod.rs
+Checks 36 to 38: each distinct leaf read once as a     assembly/step.rs
+  │   part (above; a refused one refuses the whole
+  │   assembly), its frame and its range; parts
+  │   listed with quantities and occurrences            assembly/parts.rs
   ▼
-Each leaf definition read once, as a part (above)
+Selection: --part by id, name or #<n>; --occurrence    assembly/mod.rs
   ▼
 Per chosen occurrence, its neighbours in its frame:    socket/mod.rs, place.rs, index.rs
   │   search trees by box and along hole axes (N4)
@@ -115,9 +115,11 @@ the same rule:
   when a cylinder is undecided or a hole or shaft has an irregular or
   unknown end; an unknown outline does not affect it, so a consumer checks
   each outline's status. M3 and M4 treat unknowns as unverified (design,
-  section 9.6): a socket states what it cannot read as `unresolved`
-  requirements, flagged unverifiable, which every candidate fails until a
-  reviewer removes them.
+  section 9.6): a socket states what it cannot verify as requirements
+  every candidate fails until a reviewer removes them: `unresolved` ones,
+  partial bores and shafts, bores and shafts flagged `target_undecided` or
+  `open_at_unknown_end`, seats of unknown outline and conical seats of
+  unknown range.
 - **Never state a wrong known value.** Every rule that was found to guess
   in review was withdrawn or made to say `unknown` instead: the seam proof
   (F3), a walk that turns back along its axis (W7b), a drill point after a
@@ -180,10 +182,10 @@ them, and every bound is tested so that NaN fails it.
 | Gate edits | `tests/features.rs` | Hand-edited STEP for the gate's checks, stage by stage |
 | Unit assemblies | `crates/fitment-core/tests/assemblies`, `tests/assemblies.rs`, `tests/review.rs` | s01, s02, s03 and s08x, and the assembly gate's and review's checks as snippets and text edits |
 | Hostile inputs | `tests/hostile.rs` | Assemblies grown from s08x: 10,008 bolts read, 36,008 coincident ones refused by check 39, 1,000 nuts on one axis |
-| Generated corpus | `tools/gen-corpus.py`, `crates/fitment/tests/corpus.rs` | Parts and assemblies with answers from the construction alone: parts also with pcurves (`_pc`) and in a skew frame (`_rot`); every assembly with sockets also under a skew root (`_rot`), with its targets in a tilted frame (`_tgt`), with pcurves (`_pc`) and with its components in reverse order (`_perm`) |
+| Generated corpus | `tools/gen-corpus.py`, `crates/fitment/tests/corpus.rs` | Parts and assemblies with answers from the construction alone: parts also with pcurves (`_pc`) and in a skew frame (`_rot`); every assembly with sockets, but those written by hand edits or with frames Open CASCADE rewrites, also under a skew root (`_rot`), with its targets in a tilted frame (`_tgt`), with pcurves (`_pc`) and with its components in reverse order (`_perm`) |
 | Goldens | `crates/fitment/tests/golden` | The exact bytes of each unit part's `features` document, and of each unit assembly's `parts` and `socket` documents; on three operating systems, the determinism check |
 | Fixtures | `tools/fetch-fixtures.sh`, `fixtures/manifest.json`, `tests/fixtures.rs` | 45 public STEP files: pinned gate results and counts of planes, outlines, cylinders, holes and shafts; sockets pinned for chosen targets of the assemblies, and AS1's exports compared |
-| Oracle | `tools/verify-occt.py` | Open CASCADE 8.0.1, a kernel the generator does not use: `manifest` checks the construction; `features` checks fitment's planes, cylinders, holes and shafts; `socket` checks every socket against the solids, both ways (spans, seats, touchers, grips, floors, touching faces, occupied holes), with the fixtures' tallies pinned; `mutations` edits fitment's sockets nine ways and requires each edit to meet a disagreement |
+| Oracle | `tools/verify-occt.py` | Open CASCADE 8.0.1, a kernel the generator does not use: `manifest` checks the construction; `features` checks fitment's planes, cylinders, holes and shafts; `socket` checks every socket against the solids, both ways (spans, seats, touchers, grips, floors, touching faces, occupied holes), but s55's, which it skips by name (its 7,440-face plate takes Open CASCADE hours), with the fixtures' tallies pinned but the sampled count of touching faces; `mutations` edits fitment's sockets nine ways and requires each edit to meet a disagreement |
 
 The test parts' answers come from the generator's arguments, never from
 reading a written file; the oracle catches a generator whose part is not

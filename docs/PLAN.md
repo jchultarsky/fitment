@@ -10,19 +10,32 @@ Given an assembly and one part in it that is no longer available, the system sug
 M0 was completed on 9 Oct 2026, M1 on 11 Oct 2026, M2 on 12 Oct 2026 and M3 on 12 Oct 2026: `fitment features` reads one part and `fitment socket` reads a part's socket from an assembly, as designed in [research/m2-features.md](research/m2-features.md) and [research/m3-socket.md](research/m3-socket.md) and mapped in [ARCHITECTURE.md](ARCHITECTURE.md). Work continues at M4, in this repository. Open it in Code mode, with ../stepq added, and paste:
 
 ```text
-Read docs/PLAN.md, sections "How it works", "Soundness rules", "Matching method"
-(steps 3 to 7 and its paragraph on tolerances), decisions D6 to D9 and
-"Milestones"; docs/ARCHITECTURE.md; and docs/research/m3-socket.md sections
-6.2 (the floor and tolerances), 8 (what each requirement states) and 9 (the
-socket document and its review), which bind M4. We are at fitment's milestone
-M4: signature, alignment, verification and evidence; `fitment match socket.json
-candidates/*.stp`; the known-answer corpus and its harness.
+Read docs/PLAN.md, sections "Decisions made", "How it works", "Soundness rules",
+"Choosing the part to replace", "Matching method" (steps 2 to 7 and its
+paragraph on tolerances), "Metadata from STEP only", decisions D6 to D10 and
+"Milestones"; docs/ARCHITECTURE.md; docs/research/m3-socket.md sections 1 and 2
+(what the socket records and what M4 decides), 6.2 (the floor), 7.8 and 7.10
+(seat regions, unknown outlines, the causes of unresolved requirements), 8
+(what each requirement states, Y4 and the envelope), 9 (the socket document,
+its review and carry-over), 11 (the API), 13 and 14 (the generator, the
+manifest, the RULES registry and the oracle) and 18 (risks, and what it hands
+to M4); and docs/research/m2-features.md sections 7.4 and 9.6, which bind the
+candidate side (unknown outlines, unknown ends, undecided cylinders). We are at
+fitment's milestone
+M4: signature, alignment, verification and evidence; `fitment match
+socket.json candidates/*.stp`; the known-answer corpus and its harness.
 1. Propose the signature, alignment, verification and verdict types and the
-   corpus of good and bad candidates in docs/research/m4-match.md, then stop for
-   my review.
-2. Implement them one PR at a time, each with tests and two adversarial reviews.
-Done when the known-bad set gives zero false positives and the false-negative
-rate is reported.
+   corpus of good and bad candidates in docs/research/m4-match.md, then stop
+   for my review. The original part, run as a candidate against its own
+   socket, must fail exactly its unverifiable requirements (Y4, deferred to
+   M4 in RULES); M4's rules join the RULES registry and m4-match.md joins the
+   coverage test.
+2. Implement them one PR at a time, each with tests and two adversarial
+   reviews, and publish fitment at the exit.
+Done when there are zero false positives on the known-bad set and the
+false-negative rate is reported. A false positive is `Match` on any bad case,
+or any pass on a bad interface. `InterfaceMatch` on the colliding-body case is
+correct until M7.
 ```
 
 The project is named `fitment` and will be published as open source. stepq is at [github.com/jchultarsky/stepq](https://github.com/jchultarsky/stepq); it was at 0.4.1 when this plan was written and is at 0.6.0 since M1.
@@ -150,7 +163,7 @@ Test oracle, as elsewhere in stepq: compare the placements and cylinder axes ste
 The user names a part by its part number, and every occurrence of it is replaced. This was the recommended default (D11), confirmed by M3's design (section 5).
 
 - `fitment parts asm.stp` lists the parts in an assembly: id, name and quantity, read from `PRODUCT.id`, `PRODUCT.name` and the usage occurrences.
-- `--part <id>` selects by `PRODUCT.id`, usually the part number, with the name as a fallback, or by a definition's `#<n>`. A value that matches no part, or more than one, is refused with the candidates listed.
+- `--part <id>` selects by `PRODUCT.id`, usually the part number, with the name as a fallback, or by a definition's `#<n>`. A value that matches more than one part is refused with them listed, and one that matches none with any similar parts suggested.
 - A part used several times has one socket per occurrence. A candidate must fit every one. Sockets that are identical apart from their position are merged.
 - `--occurrence <path>` narrows the choice to one occurrence, addressed by its path through the assembly tree.
 - The first version accepts only a leaf part, not a sub-assembly.
@@ -168,7 +181,7 @@ A candidate is never compared with the original part. It is tested against the s
     - A plane is kept with its outward normal and its outline from the loop vertices and each edge's line or circle, exactly.
     - Every other surface is recorded as "other" with its type.
 2. **Socket from the assembly.** Every occurrence is placed in the assembly frame, then the target part is tested against each neighbor:
-    - Parallel, with cross-sections meeting over an axial overlap, neighbor shaft smaller than the target hole: a clearance fit, its bound the shaft's diameter plus twice the offset. The hole must be at least the shaft's diameter and, under the strict policy (D6), no larger than the original.
+    - Parallel, with cross-sections meeting over an axial overlap, neighbor shaft smaller than the target hole: a clearance fit, its bound the shaft's diameter plus twice the offset. The hole must be at least that bound and, under the strict policy (D6), no larger than the original.
     - Coaxial and overlapping, neighbor shaft larger than the hole: a threaded or press fit, inferred. The hole diameter is pinned.
     - Coaxial, not overlapping, neighbor hole: the hole continues into the neighbor, a bolted joint. The axis is required, also beyond a gap, unless a plane face of known outline blocks the line between them; with no fastener read, the hole is pinned.
     - Coaxial, not overlapping, a larger neighbor cylinder ending at the target's face: a head or shoulder bears there. A seating plane and a clear ring around the hole are required.
