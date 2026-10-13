@@ -811,17 +811,21 @@ fn to_floor(a: &Element, b: &Element, p: &Pair, tau: f64) -> Option<f64> {
 
 /// True if `shaft`'s part is a ring clear of the part holding the hole
 /// it was paired with, over `p`'s overlap on `shaft`'s axis: `ring` has a
-/// bore coaxial with `shaft`, and `core` (the hole's part) an outside
-/// coaxial with it no wider than that bore. The ring's material lies
-/// outside its bore and the core's inside its outside, so they meet at
-/// most, whatever the hole: a spacer inside a bearing's bore. A core
-/// with no such outside (a hex nut) proves nothing.
+/// bore coaxial with `shaft` and inside it, and `core` (the hole's part)
+/// an outside coaxial with it no wider than that bore. The wall `shaft`
+/// bounds lies outside that bore and the core inside its outside, so
+/// they meet at most, whatever the hole: a spacer inside a bearing's
+/// bore. A wider bore of the ring's (a cap's skirt around its spigot)
+/// says nothing of this wall; a core with no round outside (a hex nut)
+/// proves nothing; and only what is known of a cylinder covers, never
+/// an undecided one's.
 fn hollow(ring: &[Element], shaft: &Element, core: &[Element], p: &Pair, tau: f64) -> bool {
     let (from, to) = (p.from.min(p.to), p.from.max(p.to));
     let covering = |e: &&Element, side: Side| {
         e.side == side
             && e.partial.is_none()
-            && axial::pair(shaft, e, PARALLEL_SINE_REL, 0.0)
+            && !e.undecided
+            && axial::pair(shaft, &known(e), PARALLEL_SINE_REL, 0.0)
                 .is_some_and(|q| q.e_max <= tau && q.lo <= from + tau && q.hi >= to - tau)
     };
     // The outermost, should the core have walls within walls.
@@ -834,7 +838,7 @@ fn hollow(ring: &[Element], shaft: &Element, core: &[Element], p: &Pair, tau: f6
         return false;
     };
     ring.iter()
-        .filter(|e| covering(e, Side::Hole))
+        .filter(|e| covering(e, Side::Hole) && e.radius < shaft.radius - tau)
         .any(|e| outside <= e.radius + tau)
 }
 

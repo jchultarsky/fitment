@@ -707,13 +707,6 @@ def check_assembly(directory, case):
                 return [f"{name}: refused for two roots, but Open CASCADE reads {len(leaves)} leaves"]
         return []
     problems = []
-    wanted = sum(len(ms) for ms in expect["occurrences"].values())
-    if case.get("construction", {}).get("xcaf_reads_otherwise"):
-        # A layout XCAF places another way (s10's mapped item): its leaves
-        # are counted, and the construction is checked by corpus.rs.
-        if wanted != len(leaves):
-            problems.append(f"{name}: Open CASCADE reads {len(leaves)} leaf occurrences, the construction {wanted}")
-        return problems
     # XCAF names a leaf by its PRODUCT.name; the manifest keys it by id.
     names = {p["id"]: p["name"] for p in expect["listing"]["parts"]}
     wanted = [(names.get(product, product), m) for product, ms in expect["occurrences"].items() for m in ms]
@@ -722,7 +715,8 @@ def check_assembly(directory, case):
                         f"{len(wanted)}")
     left = [(n, m) for n, m, _ in leaves]
     for product, m in wanted:
-        at = next((k for k, (n, found) in enumerate(left) if n == product and all(
+        # A leaf placed through a mapped item comes back named SOLID (s10).
+        at = next((k for k, (n, found) in enumerate(left) if n in (product, "SOLID") and all(
             abs(found[i][j] - m[i][j]) <= PLACEMENT_TOL for i in range(3) for j in range(4))), None)
         if at is None:
             problems.append(f"{name}: no {product} where the construction places one: {m}")
@@ -1317,16 +1311,17 @@ def inside_any(point, shapes):
     return any(BRepClass3d_SolidClassifier(shape, gp_Pnt(*point), 1e-7).State() == TopAbs_IN for shape in shapes)
 
 
-def span_problems(where, kind, axis, span, m, others, tally):
+def span_problems(where, kind, axis, span, m, target, others, tally):
     """What Open CASCADE sees that one span misstates: a clearance span's
     gap (between the clear diameter and the hole's, or the shaft's and its
     limit) is air in every other solid, and an interference span's
-    occupant (or holder) is material past the target's surface."""
+    overlap is material of both the target and another solid."""
     tally[f"{kind} spans"] += 1
     mid = (span["from_mm"] + span["to_mm"]) / 2
     own = span["hole_diameter_mm" if kind == "bore" else "shaft_diameter_mm"]
     clear = span["clear_diameter_mm"]
     if span["to_mm"] - span["from_mm"] <= 0.01:
+        tally["touch spans"] = tally.get("touch spans", 0) + 1
         return []  # a touch (B5): nothing to probe
     if span["fit"] == "clearance" and clear is not None and abs(clear - own) > 0.05:
         radius = (clear + own) / 4
@@ -1335,15 +1330,19 @@ def span_problems(where, kind, axis, span, m, others, tally):
                 return [f"{where}: {span['fit']} with clear diameter {clear}, but Open CASCADE finds material "
                         f"at radius {radius:.4f} at {point}"]
     if span["fit"] == "interference":
-        # Midway to the clear diameter, where the overlap is (an occupant
-        # may be a ring, air just inside the target's surface); without
-        # one, just inside the surface.
         if clear is not None and abs(clear - own) > 0.002:
-            radius = (clear + own) / 4
+            # Between the target's surface and the clear diameter, where
+            # the overlap is: some point there in the target and in another
+            # solid (an occupant's own wall alone is no overlap).
+            radii = [(own + (clear - own) * k / 8) / 2 for k in range(1, 8)]
+            if not any(inside_any(point, [target]) and inside_any(point, others)
+                       for radius in radii for point in ring(m, axis, mid, radius)):
+                return [f"{where}: interference to clear diameter {clear}, but Open CASCADE finds no point "
+                        f"between it and {own} in both the part and another solid"]
         else:
             radius = own / 2 - 0.001 if kind == "bore" else own / 2 + 0.001
-        if not any(inside_any(point, others) for point in ring(m, axis, mid, radius)):
-            return [f"{where}: interference, but Open CASCADE finds no other solid at radius {radius:.4f}"]
+            if not any(inside_any(point, others) for point in ring(m, axis, mid, radius)):
+                return [f"{where}: interference, but Open CASCADE finds no other solid at radius {radius:.4f}"]
     return []
 
 
@@ -1431,11 +1430,18 @@ def seat_problems(where, socket, m, target, others, tally):
             unknown = all("unknown_outline" in b["flags"] for c in q["contacts"] for b in c["by"]) and \
                 any(b for c in q["contacts"] for b in c["by"])
             if not gaps and unknown:
-                # Outlines fitment could not read: it cannot rule out a touch
-                # by an opposed face on the band's planes, nor can this.
-                gaps = [dot(n, sub(gp, f[2])) for f in faces for g, gn, gp, gb in theirs
-                        if dot(gn, n) <= -COS_LIMIT and abs(dot(n, sub(gp, f[2]))) <= NEAR]
-                tally["seats of unknown outline"] = tally.get("seats of unknown outline", 0) + 1
+                # Outlines fitment could not read: an opposed face within the
+                # band near the seat's faces suffices, as fitment could rule
+                # out no more. Failing that, an opposed face anywhere on the
+                # band's planes (fitment has no box of a face with an unread
+                # edge either): counted apart, and pinned.
+                near = [dot(n, sub(gp, f[2])) for f in faces for g, gn, gp, gb in theirs
+                        if dot(gn, n) <= -COS_LIMIT and abs(dot(n, sub(gp, f[2]))) <= NEAR
+                        and f[3].Distance(gb) <= NEAR + 1e-6]
+                key = "seats of unknown outline" if near else "seats of unknown outline, no face near"
+                gaps = near or [dot(n, sub(gp, f[2])) for f in faces for g, gn, gp, gb in theirs
+                                if dot(gn, n) <= -COS_LIMIT and abs(dot(n, sub(gp, f[2]))) <= NEAR]
+                tally[key] = tally.get(key, 0) + 1
             if not gaps:
                 problems.append(f"{where} {requirement['id']}: no opposed face shares area with it within {NEAR} mm")
                 continue
@@ -1583,7 +1589,7 @@ def socket_problems(directory, case, binary, tally):
                 if requires["kind"] in ("bore", "shaft"):
                     for span in requires["spans"]:
                         problems += span_problems(f"{where} {requirement['id']}", requires["kind"],
-                                                  requires["axis"], span, m, others, tally)
+                                                  requires["axis"], span, m, leaves[mine[0]][2], others, tally)
             for left in socket["left_out"]:
                 tally["left out holes"] += 1
                 p, d = left["axis"]["point_mm"], left["axis"]["direction"]
@@ -1626,8 +1632,7 @@ def socket_main(argv):
              "conical seats": 0, "grips": 0, "seat pairs": 0, "faces off every seat": 0}
     problems = []
     for case in cases:
-        if case.get("kind") != "assembly" or "sockets" not in case["expect"] \
-                or case.get("construction", {}).get("xcaf_reads_otherwise"):
+        if case.get("kind") != "assembly" or "sockets" not in case["expect"]:
             continue
         tally["cases"] += 1
         found = socket_problems(directory, case, binary, tally)
