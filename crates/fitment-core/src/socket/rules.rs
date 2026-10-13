@@ -234,7 +234,15 @@ pub(crate) fn relate(
             );
             pairs.extend(near.into_iter().map(|t| (t, e)));
             if b.side == Side::Hole {
-                let line = search.tree.along(b.point, b.dir, b.radius + widest + by);
+                // J pairs axes up to PARALLEL_SINE_REL apart at any distance:
+                // a cone about this one.
+                let line = search.tree.along(
+                    b.point,
+                    b.dir,
+                    b.radius + widest + by,
+                    PARALLEL_SINE_REL,
+                    b.lo.abs().max(b.hi.abs()),
+                );
                 pairs.extend(line.into_iter().map(|t| (t, e)));
             }
         }

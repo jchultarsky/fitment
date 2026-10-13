@@ -1408,10 +1408,21 @@ def distance(a, b):
 
 def common_area(face, other, normal, gap):
     """The area `other`, moved by `gap` against `normal` onto `face`'s
-    plane, shares with `face`."""
+    plane, shares with `face`. A face tilted within the parallel window is
+    first turned about the point its plane states, square to `normal`."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-    from OCP.gp import gp_Trsf, gp_Vec
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Trsf, gp_Vec
+    facts = plane_facts(other)
+    if facts is not None and dot(facts[0], normal) > -1 + 1e-12:
+        towards = [-c for c in normal]
+        axis = cross(facts[0], towards)
+        size = math.sqrt(dot(axis, axis))
+        if size > 1e-15:
+            turn_ = gp_Trsf()
+            turn_.SetRotation(gp_Ax1(gp_Pnt(*facts[1]), gp_Dir(*[c / size for c in axis])),
+                              math.atan2(size, dot(facts[0], towards)))
+            other = BRepBuilderAPI_Transform(other, turn_, True).Shape()
     t = gp_Trsf()
     t.SetTranslation(gp_Vec(*[-gap * c for c in normal]))
     moved = BRepBuilderAPI_Transform(other, t, True).Shape()
@@ -1638,6 +1649,7 @@ def detail_problems(where, socket, m, target, leaves, mine, neighbours, face_id,
     # at the gap stated.
     placed = {tuple(n["path"]): [row + [n["transform"]["translation_mm"][i]]
                                  for i, row in enumerate(n["transform"]["rotation"])] for n in neighbours}
+    contact_faces = {face_id(as_face(f)): as_face(f) for f in explore(target, TopAbs_FACE)}
     for requirement in socket["requirements"]:
         q, requirement_floor = requirement["requires"], requirement["floor_mm"]
         if q["kind"] != "seat":
@@ -1663,7 +1675,24 @@ def detail_problems(where, socket, m, target, leaves, mine, neighbours, face_id,
                         facts = plane_facts(f)
                         if facts is not None:
                             gap = dot(n, facts[1]) - offset
-                            found = found or (dot(facts[0], n) <= -COS_LIMIT and abs(gap - by["gap_mm"]) <= 1e-5)
+                            # Opposed at the gap, and within it of this
+                            # contact's face, not another's on the plane.
+                            mine_face = contact_faces.get(contact["face"])
+                            # (An outline fitment could not read places the
+                            # toucher nowhere: counted apart, above.)
+                            near_it = mine_face is None or "unknown_outline" in by["flags"] or \
+                                BRepExtrema_DistShapeShape(mine_face, f).Value() <= \
+                                abs(gap) + max(TOUCH, requirement_floor) + 1e-6
+                            if abs(dot(facts[0], n) + 1) <= 1e-9:
+                                at_gap = abs(gap - by["gap_mm"]) <= 1e-5
+                            else:
+                                # Tilted within the window: fitment states the
+                                # least gap over both outlines' vertices, which
+                                # may lie past the contact, so no more than the
+                                # faces' true distance, in the band.
+                                d = BRepExtrema_DistShapeShape(mine_face, f).Value() if mine_face is not None else 0.0
+                                at_gap = by["gap_mm"] <= d + 1e-6 and d <= NEAR + requirement_floor
+                            found = found or (dot(facts[0], n) <= -COS_LIMIT and at_gap and near_it)
                             continue
                         # A ring's (H1): a cylinder or cone of a neighbour
                         # the seat has a ring of, its axis along the normal,
@@ -1772,13 +1801,19 @@ TOUCH = 0.01  # mm: fitment's CONTACT_MM, τ without a floor
 
 def held_ids(socket):
     """What a socket holds by #id: its seats' contact faces; the feature
-    numbers its requirements and left-out features name (their ids and
-    their `hole`, `shaft`, `plane`, `cylinder`, `cone` or `feature`); and
-    the neighbour faces its unread neighbours (U4) list."""
+    numbers its other requirements and left-out features name (their ids
+    and their `hole`, `shaft`, `plane`, `cylinder`, `cone` or `feature`;
+    a seat's or grip's plane holds no face by itself); and the neighbour
+    faces its unread neighbours (U4) list."""
     faces, features, unread = set(), set(), set()
     number = lambda text: [int(x) for x in re.findall(r"-(\d+)", text or "")]
     for r in socket["requirements"]:
         q = r["requires"]
+        if q["kind"] in ("seat", "grip"):
+            # A seat holds its plane's faces as contacts only (below).
+            for c in q.get("contacts", []):
+                faces.add(c["face"])
+            continue
         features.update(number(r["id"]))
         for key in ("hole", "shaft", "plane", "cylinder", "cone", "feature"):
             if isinstance(q.get(key), str):
@@ -1803,28 +1838,11 @@ def on_line(m, axis, point, direction):
     return math.sqrt(dot(across, across)) <= 1e-4
 
 
-def on_seat_plane(face, socket, m):
-    """True if `face` (placed) is a plane face on one of `socket`'s seats'
-    planes."""
-    facts = plane_facts(face)
-    if facts is None:
-        return False
-    n, point = facts[0], facts[1]
-    for r in socket["requirements"]:
-        q = r["requires"]
-        if q["kind"] == "seat":
-            qn = turn(m, q["normal"])
-            offset = dot(qn, apply(m, [c * q["offset_mm"] for c in q["normal"]]))
-            if abs(dot(qn, n)) >= 1 - 1e-9 and abs(dot(qn, point) - offset) <= 1e-5:
-                return True
-    return False
-
-
-def held_by_geometry(face, socket, m, id_=None):
+def held_by_geometry(face, socket, m):
     """True if a requirement or left-out feature of `socket` lies on the
     (placed) face's surface: a cylinder on a bore's, shaft's, partial's or
-    left-out axis and diameter, a plane on a seat's plane, a cone on a
-    conical seat's apex."""
+    left-out axis and diameter, a cone on a conical seat's apex. A plane on
+    a seat's plane is held only as one of its contacts."""
     surface = BRepAdaptor_Surface(face)
     kind = surface.GetType()
     items = [r["requires"] for r in socket["requirements"]] + socket["left_out"]
@@ -1838,17 +1856,6 @@ def held_by_geometry(face, socket, m, id_=None):
                                                  for s in q.get("spans", [])]
             if any(x is not None and abs(x - d) <= 1e-4 for x in diameters):
                 return True
-    elif kind == Kind.GeomAbs_Plane:
-        facts = plane_facts(face)
-        n, point = facts[0], facts[1]
-        for q in items:
-            if q.get("kind") == "seat":
-                qn = turn(m, q["normal"])
-                offset = dot(qn, apply(m, [c * q["offset_mm"] for c in q["normal"]]))
-                if abs(dot(qn, n)) >= 1 - 1e-9 and abs(dot(qn, point) - offset) <= 1e-5:
-                    # A face on a seat's plane is held only as one of its contacts
-                    # (a contact dropped is a requirement shrunk).
-                    return id_ is None or id_ in {c["face"] for c in q["contacts"]}
     elif kind == Kind.GeomAbs_Cone:
         apex = xyz(surface.Cone().Apex())
         for q in items:
@@ -1986,9 +1993,8 @@ def touch_problems(where, socket, m, target, named, face_id, tally, clash_ok):
             continue
         # A face on a seat's plane is held as one of its contacts, and so
         # only; any other by the ids and geometry the socket states.
-        on_seat = on_seat_plane(face, socket, m)
-        held = id_ in faces if on_seat else (
-            id_ in features or smallest.get(key) in features or held_by_geometry(face, socket, m, id_))
+        held = (id_ in faces or id_ in features or smallest.get(key) in features
+                or held_by_geometry(face, socket, m))
         box = Bnd_Box()
         BRepBndLib.Add_s(face, box)
         near = [b for b in boxes if box.Distance(b[2]) <= TOUCH]
@@ -2164,6 +2170,9 @@ def socket_problems(directory, case, binary, tally):
 # A mutation `mutations` mode applies to every document fitment gives.
 MUTATE = None
 
+# The cases the socket oracle may skip, each saying why in its construction.
+SKIPPED = {"s55_tiles"}
+
 
 def each_requirement(document):
     for socket in document["extracted"]["sockets"]:
@@ -2233,12 +2242,16 @@ def mutations_main(argv):
              if c.get("kind") == "assembly" and "sockets" in c["expect"]
              and not c.get("construction", {}).get("socket_oracle")]
     missed = []
+    fresh = lambda: {"cases": 0, "others": 0, "bore spans": 0, "shaft spans": 0, "left out holes": 0, "seats": 0,
+                     "conical seats": 0, "grips": 0, "seat pairs": 0, "faces off every seat": 0, "touching faces": 0,
+                     "max extras": 0, "touchers": 0, "grip holes": 0, "partial cylinders": 0}
+    # What the documents as given already meet is not the mutation's.
+    MUTATE = None
+    baseline = {case["id"]: set(socket_problems(directory, case, binary, fresh())) for case in cases}
     for name, mutate in MUTATIONS.items():
         MUTATE = mutate
-        tally = {"cases": 0, "others": 0, "bore spans": 0, "shaft spans": 0, "left out holes": 0, "seats": 0,
-                 "conical seats": 0, "grips": 0, "seat pairs": 0, "faces off every seat": 0, "touching faces": 0,
-                 "max extras": 0, "touchers": 0, "grip holes": 0, "partial cylinders": 0}
-        failing = sum(1 for case in cases if socket_problems(directory, case, binary, tally))
+        failing = sum(1 for case in cases
+                      if set(socket_problems(directory, case, binary, fresh())) - baseline[case["id"]])
         print(f"{name}: {failing} cases disagree")
         if not failing:
             missed.append(name)
@@ -2278,6 +2291,9 @@ def socket_main(argv):
         if case.get("kind") != "assembly" or "sockets" not in case["expect"]:
             continue
         if case.get("construction", {}).get("socket_oracle"):
+            if case["id"] not in SKIPPED:
+                problems.append(f"{case['id']} asks to skip the socket oracle, and is not among {sorted(SKIPPED)}")
+                continue
             print(f"skip {case['id']}: {case['construction']['socket_oracle']}")
             continue
         tally["cases"] += 1

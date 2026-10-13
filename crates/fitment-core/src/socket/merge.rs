@@ -177,15 +177,9 @@ fn strictest(ours: &mut Requirement, theirs: Requirement) {
     ours.floor_mm = ours.floor_mm.max(theirs.floor_mm);
     let flags: BTreeSet<_> = ours.flags.iter().chain(&theirs.flags).copied().collect();
     ours.flags = flags.into_iter().collect();
+    // Lists are gathered here and sorted once, in `normalize`, after every
+    // member is absorbed: sorting on each absorb made merging quadratic.
     ours.sources.extend(theirs.sources);
-    ours.sources.sort_by(|a, b| {
-        (&a.occurrence, &a.neighbour, &a.rule, &a.faces).cmp(&(
-            &b.occurrence,
-            &b.neighbour,
-            &b.rule,
-            &b.faces,
-        ))
-    });
     match (&mut ours.requires, theirs.requires) {
         (
             Requires::Bore { spans, open, .. },
@@ -244,18 +238,12 @@ fn strictest(ours: &mut Requirement, theirs: Requirement) {
         ) => {
             for (a, b) in contacts.iter_mut().zip(other) {
                 a.by.extend(b.by);
-                a.by.sort_by(|x, y| (&x.neighbour, x.face).cmp(&(&y.neighbour, y.face)));
-                a.by.dedup_by(|x, y| x.neighbour == y.neighbour && x.face == y.face);
             }
             rings.extend(their_rings);
-            rings.sort_by(|x, y| (x.hole, &x.neighbour).cmp(&(y.hole, &y.neighbour)));
-            rings.dedup();
         }
         (Requires::Unresolved { causes, .. }, Requires::Unresolved { causes: other, .. }) => {
             for (a, b) in causes.iter_mut().zip(other) {
                 a.faces.extend(b.faces);
-                a.faces.sort_unstable();
-                a.faces.dedup();
             }
         }
         _ => {}

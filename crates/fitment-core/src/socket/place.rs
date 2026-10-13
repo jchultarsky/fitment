@@ -83,6 +83,14 @@ fn crosses(b: &Aabb, point: V, dir: V, by: f64) -> bool {
     true
 }
 
+/// The distance from `point` to the farthest corner of `b`.
+fn far(b: &Aabb, point: V) -> f64 {
+    let d: Vec<f64> = (0..3)
+        .map(|k| (point[k] - b.0[k]).abs().max((b.1[k] - point[k]).abs()))
+        .collect();
+    d.iter().map(|x| x * x).sum::<f64>().sqrt()
+}
+
 impl Tree {
     /// A tree over `boxes`, item `i` being `boxes[i]`; `None`, or a box
     /// with an infinite side, is unbounded.
@@ -209,13 +217,18 @@ impl Tree {
         self.search(|b| meet(b, query, by))
     }
 
-    /// The items whose boxes, grown by `by`, the infinite line through
-    /// `point` along `dir` crosses.
-    pub(crate) fn along(&self, point: V, dir: V, by: f64) -> Vec<usize> {
-        if !(point.iter().chain(&dir).all(|x| x.is_finite())) {
+    /// The items whose boxes the infinite line through `point` along `dir`
+    /// passes within `by` of, widened by `slope` for every mm of the way
+    /// from `point` to the box's far corner, plus `extra` (a cone: a line
+    /// tilted by up to `slope` from this one, through any point within
+    /// `extra` of `point` along it, may pass the box). The widening grows
+    /// from a box to any box holding it, so a node passed over holds no
+    /// item that would pass.
+    pub(crate) fn along(&self, point: V, dir: V, by: f64, slope: f64, extra: f64) -> Vec<usize> {
+        if !(point.iter().chain(&dir).all(|x| x.is_finite()) && extra.is_finite()) {
             return (0..self.boxes.len()).collect();
         }
-        self.search(|b| crosses(b, point, dir, by))
+        self.search(|b| crosses(b, point, dir, by + slope * (far(b, point) + extra)))
     }
 }
 
@@ -250,12 +263,12 @@ mod tests {
         assert_eq!(tree.meeting(&query, 0.1), scan(&|b| meet(b, &query, 0.1)));
         let (point, dir) = ([0.5, 0.0, 0.5], [0.0, 1.0, 0.0]);
         assert_eq!(
-            tree.along(point, dir, 0.0),
+            tree.along(point, dir, 0.0, 0.0, 0.0),
             scan(&|b| crosses(b, point, dir, 0.0))
         );
         let slant = [1.0, 1.0, 0.0];
         assert_eq!(
-            tree.along(point, slant, 0.3),
+            tree.along(point, slant, 0.3, 0.0, 0.0),
             scan(&|b| crosses(b, point, slant, 0.3))
         );
         // The unbounded box comes back from every query.

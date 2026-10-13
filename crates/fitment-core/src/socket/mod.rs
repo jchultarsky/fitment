@@ -763,6 +763,8 @@ struct Around<'l, 's> {
 /// far a neighbour may be and still be in reach of any rule bounded by
 /// distance.
 struct World {
+    /// The occurrences of parts, which the tree holds by position.
+    members: Vec<usize>,
     /// Each accepted definition's index.
     indices: BTreeMap<usize, index::Index>,
     /// The chosen occurrences.
@@ -805,10 +807,25 @@ impl World {
                 Some((*d, index::Index::of(part, faces, e)))
             })
             .collect();
+        // Only parts are neighbours: a sub-assembly's occurrence has no box
+        // and would come back from every search.
+        let members: Vec<usize> = listing
+            .occurrences()
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| accepted_part(listing, o.definition).is_some())
+            .map(|(j, _)| j)
+            .collect();
         Self {
             indices,
             selected: selection.occurrences.iter().copied().collect(),
-            tree: place::Tree::new(boxes.clone()),
+            tree: place::Tree::new(
+                members
+                    .iter()
+                    .map(|j| boxes.get(*j).copied().flatten())
+                    .collect(),
+            ),
+            members,
             boxes,
             to_root,
             reach: rules::reach(floor),
@@ -824,23 +841,31 @@ impl World {
         index: usize,
         holes: &[axial::Element],
     ) -> (Vec<usize>, BTreeMap<usize, Vec<usize>>) {
+        let occurrences = |found: Vec<usize>| -> Vec<usize> {
+            found
+                .into_iter()
+                .filter_map(|k| self.members.get(k).copied())
+                .collect()
+        };
         let mut out = match self.boxes.get(index).copied().flatten() {
-            Some(bounds) => self.tree.meeting(&bounds, self.reach),
-            None => (0..self.boxes.len()).collect(),
+            Some(bounds) => occurrences(self.tree.meeting(&bounds, self.reach)),
+            None => self.members.clone(),
         };
         let mut lines: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        let every = (0..self.boxes.len()).collect::<Vec<_>>();
+        let every = self.members.clone();
         for (h, e) in holes
             .iter()
             .enumerate()
             .filter(|(_, e)| e.side == axial::Side::Hole)
         {
             let crossed = match self.to_root.get(index) {
-                Some(Some(motion)) => self.tree.along(
+                Some(Some(motion)) => occurrences(self.tree.along(
                     motion.point(e.point),
                     motion.dir(e.dir),
                     e.radius + self.reach,
-                ),
+                    PARALLEL_SINE_REL,
+                    e.lo.abs().max(e.hi.abs()),
+                )),
                 _ => every.clone(),
             };
             for j in crossed {
@@ -974,11 +999,13 @@ fn near_parts(
     let back = motion.inverse();
     let mut kept = index.elements.meeting(region, 0.0);
     for e in holes {
-        kept.extend(
-            index
-                .elements
-                .along(back.point(e.point), back.dir(e.dir), e.radius + reach),
-        );
+        kept.extend(index.elements.along(
+            back.point(e.point),
+            back.dir(e.dir),
+            e.radius + reach,
+            PARALLEL_SINE_REL,
+            e.lo.abs().max(e.hi.abs()),
+        ));
     }
     let stacks: BTreeSet<FeatureId> = kept
         .iter()

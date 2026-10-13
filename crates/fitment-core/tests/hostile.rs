@@ -2,8 +2,9 @@
 //! assemblies built from the committed s08x by adding usages, so large and
 //! still small on disk. Check 39 counts every candidate pair the searches
 //! return, deterministically, so an extraction that finishes under its
-//! limit of 10⁷ shows the work grew with what lies near each part: the
-//! same inputs scanned pair by pair need more than 10⁸.
+//! limit of 10⁷ shows the searches grew with what lies near each part: the
+//! same inputs scanned pair by pair need more than 10⁸. What check 39 does
+//! not count (merging sockets, gathering) is n log n by construction.
 
 use std::fmt::Write as _;
 
@@ -138,9 +139,11 @@ fn ten_thousand_coincident_joints_are_refused_by_check_39() {
     );
 }
 
-/// A thousand nuts stacked on one axis, each 5 mm tall and touching the
-/// next: each nut's hole is continued by the next (J1) and sees the
-/// others along the axis, and that is still read nut by nut.
+/// 1,000 nuts stacked on one axis, each 5 mm tall and touching the next:
+/// each nut's hole is continued by the next (J1), and every other nut lies
+/// along its axis, so this is read in about 10⁶ pairs. (At 4,000, J's
+/// search along the axis returns all 4,000 to each nut, which picks the
+/// nearest unblocked only later: check 39 refuses it.)
 #[test]
 fn a_hole_with_a_thousand_coaxial_neighbours_is_read() {
     let at: Vec<[f64; 3]> = (0..1000)
@@ -149,5 +152,37 @@ fn a_hole_with_a_thousand_coaxial_neighbours_is_read() {
     let text = with_usages(NUT, &at);
     let nuts = socket(&text, "NUT");
     assert_eq!(nuts.status(), Status::Accepted, "{:?}", nuts.refusals());
-    assert_eq!(nuts.extracted().unwrap().occurrences.len(), 1008);
+    let extracted = nuts.extracted().unwrap();
+    assert_eq!(extracted.occurrences.len(), 1008);
+    let mut sizes: Vec<usize> = extracted
+        .sockets
+        .iter()
+        .map(|s| s.occurrences.len())
+        .collect();
+    sizes.sort_unstable();
+    // s08x's eight, the stack's two ends, and its 998 between.
+    assert_eq!(sizes, [1, 1, 8, 998]);
+    let middle = extracted
+        .sockets
+        .iter()
+        .find(|s| s.occurrences.len() == 998)
+        .unwrap();
+    let bore = middle
+        .requirements
+        .iter()
+        .find(|r| r.id.starts_with("bore:"))
+        .unwrap();
+    assert!(
+        bore.sources.iter().any(|s| s.rule == "J1"),
+        "{:?}",
+        bore.sources
+    );
+    assert_eq!(
+        middle
+            .requirements
+            .iter()
+            .filter(|r| r.id.starts_with("seat:"))
+            .count(),
+        2
+    );
 }
