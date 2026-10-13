@@ -125,8 +125,8 @@ One Cargo workspace grows one crate per milestone on top of stepq (decision 11);
 | Component | Where | Responsibility | Reuse |
 | --- | --- | --- | --- |
 | STEP reading | stepq (extended) | Parsing, product structure, placements, geometry values, units, properties, PMI | Exists; six additions in M1 (0.6.0) |
-| Matcher | `fitment-core` (M0) | Canonical gate and features (M2), socket, signature, alignment, verification, evidence; a `FitVerifier` trait. No storage, no network, enforced by CI. The only crate that depends on stepq. | New |
-| CLI | `fitment`, binary `fitment` (M0) | `features`, `socket`, `match`, later `catalog`. Proves the matcher before any server exists. | stepq's CLI pattern |
+| Matcher | `fitment-core` (M0) | Canonical gate and features (M2), socket (M3), signature, alignment, verification, evidence; a `FitVerifier` trait. No storage, no network, enforced by CI. The only crate that depends on stepq. | New |
+| CLI | `fitment`, binary `fitment` (M0) | `features`, `parts`, `socket`, `review`, then `match`, later `catalog`. Proves the matcher before any server exists. | stepq's CLI pattern |
 | Catalog | `fitment-catalog` (M5), synchronous | File store, feature index, applies the canonical gate (built in M2, in `fitment-core`), CRUD, re-index when the extractor version changes | Vectera's lessons only |
 | API | `fitment-server` (M6), the only async crate | REST over catalog and matcher. Ingest and matching run as jobs. | Vectera's auth, ported |
 | Fit verifier | Optional crate, pure Rust, plus a helper script | Body clearance against the neighbors. The crate implements `FitVerifier` and drives a pinned Open CASCADE helper in a separate process; a crash, timeout or warning there means "not verified", never a pass | New; stepq's Open CASCADE oracle stack (D1) |
