@@ -112,6 +112,28 @@ pub(crate) fn hole_polygons(outline: &Outline, n: V) -> Vec<Vec<V>> {
     out
 }
 
+/// An ellipse about `center` in the plane of unit normal `n`, of semi-axis
+/// `long` along the unit in-plane `major` and `short` across it, as a
+/// polygon around it (circumscribed: an affine image of [`disc`]'s).
+pub(crate) fn ellipse(center: V, n: V, major: V, long: f64, short: f64) -> Vec<V> {
+    let minor = cross(n, major);
+    let reach = 1.0 / libm::cos(STEP / 2.0);
+    let mut out = Vec::new();
+    let mut k = 0.0;
+    while k < 16.0 {
+        let (s, c) = (libm::sin(STEP * k), libm::cos(STEP * k));
+        out.push(add(
+            center,
+            add(
+                scale(major, long * c * reach),
+                scale(minor, short * s * reach),
+            ),
+        ));
+        k += 1.0;
+    }
+    out
+}
+
 /// A circle of `radius` about `center` in the plane of unit normal `n`, as
 /// a polygon around it (circumscribed).
 pub(crate) fn disc(center: V, n: V, radius: f64) -> Vec<V> {

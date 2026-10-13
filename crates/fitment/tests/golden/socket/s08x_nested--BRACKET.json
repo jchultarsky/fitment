@@ -1,0 +1,2019 @@
+{
+  "format": "fitment.socket",
+  "format_version": 1,
+  "extractor_version": 6,
+  "socket_rules_version": 5,
+  "extraction": {
+    "features": {
+      "identity_mm": 1e-6,
+      "parallel_sine": 1e-9,
+      "vertex_side_mm": 0.001,
+      "lever_min_mm": 1.0,
+      "sweep_rad": 1e-9,
+      "walk_max": 8,
+      "gate_slack_mm": 1e-6,
+      "gate_slack_rel": 1e-6,
+      "range_mm": 1000000.0
+    },
+    "socket": {
+      "contact_mm": 0.01,
+      "near_mm": 1.0,
+      "parallel_sine_rel": 0.01,
+      "merge_mm": 1e-6,
+      "merge_sine": 1e-9,
+      "max_occurrences": 100000,
+      "max_relations": 10000000
+    }
+  },
+  "source": {
+    "sha256": "8c5d5a00fe29045b70880b37fb112740fa36f66fe7f7e0e45e9a6f2e9fd79d4f",
+    "bytes": 64608,
+    "header": {
+      "schema": "ap214",
+      "schema_identifiers": [
+        "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+      ],
+      "originating_system": "Open CASCADE 7.9",
+      "preprocessor_version": "Open CASCADE STEP processor 7.9",
+      "implementation_level": "2;1"
+    }
+  },
+  "selection": {
+    "part": "BRACKET",
+    "occurrence": null,
+    "matched_by": "product_id"
+  },
+  "status": "accepted",
+  "refusals": [],
+  "notes": [],
+  "extracted": {
+    "target": {
+      "definition": {
+        "instance": 571,
+        "product": {
+          "instance": 573,
+          "id": "BRACKET",
+          "name": "BRACKET"
+        }
+      },
+      "frame": {
+        "shape_representation": 576
+      },
+      "solid": "solid-577",
+      "part_uncertainty_mm": 1e-7,
+      "vertex_offset_mm": 2.6645352591003757e-15,
+      "complete": true,
+      "extent": {
+        "min_mm": [
+          -40.0,
+          -25.000000000000004,
+          -2.6645352591003757e-15
+        ],
+        "max_mm": [
+          40.0,
+          25.000000000000004,
+          8.000000000000004
+        ]
+      },
+      "anchors": [
+        "hole-837",
+        "hole-854",
+        "hole-871",
+        "hole-888",
+        "hole-905"
+      ]
+    },
+    "occurrences": [
+      {
+        "path": [
+          567,
+          931
+        ],
+        "label": [
+          "2",
+          "3"
+        ],
+        "definition": {
+          "instance": 571,
+          "product": {
+            "instance": 573,
+            "id": "BRACKET",
+            "name": "BRACKET"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 2.6645352591003757e-15,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": "socket-1"
+      },
+      {
+        "path": [
+          1521,
+          931
+        ],
+        "label": [
+          "12",
+          "3"
+        ],
+        "definition": {
+          "instance": 571,
+          "product": {
+            "instance": 573,
+            "id": "BRACKET",
+            "name": "BRACKET"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              -1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              -1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            100.0,
+            0.0,
+            0.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 2.6645352591003757e-15,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": "socket-1"
+      }
+    ],
+    "neighbours": [
+      {
+        "path": [
+          512
+        ],
+        "label": [
+          "1"
+        ],
+        "definition": {
+          "instance": 35,
+          "product": {
+            "instance": 37,
+            "id": "PLATE",
+            "name": "PLATE"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            50.0,
+            0.0,
+            0.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 2.6645352591003757e-15,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          567,
+          1211
+        ],
+        "label": [
+          "2",
+          "4"
+        ],
+        "definition": {
+          "instance": 935,
+          "product": {
+            "instance": 937,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            -30.0,
+            -15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          567,
+          1491
+        ],
+        "label": [
+          "2",
+          "6"
+        ],
+        "definition": {
+          "instance": 935,
+          "product": {
+            "instance": 937,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            30.0,
+            -15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          567,
+          1501
+        ],
+        "label": [
+          "2",
+          "8"
+        ],
+        "definition": {
+          "instance": 935,
+          "product": {
+            "instance": 937,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            -30.0,
+            15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          567,
+          1511
+        ],
+        "label": [
+          "2",
+          "10"
+        ],
+        "definition": {
+          "instance": 935,
+          "product": {
+            "instance": 937,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            30.0,
+            15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          1521,
+          1211
+        ],
+        "label": [
+          "12",
+          "4"
+        ],
+        "definition": {
+          "instance": 935,
+          "product": {
+            "instance": 937,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              -1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              -1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            130.0,
+            15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          1521,
+          1491
+        ],
+        "label": [
+          "12",
+          "6"
+        ],
+        "definition": {
+          "instance": 935,
+          "product": {
+            "instance": 937,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              -1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              -1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            70.0,
+            15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          1521,
+          1501
+        ],
+        "label": [
+          "12",
+          "8"
+        ],
+        "definition": {
+          "instance": 935,
+          "product": {
+            "instance": 937,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              -1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              -1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            130.0,
+            -15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          1521,
+          1511
+        ],
+        "label": [
+          "12",
+          "10"
+        ],
+        "definition": {
+          "instance": 935,
+          "product": {
+            "instance": 937,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              -1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              -1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            70.0,
+            -15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      }
+    ],
+    "sockets": [
+      {
+        "id": "socket-1",
+        "occurrences": [
+          [
+            567,
+            931
+          ],
+          [
+            1521,
+            931
+          ]
+        ],
+        "requirements": [
+          {
+            "id": "seat:plane-650",
+            "requires": {
+              "kind": "seat",
+              "plane": "plane-650",
+              "normal": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "offset_mm": 8.0,
+              "contacts": [
+                {
+                  "face": 650,
+                  "basis": "target_face",
+                  "outline": {
+                    "status": "known",
+                    "loops": [
+                      {
+                        "bound": 651,
+                        "outer": true,
+                        "area_mm2": 4000.0,
+                        "segments": [
+                          {
+                            "kind": "line",
+                            "edge": 609,
+                            "from_mm": [
+                              -40.0,
+                              25.0,
+                              8.0
+                            ],
+                            "to_mm": [
+                              -40.0,
+                              -25.0,
+                              8.0
+                            ],
+                            "across": "plane-579"
+                          },
+                          {
+                            "kind": "line",
+                            "edge": 632,
+                            "from_mm": [
+                              -40.0,
+                              -25.0,
+                              8.0
+                            ],
+                            "to_mm": [
+                              40.0,
+                              -25.0,
+                              8.0
+                            ],
+                            "across": "plane-619"
+                          },
+                          {
+                            "kind": "line",
+                            "edge": 656,
+                            "from_mm": [
+                              40.0,
+                              -25.0,
+                              8.0
+                            ],
+                            "to_mm": [
+                              40.0,
+                              25.0,
+                              8.0
+                            ],
+                            "across": "plane-825"
+                          },
+                          {
+                            "kind": "line",
+                            "edge": 664,
+                            "from_mm": [
+                              40.0,
+                              25.0,
+                              8.0
+                            ],
+                            "to_mm": [
+                              -40.0,
+                              25.0,
+                              8.0
+                            ],
+                            "across": "plane-729"
+                          }
+                        ]
+                      },
+                      {
+                        "bound": 669,
+                        "outer": false,
+                        "area_mm2": -34.21194399759284,
+                        "segments": [
+                          {
+                            "kind": "arc",
+                            "edge": 672,
+                            "from_mm": [
+                              -26.7,
+                              -15.0,
+                              8.0
+                            ],
+                            "to_mm": [
+                              -26.7,
+                              -15.0,
+                              8.0
+                            ],
+                            "center_mm": [
+                              -30.0,
+                              -15.0,
+                              8.0
+                            ],
+                            "radius_mm": 3.3,
+                            "sweep_rad": -6.283185307179586,
+                            "across": "cylinder-837"
+                          }
+                        ]
+                      },
+                      {
+                        "bound": 680,
+                        "outer": false,
+                        "area_mm2": -34.21194399759284,
+                        "segments": [
+                          {
+                            "kind": "arc",
+                            "edge": 683,
+                            "from_mm": [
+                              33.3,
+                              -15.0,
+                              8.0
+                            ],
+                            "to_mm": [
+                              33.3,
+                              -15.0,
+                              8.0
+                            ],
+                            "center_mm": [
+                              30.0,
+                              -15.0,
+                              8.0
+                            ],
+                            "radius_mm": 3.3,
+                            "sweep_rad": -6.283185307179586,
+                            "across": "cylinder-854"
+                          }
+                        ]
+                      },
+                      {
+                        "bound": 691,
+                        "outer": false,
+                        "area_mm2": -34.21194399759284,
+                        "segments": [
+                          {
+                            "kind": "arc",
+                            "edge": 694,
+                            "from_mm": [
+                              -26.7,
+                              15.0,
+                              8.0
+                            ],
+                            "to_mm": [
+                              -26.7,
+                              15.0,
+                              8.0
+                            ],
+                            "center_mm": [
+                              -30.0,
+                              15.0,
+                              8.0
+                            ],
+                            "radius_mm": 3.3,
+                            "sweep_rad": -6.283185307179586,
+                            "across": "cylinder-871"
+                          }
+                        ]
+                      },
+                      {
+                        "bound": 702,
+                        "outer": false,
+                        "area_mm2": -50.26548245743669,
+                        "segments": [
+                          {
+                            "kind": "arc",
+                            "edge": 705,
+                            "from_mm": [
+                              4.0,
+                              -9.797174393179e-16,
+                              8.0
+                            ],
+                            "to_mm": [
+                              4.0,
+                              -9.797174393179e-16,
+                              8.0
+                            ],
+                            "center_mm": [
+                              0.0,
+                              0.0,
+                              8.0
+                            ],
+                            "radius_mm": 4.0,
+                            "sweep_rad": -6.283185307179586,
+                            "across": "cylinder-888"
+                          }
+                        ]
+                      },
+                      {
+                        "bound": 713,
+                        "outer": false,
+                        "area_mm2": -34.21194399759284,
+                        "segments": [
+                          {
+                            "kind": "arc",
+                            "edge": 716,
+                            "from_mm": [
+                              33.3,
+                              15.0,
+                              8.0
+                            ],
+                            "to_mm": [
+                              33.3,
+                              15.0,
+                              8.0
+                            ],
+                            "center_mm": [
+                              30.0,
+                              15.0,
+                              8.0
+                            ],
+                            "radius_mm": 3.3,
+                            "sweep_rad": -6.283185307179586,
+                            "across": "cylinder-905"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  "by": [
+                    {
+                      "neighbour": [
+                        567,
+                        1211
+                      ],
+                      "face": 1045,
+                      "gap_mm": 0.0,
+                      "flags": []
+                    },
+                    {
+                      "neighbour": [
+                        567,
+                        1491
+                      ],
+                      "face": 1045,
+                      "gap_mm": 0.0,
+                      "flags": []
+                    },
+                    {
+                      "neighbour": [
+                        567,
+                        1501
+                      ],
+                      "face": 1045,
+                      "gap_mm": 0.0,
+                      "flags": []
+                    },
+                    {
+                      "neighbour": [
+                        567,
+                        1511
+                      ],
+                      "face": 1045,
+                      "gap_mm": 0.0,
+                      "flags": []
+                    },
+                    {
+                      "neighbour": [
+                        1521,
+                        1211
+                      ],
+                      "face": 1045,
+                      "gap_mm": 0.0,
+                      "flags": []
+                    },
+                    {
+                      "neighbour": [
+                        1521,
+                        1491
+                      ],
+                      "face": 1045,
+                      "gap_mm": 0.0,
+                      "flags": []
+                    },
+                    {
+                      "neighbour": [
+                        1521,
+                        1501
+                      ],
+                      "face": 1045,
+                      "gap_mm": 0.0,
+                      "flags": []
+                    },
+                    {
+                      "neighbour": [
+                        1521,
+                        1511
+                      ],
+                      "face": 1045,
+                      "gap_mm": 0.0,
+                      "flags": []
+                    }
+                  ]
+                }
+              ],
+              "rings": []
+            },
+            "floor_mm": 1e-7,
+            "flags": [],
+            "sources": [
+              {
+                "rule": "C1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  567,
+                  1211
+                ],
+                "feature": null,
+                "faces": [
+                  1045
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "C1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  567,
+                  1491
+                ],
+                "feature": null,
+                "faces": [
+                  1045
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "C1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  567,
+                  1501
+                ],
+                "feature": null,
+                "faces": [
+                  1045
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "C1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  567,
+                  1511
+                ],
+                "feature": null,
+                "faces": [
+                  1045
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "C1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  1521,
+                  1211
+                ],
+                "feature": null,
+                "faces": [
+                  1045
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "C1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  1521,
+                  1491
+                ],
+                "feature": null,
+                "faces": [
+                  1045
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "C1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  1521,
+                  1501
+                ],
+                "feature": null,
+                "faces": [
+                  1045
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "C1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  1521,
+                  1511
+                ],
+                "feature": null,
+                "faces": [
+                  1045
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              }
+            ]
+          },
+          {
+            "id": "grip:plane-650+plane-753",
+            "requires": {
+              "kind": "grip",
+              "seats": [
+                "plane-650",
+                "plane-753"
+              ],
+              "length_mm": 8.0,
+              "holes": [
+                "hole-837",
+                "hole-854",
+                "hole-871",
+                "hole-888",
+                "hole-905"
+              ]
+            },
+            "floor_mm": 1e-7,
+            "flags": [],
+            "sources": []
+          },
+          {
+            "id": "seat:plane-753",
+            "requires": {
+              "kind": "seat",
+              "plane": "plane-753",
+              "normal": [
+                0.0,
+                0.0,
+                -1.0
+              ],
+              "offset_mm": 0.0,
+              "contacts": [
+                {
+                  "face": 753,
+                  "basis": "target_face",
+                  "outline": {
+                    "status": "known",
+                    "loops": [
+                      {
+                        "bound": 754,
+                        "outer": true,
+                        "area_mm2": 4000.0,
+                        "segments": [
+                          {
+                            "kind": "line",
+                            "edge": 733,
+                            "from_mm": [
+                              -40.0,
+                              25.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              40.0,
+                              25.0,
+                              0.0
+                            ],
+                            "across": "plane-729"
+                          },
+                          {
+                            "kind": "line",
+                            "edge": 759,
+                            "from_mm": [
+                              40.0,
+                              25.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              40.0,
+                              -25.0,
+                              0.0
+                            ],
+                            "across": "plane-825"
+                          },
+                          {
+                            "kind": "line",
+                            "edge": 623,
+                            "from_mm": [
+                              40.0,
+                              -25.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              -40.0,
+                              -25.0,
+                              0.0
+                            ],
+                            "across": "plane-619"
+                          },
+                          {
+                            "kind": "line",
+                            "edge": 593,
+                            "from_mm": [
+                              -40.0,
+                              -25.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              -40.0,
+                              25.0,
+                              0.0
+                            ],
+                            "across": "plane-579"
+                          }
+                        ]
+                      },
+                      {
+                        "bound": 765,
+                        "outer": false,
+                        "area_mm2": -34.21194399759284,
+                        "segments": [
+                          {
+                            "kind": "arc",
+                            "edge": 768,
+                            "from_mm": [
+                              -26.7,
+                              -15.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              -26.7,
+                              -15.0,
+                              0.0
+                            ],
+                            "center_mm": [
+                              -30.0,
+                              -15.0,
+                              0.0
+                            ],
+                            "radius_mm": 3.3,
+                            "sweep_rad": -6.283185307179586,
+                            "across": "cylinder-837"
+                          }
+                        ]
+                      },
+                      {
+                        "bound": 776,
+                        "outer": false,
+                        "area_mm2": -34.21194399759284,
+                        "segments": [
+                          {
+                            "kind": "arc",
+                            "edge": 779,
+                            "from_mm": [
+                              33.3,
+                              -15.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              33.3,
+                              -15.0,
+                              0.0
+                            ],
+                            "center_mm": [
+                              30.0,
+                              -15.0,
+                              0.0
+                            ],
+                            "radius_mm": 3.3,
+                            "sweep_rad": -6.283185307179586,
+                            "across": "cylinder-854"
+                          }
+                        ]
+                      },
+                      {
+                        "bound": 787,
+                        "outer": false,
+                        "area_mm2": -34.21194399759284,
+                        "segments": [
+                          {
+                            "kind": "arc",
+                            "edge": 790,
+                            "from_mm": [
+                              -26.7,
+                              15.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              -26.7,
+                              15.0,
+                              0.0
+                            ],
+                            "center_mm": [
+                              -30.0,
+                              15.0,
+                              0.0
+                            ],
+                            "radius_mm": 3.3,
+                            "sweep_rad": -6.283185307179586,
+                            "across": "cylinder-871"
+                          }
+                        ]
+                      },
+                      {
+                        "bound": 798,
+                        "outer": false,
+                        "area_mm2": -50.26548245743669,
+                        "segments": [
+                          {
+                            "kind": "arc",
+                            "edge": 801,
+                            "from_mm": [
+                              4.0,
+                              -9.797174393179e-16,
+                              0.0
+                            ],
+                            "to_mm": [
+                              4.0,
+                              -9.797174393179e-16,
+                              0.0
+                            ],
+                            "center_mm": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "radius_mm": 4.0,
+                            "sweep_rad": -6.283185307179586,
+                            "across": "cylinder-888"
+                          }
+                        ]
+                      },
+                      {
+                        "bound": 809,
+                        "outer": false,
+                        "area_mm2": -34.21194399759284,
+                        "segments": [
+                          {
+                            "kind": "arc",
+                            "edge": 812,
+                            "from_mm": [
+                              33.3,
+                              15.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              33.3,
+                              15.0,
+                              0.0
+                            ],
+                            "center_mm": [
+                              30.0,
+                              15.0,
+                              0.0
+                            ],
+                            "radius_mm": 3.3,
+                            "sweep_rad": -6.283185307179586,
+                            "across": "cylinder-905"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  "by": [
+                    {
+                      "neighbour": [
+                        512
+                      ],
+                      "face": 114,
+                      "gap_mm": 0.0,
+                      "flags": []
+                    }
+                  ]
+                }
+              ],
+              "rings": []
+            },
+            "floor_mm": 1e-7,
+            "flags": [],
+            "sources": [
+              {
+                "rule": "C1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  512
+                ],
+                "feature": null,
+                "faces": [
+                  114
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "C1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  512
+                ],
+                "feature": null,
+                "faces": [
+                  114
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              }
+            ]
+          },
+          {
+            "id": "bore:hole-837",
+            "requires": {
+              "kind": "bore",
+              "hole": "hole-837",
+              "axis": {
+                "point_mm": [
+                  -30.0,
+                  -15.0,
+                  0.0
+                ],
+                "direction": [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              },
+              "spans": [
+                {
+                  "from_mm": 0.0,
+                  "to_mm": 8.0,
+                  "hole_diameter_mm": 6.6,
+                  "clear_diameter_mm": 6.0,
+                  "fit": "clearance",
+                  "pinned": false
+                }
+              ],
+              "open": {
+                "start": true,
+                "finish": false
+              },
+              "depth": "known"
+            },
+            "floor_mm": 1e-7,
+            "flags": [],
+            "sources": [
+              {
+                "rule": "J1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  512
+                ],
+                "feature": "hole-367",
+                "faces": [
+                  367
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  567,
+                  1211
+                ],
+                "feature": "shaft-1168",
+                "faces": [
+                  1168
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": 0.2999999999999998,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  8.0
+                ],
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "J1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  512
+                ],
+                "feature": "hole-486",
+                "faces": [
+                  486
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  1521,
+                  1211
+                ],
+                "feature": "shaft-1168",
+                "faces": [
+                  1168
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": 0.2999999999999998,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  8.0
+                ],
+                "floor_mm": 1e-7,
+                "flags": []
+              }
+            ]
+          },
+          {
+            "id": "bore:hole-854",
+            "requires": {
+              "kind": "bore",
+              "hole": "hole-854",
+              "axis": {
+                "point_mm": [
+                  30.0,
+                  -15.0,
+                  0.0
+                ],
+                "direction": [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              },
+              "spans": [
+                {
+                  "from_mm": 0.0,
+                  "to_mm": 8.0,
+                  "hole_diameter_mm": 6.6,
+                  "clear_diameter_mm": 6.0,
+                  "fit": "clearance",
+                  "pinned": false
+                }
+              ],
+              "open": {
+                "start": true,
+                "finish": false
+              },
+              "depth": "known"
+            },
+            "floor_mm": 1e-7,
+            "flags": [],
+            "sources": [
+              {
+                "rule": "J1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  512
+                ],
+                "feature": "hole-384",
+                "faces": [
+                  384
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  567,
+                  1491
+                ],
+                "feature": "shaft-1168",
+                "faces": [
+                  1168
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": 0.2999999999999998,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  8.0
+                ],
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "J1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  512
+                ],
+                "feature": "hole-469",
+                "faces": [
+                  469
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  1521,
+                  1491
+                ],
+                "feature": "shaft-1168",
+                "faces": [
+                  1168
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": 0.2999999999999998,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  8.0
+                ],
+                "floor_mm": 1e-7,
+                "flags": []
+              }
+            ]
+          },
+          {
+            "id": "bore:hole-871",
+            "requires": {
+              "kind": "bore",
+              "hole": "hole-871",
+              "axis": {
+                "point_mm": [
+                  -30.0,
+                  15.0,
+                  0.0
+                ],
+                "direction": [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              },
+              "spans": [
+                {
+                  "from_mm": 0.0,
+                  "to_mm": 8.0,
+                  "hole_diameter_mm": 6.6,
+                  "clear_diameter_mm": 6.0,
+                  "fit": "clearance",
+                  "pinned": false
+                }
+              ],
+              "open": {
+                "start": true,
+                "finish": false
+              },
+              "depth": "known"
+            },
+            "floor_mm": 1e-7,
+            "flags": [],
+            "sources": [
+              {
+                "rule": "J1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  512
+                ],
+                "feature": "hole-435",
+                "faces": [
+                  435
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  567,
+                  1501
+                ],
+                "feature": "shaft-1168",
+                "faces": [
+                  1168
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": 0.2999999999999998,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  8.0
+                ],
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "J1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  512
+                ],
+                "feature": "hole-418",
+                "faces": [
+                  418
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  1521,
+                  1501
+                ],
+                "feature": "shaft-1168",
+                "faces": [
+                  1168
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": 0.2999999999999998,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  8.0
+                ],
+                "floor_mm": 1e-7,
+                "flags": []
+              }
+            ]
+          },
+          {
+            "id": "bore:hole-905",
+            "requires": {
+              "kind": "bore",
+              "hole": "hole-905",
+              "axis": {
+                "point_mm": [
+                  30.0,
+                  15.0,
+                  0.0
+                ],
+                "direction": [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              },
+              "spans": [
+                {
+                  "from_mm": 0.0,
+                  "to_mm": 8.0,
+                  "hole_diameter_mm": 6.6,
+                  "clear_diameter_mm": 6.0,
+                  "fit": "clearance",
+                  "pinned": false
+                }
+              ],
+              "open": {
+                "start": true,
+                "finish": false
+              },
+              "depth": "known"
+            },
+            "floor_mm": 1e-7,
+            "flags": [],
+            "sources": [
+              {
+                "rule": "J1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  512
+                ],
+                "feature": "hole-452",
+                "faces": [
+                  452
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B1",
+                "occurrence": [
+                  567,
+                  931
+                ],
+                "neighbour": [
+                  567,
+                  1511
+                ],
+                "feature": "shaft-1168",
+                "faces": [
+                  1168
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": 0.2999999999999998,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  8.0
+                ],
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "J1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  512
+                ],
+                "feature": "hole-401",
+                "faces": [
+                  401
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B1",
+                "occurrence": [
+                  1521,
+                  931
+                ],
+                "neighbour": [
+                  1521,
+                  1511
+                ],
+                "feature": "shaft-1168",
+                "faces": [
+                  1168
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": 0.2999999999999998,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  8.0
+                ],
+                "floor_mm": 1e-7,
+                "flags": []
+              }
+            ]
+          }
+        ],
+        "left_out": [
+          {
+            "feature": "hole-888",
+            "reason": "nothing_on_axis",
+            "axis": {
+              "point_mm": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "direction": [
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "diameter_mm": 8.0,
+            "from_mm": 0.0,
+            "to_mm": 8.0
+          }
+        ]
+      }
+    ],
+    "envelope": {
+      "check_set": "others_and_copies",
+      "extent": {
+        "min_mm": [
+          -40.0,
+          -25.000000000000004,
+          -2.6645352591003757e-15
+        ],
+        "max_mm": [
+          40.0,
+          25.000000000000004,
+          8.000000000000004
+        ]
+      }
+    }
+  },
+  "digest": "sha256:8e15be5515dfdf4b2ef528cff85930ff4cd90426bcd64dc92c8c4467f536f2ef",
+  "review": [
+    {
+      "socket": "socket-1",
+      "requirement": "seat:plane-650",
+      "status": "unreviewed",
+      "note": null
+    },
+    {
+      "socket": "socket-1",
+      "requirement": "grip:plane-650+plane-753",
+      "status": "unreviewed",
+      "note": null
+    },
+    {
+      "socket": "socket-1",
+      "requirement": "seat:plane-753",
+      "status": "unreviewed",
+      "note": null
+    },
+    {
+      "socket": "socket-1",
+      "requirement": "bore:hole-837",
+      "status": "unreviewed",
+      "note": null
+    },
+    {
+      "socket": "socket-1",
+      "requirement": "bore:hole-854",
+      "status": "unreviewed",
+      "note": null
+    },
+    {
+      "socket": "socket-1",
+      "requirement": "bore:hole-871",
+      "status": "unreviewed",
+      "note": null
+    },
+    {
+      "socket": "socket-1",
+      "requirement": "bore:hole-905",
+      "status": "unreviewed",
+      "note": null
+    }
+  ],
+  "stale_reviews": []
+}

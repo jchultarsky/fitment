@@ -567,8 +567,7 @@ RULES.update({
     "P7": {"tests": ["crates/fitment-core/src/geom.rs::a_reflection_or_shear_is_not_a_rigid_transform"]},
     "P3": {},
     "P4": {}, "P5": {}, "P6": {},
-    "P8": {"deferred": "M3 PR 7 builds s22, its answers from the frames Open CASCADE writes; `_tgt` covers a target "
-                       "modelled in a frame of its own"},
+    "P8": {},
     "Z1": {"tests": [f"{M3_CORE}/assemblies.rs::a_placement_floor_is_the_largest_its_path_states"]},
     "Z2": {"tests": [f"crates/fitment-core/src/socket/mod.rs::each_structural_rule_refuses_an_edit_with_its_digest_recomputed"]},
     "Z3": {}, "Z4": {}, "Z5": {},
@@ -579,7 +578,7 @@ RULES.update({
                        "refused in 0.8 s (PR 3 review)"},
     "X1": {}, "X2": {}, "X3": {}, "X4": {}, "X5": {}, "X6": {}, "X7": {},
     "B1": {}, "B2": {}, "B3": {}, "B5": {}, "B6": {}, "B7": {}, "B8": {},
-    "B4": {"deferred": "M3 PR 7 adds a shaft through a hole's wall"},
+    "B4": {},
     "I1": {}, "I2": {}, "I3": {},
     "I4": {},
     "I5": {}, "I6": {}, "I7": {},
@@ -588,7 +587,7 @@ RULES.update({
     "U2": {}, "U3": {}, "U4": {}, "U8": {},
     "U5": {},
     "U6": {},
-    "U7": {"deferred": "M3 PR 7 adds a skew pin"},
+    "U7": {},
     "A1": {},
     "A2": {},
     "A3": {"tests": [f"crates/fitment-core/src/socket/mod.rs::each_structural_rule_refuses_an_edit_with_its_digest_recomputed"]},
@@ -597,7 +596,7 @@ RULES.update({
     "Y4": {"deferred": "M4 runs the original as a candidate; M3 checks each socket's count of unverifiable requirements"},
     "V1": {"deferred": "M7 checks the candidate's copies against each other"},
     "V2": {},
-    "H1": {}, "H2": {"deferred": "M3 PR 7 adds a flange over holes off its axis; C1 reads its face"},
+    "H1": {}, "H2": {},
     "Q1": {}, "Q2": {}, "L1": {}, "L2": {},
     "C1": {}, "C2": {}, "C3": {}, "C4": {}, "C5": {}, "C6": {},
 })
@@ -1363,6 +1362,47 @@ def listing(root):
             for (name, kind), n in sorted(quantities(root).items())]
 
 
+def read_placements(path):
+    """{product name: sorted 3x4 rows} of every leaf Open CASCADE's XCAF
+    reads in `path`, rounded as the answers are."""
+    from OCP.STEPCAFControl import STEPCAFControl_Reader
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDF import TDF_Label, TDF_LabelSequence as Sequence_TDF_Label
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+
+    doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+    reader = STEPCAFControl_Reader()
+    reader.SetNameMode(True)
+    if reader.ReadFile(str(path)) != IFSelect_RetDone or not reader.Transfer(doc):
+        raise OSError(f"Open CASCADE cannot read {path}")
+    tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    out = {}
+
+    def walk(label, loc):
+        if tool.IsAssembly_s(label):
+            comps = Sequence_TDF_Label()
+            tool.GetComponents_s(label, comps, False)
+            for i in range(1, comps.Length() + 1):
+                comp, ref = comps.Value(i), TDF_Label()
+                if tool.GetReferredShape_s(comp, ref):
+                    walk(ref, loc.Multiplied(tool.GetLocation_s(comp)))
+        else:
+            name = TDataStd_Name()
+            label.FindAttribute(TDataStd_Name.GetID_s(), name)
+            t = loc.Transformation()
+            out.setdefault(name.Get().ToExtString(), []).append(
+                [[r(t.Value(i, j)) + 0.0 for j in range(1, 5)] for i in range(1, 4)])
+
+    free = Sequence_TDF_Label()
+    tool.GetFreeShapes(free)
+    for i in range(1, free.Length() + 1):
+        walk(free.Value(i), TopLoc_Location())
+    return {k: sorted(v) for k, v in out.items()}
+
+
 def write_xcaf(w: Writer, root: Node, name: str, pcurves=False):
     """Writes the tree under `root` as one STEP assembly: every Leaf and
     Node object one product, named after it, every child one usage."""
@@ -1624,10 +1664,17 @@ class Asm:
     def __init__(self, w: Writer, which):
         self.w, self.which = w, which
 
-    def case(self, name, root, tests, rules, unit_set, construction, expect, edit=None):
+    def case(self, name, root, tests, rules, unit_set, construction, expect, edit=None, written=None):
         if not self.which(unit_set):
             return None
-        path = write_xcaf(self.w, root, name)
+        path = write_xcaf(self.w, written or root, name)
+        if written is not None:
+            # `written` states frames Open CASCADE writes otherwise: the
+            # answers are `root`'s, and Open CASCADE must read them back.
+            read = read_placements(path)
+            wanted = {k: sorted(v) for k, v in occurrences(root).items()}
+            if read != wanted:
+                raise RuntimeError(f"{name}: Open CASCADE wrote {read}, not {wanted}")
         if edit is not None:
             f = Part21(path.read_text(encoding="latin-1"))
             edit(f)
@@ -1636,7 +1683,7 @@ class Asm:
         self.w.cases.append({"id": name, "file": f"{name}.stp", "kind": "assembly",
                              "set": "unit" if unit_set else "corpus", "tests": tests, "rules": rules,
                              "construction": construction, "expect": expect})
-        if "sockets" in expect and edit is None and self.which(False):
+        if "sockets" in expect and edit is None and written is None and self.which(False):
             self.variants(name, root, expect)
         return path
 
@@ -1651,6 +1698,18 @@ class Asm:
                              "construction": {"variant_of": name, "root": "VARIANT"},
                              "expect": {**asm_expect(rot), "variant": {"of": name, "kind": "rot",
                                                                        "motion": m_motion(VARIANT)}}})
+        # `_pc`: written with pcurves; `_perm`: every node's children in
+        # reverse order, so #ids and paths move. Both have the base's sockets.
+        write_xcaf(self.w, Node(f"{name}_pc", root.children), f"{name}_pc", pcurves=True)
+        perm = reversed_tree(root, f"{name}_perm")
+        write_xcaf(self.w, perm, f"{name}_perm")
+        for kind, tree, tests, rules in (("pc", Node(f"{name}_pc", root.children), "written with pcurves", ["P1"]),
+                                         ("perm", perm, "with its components in reverse order", ["O1", "P2"])):
+            self.w.cases.append({"id": f"{name}_{kind}", "file": f"{name}_{kind}.stp", "kind": "assembly",
+                                 "set": "corpus", "tests": f"{name} {tests}", "rules": rules,
+                                 "construction": {"variant_of": name, kind: True},
+                                 "expect": {**asm_expect(tree), "variant": {"of": name, "kind": kind,
+                                                                            "motion": [row[:] for row in I4[:3]]}}})
         targets = set(expect["sockets"])
         tgt = tilted(root, targets, f"{name}_tgt")
         write_xcaf(self.w, tgt, f"{name}_tgt")
@@ -1659,6 +1718,24 @@ class Asm:
                              "construction": {"variant_of": name, "targets": "modelled in TILT, placed by TILT^-1"},
                              "expect": {**asm_expect(tgt), "variant": {"of": name, "kind": "tgt",
                                                                        "motion": m_motion(TILT)}}})
+
+
+def reversed_tree(root, name):
+    """`root` again with every node's children in reverse order; leaves and
+    sub-assemblies stay shared."""
+    nodes = {}
+
+    def node(n, rename=None):
+        if id(n) not in nodes or rename:
+            copy = Node(rename or n.name)
+            for child, matrix in reversed(n.children):
+                copy.add(child if isinstance(child, Leaf) else node(child), matrix)
+            if rename:
+                return copy
+            nodes[id(n)] = copy
+        return nodes[id(n)]
+
+    return node(root, name)
 
 
 def tilted(root, targets, name):
@@ -2396,6 +2473,97 @@ def build_assemblies(w: Writer, which):
     a.case("s50_cap", s50, "a cap pressed into a tube's bore, its skirt clear around the tube", ["B3", "I2"], False,
            {"tube": "dia 40 / 16, z 0 to 30", "cap": "dia 16.1 spigot from z 0, dia 50 / 42 skirt from z 0, "
             "top dia 50 from z 30 to 33"}, asm_expect(s50, sockets=sockets50))
+
+    # s51: a dia 6 pin 0.5 mm off the axis of a 10 mm plate's dia 6.6 hole: it runs 0.2 mm into the wall (B4),
+    # a conflict on both sides.
+    plate51 = cut(box(-20, -20, 0, 40, 40, 10), cyl((0, 0, -1), UP, 3.3, 12))
+    s51 = Node("s51_wall").add(Leaf("PLATE", plate51)).add(Leaf("PIN", cyl((0.5, 0, -5), UP, 3, 20)))
+    a.case("s51_wall", s51, "a pin through a hole's wall", ["B4"], False,
+           {"plate": "40 x 40 x 10, dia 6.6", "pin": "dia 6, z -5 to 15, 0.5 mm off the hole's axis"},
+           asm_expect(s51, sockets={
+               "PLATE": [e_socket([e_axial("bore", (0, 0, 0), Z, [(0, 10, 6.6, 7, "interference", True)], open_at=[0, 10],
+                                           flags=["conflict"])])],
+               "PIN": [e_socket([e_axial("shaft", (0.5, 0, -5), Z, [(5, 15, 6, None, "interference", True)],
+                                         flags=["conflict"])])]}))
+
+    # s52: a dia 4 pin at 10 degrees through a 10 mm plate's dia 10 hole, touching nothing: a skew relation,
+    # unresolved on both sides (U7); the plate's bore is pinned by the pin's unread (skew) material (B8).
+    t52 = math.radians(10)
+    plate52 = cut(box(-20, -20, 0, 40, 40, 10), cyl((0, 0, -1), UP, 5, 12))
+    pin52 = cyl((-10 * math.sin(t52), 0, 5 - 10 * math.cos(t52)), (math.sin(t52), 0, math.cos(t52)), 2, 20)
+    s52 = Node("s52_skew").add(Leaf("PLATE", plate52)).add(Leaf("PIN", pin52))
+    a.case("s52_skew", s52, "a pin at 10 degrees through a hole", ["U7", "B8"], False,
+           {"plate": "40 x 40 x 10, dia 10", "pin": "dia 4 x 20, centred at (0, 0, 5), 10 degrees off z toward x"},
+           asm_expect(s52, sockets={
+               "PLATE": [e_socket([e_axial("bore", (0, 0, 0), Z, [(0, 10, 10, None, "not_read", True)], open_at=[0, 10],
+                                           flags=["occupant_unread"])], unresolved={"skew": 1})],
+               "PIN": [e_socket([], unresolved={"skew": 1})]}))
+
+    # s53: a dia 50 flange standing on a plate, over two dia 6.6 holes 18 mm off its axis: C1's seat, no H1
+    # ring (H2); the holes hold nothing.
+    plate53 = cut(box(-40, -40, -10, 80, 80, 10), cyl((18, 0, -11), UP, 3.3, 12), cyl((-18, 0, -11), UP, 3.3, 12))
+    s53 = Node("s53_flange").add(Leaf("PLATE", plate53)).add(Leaf("FLANGE", cyl((0, 0, 0), UP, 25, 8)))
+    a.case("s53_flange", s53, "a flange over holes off its axis", ["H2", "C1", "A1"], False,
+           {"plate": "80 x 80 x 10, top at z 0, dia 6.6 at x -18 and 18", "flange": "dia 50 x 8 on it"},
+           asm_expect(s53, sockets={
+               "PLATE": [e_socket([], left_out=[e_left((-18, 0, -10), Z, 6.6, wall=(0, 10)),
+                                                e_left((18, 0, -10), Z, 6.6, wall=(0, 10))], seats=[e_seat((0, 0, 0), Z)])],
+               "FLANGE": [e_socket([], left_out=[e_left((0, 0, 0), Z, 50, wall=(0, 8))],
+                                   seats=[e_seat((0, 0, 0), (0, 0, -1))])]}))
+
+    # s15: a block and its mirror image, two products, each on a dia 6 pin standing in a plate. The mirror is
+    # modelled mirrored, so its socket is the block's mirrored.
+    block15 = cut(box(0, -10, 0, 20, 20, 8), cyl((12, 5, -1), UP, 3.3, 10))
+    mirror = gp_Trsf()
+    mirror.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)))
+    mirror15 = BRepBuilderAPI_Transform(block15, mirror, True).Shape()
+    plate15 = cut(box(-30, -20, -10, 60, 40, 10), cyl((12, 5, -11), UP, 3, 12), cyl((-12, 5, -11), UP, 3, 12))
+    s15 = Node("s15_mirror_part").add(Leaf("PLATE", plate15)).add(Leaf("BLOCK", block15))
+    pin15 = Leaf("PIN", cyl((0, 0, -10), UP, 3, 18))
+    s15.add(Leaf("MIRROR", mirror15)).add(pin15, m_tr((12, 5, 0))).add(pin15, m_tr((-12, 5, 0)))
+    a.case("s15_mirror_part", s15, "a block and its mirror image as two products", ["P7"], False,
+           {"plate": "60 x 40 x 10, top at z 0, dia 6 at (12, 5) and (-12, 5)",
+            "block": "20 x 20 x 8 from x 0, dia 6.6 at (12, 5)", "mirror": "the block mirrored in x = 0",
+            "pins": "dia 6, z -10 to 8"}, asm_expect(s15, sockets={
+               "BLOCK": [e_socket([e_axial("bore", (12, 5, 0), Z, [(0, 8, 6.6, 6, "clearance", False)], open_at=[0])],
+                                  seats=[e_seat((0, 0, 0), (-1, 0, 0)), e_seat((0, 0, 0), (0, 0, -1))])],
+               "MIRROR": [e_socket([e_axial("bore", (-12, 5, 0), Z, [(0, 8, 6.6, 6, "clearance", False)], open_at=[0])],
+                                   seats=[e_seat((0, 0, 0), (1, 0, 0)), e_seat((0, 0, 0), (0, 0, -1))])]}))
+
+    # s22: a block meant to rest flipped (mirrored in z = 4, then up 8) on a pedestal, round a pin through the
+    # pedestal's dia 6 hole at (5, 0). Open CASCADE 8.0.1 writes that mirror as its shift alone (P8): the file
+    # places the block unturned, 16 mm up, 8 mm above the pedestal. The answers are the file's: the pin runs
+    # through the block's dia 6.6 hole, and nothing seats it. The generator checks Open CASCADE still writes so.
+    block22 = cut(box(-10, -5, 0, 20, 10, 8), cyl((5, 0, -1), UP, 3.3, 10))
+    pedestal22 = cut(box(-15, -10, 0, 30, 20, 8), cyl((5, 0, -1), UP, 3, 10))
+    mirror22 = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, 16], [0, 0, 0, 1]]
+    written22 = m_tr((0, 0, 16))
+    s22_file = Node("s22_mirror_intent").add(Leaf("PEDESTAL", pedestal22))
+    s22_file.add(Leaf("BLOCK", block22), mirror22).add(Leaf("PIN", cyl((5, 0, 0), UP, 3, 30)))
+    s22 = Node("s22_mirror_intent").add(s22_file.children[0][0]).add(s22_file.children[1][0], written22)
+    s22.add(s22_file.children[2][0])
+    a.case("s22_mirror_intent", s22, "a block placed through a mirror, as Open CASCADE writes it", ["P8"], False,
+           {"pedestal": "30 x 20 x 8, dia 6 at (5, 0)", "block": "20 x 10 x 8, dia 6.6 at (5, 0), mirrored in z = 4 "
+            "and moved up 8", "pin": "dia 6, z 0 to 30 at (5, 0)", "written": "the shift alone"},
+           asm_expect(s22, sockets={"BLOCK": [e_socket([e_axial("bore", (5, 0, 0), Z, [(0, 8, 6.6, 6, "clearance", False)],
+                                                                open_at=[0, 8])], at=(0, 0, 16))]}),
+           written=s22_file)
+
+    # s54: two stepped blind holes in a base (top at z 0), dia 6.2 to 10 deep and dia 4 to 15 deep; a block on
+    # it carries a dia 6 pin to 6 deep in one and a dia 3.5 pin to 6 deep in the other. The dia 6 pin can go 4
+    # further, to the step; the dia 3.5 one passes the step, 9 to the floor (I4).
+    def stepped(x):
+        return [cyl((x, 0, -10), UP, 3.1, 11), cyl((x, 0, -15), UP, 2, 6)]
+    base54 = cut(box(-25, -15, -20, 50, 30, 20), *stepped(-10), *stepped(10))
+    block54 = fuse(box(-20, -10, 0, 40, 20, 8), cyl((-10, 0, -6), UP, 3, 7), cyl((10, 0, -6), UP, 1.75, 7))
+    s54 = Node("s54_stepped").add(Leaf("BASE", base54)).add(Leaf("BLOCK", block54))
+    a.case("s54_stepped", s54, "pins ending in the wider segment of stepped blind holes", ["I4", "I1"], False,
+           {"base": "50 x 30 x 20, top at z 0; at x -10 and 10: dia 6.2 to z -10, dia 4 to z -15",
+            "block": "40 x 20 x 8 on it, with pins dia 6 at x -10 and dia 3.5 at x 10 to z -6"},
+           asm_expect(s54, sockets={"BLOCK": [e_socket(
+               [e_axial("shaft", (-10, 0, 0), (0, 0, -1), [(0, 6, 6, 6.2, "clearance", False)], max_extra=4),
+                e_axial("shaft", (10, 0, 0), (0, 0, -1), [(0, 6, 3.5, 6.2, "clearance", False)], max_extra=9)],
+               seats=[e_seat((0, 0, 0), (0, 0, -1))])]}))
 
     # s47: a dia 6 rod lying across a plate's top face: a curved face on a flat, which no rule reads (C6).
     s47 = Node("s47_rod_on_flat").add(Leaf("PLATE", box(-30, -20, -10, 60, 40, 10)))
