@@ -594,7 +594,13 @@ RULES.update({
     "A3": {"tests": [f"crates/fitment-core/src/socket/mod.rs::each_structural_rule_refuses_an_edit_with_its_digest_recomputed"]},
     "Y1": {}, "Y3": {},
     "Y2": {"tests": [f"crates/fitment-core/src/socket/mod.rs::each_structural_rule_refuses_an_edit_with_its_digest_recomputed"]},
-    "Y4": {"deferred": "M4 runs the original as a candidate; M3 checks each socket's count of unverifiable requirements"},
+    # Y4's two halves: the original witnesses every verifiable requirement (the read-back's clearance bounds,
+    # the corpus's sockets from the construction, the oracle's seats and grips on the part's own faces) and fails
+    # exactly the unverifiable ones, which M4 shows by running it as a candidate.
+    "Y4.witness": {"tests": ["crates/fitment-core/src/socket/mod.rs::a_clearance_looser_than_its_sources_margins_is_refused",
+                             "crates/fitment/tests/corpus.rs::every_corpus_assembly_reads_as_its_construction_says"]},
+    "Y4.original_run": {"deferred": "M4 runs the original as a candidate and expects exactly its unverifiable "
+                                    "requirements to fail"},
     "V1": {"deferred": "M7 checks the candidate's copies against each other"},
     "V2": {},
     "H1": {}, "H2": {},
@@ -2283,6 +2289,25 @@ def build_assemblies(w: Writer, which):
            {"plate": "40 x 40 x 10, dia 6.6 through, countersunk 90 deg to dia 12.4 at z 10",
             "screw": "dia 6 from z -8, head cone dia 6 at z 6.8 to dia 12.4 at z 10", "nut": "z -5 to 0"},
            asm_expect(s18, sockets=sockets18))
+
+    # s58: s18's countersunk screw in a plate whose top is inclined 2 degrees, below the countersink's rim (z 9.6 on
+    # the axis): the cone breaks through the inclined face in an ellipse, no circle, so its radial range is unknown
+    # and the conical seat has none: an unverifiable requirement (Y4, 8.4).
+    rise58 = 20 * math.tan(math.radians(2))
+    profile58 = (cq.Workplane("XZ").polyline([(-20, 0), (20, 0), (20, 9.6 + rise58), (-20, 9.6 - rise58)])
+                 .close().extrude(-20)).translate((0, -10, 0))
+    plate58 = cut(profile58.val().wrapped, tool(h18))
+    s58 = Node("s58_csink_tilted").add(Leaf("PLATE", plate58)).add(Leaf("SCREW", screw18))
+    a.case("s58_csink_tilted", s58, "a countersunk screw in a plate whose inclined top cuts the countersink",
+           ["Q1", "Y4.witness"], False,
+           {"plate": "40 x 20, top inclined 2 deg through z 9.6 on the axis, dia 6.6 through, countersunk 90 deg "
+            "to dia 12.4 at z 10", "screw": "s18's"},
+           # The head stands proud of the inclined top, which touches its cone along a curve no rule reads (C6).
+           asm_expect(s58, sockets={"PLATE": [e_socket(
+               [e_axial("bore", (0, 0, 0), Z, [(0, 6.8, 6.6, 6, "not_read", True), (6.8, 7.1, 6.6, None, "not_read", True),
+                                               (7.1, 10, 6.6, None, "not_read", False)],
+                        open_at=[0], flags=["extent_unknown", "occupant_unread"], depth="unknown_end")],
+               unresolved={"contact_no_rule": 1}, cones=[e_cone((0, 0, 3.8), 90, Z, None)])]}))
 
     # PR 4's cases: seats, grips, partial cylinders and the near band.
 
