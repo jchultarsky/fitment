@@ -8,6 +8,7 @@
     tools/verify-occt.py manifest DIR
     tools/verify-occt.py features [--expect MANIFEST] PATH...
     tools/verify-occt.py socket DIR
+    tools/verify-occt.py mutations DIR
 
 Reads every case of DIR/manifest.json (written by tools/gen-corpus.py) with
 Open CASCADE 8.0.1, the kernel the M7 fit verifier pins (decision 8), and
@@ -1586,6 +1587,23 @@ def detail_problems(where, socket, m, target, leaves, mine, neighbours, face_id,
     problems = []
     others = [shape for i, (_, _, shape) in enumerate(leaves) if i != mine]
     requirements = [r["requires"] for r in socket["requirements"]]
+    # Every bore and shaft lies on a cylinder of the target, of one of its
+    # spans' diameters.
+    cylinders = []
+    for f in explore(target, TopAbs_FACE):
+        surface = BRepAdaptor_Surface(as_face(f))
+        if surface.GetType() == Kind.GeomAbs_Cylinder:
+            c = surface.Cylinder()
+            cylinders.append((xyz(c.Location()), xyz(c.Axis().Direction()), 2 * c.Radius()))
+    for q in requirements:
+        if q["kind"] not in ("bore", "shaft") or not q["spans"]:
+            continue
+        tally["axes"] = tally.get("axes", 0) + 1
+        diameters = [sp.get("hole_diameter_mm") or sp.get("shaft_diameter_mm") for sp in q["spans"]]
+        if not any(on_line(m, q["axis"], p, d) and any(abs(x - dia) <= 1e-4 for x in diameters)
+                   for p, d, dia in cylinders):
+            problems.append(f"{where} {q['kind']} {q.get('hole') or q.get('shaft')}: no cylinder of the part "
+                            f"lies on its axis at {diameters}")
     # I4: beyond one end of the shaft, air for max_extra and then material.
     placed_paths = {tuple(n["path"]): [row + [n["transform"]["translation_mm"][i]]
                                        for i, row in enumerate(n["transform"]["rotation"])] for n in neighbours}
@@ -1667,6 +1685,50 @@ def detail_problems(where, socket, m, target, leaves, mine, neighbours, face_id,
                         found = found or any(
                             abs(dot(n, e) - offset - by["gap_mm"]) <= tau for e in ends)
                 touchers[key] = touchers.get(key, False) or bool(found)
+    # And the other way: every plane face of another solid opposed to a
+    # contact face within the band, sharing area with it, is listed among
+    # that contact's touchers (the merged socket's, of every occurrence).
+    if face_id(None):
+        from OCP.Bnd import Bnd_Box
+        from OCP.BRepBndLib import BRepBndLib
+        ours = {face_id(as_face(f)): as_face(f) for f in explore(target, TopAbs_FACE)}
+        target_box = Bnd_Box()
+        BRepBndLib.Add_s(target, target_box)
+        near = []
+        for i, (_, lm, shape) in enumerate(leaves):
+            if i == mine:
+                continue
+            box = Bnd_Box()
+            BRepBndLib.Add_s(shape, box)
+            if box.Distance(target_box) > NEAR:
+                continue
+            paths = [p for p, t in placed.items()
+                     if all(abs(lm[r][c] - t[r][c]) <= 1e-6 for r in range(3) for c in range(4))]
+            near.append((paths, planar_faces(shape)))
+        for requirement in socket["requirements"]:
+            q = requirement["requires"]
+            if q["kind"] != "seat":
+                continue
+            for contact in q["contacts"]:
+                face = ours.get(contact["face"])
+                facts = plane_facts(face) if face is not None else None
+                if facts is None:
+                    continue
+                n, point = facts[0], facts[1]
+                listed = {(tuple(b_["neighbour"]), b_["face"]) for b_ in contact["by"]}
+                fbox = Bnd_Box()
+                BRepBndLib.Add_s(face, fbox)
+                for paths, theirs in near:
+                    for g, gn, gp, gb in theirs:
+                        gap = dot(n, sub(gp, point))
+                        if dot(gn, n) > -COS_LIMIT or abs(gap) > NEAR or fbox.Distance(gb) > NEAR + 1e-6:
+                            continue
+                        if common_area(face, g, n, gap) <= 1e-6:
+                            continue
+                        tally["touchers found"] = tally.get("touchers found", 0) + 1
+                        if not any((p, face_id(g)) in listed for p in paths):
+                            problems.append(f"{where} seat {q['plane']}: face #{face_id(g)} of {paths} lies on "
+                                            f"contact #{contact['face']}, {gap:.3g} mm away, and is not listed")
     # Grip holes: each a bore or left-out hole of the socket, along the
     # grip's normal.
     axes = {q.get("hole"): q["axis"] for q in requirements if q["kind"] == "bore"}
@@ -1741,7 +1803,24 @@ def on_line(m, axis, point, direction):
     return math.sqrt(dot(across, across)) <= 1e-4
 
 
-def held_by_geometry(face, socket, m):
+def on_seat_plane(face, socket, m):
+    """True if `face` (placed) is a plane face on one of `socket`'s seats'
+    planes."""
+    facts = plane_facts(face)
+    if facts is None:
+        return False
+    n, point = facts[0], facts[1]
+    for r in socket["requirements"]:
+        q = r["requires"]
+        if q["kind"] == "seat":
+            qn = turn(m, q["normal"])
+            offset = dot(qn, apply(m, [c * q["offset_mm"] for c in q["normal"]]))
+            if abs(dot(qn, n)) >= 1 - 1e-9 and abs(dot(qn, point) - offset) <= 1e-5:
+                return True
+    return False
+
+
+def held_by_geometry(face, socket, m, id_=None):
     """True if a requirement or left-out feature of `socket` lies on the
     (placed) face's surface: a cylinder on a bore's, shaft's, partial's or
     left-out axis and diameter, a plane on a seat's plane, a cone on a
@@ -1767,7 +1846,9 @@ def held_by_geometry(face, socket, m):
                 qn = turn(m, q["normal"])
                 offset = dot(qn, apply(m, [c * q["offset_mm"] for c in q["normal"]]))
                 if abs(dot(qn, n)) >= 1 - 1e-9 and abs(dot(qn, point) - offset) <= 1e-5:
-                    return True
+                    # A face on a seat's plane is held only as one of its contacts
+                    # (a contact dropped is a requirement shrunk).
+                    return id_ is None or id_ in {c["face"] for c in q["contacts"]}
     elif kind == Kind.GeomAbs_Cone:
         apex = xyz(surface.Cone().Apex())
         for q in items:
@@ -1903,8 +1984,11 @@ def touch_problems(where, socket, m, target, named, face_id, tally, clash_ok):
         if id_ is None:
             tally["touch faces unbound"] = tally.get("touch faces unbound", 0) + 1
             continue
-        held = (id_ in faces or id_ in features or smallest.get(key) in features
-                or held_by_geometry(face, socket, m))
+        # A face on a seat's plane is held as one of its contacts, and so
+        # only; any other by the ids and geometry the socket states.
+        on_seat = on_seat_plane(face, socket, m)
+        held = id_ in faces if on_seat else (
+            id_ in features or smallest.get(key) in features or held_by_geometry(face, socket, m, id_))
         box = Bnd_Box()
         BRepBndLib.Add_s(face, box)
         near = [b for b in boxes if box.Distance(b[2]) <= TOUCH]
@@ -2007,6 +2091,8 @@ def socket_problems(directory, case, binary, tally):
             problems.append(f"{case['id']}: fitment socket --part {target} exited {run.returncode}")
             continue
         document = json.loads(run.stdout)
+        if MUTATE is not None:
+            MUTATE(document)
         extracted = document["extracted"]
         for occurrence in extracted["occurrences"]:
             socket = next(s for s in extracted["sockets"] if s["id"] == occurrence["socket"])
@@ -2075,6 +2161,93 @@ def socket_problems(directory, case, binary, tally):
     return problems
 
 
+# A mutation `mutations` mode applies to every document fitment gives.
+MUTATE = None
+
+
+def each_requirement(document):
+    for socket in document["extracted"]["sockets"]:
+        for r in socket["requirements"]:
+            yield socket, r
+
+
+def drop(kind):
+    def mutate(document):
+        for socket in document["extracted"]["sockets"]:
+            socket["requirements"] = [r for r in socket["requirements"] if r["requires"]["kind"] != kind]
+    return mutate
+
+
+def move_axes(document):
+    for _, r in each_requirement(document):
+        q = r["requires"]
+        if q["kind"] in ("bore", "shaft"):
+            u, _ = perpendiculars(q["axis"]["direction"])
+            q["axis"]["point_mm"] = [p + 0.01 * x for p, x in zip(q["axis"]["point_mm"], u)]
+
+
+def swap_fits(document):
+    for _, r in each_requirement(document):
+        for sp in r["requires"].get("spans", []):
+            if sp["fit"] == "clearance":
+                sp["fit"], sp["clear_diameter_mm"] = "interference", None
+            elif sp["fit"] == "interference":
+                own = sp.get("hole_diameter_mm") or sp.get("shaft_diameter_mm")
+                sp["fit"], sp["clear_diameter_mm"] = "clearance", own
+
+
+def shrink_contacts(document):
+    for _, r in each_requirement(document):
+        contacts = r["requires"].get("contacts", [])
+        for c in contacts:
+            if len(c["by"]) > 1:
+                c["by"].pop()
+        if len(contacts) > 1:
+            contacts.pop()
+
+
+def merge_sockets(document):
+    sockets = document["extracted"]["sockets"]
+    if len(sockets) > 1:
+        for o in document["extracted"]["occurrences"]:
+            o["socket"] = sockets[0]["id"]
+
+
+def null_extras(document):
+    for _, r in each_requirement(document):
+        if r["requires"]["kind"] == "shaft":
+            r["requires"]["max_extra_mm"] = None
+
+
+MUTATIONS = {"drop bores": drop("bore"), "drop shafts": drop("shaft"), "drop seats": drop("seat"),
+             "drop grips": drop("grip"), "move axes 0.01 mm": move_axes, "swap fits": swap_fits,
+             "shrink contacts": shrink_contacts, "merge sockets": merge_sockets, "null max_extra": null_extras}
+
+
+def mutations_main(argv):
+    """Every mutation of fitment's documents must meet a disagreement."""
+    global MUTATE
+    directory = Path(argv[0])
+    binary = Path(os.environ.get("FITMENT", Path(__file__).resolve().parent.parent / "target/release/fitment"))
+    cases = [c for c in json.loads((directory / "manifest.json").read_text(encoding="utf-8"))["cases"]
+             if c.get("kind") == "assembly" and "sockets" in c["expect"]
+             and not c.get("construction", {}).get("socket_oracle")]
+    missed = []
+    for name, mutate in MUTATIONS.items():
+        MUTATE = mutate
+        tally = {"cases": 0, "others": 0, "bore spans": 0, "shaft spans": 0, "left out holes": 0, "seats": 0,
+                 "conical seats": 0, "grips": 0, "seat pairs": 0, "faces off every seat": 0, "touching faces": 0,
+                 "max extras": 0, "touchers": 0, "grip holes": 0, "partial cylinders": 0}
+        failing = sum(1 for case in cases if socket_problems(directory, case, binary, tally))
+        print(f"{name}: {failing} cases disagree")
+        if not failing:
+            missed.append(name)
+    MUTATE = None
+    if missed:
+        print("mutations no check catches: " + ", ".join(missed), file=sys.stderr)
+    sys.exit(1 if missed else 0)
+
+
 def socket_main(argv):
     import argparse
 
@@ -2103,6 +2276,9 @@ def socket_main(argv):
     problems = []
     for case in cases:
         if case.get("kind") != "assembly" or "sockets" not in case["expect"]:
+            continue
+        if case.get("construction", {}).get("socket_oracle"):
+            print(f"skip {case['id']}: {case['construction']['socket_oracle']}")
             continue
         tally["cases"] += 1
         found = socket_problems(directory, case, binary, tally)
@@ -2133,6 +2309,9 @@ def socket_main(argv):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "mutations":
+        quiet()
+        mutations_main(sys.argv[2:])
     if len(sys.argv) >= 3 and sys.argv[1] == "socket":
         quiet()
         socket_main(sys.argv[2:])

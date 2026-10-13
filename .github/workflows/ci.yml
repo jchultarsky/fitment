@@ -72,6 +72,8 @@ jobs:
       - run: tools/verify-occt.py features corpus/out
       - run: tools/verify-occt.py features --expect fixtures/manifest.json fixtures
       - run: tools/verify-occt.py socket corpus/out
+      # Every mutation of fitment's sockets meets a disagreement.
+      - run: tools/verify-occt.py mutations corpus/out
       - run: tools/verify-occt.py socket --expect fixtures/manifest.json fixtures
       - run: cargo test -p fitment --test corpus --test fixtures --locked
         env:

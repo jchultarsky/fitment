@@ -49,6 +49,7 @@ import cadquery as cq
 from OCP.BRep import BRep_Builder
 from OCP.BRepAdaptor import BRepAdaptor_Curve
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+from OCP.TopTools import TopTools_ListOfShape
 from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert, BRepBuilderAPI_Transform
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
 from OCP.BRepPrimAPI import (
@@ -557,7 +558,7 @@ RULES.update({
     "m3.4.1#38": {"tests": [f"{M3_CORE}/assemblies.rs::a_placement_far_out_of_range_is_refused",
                             f"{M3_CORE}/assemblies.rs::check_38_counts_the_part_s_reach_beside_the_translation",
                             f"{M3_CORE}/assemblies.rs::a_translation_of_1e17_mm_is_refused_without_panic"]},
-    "m3.4.1#39": {"deferred": "M3 PR 7's hostile inputs reach it"},
+    "m3.4.1#39": {"tests": [f"{M3_CORE}/hostile.rs::ten_thousand_coincident_joints_are_refused_by_check_39"]},
     "T1": {}, "T2": {"tests": [f"{M3_CORE}/assemblies.rs::a_definition_instance_selects_unless_an_id_reads_the_same"]},
     "T3": {}, "T4": {}, "T5": {}, "T6": {"tests": ["crates/fitment/tests/cli.rs::a_selection_error_names_the_candidates"]},
     "O1": {}, "O2": {}, "O3": {"tests": [f"{M3_CORE}/assemblies.rs::a_path_segment_that_names_two_usages_is_refused"]},
@@ -574,8 +575,8 @@ RULES.update({
     "Z6": {},
     "Z7": {"deferred": "holds by construction: the socket rules read M2's features and never change its constants"},
     "N1": {}, "N2": {}, "N3": {}, "N5": {},
-    "N4": {"deferred": "M3 PR 7's hostile inputs reach check 39; 4,000 copies among 4,400 occurrences are "
-                       "refused in 0.8 s (PR 3 review)"},
+    "N4": {"tests": [f"{M3_CORE}/hostile.rs::ten_thousand_bolts_are_read_in_reach_of_their_own_joints",
+                     f"{M3_CORE}/hostile.rs::a_hole_with_a_thousand_coaxial_neighbours_is_read"]},
     "X1": {}, "X2": {}, "X3": {}, "X4": {}, "X5": {}, "X6": {}, "X7": {},
     "B1": {}, "B2": {}, "B3": {}, "B5": {}, "B6": {}, "B7": {}, "B8": {},
     "B4": {},
@@ -1664,7 +1665,7 @@ class Asm:
     def __init__(self, w: Writer, which):
         self.w, self.which = w, which
 
-    def case(self, name, root, tests, rules, unit_set, construction, expect, edit=None, written=None):
+    def case(self, name, root, tests, rules, unit_set, construction, expect, edit=None, written=None, variants=True):
         if not self.which(unit_set):
             return None
         path = write_xcaf(self.w, written or root, name)
@@ -1683,7 +1684,7 @@ class Asm:
         self.w.cases.append({"id": name, "file": f"{name}.stp", "kind": "assembly",
                              "set": "unit" if unit_set else "corpus", "tests": tests, "rules": rules,
                              "construction": construction, "expect": expect})
-        if "sockets" in expect and edit is None and written is None and self.which(False):
+        if "sockets" in expect and edit is None and written is None and variants and self.which(False):
             self.variants(name, root, expect)
         return path
 
@@ -2572,6 +2573,27 @@ def build_assemblies(w: Writer, which):
                "PIN": [e_socket([e_axial("shaft", (0, 0, -9.5), Z, [(0, 8, 6, 6.2, "clearance", False)], max_extra=0.5)],
                                 seats=[e_seat((0, 0, -9.5), (0, 0, -1), flags=["near_gap"],
                                               touchers=[("BASE", 0.5, ["near_gap"])])])]}))
+
+    # s55: a plate fused from 60 x 60 tiles 2 mm square, its top face 3,600 coplanar faces, and a 20 x 20 block on
+    # it: 144 tiles touch it (the 100 under it and the 44 its edges meet; touching counts), all one seat, and
+    # the block's seat has those 144 faces on it (N4: the searches keep this near linear). No variants: the
+    # fuse is slow to repeat.
+    tiles = [box(i * 2, j * 2, -10, 2, 2, 10) for i in range(60) for j in range(60)]
+    first, rest = TopTools_ListOfShape(), TopTools_ListOfShape()
+    first.Append(tiles[0])
+    for t in tiles[1:]:
+        rest.Append(t)
+    fused = BRepAlgoAPI_Fuse()
+    fused.SetArguments(first)
+    fused.SetTools(rest)
+    fused.Build()
+    s55 = Node("s55_tiles").add(Leaf("PLATE", fused.Shape())).add(Leaf("BLOCK", box(10, 10, 0, 20, 20, 5)))
+    a.case("s55_tiles", s55, "a block on a plate whose top is 3,600 coplanar faces", ["N4", "C1"], False,
+           {"plate": "60 x 60 tiles 2 x 2 x 10 fused, top at z 0", "block": "20 x 20 x 5 at (10, 10, 0)",
+            "socket_oracle": "skipped: Open CASCADE classifies points against 7,440 faces for hours"},
+           asm_expect(s55, sockets={"PLATE": [e_socket([], seats=[e_seat((0, 0, 0), Z, basis=("target_face",) * 144)])],
+                                    "BLOCK": [e_socket([], seats=[e_seat((0, 0, 0), (0, 0, -1), by=144)])]}),
+           variants=False)
 
     # s47: a dia 6 rod lying across a plate's top face: a curved face on a flat, which no rule reads (C6).
     s47 = Node("s47_rod_on_flat").add(Leaf("PLATE", box(-30, -20, -10, 60, 40, 10)))
