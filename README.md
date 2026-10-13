@@ -11,12 +11,13 @@ same axes, diameters within limits, the same seating planes and grip
 length. It is deterministic (rules and arithmetic, no machine learning),
 written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 
-> **Status: M2 done, M3 next.** `fitment features` reads one part from a
-> STEP file: it refuses a file that is not a canonical part, with reasons,
-> and otherwise prints its planes, cylinders, holes and shafts. Sockets
-> and matching are not built yet. The design is in
-> [docs/PLAN.md](docs/PLAN.md), and the code is mapped in
-> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+> **Status: M3 done, M4 next.** `fitment features` reads one part from a
+> STEP file, refusing a file that is not a canonical part, with reasons.
+> `fitment socket` reads what the neighbours of a part in an assembly
+> require of any part that replaces it, as a reviewable socket file, and
+> `fitment review` records the user's decisions in it. Matching is not
+> built yet. The design is in [docs/PLAN.md](docs/PLAN.md), and the code
+> is mapped in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## How it works
 
@@ -84,11 +85,45 @@ a curve stepq does not read is an `undecided` cylinder and no hole, a
 hole whose end the rules cannot read has an `unknown` end, and a plane
 with an unread edge has an `unknown` outline.
 
+## Reading an assembly
+
+`fitment parts` lists an assembly's parts, and `fitment socket` reads what
+the neighbours of one of them require of any replacement: holes on given
+axes with diameter limits (bores), shafts, seating planes and grip lengths,
+and, where a rule cannot decide, `unresolved` requirements that fail every
+candidate until a reviewer removes them.
+
+```console
+$ fitment parts s01_bolted.stp
+id                       name                     kind      quantity definition  first occurrence
+PLATE                    PLATE                    part             1        #63  1
+BRACKET                  BRACKET                  part             1       #388  2
+BOLT                     BOLT                     part             4       #752  3
+NUT                      NUT                      part             4      #1032  4
+s01_bolted               s01_bolted               assembly         1         #5  (root)
+assembly gate: accepted
+$ fitment socket --format table s01_bolted.stp --part BRACKET
+socket-1  1 occurrences
+  -        seat:plane-467                       1 faces, 4 contacts
+  -        grip:plane-467+plane-570             8 mm thick, 5 holes through
+  -        seat:plane-570                       1 faces, 1 contacts
+  -        bore:hole-654                        0..8 Ø6.6 clearance clear Ø6 open at start
+  -        bore:hole-671                        0..8 Ø6.6 clearance clear Ø6 open at start
+  -        bore:hole-688                        0..8 Ø6.6 clearance clear Ø6 open at start
+  -        bore:hole-722                        0..8 Ø6.6 clearance clear Ø6 open at start
+  left out hole-705 Ø8 (NothingOnAxis)
+```
+
+The default output is the `fitment.socket` JSON document, with a digest
+over everything fitment extracted. `fitment review socket.json --keep ID`
+or `--remove ID --note "..."` records a decision outside the digest, and
+`fitment socket -o socket.json` on the same file again carries decisions
+over to requirements that did not change. Occurrences of a part that ask
+the same of it share one socket.
+
 ## Planned interface
 
 ```console
-$ fitment parts assembly.stp                      # list parts and quantities
-$ fitment socket assembly.stp --part BRK-100      # reviewable socket file
 $ fitment match socket.json candidates/*.stp      # verdicts with evidence
 ```
 
