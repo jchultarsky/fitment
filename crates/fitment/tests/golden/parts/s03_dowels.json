@@ -1,0 +1,361 @@
+{
+  "format": "fitment.parts",
+  "format_version": 1,
+  "extractor_version": 6,
+  "source": {
+    "sha256": "416ba42967fb80b0a5c905baba7fd3f7851233b86c330cf6ac3c07cd89d4cb28",
+    "bytes": 33382,
+    "header": {
+      "schema": "ap214",
+      "schema_identifiers": [
+        "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+      ],
+      "originating_system": "Open CASCADE 7.9",
+      "preprocessor_version": "Open CASCADE STEP processor 7.9",
+      "implementation_level": "2;1"
+    }
+  },
+  "status": "accepted",
+  "refusals": [],
+  "assembly_gate": {
+    "status": "accepted",
+    "refusals": []
+  },
+  "root": {
+    "instance": 5,
+    "product": {
+      "instance": 7,
+      "id": "s03_dowels",
+      "name": "s03_dowels"
+    }
+  },
+  "path_form": "usage_id",
+  "parts": [
+    {
+      "definition": {
+        "instance": 5,
+        "product": {
+          "instance": 7,
+          "id": "s03_dowels",
+          "name": "s03_dowels"
+        }
+      },
+      "kind": "assembly",
+      "quantity": 1,
+      "occurrences": [
+        {
+          "path": [],
+          "label": [],
+          "transform": {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "part_uncertainty_mm": 0.0,
+          "vertex_offset_mm": 0.0,
+          "placement_uncertainty_mm": 0.0
+        }
+      ],
+      "component": null
+    },
+    {
+      "definition": {
+        "instance": 47,
+        "product": {
+          "instance": 49,
+          "id": "BASE",
+          "name": "BASE"
+        }
+      },
+      "kind": "part",
+      "quantity": 1,
+      "occurrences": [
+        {
+          "path": [
+            392
+          ],
+          "label": [
+            "1"
+          ],
+          "transform": {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "part_uncertainty_mm": 1e-7,
+          "vertex_offset_mm": 0.0,
+          "placement_uncertainty_mm": 1e-7
+        }
+      ],
+      "component": {
+        "gate": {
+          "status": "accepted",
+          "refusals": []
+        },
+        "holes": 4,
+        "shafts": 0,
+        "complete": true
+      }
+    },
+    {
+      "definition": {
+        "instance": 396,
+        "product": {
+          "instance": 398,
+          "id": "PLATE",
+          "name": "PLATE"
+        }
+      },
+      "kind": "part",
+      "quantity": 1,
+      "occurrences": [
+        {
+          "path": [
+            717
+          ],
+          "label": [
+            "2"
+          ],
+          "transform": {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "part_uncertainty_mm": 1e-7,
+          "vertex_offset_mm": 4.440892098500626e-16,
+          "placement_uncertainty_mm": 1e-7
+        }
+      ],
+      "component": {
+        "gate": {
+          "status": "accepted",
+          "refusals": []
+        },
+        "holes": 4,
+        "shafts": 0,
+        "complete": true
+      }
+    },
+    {
+      "definition": {
+        "instance": 721,
+        "product": {
+          "instance": 723,
+          "id": "DOWEL",
+          "name": "DOWEL"
+        }
+      },
+      "kind": "part",
+      "quantity": 4,
+      "occurrences": [
+        {
+          "path": [
+            789
+          ],
+          "label": [
+            "3"
+          ],
+          "transform": {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              -30.0,
+              0.0,
+              -8.0
+            ]
+          },
+          "part_uncertainty_mm": 1e-7,
+          "vertex_offset_mm": 0.0,
+          "placement_uncertainty_mm": 1e-7
+        },
+        {
+          "path": [
+            795
+          ],
+          "label": [
+            "4"
+          ],
+          "transform": {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              -10.0,
+              0.0,
+              -8.0
+            ]
+          },
+          "part_uncertainty_mm": 1e-7,
+          "vertex_offset_mm": 0.0,
+          "placement_uncertainty_mm": 1e-7
+        },
+        {
+          "path": [
+            800
+          ],
+          "label": [
+            "5"
+          ],
+          "transform": {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              10.0,
+              0.0,
+              -8.0
+            ]
+          },
+          "part_uncertainty_mm": 1e-7,
+          "vertex_offset_mm": 0.0,
+          "placement_uncertainty_mm": 1e-7
+        },
+        {
+          "path": [
+            805
+          ],
+          "label": [
+            "6"
+          ],
+          "transform": {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              30.0,
+              0.0,
+              -8.0
+            ]
+          },
+          "part_uncertainty_mm": 1e-7,
+          "vertex_offset_mm": 0.0,
+          "placement_uncertainty_mm": 1e-7
+        }
+      ],
+      "component": {
+        "gate": {
+          "status": "accepted",
+          "refusals": []
+        },
+        "holes": 0,
+        "shafts": 1,
+        "complete": true
+      }
+    }
+  ],
+  "notes": []
+}

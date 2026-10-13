@@ -1,0 +1,256 @@
+{
+  "format": "fitment.parts",
+  "format_version": 1,
+  "extractor_version": 6,
+  "source": {
+    "sha256": "2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a",
+    "bytes": 25494,
+    "header": {
+      "schema": "ap214",
+      "schema_identifiers": [
+        "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+      ],
+      "originating_system": "Open CASCADE 7.9",
+      "preprocessor_version": "Open CASCADE STEP processor 7.9",
+      "implementation_level": "2;1"
+    }
+  },
+  "status": "accepted",
+  "refusals": [],
+  "assembly_gate": {
+    "status": "accepted",
+    "refusals": []
+  },
+  "root": {
+    "instance": 5,
+    "product": {
+      "instance": 7,
+      "id": "s02_cbore",
+      "name": "s02_cbore"
+    }
+  },
+  "path_form": "usage_id",
+  "parts": [
+    {
+      "definition": {
+        "instance": 5,
+        "product": {
+          "instance": 7,
+          "id": "s02_cbore",
+          "name": "s02_cbore"
+        }
+      },
+      "kind": "assembly",
+      "quantity": 1,
+      "occurrences": [
+        {
+          "path": [],
+          "label": [],
+          "transform": {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "part_uncertainty_mm": 0.0,
+          "vertex_offset_mm": 0.0,
+          "placement_uncertainty_mm": 0.0
+        }
+      ],
+      "component": null
+    },
+    {
+      "definition": {
+        "instance": 35,
+        "product": {
+          "instance": 37,
+          "id": "BASE",
+          "name": "BASE"
+        }
+      },
+      "kind": "part",
+      "quantity": 1,
+      "occurrences": [
+        {
+          "path": [
+            245
+          ],
+          "label": [
+            "1"
+          ],
+          "transform": {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "part_uncertainty_mm": 1e-7,
+          "vertex_offset_mm": 0.0,
+          "placement_uncertainty_mm": 1e-7
+        }
+      ],
+      "component": {
+        "gate": {
+          "status": "accepted",
+          "refusals": []
+        },
+        "holes": 1,
+        "shafts": 0,
+        "complete": true
+      }
+    },
+    {
+      "definition": {
+        "instance": 249,
+        "product": {
+          "instance": 251,
+          "id": "BLOCK",
+          "name": "BLOCK"
+        }
+      },
+      "kind": "part",
+      "quantity": 1,
+      "occurrences": [
+        {
+          "path": [
+            498
+          ],
+          "label": [
+            "2"
+          ],
+          "transform": {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "part_uncertainty_mm": 1e-7,
+          "vertex_offset_mm": 0.0,
+          "placement_uncertainty_mm": 1e-7
+        }
+      ],
+      "component": {
+        "gate": {
+          "status": "accepted",
+          "refusals": []
+        },
+        "holes": 1,
+        "shafts": 0,
+        "complete": true
+      }
+    },
+    {
+      "definition": {
+        "instance": 502,
+        "product": {
+          "instance": 504,
+          "id": "SCREW",
+          "name": "SCREW"
+        }
+      },
+      "kind": "part",
+      "quantity": 1,
+      "occurrences": [
+        {
+          "path": [
+            615
+          ],
+          "label": [
+            "3"
+          ],
+          "transform": {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              8.5
+            ]
+          },
+          "part_uncertainty_mm": 1e-7,
+          "vertex_offset_mm": 0.0,
+          "placement_uncertainty_mm": 1e-7
+        }
+      ],
+      "component": {
+        "gate": {
+          "status": "accepted",
+          "refusals": []
+        },
+        "holes": 0,
+        "shafts": 1,
+        "complete": true
+      }
+    }
+  ],
+  "notes": []
+}

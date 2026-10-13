@@ -649,18 +649,28 @@ fn plane_cylinder(
         if lowest > tau || highest < -tau {
             return Ok(false);
         }
-        // Square to the plane, its cross-section is a disc where its axis
-        // crosses: through one of the face's holes, it touches nothing.
-        if along.abs() >= 1.0 - PARALLEL_SINE_REL * PARALLEL_SINE_REL / 2.0 {
-            let crossing = add(*point, scale(*dir, -height / along));
-            return in_region(
-                plane,
-                &overlap::disc(crossing, *normal, *radius),
-                tau,
-                count,
-            );
+        // Within the slab |h| ≤ τ, its cross-sections lie in an ellipse
+        // about where its axis crosses: semi-axes r across, and r / cos θ
+        // along its lean, grown by the crossing's slide over the slab.
+        // Through one of the face's holes, it touches nothing, in whatever
+        // frame its box is taken.
+        if !footprint(plane, cylinder, tau, count)? {
+            return Ok(false);
         }
-        return footprint(plane, cylinder, tau, count);
+        let crossing = add(*point, scale(*dir, -height / along));
+        let lean = sub(*dir, scale(*normal, along));
+        let lean = if norm(lean) > 1e-12 {
+            scale(lean, 1.0 / norm(lean))
+        } else {
+            perpendiculars(*normal).0
+        };
+        let long = (radius + tau * sine) / along.abs();
+        return in_region(
+            plane,
+            &overlap::ellipse(crossing, *normal, lean, long, *radius),
+            tau,
+            count,
+        );
     }
     // Parallel: the cylinder meets the slab |h| ≤ τ only where
     // height + r cos φ is within τ: two bands at ±r sin φ beside the axis.

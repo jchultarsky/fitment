@@ -275,9 +275,10 @@ impl Search<'_, '_> {
     }
 
     /// U7: neighbour material at an angle whose cross-section may meet the
-    /// target's.
+    /// target's: a shaft, or the wall of a hole a target shaft runs through.
     fn skew(&mut self, a: &Element, b: &Element, tau: f64) {
-        if b.side == Side::Shaft && axial::segment_distance(a, b) < a.radius + b.radius + tau {
+        let material = b.side == Side::Shaft || a.side == Side::Shaft;
+        if material && axial::segment_distance(a, b) < a.radius + b.radius + tau {
             self.found
                 .skew
                 .entry(a.feature)
@@ -327,7 +328,13 @@ impl Search<'_, '_> {
         // A wider cylinder that only touches the rim does not enter: a head
         // bearing there (H1), not an occupant.
         if p.length.abs() <= tau && margin < -tau {
-            self.ring(a, n, b, &p, tau);
+            // Only a known end bears (U3): a flange whose end the rim meets
+            // only past an unread side (a valve's far flange) is no ring.
+            if let Some(q) = axial::pair(a, &known(b), PARALLEL_SINE_REL, 1.0) {
+                if q.length.abs() <= tau {
+                    self.ring(a, n, b, &q, tau);
+                }
+            }
             return;
         }
         let mut relation = self.relation(t, "B", n, b, &p);
@@ -373,7 +380,13 @@ impl Search<'_, '_> {
     /// rim all round, touching an open rim of a target hole: the plane the
     /// hole opens onto there is a seat.
     fn ring(&mut self, a: &Element, n: usize, b: &Element, p: &Pair, tau: f64) {
-        if p.e_max > b.radius - a.radius || a.partial.is_some() || a.undecided {
+        // H2: a cylinder whose axis misses the hole (a flange over bolt
+        // holes off its axis) is C1's, which reads its end face.
+        if p.e_max > b.radius - a.radius
+            || p.e_max >= a.radius
+            || a.partial.is_some()
+            || a.undecided
+        {
             return;
         }
         // The rim it touches: an open end, or a step inside the stack.
@@ -400,6 +413,7 @@ impl Search<'_, '_> {
     /// I1 to I3: a target shaft in a neighbour hole.
     fn held(&mut self, t: usize, a: &Element, n: usize, b: &Element, tau: f64) {
         let Some(p) = axial::pair(a, b, PARALLEL_SINE_REL, -1.0) else {
+            self.skew(a, b, tau);
             return;
         };
         if p.e_min >= a.radius + b.radius / p.cosine + tau || p.length <= -tau {
@@ -441,7 +455,11 @@ impl Search<'_, '_> {
         if through_unknown(a, b, &p) {
             relation.flags.insert(Flag::ExtentUnknown);
         }
-        relation.extra = to_floor(a, b, &p, tau);
+        let stack = self
+            .neighbours
+            .get(n)
+            .map_or(&[][..], |x| x.elements.as_slice());
+        relation.extra = to_floor(a, b, &p, tau, stack);
         self.push_split(&relation, a, b, &p, -1.0, tau);
     }
 
@@ -784,29 +802,53 @@ impl Search<'_, '_> {
     }
 }
 
-/// I4: the room between target shaft `a`'s free end and the closed end of
-/// neighbour hole `b` beyond it, along `a`'s axis; `None` unless the tip
-/// lies in the hole with its floor beyond.
-fn to_floor(a: &Element, b: &Element, p: &Pair, tau: f64) -> Option<f64> {
-    let along = dot(a.dir, b.dir) > 0.0;
-    let closed_at = |high: bool| {
-        // b's end that lies at a's high (or low) side.
-        let b_high = high == along;
-        if b_high {
-            b.segment + 1 == b.segments && b.finish == EndKind::Closed
-        } else {
-            b.segment == 0 && b.start == EndKind::Closed
-        }
-    };
+/// I4: the room between target shaft `a`'s free end and what stops it in
+/// neighbour hole `b` beyond it, along `a`'s axis: the first segment of
+/// `b`'s stack (among `elements`) too narrow for it, a step, or else the
+/// stack's closed end. `None` unless the tip lies in `b` and the stack is
+/// closed beyond it, or narrows.
+fn to_floor(a: &Element, b: &Element, p: &Pair, tau: f64, elements: &[Element]) -> Option<f64> {
     let tip_high = a.segment + 1 == a.segments && a.finish == EndKind::Open;
     let tip_low = a.segment == 0 && a.start == EndKind::Open;
-    if tip_high && closed_at(true) && a.hi <= p.hi + tau && a.hi >= p.lo {
-        return Some((p.hi - a.hi).max(0.0));
+    let high = if tip_high && a.hi <= p.hi + tau && a.hi >= p.lo {
+        true
+    } else if tip_low && a.lo >= p.lo - tau && a.lo <= p.hi {
+        false
+    } else {
+        return None;
+    };
+    // Beyond the tip: on a's high side, b's next segments when b runs the
+    // same way, its previous ones when it runs against.
+    let forward = high == (dot(a.dir, b.dir) > 0.0);
+    let room = |near: f64, far: f64| {
+        if high {
+            (near - a.hi).max(0.0)
+        } else {
+            (a.lo - far).max(0.0)
+        }
+    };
+    let (mut segment, mut last) = (b.segment, *p);
+    loop {
+        let next = if forward {
+            Some(segment + 1).filter(|k| *k < b.segments)
+        } else {
+            segment.checked_sub(1)
+        };
+        let Some(next) = next else {
+            let closed = if forward { b.finish } else { b.start } == EndKind::Closed;
+            return closed.then(|| room(last.hi, last.lo));
+        };
+        let s = elements
+            .iter()
+            .find(|e| e.feature == b.feature && e.segment == next)?;
+        let q = axial::pair(a, s, PARALLEL_SINE_REL, -1.0)?;
+        if s.radius < a.radius - tau {
+            // A step it cannot pass: its near side stops the shaft.
+            return Some(room(q.lo, q.hi));
+        }
+        segment = next;
+        last = q;
     }
-    if tip_low && closed_at(false) && a.lo >= p.lo - tau && a.lo <= p.hi {
-        return Some((a.lo - p.lo).max(0.0));
-    }
-    None
 }
 
 /// True if `shaft`'s part is a ring clear of the part holding the hole

@@ -1,0 +1,1001 @@
+{
+  "format": "fitment.socket",
+  "format_version": 1,
+  "extractor_version": 6,
+  "socket_rules_version": 5,
+  "extraction": {
+    "features": {
+      "identity_mm": 1e-6,
+      "parallel_sine": 1e-9,
+      "vertex_side_mm": 0.001,
+      "lever_min_mm": 1.0,
+      "sweep_rad": 1e-9,
+      "walk_max": 8,
+      "gate_slack_mm": 1e-6,
+      "gate_slack_rel": 1e-6,
+      "range_mm": 1000000.0
+    },
+    "socket": {
+      "contact_mm": 0.01,
+      "near_mm": 1.0,
+      "parallel_sine_rel": 0.01,
+      "merge_mm": 1e-6,
+      "merge_sine": 1e-9,
+      "max_occurrences": 100000,
+      "max_relations": 10000000
+    }
+  },
+  "source": {
+    "sha256": "837411d1028fcace9f80236014dcbef7625bf48f2120703a9f27b79a6a5ca7ed",
+    "bytes": 56247,
+    "header": {
+      "schema": "ap214",
+      "schema_identifiers": [
+        "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+      ],
+      "originating_system": "Open CASCADE 7.9",
+      "preprocessor_version": "Open CASCADE STEP processor 7.9",
+      "implementation_level": "2;1"
+    }
+  },
+  "selection": {
+    "part": "NUT",
+    "occurrence": null,
+    "matched_by": "product_id"
+  },
+  "status": "accepted",
+  "refusals": [],
+  "notes": [],
+  "extracted": {
+    "target": {
+      "definition": {
+        "instance": 1032,
+        "product": {
+          "instance": 1034,
+          "id": "NUT",
+          "name": "NUT"
+        }
+      },
+      "frame": {
+        "shape_representation": 1037
+      },
+      "solid": "solid-1038",
+      "part_uncertainty_mm": 1e-7,
+      "vertex_offset_mm": 1.3788969965844444e-12,
+      "complete": true,
+      "extent": {
+        "min_mm": [
+          -5.773502691897379,
+          -5.0000000000013785,
+          -5.0000000000013785
+        ],
+        "max_mm": [
+          5.773502691897379,
+          5.0000000000013785,
+          1.3788969965844444e-12
+        ]
+      },
+      "anchors": [
+        "hole-1276"
+      ]
+    },
+    "occurrences": [
+      {
+        "path": [
+          1302
+        ],
+        "label": [
+          "4"
+        ],
+        "definition": {
+          "instance": 1032,
+          "product": {
+            "instance": 1034,
+            "id": "NUT",
+            "name": "NUT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            -30.0,
+            -15.0,
+            -10.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": "socket-1"
+      },
+      {
+        "path": [
+          1313
+        ],
+        "label": [
+          "6"
+        ],
+        "definition": {
+          "instance": 1032,
+          "product": {
+            "instance": 1034,
+            "id": "NUT",
+            "name": "NUT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            30.0,
+            -15.0,
+            -10.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": "socket-1"
+      },
+      {
+        "path": [
+          1323
+        ],
+        "label": [
+          "8"
+        ],
+        "definition": {
+          "instance": 1032,
+          "product": {
+            "instance": 1034,
+            "id": "NUT",
+            "name": "NUT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            -30.0,
+            15.0,
+            -10.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": "socket-1"
+      },
+      {
+        "path": [
+          1333
+        ],
+        "label": [
+          "10"
+        ],
+        "definition": {
+          "instance": 1032,
+          "product": {
+            "instance": 1034,
+            "id": "NUT",
+            "name": "NUT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            30.0,
+            15.0,
+            -10.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": "socket-1"
+      }
+    ],
+    "neighbours": [
+      {
+        "path": [
+          384
+        ],
+        "label": [
+          "1"
+        ],
+        "definition": {
+          "instance": 63,
+          "product": {
+            "instance": 65,
+            "id": "PLATE",
+            "name": "PLATE"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 2.6645352591003757e-15,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          1028
+        ],
+        "label": [
+          "3"
+        ],
+        "definition": {
+          "instance": 752,
+          "product": {
+            "instance": 754,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            -30.0,
+            -15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          1308
+        ],
+        "label": [
+          "5"
+        ],
+        "definition": {
+          "instance": 752,
+          "product": {
+            "instance": 754,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            30.0,
+            -15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          1318
+        ],
+        "label": [
+          "7"
+        ],
+        "definition": {
+          "instance": 752,
+          "product": {
+            "instance": 754,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            -30.0,
+            15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      },
+      {
+        "path": [
+          1328
+        ],
+        "label": [
+          "9"
+        ],
+        "definition": {
+          "instance": 752,
+          "product": {
+            "instance": 754,
+            "id": "BOLT",
+            "name": "BOLT"
+          }
+        },
+        "transform": {
+          "rotation": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            30.0,
+            15.0,
+            8.0
+          ]
+        },
+        "part_uncertainty_mm": 1e-7,
+        "vertex_offset_mm": 1.3788969965844444e-12,
+        "placement_uncertainty_mm": 1e-7,
+        "socket": null
+      }
+    ],
+    "sockets": [
+      {
+        "id": "socket-1",
+        "occurrences": [
+          [
+            1302
+          ],
+          [
+            1313
+          ],
+          [
+            1323
+          ],
+          [
+            1333
+          ]
+        ],
+        "requirements": [
+          {
+            "id": "seat:plane-1186",
+            "requires": {
+              "kind": "seat",
+              "plane": "plane-1186",
+              "normal": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "offset_mm": -8.881784197001e-16,
+              "contacts": [
+                {
+                  "face": 1186,
+                  "basis": "target_face",
+                  "outline": {
+                    "status": "known",
+                    "loops": [
+                      {
+                        "bound": 1187,
+                        "outer": true,
+                        "area_mm2": 86.60254037843998,
+                        "segments": [
+                          {
+                            "kind": "line",
+                            "edge": 1054,
+                            "from_mm": [
+                              5.773502691896,
+                              0.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              2.886751345948,
+                              5.0,
+                              0.0
+                            ],
+                            "across": "plane-1040"
+                          },
+                          {
+                            "kind": "line",
+                            "edge": 1116,
+                            "from_mm": [
+                              2.886751345948,
+                              5.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              -2.886751345948,
+                              5.0,
+                              0.0
+                            ],
+                            "across": "plane-1111"
+                          },
+                          {
+                            "kind": "line",
+                            "edge": 1192,
+                            "from_mm": [
+                              -2.886751345948,
+                              5.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              -5.773502691896,
+                              7.070501591499e-16,
+                              0.0
+                            ],
+                            "across": "plane-1247"
+                          },
+                          {
+                            "kind": "line",
+                            "edge": 1200,
+                            "from_mm": [
+                              -5.773502691896,
+                              7.070501591499e-16,
+                              0.0
+                            ],
+                            "to_mm": [
+                              -2.886751345948,
+                              -5.0,
+                              0.0
+                            ],
+                            "across": "plane-1264"
+                          },
+                          {
+                            "kind": "line",
+                            "edge": 1208,
+                            "from_mm": [
+                              -2.886751345948,
+                              -5.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              2.886751345948,
+                              -5.0,
+                              0.0
+                            ],
+                            "across": "plane-1230"
+                          },
+                          {
+                            "kind": "line",
+                            "edge": 1094,
+                            "from_mm": [
+                              2.886751345948,
+                              -5.0,
+                              0.0
+                            ],
+                            "to_mm": [
+                              5.773502691896,
+                              0.0,
+                              0.0
+                            ],
+                            "across": "plane-1080"
+                          }
+                        ]
+                      },
+                      {
+                        "bound": 1214,
+                        "outer": false,
+                        "area_mm2": -19.634954084936208,
+                        "segments": [
+                          {
+                            "kind": "arc",
+                            "edge": 1217,
+                            "from_mm": [
+                              2.5,
+                              -6.123233995737e-16,
+                              -8.881784197001e-16
+                            ],
+                            "to_mm": [
+                              2.5,
+                              -6.123233995737e-16,
+                              -8.881784197001e-16
+                            ],
+                            "center_mm": [
+                              0.0,
+                              0.0,
+                              -8.881784197001e-16
+                            ],
+                            "radius_mm": 2.5,
+                            "sweep_rad": -6.283185307179586,
+                            "across": "cylinder-1276"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  "by": [
+                    {
+                      "neighbour": [
+                        384
+                      ],
+                      "face": 234,
+                      "gap_mm": 0.0,
+                      "flags": []
+                    }
+                  ]
+                }
+              ],
+              "rings": []
+            },
+            "floor_mm": 1e-7,
+            "flags": [],
+            "sources": [
+              {
+                "rule": "C1",
+                "occurrence": [
+                  1302
+                ],
+                "neighbour": [
+                  384
+                ],
+                "feature": null,
+                "faces": [
+                  234
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "C1",
+                "occurrence": [
+                  1313
+                ],
+                "neighbour": [
+                  384
+                ],
+                "feature": null,
+                "faces": [
+                  234
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "C1",
+                "occurrence": [
+                  1323
+                ],
+                "neighbour": [
+                  384
+                ],
+                "feature": null,
+                "faces": [
+                  234
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "C1",
+                "occurrence": [
+                  1333
+                ],
+                "neighbour": [
+                  384
+                ],
+                "feature": null,
+                "faces": [
+                  234
+                ],
+                "e_max_mm": null,
+                "sine": null,
+                "margin_mm": null,
+                "gap_mm": 0.0,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              }
+            ]
+          },
+          {
+            "id": "bore:hole-1276",
+            "requires": {
+              "kind": "bore",
+              "hole": "hole-1276",
+              "axis": {
+                "point_mm": [
+                  0.0,
+                  0.0,
+                  -5.0
+                ],
+                "direction": [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              },
+              "spans": [
+                {
+                  "from_mm": 0.0,
+                  "to_mm": 4.999999999999999,
+                  "hole_diameter_mm": 5.0,
+                  "clear_diameter_mm": 6.0,
+                  "fit": "interference",
+                  "pinned": true
+                }
+              ],
+              "open": {
+                "start": true,
+                "finish": true
+              },
+              "depth": "known"
+            },
+            "floor_mm": 1e-7,
+            "flags": [
+              "thread_not_confirmed"
+            ],
+            "sources": [
+              {
+                "rule": "J1",
+                "occurrence": [
+                  1302
+                ],
+                "neighbour": [
+                  384
+                ],
+                "feature": "hole-307",
+                "faces": [
+                  307
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 8.881784197001252e-16,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B3",
+                "occurrence": [
+                  1302
+                ],
+                "neighbour": [
+                  1028
+                ],
+                "feature": "shaft-985",
+                "faces": [
+                  985
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": -0.5,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  4.999999999999999
+                ],
+                "floor_mm": 1e-7,
+                "flags": [
+                  "thread_not_confirmed"
+                ]
+              },
+              {
+                "rule": "J1",
+                "occurrence": [
+                  1313
+                ],
+                "neighbour": [
+                  384
+                ],
+                "feature": "hole-324",
+                "faces": [
+                  324
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 8.881784197001252e-16,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B3",
+                "occurrence": [
+                  1313
+                ],
+                "neighbour": [
+                  1308
+                ],
+                "feature": "shaft-985",
+                "faces": [
+                  985
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": -0.5,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  4.999999999999999
+                ],
+                "floor_mm": 1e-7,
+                "flags": [
+                  "thread_not_confirmed"
+                ]
+              },
+              {
+                "rule": "J1",
+                "occurrence": [
+                  1323
+                ],
+                "neighbour": [
+                  384
+                ],
+                "feature": "hole-341",
+                "faces": [
+                  341
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 8.881784197001252e-16,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B3",
+                "occurrence": [
+                  1323
+                ],
+                "neighbour": [
+                  1318
+                ],
+                "feature": "shaft-985",
+                "faces": [
+                  985
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": -0.5,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  4.999999999999999
+                ],
+                "floor_mm": 1e-7,
+                "flags": [
+                  "thread_not_confirmed"
+                ]
+              },
+              {
+                "rule": "J1",
+                "occurrence": [
+                  1333
+                ],
+                "neighbour": [
+                  384
+                ],
+                "feature": "hole-358",
+                "faces": [
+                  358
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": null,
+                "gap_mm": 8.881784197001252e-16,
+                "span_mm": null,
+                "floor_mm": 1e-7,
+                "flags": []
+              },
+              {
+                "rule": "B3",
+                "occurrence": [
+                  1333
+                ],
+                "neighbour": [
+                  1328
+                ],
+                "feature": "shaft-985",
+                "faces": [
+                  985
+                ],
+                "e_max_mm": 0.0,
+                "sine": 0.0,
+                "margin_mm": -0.5,
+                "gap_mm": null,
+                "span_mm": [
+                  0.0,
+                  4.999999999999999
+                ],
+                "floor_mm": 1e-7,
+                "flags": [
+                  "thread_not_confirmed"
+                ]
+              }
+            ]
+          }
+        ],
+        "left_out": []
+      }
+    ],
+    "envelope": {
+      "check_set": "others_and_copies",
+      "extent": {
+        "min_mm": [
+          -5.773502691897379,
+          -5.0000000000013785,
+          -5.0000000000013785
+        ],
+        "max_mm": [
+          5.773502691897379,
+          5.0000000000013785,
+          1.3788969965844444e-12
+        ]
+      }
+    }
+  },
+  "digest": "sha256:ccf1453042db89953217a21a893b8a68560b012ac92e5f8ec8696fd046c10769",
+  "review": [
+    {
+      "socket": "socket-1",
+      "requirement": "seat:plane-1186",
+      "status": "unreviewed",
+      "note": null
+    },
+    {
+      "socket": "socket-1",
+      "requirement": "bore:hole-1276",
+      "status": "unreviewed",
+      "note": null
+    }
+  ],
+  "stale_reviews": []
+}

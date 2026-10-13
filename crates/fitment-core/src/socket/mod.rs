@@ -45,7 +45,7 @@ pub const SOCKET_FORMAT_VERSION: u32 = 1;
 
 /// The version of the socket rules: it rises whenever a socket rule,
 /// constant, order or field could change any socket (R20).
-pub const SOCKET_RULES_VERSION: u32 = 4;
+pub const SOCKET_RULES_VERSION: u32 = 5;
 
 /// The least contact tolerance, in mm (Z3).
 pub(crate) const CONTACT_MM: f64 = 0.01;
@@ -884,7 +884,12 @@ mod tests {
     /// it now states, as anyone can: true if `from_json` refuses it as
     /// breaking a rule (9.4).
     fn refused(edit: impl FnOnce(&mut Extracted)) -> bool {
-        let Ok(mut document) = SocketDocument::extract(S01, Some("BRACKET"), None) else {
+        refused_in("BRACKET", edit)
+    }
+
+    /// The same for s01's `part`.
+    fn refused_in(part: &str, edit: impl FnOnce(&mut Extracted)) -> bool {
+        let Ok(mut document) = SocketDocument::extract(S01, Some(part), None) else {
             return false;
         };
         let Some(extracted) = document.extracted.as_mut() else {
@@ -896,6 +901,38 @@ mod tests {
             SocketDocument::from_json(&document.to_json()),
             Err(SocketFormatError::Invalid(_))
         )
+    }
+
+    /// 9.4: a clearance span's clear diameter is the strictest its sources'
+    /// margins give.
+    #[test]
+    fn a_clearance_looser_than_its_sources_margins_is_refused() {
+        // A bore's clear diameter lowered below what its bolt reaches (the
+        // value is still a clearance, under the original).
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    if let Requires::Bore { spans, .. } = &mut r.requires {
+                        for span in spans {
+                            span.clear_diameter_mm = span.clear_diameter_mm.map(|c| c - 0.1);
+                        }
+                    }
+                }
+            }
+        }));
+        // A bolt's limit raised past the room its holes leave.
+        assert!(!refused_in("BOLT", |_| {}));
+        assert!(refused_in("BOLT", |e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    if let Requires::Shaft { spans, .. } = &mut r.requires {
+                        for span in spans {
+                            span.clear_diameter_mm = span.clear_diameter_mm.map(|c| c + 0.1);
+                        }
+                    }
+                }
+            }
+        }));
     }
 
     #[test]

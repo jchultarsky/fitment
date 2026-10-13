@@ -644,9 +644,10 @@ def check_refused(path, solids, codes, problems, case):
 PLACEMENT_TOL = 1e-9  # mm and rotation entries (P9): answers are rounded to 9 decimals
 
 
-def xcaf_leaves(path):
+def xcaf_leaves(path, bind=False):
     """Every leaf occurrence Open CASCADE's XCAF reads, as (product name,
-    3x4 rows root <- leaf), composed from the free shapes down."""
+    3x4 rows root <- leaf, placed shape), composed from the free shapes
+    down; with `bind`, also a function giving a face's #id (or None)."""
     from OCP.collections import Sequence_TDF_Label
     from OCP.STEPCAFControl import STEPCAFControl_Reader
     from OCP.TCollection import TCollection_ExtendedString
@@ -686,7 +687,28 @@ def xcaf_leaves(path):
     tool.GetFreeShapes(free)
     for i in range(1, free.Length() + 1):
         walk(free.Value(i), TopLoc_Location())
-    return out
+    if not bind:
+        return out
+    from OCP.TopAbs import TopAbs_FORWARD
+    model = reader.Reader().StepModel()
+    entities = [model.Value(rank) for rank in range(1, model.NbEntities() + 1)]
+    by_rank = {id(entity): rank for rank, entity in enumerate(entities, 1)}
+    ranks = file_ranks(path)
+    ids = {rank: id_ for id_, rank in ranks.items()} if len(ranks) == len(entities) else {}
+    transfers = reader.Reader().WS().TransferReader()
+
+    def face_id(face):
+        if face is None:
+            # Asked whether faces bind at all: not when the file's
+            # instances do not each start a line.
+            return bool(ids)
+        key = face.Located(TopLoc_Location()).Oriented(TopAbs_FORWARD)
+        entity = transfers.EntityFromShapeResult(key, 1)
+        return None if entity is None else ids.get(by_rank.get(id(entity)))
+
+    # The entities stay alive with the reader the function holds.
+    face_id.keep = (reader, doc, entities)
+    return out, face_id
 
 
 def check_assembly(directory, case):
@@ -1438,7 +1460,7 @@ def seat_problems(where, socket, m, target, others, tally):
                 near = [dot(n, sub(gp, f[2])) for f in faces for g, gn, gp, gb in theirs
                         if dot(gn, n) <= -COS_LIMIT and abs(dot(n, sub(gp, f[2]))) <= NEAR
                         and f[3].Distance(gb) <= NEAR + 1e-6]
-                key = "seats of unknown outline" if near else "seats of unknown outline, no face near"
+                key = "seats of unknown outline" if near else "seats of unknown outline and no face near"
                 gaps = near or [dot(n, sub(gp, f[2])) for f in faces for g, gn, gp, gb in theirs
                                 if dot(gn, n) <= -COS_LIMIT and abs(dot(n, sub(gp, f[2]))) <= NEAR]
                 tally[key] = tally.get(key, 0) + 1
@@ -1515,6 +1537,302 @@ def seat_problems(where, socket, m, target, others, tally):
     return problems
 
 
+def detail_problems(where, socket, m, target, leaves, mine, neighbours, face_id, tally, touchers):
+    """I4's `max_extra_mm`, each seat's touchers, each grip's holes and
+    each partial cylinder, against Open CASCADE. A merged socket lists
+    the touchers of all its occurrences: each must hold at one of them,
+    so `touchers` collects, per (socket, plane, neighbour, face), whether
+    one occurrence found it."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    problems = []
+    others = [shape for i, (_, _, shape) in enumerate(leaves) if i != mine]
+    requirements = [r["requires"] for r in socket["requirements"]]
+    # I4: beyond one end of the shaft, air for max_extra and then material.
+    for q in requirements:
+        if q["kind"] != "shaft" or q.get("max_extra_mm") is None:
+            continue
+        tally["max extras"] += 1
+        x = q["max_extra_mm"]
+        lo = min(sp["from_mm"] for sp in q["spans"])
+        hi = max(sp["to_mm"] for sp in q["spans"])
+        # Just inside the shaft's end at each end, where its rim would meet
+        # a floor (a ring's floor may be a step, off the axis).
+        ok = False
+        for end, out, span in ((lo, -1, min(q["spans"], key=lambda sp: sp["from_mm"])),
+                               (hi, 1, max(q["spans"], key=lambda sp: sp["to_mm"]))):
+            # On the axis (a pin in a drilled hole), or just inside its rim
+            # (a ring's floor may be a step): some solid's material begins
+            # there, max_extra beyond the end (another part may lie between).
+            for radius in (0.0, 0.98 * span["shaft_diameter_mm"] / 2):
+                after = ring(m, q["axis"], end + out * (x + 0.01), radius)
+                before = ring(m, q["axis"], end + out * (x - 0.01), radius)
+                ok = ok or any(inside_any(a_, [o]) and (x <= 0.02 or not inside_any(b_, [o]))
+                               for o in others for a_, b_ in zip(after, before))
+        if not ok:
+            problems.append(f"{where} shaft {q['shaft']}: max_extra_mm {x}, but Open CASCADE finds no floor that far "
+                            f"beyond either end")
+    # Touchers: the face named, of the neighbour named, opposed to the seat
+    # at the gap stated.
+    placed = {tuple(n["path"]): [row + [n["transform"]["translation_mm"][i]]
+                                 for i, row in enumerate(n["transform"]["rotation"])] for n in neighbours}
+    for requirement in socket["requirements"]:
+        q, requirement_floor = requirement["requires"], requirement["floor_mm"]
+        if q["kind"] != "seat":
+            continue
+        n = turn(m, q["normal"])
+        offset = dot(n, apply(m, [c * q["offset_mm"] for c in q["normal"]]))
+        for contact in q["contacts"]:
+            for by in contact["by"]:
+                key = (where.rsplit(" ", 1)[0] + " " + socket["id"], q["plane"], tuple(by["neighbour"]), by["face"],
+                       by["gap_mm"])
+                if face_id(None) is False:
+                    tally["touchers unbound"] = tally.get("touchers unbound", 0) + 1
+                    continue
+                t = placed.get(tuple(by["neighbour"]))
+                leaves_there = [shape for i, (_, lm, shape) in enumerate(leaves) if i != mine and t is not None
+                                and all(abs(lm[r][c] - t[r][c]) <= 1e-6 for r in range(3) for c in range(4))]
+                found = False
+                for shape in leaves_there:
+                    for f in explore(shape, TopAbs_FACE):
+                        f = as_face(f)
+                        if face_id(f) != by["face"]:
+                            continue
+                        facts = plane_facts(f)
+                        if facts is not None:
+                            gap = dot(n, facts[1]) - offset
+                            found = found or (dot(facts[0], n) <= -COS_LIMIT and abs(gap - by["gap_mm"]) <= 1e-5)
+                            continue
+                        # A ring's (H1): a cylinder or cone ending on the
+                        # plane, its axis along the normal.
+                        surface = BRepAdaptor_Surface(f)
+                        u0, u1, v0, v1 = BRepTools.UVBounds_s(f)
+                        ends = [xyz(surface.Value((u0 + u1) / 2, v)) for v in (v0, v1)]
+                        tau = max(TOUCH, requirement_floor) + 1e-6
+                        found = found or "unknown_outline" in by["flags"] or any(
+                            abs(dot(n, e) - offset - by["gap_mm"]) <= tau for e in ends)
+                touchers[key] = touchers.get(key, False) or bool(found)
+    # Grip holes: each a bore or left-out hole of the socket, along the
+    # grip's normal.
+    axes = {q.get("hole"): q["axis"] for q in requirements if q["kind"] == "bore"}
+    axes.update({left["feature"]: left["axis"] for left in socket["left_out"]})
+    normals = {q["plane"]: q["normal"] for q in requirements if q["kind"] == "seat"}
+    for q in requirements:
+        if q["kind"] != "grip":
+            continue
+        normal = next((normals[x] for x in q["seats"] if x in normals), None)
+        for hole in q["holes"]:
+            tally["grip holes"] += 1
+            axis = axes.get(hole)
+            if axis is None or normal is None or abs(dot(axis["direction"], normal)) < 1 - 1e-9:
+                problems.append(f"{where} grip {q['seats']}: hole {hole} is no bore or left-out hole along its normal")
+    # Partial cylinders: a face of the target on that axis and diameter,
+    # with another solid within the near band of it.
+    for q in requirements:
+        if q["kind"] not in ("partial_bore", "partial_shaft"):
+            continue
+        tally["partial cylinders"] += 1
+        p, d = apply(m, q["axis"]["point_mm"]), turn(m, q["axis"]["direction"])
+        faces = []
+        for f in explore(target, TopAbs_FACE):
+            f = as_face(f)
+            surface = BRepAdaptor_Surface(f)
+            if surface.GetType() == Kind.GeomAbs_Cylinder:
+                c = surface.Cylinder()
+                if abs(2 * c.Radius() - q["diameter_mm"]) <= 1e-4 and on_line(
+                        [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]], {"point_mm": p, "direction": d},
+                        xyz(c.Location()), xyz(c.Axis().Direction())):
+                    faces.append(f)
+        near = any(BRepExtrema_DistShapeShape(f, o).Value() <= NEAR for f in faces for o in others)
+        if not faces or not near:
+            problems.append(f"{where} {q['kind']} {q['cylinder']}: Open CASCADE finds "
+                            f"{'no such face' if not faces else 'nothing near it'}")
+    return problems
+
+
+TOUCH = 0.01  # mm: fitment's CONTACT_MM, τ without a floor
+
+
+def mentioned(value, faces, features, causes=None):
+    """Every contact face and feature number a socket's JSON names, and
+    the neighbour faces its unresolved causes list."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "face" and isinstance(item, int):
+                faces.add(item)
+            if key == "causes" and causes is not None:
+                causes.update(f for c in item for f in c.get("faces", []))
+            mentioned(item, faces, features, causes)
+    elif isinstance(value, list):
+        for item in value:
+            mentioned(item, faces, features, causes)
+    elif isinstance(value, str):
+        match = re.fullmatch(r"(?:[a-z_:]+[:-])?[a-z_]+-(\d+)", value)
+        if match:
+            features.add(int(match.group(1)))
+
+
+def on_line(m, axis, point, direction):
+    """True if the placed `axis` and the line (point, direction) agree."""
+    p, d = apply(m, axis["point_mm"]), turn(m, axis["direction"])
+    if abs(abs(dot(d, direction)) - 1) > 1e-6:
+        return False
+    off = sub(point, p)
+    across = sub(off, [c * dot(off, d) for c in d])
+    return math.sqrt(dot(across, across)) <= 1e-4
+
+
+def held_by_geometry(face, socket, m):
+    """True if a requirement or left-out feature of `socket` lies on the
+    (placed) face's surface: a cylinder on a bore's, shaft's, partial's or
+    left-out axis and diameter, a plane on a seat's plane, a cone on a
+    conical seat's apex."""
+    surface = BRepAdaptor_Surface(face)
+    kind = surface.GetType()
+    items = [r["requires"] for r in socket["requirements"]] + socket["left_out"]
+    if kind == Kind.GeomAbs_Cylinder:
+        c = surface.Cylinder()
+        point, direction, d = xyz(c.Location()), xyz(c.Axis().Direction()), 2 * c.Radius()
+        for q in items:
+            if "axis" not in q or not on_line(m, q["axis"], point, direction):
+                continue
+            diameters = [q.get("diameter_mm")] + [s.get("hole_diameter_mm") or s.get("shaft_diameter_mm")
+                                                 for s in q.get("spans", [])]
+            if any(x is not None and abs(x - d) <= 1e-4 for x in diameters):
+                return True
+    elif kind == Kind.GeomAbs_Plane:
+        facts = plane_facts(face)
+        n, point = facts[0], facts[1]
+        for q in items:
+            if q.get("kind") == "seat":
+                qn = turn(m, q["normal"])
+                offset = dot(qn, apply(m, [c * q["offset_mm"] for c in q["normal"]]))
+                if abs(dot(qn, n)) >= 1 - 1e-9 and abs(dot(qn, point) - offset) <= 1e-5:
+                    return True
+    elif kind == Kind.GeomAbs_Cone:
+        apex = xyz(surface.Cone().Apex())
+        for q in items:
+            if q.get("kind") == "conical_seat" and math.dist(apex, apply(m, q["apex_mm"])) <= 1e-5:
+                return True
+    return False
+
+
+def touch_problems(where, socket, m, target, named, face_id, tally):
+    """C6's direction: every face of the target that another solid comes
+    within τ of, inside the face rather than on its edges only, is held by
+    the socket: a seat's contact, a feature a requirement names (by the
+    smallest #id of the faces on its plane or cylinder), or a requirement
+    on its surface."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape, BRepExtrema_SupportType
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.TopoDS import TopoDS_Compound
+
+    faces, features, causes = set(), set(), set()
+    mentioned(socket, faces, features, causes)
+
+    def rim(face):
+        compound, builder = TopoDS_Compound(), BRep_Builder()
+        builder.MakeCompound(compound)
+        for edge in explore(face, TopAbs_EDGE):
+            builder.Add(compound, edge)
+        return compound
+
+    def touches(face, measure, shape):
+        """The other face at each point inside `face`, away from its rim,
+        where the other solid comes within τ; a face of the same plane and
+        side is an overlap (an interference's), not a touch."""
+        from OCP.BRepGProp import BRepGProp_Face
+        from OCP.gp import gp_Vec
+
+        edges, out = rim(face), []
+        n = plane_facts(face)
+        normals = BRepGProp_Face(face)
+        for k in range(1, measure.NbSolution() + 1):
+            if measure.SupportTypeShape1(k) != BRepExtrema_SupportType.BRepExtrema_IsInFace:
+                continue
+            vertex = BRepBuilderAPI_MakeVertex(measure.PointOnShape1(k)).Vertex()
+            to_rim = BRepExtrema_DistShapeShape(vertex, edges)
+            if to_rim.IsDone() and to_rim.Value() <= TOUCH:
+                continue
+            # Just beneath it, inside the target: in the other solid too, the
+            # two overlap there (an interference's, or a clash).
+            u, v = measure.ParOnFaceS1(k)
+            at, normal = gp_Pnt(), gp_Vec()
+            normals.Normal(u, v, at, normal)
+            if normal.Magnitude() > 0:
+                normal.Normalize()
+                nv = (normal.X(), normal.Y(), normal.Z())
+                beneath = [c - TOUCH / 2 * x for c, x in zip(xyz(at), nv)]
+                t1, t2 = perpendiculars(nv)
+                around = [beneath] + [[c + sign * TOUCH / 2 * x for c, x in zip(beneath, t)]
+                                      for t in (t1, t2) for sign in (1, -1)]
+                if any(inside_any(q, [shape]) for q in around):
+                    continue
+            other = None
+            if measure.SupportTypeShape2(k) == BRepExtrema_SupportType.BRepExtrema_IsInFace:
+                other = as_face(measure.SupportOnShape2(k))
+                m2 = plane_facts(other)
+                if n is not None and m2 is not None and dot(n[0], m2[0]) >= 1 - 1e-9:
+                    continue
+            out.append(other)
+        return out
+    boxes = []
+    for name, shape in named:
+        box = Bnd_Box()
+        BRepBndLib.Add_s(shape, box)
+        boxes.append((name, shape, box))
+    ours = [as_face(f) for f in explore(target, TopAbs_FACE)]
+    ids = [face_id(f) for f in ours]
+    # The smallest #id on each face's surface: the feature's id, for a
+    # plane or a lone cylinder.
+    def surface_key(face):
+        surface = BRepAdaptor_Surface(face)
+        if surface.GetType() == Kind.GeomAbs_Plane:
+            n, point, _ = plane_facts(face)
+            return ("plane", tuple(round(c, 6) for c in n), round(dot(n, point), 5))
+        if surface.GetType() == Kind.GeomAbs_Cylinder:
+            c = surface.Cylinder()
+            d = xyz(c.Axis().Direction())
+            d = d if (d[2], d[1], d[0]) > (0, 0, 0) else tuple(-x for x in d)
+            p = xyz(c.Location())
+            foot = sub(p, [x * dot(p, d) for x in d])
+            return ("cylinder", tuple(round(x, 6) for x in d), tuple(round(x, 4) for x in foot), round(c.Radius(), 6))
+        return None
+    keys = [surface_key(f) for f in ours]
+    smallest = {}
+    for key, id_ in zip(keys, ids):
+        if key is not None and id_ is not None:
+            smallest[key] = min(smallest.get(key, id_), id_)
+    for face, id_, key in zip(ours, ids, keys):
+        if id_ is None:
+            tally["touch faces unbound"] = tally.get("touch faces unbound", 0) + 1
+            continue
+        box = Bnd_Box()
+        BRepBndLib.Add_s(face, box)
+        for name, shape, other in boxes:
+            if box.Distance(other) > TOUCH:
+                continue
+            measure = BRepExtrema_DistShapeShape(face, shape)
+            if not measure.IsDone() or measure.Value() > TOUCH:
+                continue
+            found = touches(face, measure, shape)
+            if not found:
+                continue
+            tally["touching faces"] += 1
+            held = (id_ in faces or id_ in features or smallest.get(key) in features
+                    or held_by_geometry(face, socket, m)
+                    or any(face_id(as_face(f)) in causes for f in explore(shape, TopAbs_FACE)))
+            if not held:
+                problems = [f"{where}: face #{id_} touches {name} ({measure.Value():.3g} mm) and no requirement holds it"]
+                return problems
+            break
+    return []
+
+
 def r_(v):
     return [round(x, 6) for x in v]
 
@@ -1547,9 +1865,11 @@ def socket_problems(directory, case, binary, tally):
     is the check that sees one."""
     problems = []
     path = directory / case["file"]
-    leaves = xcaf_leaves(path)
-    if leaves is None:
+    read = xcaf_leaves(path, bind=True)
+    if read is None:
         return [f"{case['id']}: Open CASCADE cannot read it"]
+    leaves, face_id = read
+    touchers = {}
     for target in case["expect"].get("sockets", {}):
         run = subprocess.run([str(binary), "socket", str(path), "--part", target], capture_output=True)
         if run.returncode != 0:
@@ -1584,6 +1904,10 @@ def socket_problems(directory, case, binary, tally):
             tally["others"] += len(others)
             where = f"{case['id']} {target} {socket['id']}"
             problems += seat_problems(where, socket, m, leaves[mine[0]][2], others, tally)
+            named = [(leaf[0], leaf[2]) for i, leaf in enumerate(leaves) if i != mine[0]]
+            problems += touch_problems(where, socket, m, leaves[mine[0]][2], named, face_id, tally)
+            problems += detail_problems(where, socket, m, leaves[mine[0]][2], leaves, mine[0],
+                                        extracted["neighbours"], face_id, tally, touchers)
             for requirement in socket["requirements"]:
                 requires = requirement["requires"]
                 if requires["kind"] in ("bore", "shaft"):
@@ -1604,6 +1928,11 @@ def socket_problems(directory, case, binary, tally):
                         problems.append(f"{where}: {left['feature']} is left out, "
                                         f"but Open CASCADE finds material on its axis at {point}")
                         break
+    tally["touchers"] += len(touchers)
+    for (where, plane, neighbour, face, gap), found in sorted(touchers.items()):
+        if not found:
+            problems.append(f"{where} seat {plane}: Open CASCADE finds no face #{face} of {list(neighbour)} "
+                            f"opposed to it {gap} mm away, at any occurrence")
     return problems
 
 
@@ -1629,7 +1958,8 @@ def socket_main(argv):
     else:
         cases = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))["cases"]
     tally = {"cases": 0, "others": 0, "bore spans": 0, "shaft spans": 0, "left out holes": 0, "seats": 0,
-             "conical seats": 0, "grips": 0, "seat pairs": 0, "faces off every seat": 0}
+             "conical seats": 0, "grips": 0, "seat pairs": 0, "faces off every seat": 0, "touching faces": 0, "max extras": 0, "touchers": 0, "grip holes": 0,
+             "partial cylinders": 0}
     problems = []
     for case in cases:
         if case.get("kind") != "assembly" or "sockets" not in case["expect"]:

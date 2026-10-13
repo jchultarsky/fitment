@@ -192,6 +192,18 @@ fn every_corpus_assembly_reads_as_its_construction_says() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// True for a requirement whose stations and openings the part's box
+/// bounds (U3's unknown ends, U1's partial cylinders, I7): they depend on
+/// the frame the part is modelled in.
+fn framed(r: &Value) -> bool {
+    let flags = r["flags"].as_array().cloned().unwrap_or_default();
+    let kind = r["requires"]["kind"].as_str().unwrap_or("").to_owned();
+    kind.starts_with("partial")
+        || flags
+            .iter()
+            .any(|f| f == "extent_unknown" || f == "target_undecided" || f == "partial_neighbour")
+}
+
 /// P2, P4 and P5: each `_rot` variant's sockets are its base's, each
 /// occurrence placed by VARIANT ∘ the base's; each `_tgt` variant's are its
 /// base's moved by TILT, the frame its targets are modelled in.
@@ -224,21 +236,20 @@ fn every_variant_has_its_base_s_sockets() {
             // cylinders, I7) depends on the frame the part is modelled in:
             // in a `_tgt` variant those requirements' stations and openings
             // are left out; the rest is compared.
-            let framed = |r: &Value| {
-                let flags = r["flags"].as_array().cloned().unwrap_or_default();
-                let kind = r["requires"]["kind"].as_str().unwrap_or("").to_owned();
-                variant["kind"] == "tgt"
-                    && (kind.starts_with("partial")
-                        || flags.iter().any(|f| {
-                            f == "extent_unknown"
-                                || f == "target_undecided"
-                                || f == "partial_neighbour"
-                        }))
-            };
-            // Occurrence by occurrence, in path order: each with its socket.
+            let framed = |r: &Value| variant["kind"] == "tgt" && framed(r);
+            // Occurrence by occurrence, in path order (in a `_perm` variant,
+            // whose paths are another order, by placement): each with its
+            // socket.
+            let by_placement = variant["kind"] == "perm";
             let shape = |extracted: &fitment_core::Extracted, tilt: bool| {
                 let mut out = serde_json::Map::new();
-                for (k, occurrence) in extracted.occurrences.iter().enumerate() {
+                let mut occurrences: Vec<_> = extracted.occurrences.iter().collect();
+                if by_placement {
+                    occurrences.sort_by_key(|o| {
+                        common::variants::key(&serde_json::to_value(o.transform).unwrap())
+                    });
+                }
+                for (k, occurrence) in occurrences.into_iter().enumerate() {
                     let socket = extracted
                         .sockets
                         .iter()

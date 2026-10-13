@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use super::model::{
     Extracted, Fit, Flag, Requirement, Requires, ReviewEntry, ReviewStatus, Socket,
 };
+use super::{CONTACT_MM, MERGE_MM};
 use crate::features::FeatureId;
 
 /// The longest review note, in characters.
@@ -115,31 +116,49 @@ fn requirement_rules(requirement: &Requirement) -> Checked {
         return Err("its floor is below one of its sources' (Y1)".to_owned());
     }
     lists_and_sources(requirement)?;
+    requires_rules(requirement)
+}
+
+/// The rules of each kind of requirement.
+fn requires_rules(requirement: &Requirement) -> Checked {
     let labelled = requirement.flags.contains(&Flag::ThreadNotConfirmed)
         || requirement.flags.contains(&Flag::Conflict);
     match &requirement.requires {
-        Requires::Bore { spans, .. } => bore_rules(spans, labelled)?,
-        Requires::Shaft { spans, .. } => shaft_rules(spans, labelled)?,
+        Requires::Bore { spans, .. } => {
+            bore_rules(spans, labelled)?;
+            margins(
+                spans.iter().map(|s| {
+                    (
+                        s.from_mm,
+                        s.to_mm,
+                        s.fit,
+                        s.clear_diameter_mm,
+                        s.hole_diameter_mm,
+                    )
+                }),
+                &requirement.sources,
+                -1.0,
+            )?;
+        }
+        Requires::Shaft { spans, .. } => {
+            shaft_rules(spans, labelled)?;
+            margins(
+                spans.iter().map(|s| {
+                    (
+                        s.from_mm,
+                        s.to_mm,
+                        s.fit,
+                        s.clear_diameter_mm,
+                        s.shaft_diameter_mm,
+                    )
+                }),
+                &requirement.sources,
+                1.0,
+            )?;
+        }
         Requires::Seat {
             contacts, rings, ..
-        } => {
-            if contacts.is_empty() || contacts.iter().any(|c| c.by.is_empty()) {
-                return Err("a seat has a contact with nothing on it".to_owned());
-            }
-            if rings.iter().any(|r| {
-                !(positive(r.inner_diameter_mm)
-                    && r.inner_diameter_mm < r.outer_diameter_mm
-                    && r.outer_diameter_mm.is_finite())
-            }) {
-                return Err("a ring's diameters are not ordered and positive".to_owned());
-            }
-            for c in contacts {
-                let known = crate::features::readback::outline(&c.outline, None)?;
-                if known.is_some() == (c.basis == super::model::Basis::Unknown) {
-                    return Err("a contact's basis disagrees with its outline".to_owned());
-                }
-            }
-        }
+        } => seat_rules(contacts, rings)?,
         Requires::Grip {
             seats, length_mm, ..
         } => {
@@ -187,6 +206,28 @@ fn requirement_rules(requirement: &Requirement) -> Checked {
             {
                 return Err("an unresolved requirement has no cause, or unsorted faces".to_owned());
             }
+        }
+    }
+    Ok(())
+}
+
+/// A seat: each contact touched, each ring's diameters ordered, each
+/// outline readable and its basis agreeing with it.
+fn seat_rules(contacts: &[super::model::SeatContact], rings: &[super::model::Ring]) -> Checked {
+    if contacts.is_empty() || contacts.iter().any(|c| c.by.is_empty()) {
+        return Err("a seat has a contact with nothing on it".to_owned());
+    }
+    if rings.iter().any(|r| {
+        !(positive(r.inner_diameter_mm)
+            && r.inner_diameter_mm < r.outer_diameter_mm
+            && r.outer_diameter_mm.is_finite())
+    }) {
+        return Err("a ring's diameters are not ordered and positive".to_owned());
+    }
+    for c in contacts {
+        let known = crate::features::readback::outline(&c.outline, None)?;
+        if known.is_some() == (c.basis == super::model::Basis::Unknown) {
+            return Err("a contact's basis disagrees with its outline".to_owned());
         }
     }
     Ok(())
@@ -268,6 +309,44 @@ fn shaft_rules(spans: &[super::model::ShaftSpan], labelled: bool) -> Checked {
         }
         if tight(s.fit) && !s.pinned {
             return Err("a tight fit is not pinned (Y1)".to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// A clearance span agrees with every source whose span overlaps it: each
+/// source's margin leaves a clearance (above its τ), and the clear
+/// diameter is the strictest they give, the original diameter shifted by
+/// twice the margin (`sign` −1 for a bore, whose occupant reaches in; +1
+/// for a shaft, whose holder leaves room). A clear diameter lowered (a
+/// bore) or raised (a shaft) by hand is refused.
+fn margins(
+    spans: impl Iterator<Item = (f64, f64, Fit, Option<f64>, f64)>,
+    sources: &[super::model::SourceRef],
+    sign: f64,
+) -> Checked {
+    for (from, to, fit, clear, diameter) in spans {
+        let (Fit::Clearance, Some(clear)) = (fit, clear) else {
+            continue;
+        };
+        for source in sources {
+            let (Some(margin), Some([a, b])) = (source.margin_mm, source.span_mm) else {
+                continue;
+            };
+            // Pieces are cut where spans end and joined only when equal, so
+            // a source over any of a span's interior holds over all of it.
+            if b.min(to) - a.max(from) <= MERGE_MM {
+                continue;
+            }
+            if margin <= CONTACT_MM.max(source.floor_mm) {
+                return Err("a clearance span has a source with no clearance".to_owned());
+            }
+            let limit = diameter + sign * 2.0 * margin;
+            if sign * (clear - limit) > 1e-9 * diameter.max(1.0) {
+                return Err(
+                    "a clearance span's clear diameter is looser than a source's margin".to_owned(),
+                );
+            }
         }
     }
     Ok(())
