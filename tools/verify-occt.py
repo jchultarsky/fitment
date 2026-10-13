@@ -1537,6 +1537,44 @@ def seat_problems(where, socket, m, target, others, tally):
     return problems
 
 
+def unstated_floor(where, q, sources, m, target, leaves, mine, placed, tally):
+    """I4 the other way: beyond an end of a shaft with no `max_extra_mm`,
+    past nothing but air, the part holding that end has no material (its
+    hole is no blind one), on the axis or just inside the shaft's rim."""
+    if not q["spans"]:
+        return []
+    lo = min(sp["from_mm"] for sp in q["spans"])
+    hi = max(sp["to_mm"] for sp in q["spans"])
+    for end, out, span in ((lo, -1, min(q["spans"], key=lambda sp: sp["from_mm"])),
+                           (hi, 1, max(q["spans"], key=lambda sp: sp["to_mm"]))):
+        holders = {tuple(src["neighbour"]) for src in sources
+                   if src["rule"] in ("I1", "I2") and src["span_mm"] is not None
+                   and min(abs(x - end) for x in src["span_mm"]) <= 1e-6}
+        shapes = [shape for i, (_, lm, shape) in enumerate(leaves) if i != mine and any(
+            all(abs(lm[r][c] - placed[h][r][c]) <= 1e-6 for r in range(3) for c in range(4))
+            for h in holders if h in placed)]
+        others = [shape for i, (_, _, shape) in enumerate(leaves) if i != mine]
+        # A shaft wider than its hole (an interference) meets the hole's
+        # wall beyond its end, at its rim: only the axis finds a floor.
+        radii = (0.0,) if span["fit"] == "interference" else (0.0, 0.98 * span["shaft_diameter_mm"] / 2)
+        for holder in shapes:
+            tally["ends checked for a floor"] = tally.get("ends checked for a floor", 0) + 1
+            for radius in radii:
+                step, reach = 0.05, 0.0
+                while reach < 200:
+                    reach += step
+                    points = ring(m, q["axis"], end + out * reach, radius)
+                    if any(inside_any(p_, [target]) for p_ in points):
+                        break  # the part's own body: no free end here
+                    if any(inside_any(p_, [holder]) for p_ in points):
+                        return [f"{where} shaft {q['shaft']}: no max_extra_mm, but Open CASCADE finds the part "
+                                f"holding it {reach:.3g} mm beyond an end"]
+                    if any(inside_any(p_, others) for p_ in points):
+                        break  # another part first
+                    step = min(1.0, step * 1.5)
+    return []
+
+
 def detail_problems(where, socket, m, target, leaves, mine, neighbours, face_id, tally, touchers):
     """I4's `max_extra_mm`, each seat's touchers, each grip's holes and
     each partial cylinder, against Open CASCADE. A merged socket lists
@@ -1549,6 +1587,12 @@ def detail_problems(where, socket, m, target, leaves, mine, neighbours, face_id,
     others = [shape for i, (_, _, shape) in enumerate(leaves) if i != mine]
     requirements = [r["requires"] for r in socket["requirements"]]
     # I4: beyond one end of the shaft, air for max_extra and then material.
+    placed_paths = {tuple(n["path"]): [row + [n["transform"]["translation_mm"][i]]
+                                       for i, row in enumerate(n["transform"]["rotation"])] for n in neighbours}
+    for requirement in socket["requirements"]:
+        q = requirement["requires"]
+        if q["kind"] == "shaft" and q.get("max_extra_mm") is None:
+            problems += unstated_floor(where, q, requirement["sources"], m, target, leaves, mine, placed_paths, tally)
     for q in requirements:
         if q["kind"] != "shaft" or q.get("max_extra_mm") is None:
             continue
@@ -1603,13 +1647,24 @@ def detail_problems(where, socket, m, target, leaves, mine, neighbours, face_id,
                             gap = dot(n, facts[1]) - offset
                             found = found or (dot(facts[0], n) <= -COS_LIMIT and abs(gap - by["gap_mm"]) <= 1e-5)
                             continue
-                        # A ring's (H1): a cylinder or cone ending on the
-                        # plane, its axis along the normal.
+                        # A ring's (H1): a cylinder or cone of a neighbour
+                        # the seat has a ring of, its axis along the normal,
+                        # ending on the plane.
                         surface = BRepAdaptor_Surface(f)
+                        ring_neighbours = {tuple(x["neighbour"]) for x in q["rings"]}
+                        if surface.GetType() == Kind.GeomAbs_Cylinder:
+                            axis = xyz(surface.Cylinder().Axis().Direction())
+                        elif surface.GetType() == Kind.GeomAbs_Cone:
+                            axis = xyz(surface.Cone().Axis().Direction())
+                        else:
+                            found = found or "unknown_outline" in by["flags"]
+                            continue
+                        if tuple(by["neighbour"]) not in ring_neighbours or abs(dot(axis, n)) < 1 - 1e-6:
+                            continue
                         u0, u1, v0, v1 = BRepTools.UVBounds_s(f)
                         ends = [xyz(surface.Value((u0 + u1) / 2, v)) for v in (v0, v1)]
                         tau = max(TOUCH, requirement_floor) + 1e-6
-                        found = found or "unknown_outline" in by["flags"] or any(
+                        found = found or any(
                             abs(dot(n, e) - offset - by["gap_mm"]) <= tau for e in ends)
                 touchers[key] = touchers.get(key, False) or bool(found)
     # Grip holes: each a bore or left-out hole of the socket, along the
@@ -1653,23 +1708,27 @@ def detail_problems(where, socket, m, target, leaves, mine, neighbours, face_id,
 TOUCH = 0.01  # mm: fitment's CONTACT_MM, τ without a floor
 
 
-def mentioned(value, faces, features, causes=None):
-    """Every contact face and feature number a socket's JSON names, and
-    the neighbour faces its unresolved causes list."""
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if key == "face" and isinstance(item, int):
-                faces.add(item)
-            if key == "causes" and causes is not None:
-                causes.update(f for c in item for f in c.get("faces", []))
-            mentioned(item, faces, features, causes)
-    elif isinstance(value, list):
-        for item in value:
-            mentioned(item, faces, features, causes)
-    elif isinstance(value, str):
-        match = re.fullmatch(r"(?:[a-z_:]+[:-])?[a-z_]+-(\d+)", value)
-        if match:
-            features.add(int(match.group(1)))
+def held_ids(socket):
+    """What a socket holds by #id: its seats' contact faces; the feature
+    numbers its requirements and left-out features name (their ids and
+    their `hole`, `shaft`, `plane`, `cylinder`, `cone` or `feature`); and
+    the neighbour faces its unread neighbours (U4) list."""
+    faces, features, unread = set(), set(), set()
+    number = lambda text: [int(x) for x in re.findall(r"-(\d+)", text or "")]
+    for r in socket["requirements"]:
+        q = r["requires"]
+        features.update(number(r["id"]))
+        for key in ("hole", "shaft", "plane", "cylinder", "cone", "feature"):
+            if isinstance(q.get(key), str):
+                features.update(number(q[key]))
+        for c in q.get("contacts", []):
+            faces.add(c["face"])
+        for c in q.get("causes", []):
+            if c["cause"] == "neighbour_unread":
+                unread.update(c["faces"])
+    for left in socket["left_out"]:
+        features.update(number(left["feature"]))
+    return faces, features, unread
 
 
 def on_line(m, axis, point, direction):
@@ -1717,22 +1776,90 @@ def held_by_geometry(face, socket, m):
     return False
 
 
-def touch_problems(where, socket, m, target, named, face_id, tally):
-    """C6's direction: every face of the target that another solid comes
-    within τ of, inside the face rather than on its edges only, is held by
-    the socket: a seat's contact, a feature a requirement names (by the
-    smallest #id of the faces on its plane or cylinder), or a requirement
-    on its surface."""
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape, BRepExtrema_SupportType
-
-    from OCP.BRep import BRep_Builder
+def face_samples(face, edges, n=6):
+    """Points of `face` on an n x n grid of its parameters, inside it and
+    more than 2τ from its rim."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.gp import gp_Pnt2d
+
+    surface = BRepAdaptor_Surface(face)
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+    out = []
+    for i in range(n):
+        for j in range(n):
+            u, v = u0 + (i + 0.5) / n * (u1 - u0), v0 + (j + 0.5) / n * (v1 - v0)
+            if BRepClass_FaceClassifier(face, gp_Pnt2d(u, v), 1e-7).State() != TopAbs_IN:
+                continue
+            point = surface.Value(u, v)
+            to_rim = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(point).Vertex(), edges)
+            if to_rim.IsDone() and to_rim.Value() <= 2 * TOUCH:
+                continue
+            out.append(xyz(point))
+    return out
+
+
+def line_touch(face, shape, edges):
+    """True if `shape` comes within τ of a point inside `face`, more than
+    2τ from its rim, with nothing of `shape` just beneath it (a contact,
+    not a crossing)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape, BRepExtrema_SupportType
+    from OCP.BRepGProp import BRepGProp_Face
+    from OCP.gp import gp_Vec
+
+    measure = BRepExtrema_DistShapeShape(face, shape)
+    if not measure.IsDone() or measure.Value() > TOUCH:
+        return False
+    normals = BRepGProp_Face(face)
+    for k in range(1, measure.NbSolution() + 1):
+        if measure.SupportTypeShape1(k) != BRepExtrema_SupportType.BRepExtrema_IsInFace:
+            continue
+        to_rim = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(measure.PointOnShape1(k)).Vertex(), edges)
+        if to_rim.IsDone() and to_rim.Value() <= 2 * TOUCH:
+            continue
+        u, v = measure.ParOnFaceS1(k)
+        at, normal = gp_Pnt(), gp_Vec()
+        normals.Normal(u, v, at, normal)
+        if normal.Magnitude() == 0:
+            continue
+        normal.Normalize()
+        nv = (normal.X(), normal.Y(), normal.Z())
+        beneath = [c - TOUCH / 2 * x for c, x in zip(xyz(at), nv)]
+        t1, t2 = perpendiculars(nv)
+        around = [beneath] + [[c + sign * TOUCH / 2 * x for c, x in zip(beneath, t)]
+                              for t in (t1, t2) for sign in (1, -1)]
+        if not any(inside_any(q, [shape]) for q in around):
+            return True
+    return False
+
+
+def touch_problems(where, socket, m, target, named, face_id, tally, clash_ok):
+    """C6's direction, and A1's: every face of the target that another
+    solid comes within τ of, at points sampled inside it, is held by the
+    socket (a seat's contact, a feature a requirement names by the
+    smallest #id on its plane or cylinder, a requirement on its surface,
+    or an unread neighbour's faces); where the two overlap there, by an
+    interference requirement on that neighbour, if not so. And every
+    target hole with material of another solid on its axis is held."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepGProp import BRepGProp_Face
+    from OCP.gp import gp_Vec
     from OCP.TopoDS import TopoDS_Compound
 
-    faces, features, causes = set(), set(), set()
-    mentioned(socket, faces, features, causes)
+    faces, features, unread = held_ids(socket)
+    interfering = set()
+    for r in socket["requirements"]:
+        q = r["requires"]
+        tight = {"interference", "conflict"} & set(r["flags"]) or any(
+            sp.get("fit") == "interference" for sp in q.get("spans", []))
+        if tight:
+            interfering.update(tuple(src["neighbour"]) for src in r["sources"] if src["neighbour"])
 
     def rim(face):
         compound, builder = TopoDS_Compound(), BRep_Builder()
@@ -1741,52 +1868,15 @@ def touch_problems(where, socket, m, target, named, face_id, tally):
             builder.Add(compound, edge)
         return compound
 
-    def touches(face, measure, shape):
-        """The other face at each point inside `face`, away from its rim,
-        where the other solid comes within τ; a face of the same plane and
-        side is an overlap (an interference's), not a touch."""
-        from OCP.BRepGProp import BRepGProp_Face
-        from OCP.gp import gp_Vec
-
-        edges, out = rim(face), []
-        n = plane_facts(face)
-        normals = BRepGProp_Face(face)
-        for k in range(1, measure.NbSolution() + 1):
-            if measure.SupportTypeShape1(k) != BRepExtrema_SupportType.BRepExtrema_IsInFace:
-                continue
-            vertex = BRepBuilderAPI_MakeVertex(measure.PointOnShape1(k)).Vertex()
-            to_rim = BRepExtrema_DistShapeShape(vertex, edges)
-            if to_rim.IsDone() and to_rim.Value() <= TOUCH:
-                continue
-            # Just beneath it, inside the target: in the other solid too, the
-            # two overlap there (an interference's, or a clash).
-            u, v = measure.ParOnFaceS1(k)
-            at, normal = gp_Pnt(), gp_Vec()
-            normals.Normal(u, v, at, normal)
-            if normal.Magnitude() > 0:
-                normal.Normalize()
-                nv = (normal.X(), normal.Y(), normal.Z())
-                beneath = [c - TOUCH / 2 * x for c, x in zip(xyz(at), nv)]
-                t1, t2 = perpendiculars(nv)
-                around = [beneath] + [[c + sign * TOUCH / 2 * x for c, x in zip(beneath, t)]
-                                      for t in (t1, t2) for sign in (1, -1)]
-                if any(inside_any(q, [shape]) for q in around):
-                    continue
-            other = None
-            if measure.SupportTypeShape2(k) == BRepExtrema_SupportType.BRepExtrema_IsInFace:
-                other = as_face(measure.SupportOnShape2(k))
-                m2 = plane_facts(other)
-                if n is not None and m2 is not None and dot(n[0], m2[0]) >= 1 - 1e-9:
-                    continue
-            out.append(other)
-        return out
     boxes = []
-    for name, shape in named:
+    for name, shape, paths in named:
         box = Bnd_Box()
         BRepBndLib.Add_s(shape, box)
-        boxes.append((name, shape, box))
+        ids = {face_id(as_face(f)) for f in explore(shape, TopAbs_FACE)}
+        boxes.append((name, shape, box, paths, bool(ids & unread)))
     ours = [as_face(f) for f in explore(target, TopAbs_FACE)]
     ids = [face_id(f) for f in ours]
+
     # The smallest #id on each face's surface: the feature's id, for a
     # plane or a lone cylinder.
     def surface_key(face):
@@ -1802,35 +1892,76 @@ def touch_problems(where, socket, m, target, named, face_id, tally):
             foot = sub(p, [x * dot(p, d) for x in d])
             return ("cylinder", tuple(round(x, 6) for x in d), tuple(round(x, 4) for x in foot), round(c.Radius(), 6))
         return None
+
     keys = [surface_key(f) for f in ours]
     smallest = {}
     for key, id_ in zip(keys, ids):
         if key is not None and id_ is not None:
             smallest[key] = min(smallest.get(key, id_), id_)
+    problems = []
     for face, id_, key in zip(ours, ids, keys):
         if id_ is None:
             tally["touch faces unbound"] = tally.get("touch faces unbound", 0) + 1
             continue
+        held = (id_ in faces or id_ in features or smallest.get(key) in features
+                or held_by_geometry(face, socket, m))
         box = Bnd_Box()
         BRepBndLib.Add_s(face, box)
-        for name, shape, other in boxes:
-            if box.Distance(other) > TOUCH:
-                continue
-            measure = BRepExtrema_DistShapeShape(face, shape)
-            if not measure.IsDone() or measure.Value() > TOUCH:
-                continue
-            found = touches(face, measure, shape)
-            if not found:
+        near = [b for b in boxes if box.Distance(b[2]) <= TOUCH]
+        samples = face_samples(face, rim(face)) if near else []
+        if near and not samples:
+            tally["faces too small to sample"] = tally.get("faces too small to sample", 0) + 1
+        edges = rim(face) if near else None
+        for name, shape, _, paths, unread_neighbour in near:
+            touch = overlap = False
+            for point in samples:
+                if inside_any(point, [shape]):
+                    overlap = True
+                else:
+                    measure = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(gp_Pnt(*point)).Vertex(), shape)
+                    touch = touch or (measure.IsDone() and measure.Value() <= TOUCH)
+            # A line or point contact (a rod on a flat) falls between the
+            # samples: Open CASCADE's nearest points inside the face, away
+            # from its rim, where the target's side of the face is clear.
+            if not touch:
+                touch = line_touch(face, shape, edges)
+            if not (touch or overlap):
                 continue
             tally["touching faces"] += 1
-            held = (id_ in faces or id_ in features or smallest.get(key) in features
-                    or held_by_geometry(face, socket, m)
-                    or any(face_id(as_face(f)) in causes for f in explore(shape, TopAbs_FACE)))
-            if not held:
-                problems = [f"{where}: face #{id_} touches {name} ({measure.Value():.3g} mm) and no requirement holds it"]
+            # Overlapping, the other solid crosses the face (an interference,
+            # or a clash): points beside the crossing measure within τ too.
+            if touch and not overlap and not (held or unread_neighbour):
+                problems.append(f"{where}: face #{id_} touches {name} and no requirement holds it")
                 return problems
-            break
-    return []
+            if overlap and not (held or unread_neighbour or any(p in interfering for p in paths)):
+                # A clash no requirement explains: M7's to report (N3).
+                tally["clashes"] = tally.get("clashes", 0) + 1
+                if not clash_ok:
+                    problems.append(f"{where}: face #{id_} overlaps {name} and no requirement holds it")
+                    return problems
+        # A1's converse: a hole with another solid's material on its axis.
+        surface = BRepAdaptor_Surface(face)
+        if surface.GetType() != Kind.GeomAbs_Cylinder:
+            continue
+        c = surface.Cylinder()
+        axis_p, axis_d = xyz(c.Location()), xyz(c.Axis().Direction())
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+        at, normal = gp_Pnt(), gp_Vec()
+        BRepGProp_Face(face).Normal((u0 + u1) / 2, (v0 + v1) / 2, at, normal)
+        foot = add(axis_p, [x * dot(sub(xyz(at), axis_p), axis_d) for x in axis_d])
+        if dot((normal.X(), normal.Y(), normal.Z()), sub(foot, xyz(at))) <= 0:
+            continue  # a shaft: material inside it is its own
+        stations = [v0 + (v1 - v0) * k / 6 for k in range(1, 6)]
+        on_axis = [add(axis_p, [x * s_ for x in axis_d]) for s_ in stations]
+        for name, shape, other, paths, unread_neighbour in boxes:
+            if all(other.IsOut(gp_Pnt(*point)) for point in on_axis):
+                continue
+            if any(inside_any(point, [shape]) for point in on_axis):
+                tally["occupied holes"] = tally.get("occupied holes", 0) + 1
+                if not (held or unread_neighbour):
+                    problems.append(f"{where}: hole face #{id_} has {name} on its axis and no requirement holds it")
+                    return problems
+    return problems
 
 
 def r_(v):
@@ -1904,8 +2035,16 @@ def socket_problems(directory, case, binary, tally):
             tally["others"] += len(others)
             where = f"{case['id']} {target} {socket['id']}"
             problems += seat_problems(where, socket, m, leaves[mine[0]][2], others, tally)
-            named = [(leaf[0], leaf[2]) for i, leaf in enumerate(leaves) if i != mine[0]]
-            problems += touch_problems(where, socket, m, leaves[mine[0]][2], named, face_id, tally)
+            neighbour_at = [(tuple(n_["path"]), [row + [n_["transform"]["translation_mm"][r]]
+                                                 for r, row in enumerate(n_["transform"]["rotation"])])
+                            for n_ in extracted["neighbours"]]
+            named = [(leaf[0], leaf[2], [path for path, t in neighbour_at
+                                         if all(abs(leaf[1][r][c] - t[r][c]) <= 1e-6 for r in range(3) for c in range(4))])
+                     for i, leaf in enumerate(leaves) if i != mine[0]]
+            # A clash is a finding of its own where the case says so (N3),
+            # and among the fixtures, whose tallies pin it.
+            clash_ok = "N3" in case.get("rules", []) or case.get("fixture", False)
+            problems += touch_problems(where, socket, m, leaves[mine[0]][2], named, face_id, tally, clash_ok)
             problems += detail_problems(where, socket, m, leaves[mine[0]][2], leaves, mine[0],
                                         extracted["neighbours"], face_id, tally, touchers)
             for requirement in socket["requirements"]:
@@ -1953,7 +2092,8 @@ def socket_main(argv):
         # Fixtures: each pinned target, as a case of its own file.
         expect = json.loads(Path(args.expect).read_text(encoding="utf-8"))
         pinned = expect.get("socket_oracle", {})
-        cases = [{"id": f["path"], "file": f["path"], "kind": "assembly", "expect": {"sockets": f["sockets"]}}
+        cases = [{"id": f["path"], "file": f["path"], "kind": "assembly", "fixture": True,
+                  "expect": {"sockets": f["sockets"]}}
                  for f in expect["fixtures"] if "sockets" in f]
     else:
         cases = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))["cases"]
@@ -1976,6 +2116,10 @@ def socket_main(argv):
                        if pinned.get(k) != tally.get(k)}
             problems.append(f"the tallies differ from the pinned `socket_oracle` ones (pinned, now): {changed}")
             print(problems[-1], file=sys.stderr)
+    elif any(v and "unbound" in k for k, v in tally.items()):
+        problems.append("faces did not bind to #ids, so checks were skipped: "
+                        + ", ".join(f"{v} {k}" for k, v in tally.items() if "unbound" in k))
+        print(problems[-1], file=sys.stderr)
     elif any(v == 0 for v in tally.values()):
         problems.append("a socket check examined nothing: " + ", ".join(f"{v} {k}" for k, v in tally.items()))
         print(problems[-1], file=sys.stderr)
