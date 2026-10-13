@@ -106,21 +106,29 @@ fn moved_polygon(
     Some(overlap::flatten(&moved, target.origin, target.u, target.w))
 }
 
-/// The holes of a neighbour face, moved and flattened into `target`'s
-/// plane.
+/// The holes of a neighbour face near the target (N4), moved and
+/// flattened into `target`'s plane.
 fn moved_holes(
-    outline: &Outline,
+    neighbour: &Neighbour<'_>,
+    face: &crate::features::PlaneFace,
     normal: V,
-    motion: &Motion,
     target: &TargetFace<'_>,
 ) -> Vec<Vec<P2>> {
-    overlap::hole_polygons(outline, normal)
-        .iter()
-        .map(|points| {
-            let moved: Vec<V> = points.iter().map(|p| motion.point(*p)).collect();
-            overlap::flatten(&moved, target.origin, target.u, target.w)
-        })
-        .collect()
+    let flat = |points: &Vec<V>| {
+        let moved: Vec<V> = points.iter().map(|p| neighbour.motion.point(*p)).collect();
+        overlap::flatten(&moved, target.origin, target.u, target.w)
+    };
+    match neighbour.index {
+        Some(index) => index
+            .holes_near(face.face, neighbour.region.as_ref())
+            .into_iter()
+            .map(flat)
+            .collect(),
+        None => overlap::hole_polygons(&face.outline, normal)
+            .iter()
+            .map(flat)
+            .collect(),
+    }
 }
 
 /// C1's gap of neighbour plane face `face` (outward `normal` and `offset`
@@ -133,21 +141,38 @@ fn gap_of(
     face: &crate::features::PlaneFace,
     normal: V,
     offset: f64,
-    motion: &Motion,
+    neighbour: &Neighbour<'_>,
 ) -> f64 {
+    let motion = &neighbour.motion;
     let denominator = dot(normal, target.normal);
     let mut gaps: Vec<f64> = gap_points(target)
         .into_iter()
         .map(|p| (offset - dot(normal, p)) / denominator)
         .collect();
     if let Outline::Known { loops } = &face.outline {
-        gaps.extend(loops.iter().flat_map(|l| l.segments.iter()).map(|s| {
-            let p = match s {
-                crate::features::Segment::Line { from_mm, .. }
-                | crate::features::Segment::Arc { from_mm, .. } => from_mm.to_array(),
-            };
-            dot(motion.point(p), target.normal) - target.offset
-        }));
+        let from = |s: &crate::features::Segment| match s {
+            crate::features::Segment::Line { from_mm, .. }
+            | crate::features::Segment::Arc { from_mm, .. } => from_mm.to_array(),
+        };
+        let at = |p: V| dot(motion.point(p), target.normal) - target.offset;
+        match neighbour.index {
+            // The outer loop's vertices, and the points of the hole loops
+            // near the target (N4): a hole far from it says nothing of the
+            // gap there.
+            Some(index) => {
+                let outer = loops.iter().find(|l| l.outer).into_iter();
+                gaps.extend(outer.flat_map(|l| l.segments.iter()).map(|s| at(from(s))));
+                for hole in index.holes_near(face.face, neighbour.region.as_ref()) {
+                    gaps.extend(hole.iter().map(|p| at(*p)));
+                }
+            }
+            None => gaps.extend(
+                loops
+                    .iter()
+                    .flat_map(|l| l.segments.iter())
+                    .map(|s| at(from(s))),
+            ),
+        }
     }
     if gaps.iter().any(|g| *g < 0.0) && gaps.iter().any(|g| *g > 0.0) {
         return 0.0;
@@ -203,16 +228,26 @@ pub(crate) fn relate(
         }
         let tau = CONTACT_MM.max(neighbour.floor);
         let band = NEAR_MM.max(tau);
+        // N4: the neighbour's faces near the target.
+        let kept: BTreeSet<u64> = neighbour.faces.iter().map(|b| b.face).collect();
         for plane in &neighbour.part.planes {
+            let near: Vec<&crate::features::PlaneFace> = plane
+                .faces
+                .iter()
+                .filter(|f| kept.contains(&f.face))
+                .collect();
+            if near.is_empty() {
+                continue;
+            }
             let normal = neighbour.motion.dir(plane.normal.to_array());
             for target in faces {
-                count.add(plane.faces.len() as u64)?;
+                count.add(near.len() as u64)?;
                 if dot(normal, target.normal) > -cos_limit {
                     continue;
                 }
-                for face in &plane.faces {
+                for face in near.iter().copied() {
                     let offset = face.offset_mm + dot(normal, neighbour.motion.point([0.0; 3]));
-                    let gap = gap_of(target, face, normal, offset, &neighbour.motion);
+                    let gap = gap_of(target, face, normal, offset, neighbour);
                     if gap.is_nan() || gap.abs() > band {
                         continue;
                     }
@@ -232,14 +267,9 @@ pub(crate) fn relate(
                                     .holes
                                     .iter()
                                     .any(|h| overlap::contained(b, h, tau, &mut pairs))
-                                && !moved_holes(
-                                    &face.outline,
-                                    plane.normal.to_array(),
-                                    &neighbour.motion,
-                                    target,
-                                )
-                                .iter()
-                                .any(|h| overlap::contained(a, h, tau, &mut pairs));
+                                && !moved_holes(neighbour, face, plane.normal.to_array(), target)
+                                    .iter()
+                                    .any(|h| overlap::contained(a, h, tau, &mut pairs));
                             count.add(pairs)?;
                             overlaps
                         }

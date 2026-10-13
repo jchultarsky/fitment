@@ -12,6 +12,7 @@ use super::axial::{self, Element, EndKind, Pair, Side};
 use super::block;
 use super::geo::{Motion, V, add, dot, norm, perpendiculars, scale, sub};
 use super::model::{Fit, Flag};
+use super::place::{Aabb, Tree};
 use super::{CONTACT_MM, MAX_RELATIONS, NEAR_MM, PARALLEL_SINE_REL};
 use crate::features::extent::FaceBox;
 use crate::features::{Extent, FeatureId, Part};
@@ -21,7 +22,8 @@ pub(crate) struct Neighbour<'a> {
     /// Its path, by usage `#id`s.
     pub(crate) path: Vec<u64>,
     pub(crate) part: &'a Part,
-    pub(crate) faces: &'a [FaceBox],
+    /// Its faces' boxes near the target (N4).
+    pub(crate) faces: Vec<FaceBox>,
     /// From its frame into the target's.
     pub(crate) motion: Motion,
     pub(crate) elements: Vec<Element>,
@@ -32,6 +34,11 @@ pub(crate) struct Neighbour<'a> {
     /// Its extent, in the target's frame, may come within reach of the
     /// target's (N3); always true when either has none.
     pub(crate) near: bool,
+    /// Its definition's index (N4).
+    pub(crate) index: Option<&'a super::index::Index>,
+    /// The target's box grown by reach, in its frame: what of it is read
+    /// (N4); `None` for all of it.
+    pub(crate) region: Option<Aabb>,
 }
 
 /// One relation, before it is combined into a requirement.
@@ -190,6 +197,8 @@ struct Search<'s, 'a> {
     /// The holes beyond each open rim: (target element, start?) to
     /// (gap, neighbour, element, pair).
     beyond: BTreeMap<(usize, bool), Vec<Beyond>>,
+    /// The target elements' boxes (N4).
+    tree: Tree,
 }
 
 /// Every relation between the target's `targets` (in its own frame) and
@@ -208,13 +217,35 @@ pub(crate) fn relate(
         read: BTreeMap::new(),
         found: Found::default(),
         beyond: BTreeMap::new(),
+        tree: Tree::new(targets.iter().map(element_box).collect()),
     };
+    // N4: each neighbour element against the target elements it may
+    // relate to: those its box comes within reach of, and for a hole those
+    // its axis passes near at any distance (J). In the order of a full
+    // scan, target by target.
+    let widest = targets.iter().map(|a| a.radius).fold(0.0, f64::max);
     for (n, neighbour) in neighbours.iter().enumerate() {
-        for (t, a) in targets.iter().enumerate() {
-            for (e, b) in neighbour.elements.iter().enumerate() {
-                search.count()?;
-                search.axial(t, a, n, e, b);
+        let by = reach(neighbour.floor);
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        for (e, b) in neighbour.elements.iter().enumerate() {
+            let near = element_box(b).map_or_else(
+                || (0..targets.len()).collect(),
+                |x| search.tree.meeting(&x, by),
+            );
+            pairs.extend(near.into_iter().map(|t| (t, e)));
+            if b.side == Side::Hole {
+                let line = search.tree.along(b.point, b.dir, b.radius + widest + by);
+                pairs.extend(line.into_iter().map(|t| (t, e)));
             }
+        }
+        pairs.sort_unstable();
+        pairs.dedup();
+        for (t, e) in pairs {
+            let (Some(a), Some(b)) = (targets.get(t), neighbour.elements.get(e)) else {
+                continue;
+            };
+            search.count()?;
+            search.axial(t, a, n, e, b);
         }
     }
     search.continuations(planes)?;
@@ -701,30 +732,23 @@ impl Search<'_, '_> {
             return Ok(());
         };
         let tau = CONTACT_MM.max(neighbour.floor);
-        let shapes = super::touch::Shapes::of(
-            neighbour.part,
-            neighbour.faces,
-            &neighbour.elements,
-            &neighbour.motion,
-        );
-        // Its hole-sense cylinders' faces, by face: axis point, direction
-        // and radius, in the target's frame. Only air lies inside one; a
-        // shaft's cylinder, even a D-shaft's partial one, is material.
-        let round: BTreeMap<u64, (V, V, f64)> = neighbour
-            .part
-            .cylinders
-            .iter()
-            .filter(|c| c.sense == crate::features::Sense::Hole)
-            .flat_map(|c| {
-                let axis = (
-                    neighbour.motion.point(c.axis.point_mm.to_array()),
-                    neighbour.motion.dir(c.axis.direction.to_array()),
-                    c.radius_mm,
-                );
-                c.faces.iter().map(move |f| (*f, axis))
-            })
-            .collect();
-        for (t, a) in self.targets.iter().enumerate() {
+        let shapes = super::touch::Shapes::of(neighbour);
+        let round = round_faces(neighbour);
+        // N4: only the holes a face of the neighbour may come near; a face
+        // with no box may come near any.
+        let mut holes: Vec<usize> = Vec::new();
+        for face in &neighbour.faces {
+            match face.bounds.map(|b| moved(b, &neighbour.motion)) {
+                Some(bounds) => holes.extend(self.tree.meeting(&bounds, tau)),
+                None => holes.extend(0..self.targets.len()),
+            }
+        }
+        holes.sort_unstable();
+        holes.dedup();
+        for t in holes {
+            let Some(a) = self.targets.get(t) else {
+                continue;
+            };
             if a.side != Side::Hole
                 || a.partial.is_some()
                 || a.hi - a.lo <= 2.0 * tau
@@ -741,7 +765,7 @@ impl Search<'_, '_> {
                 .collect();
             let mut faces = Vec::new();
             let mut reach = (f64::INFINITY, f64::NEG_INFINITY);
-            for face in neighbour.faces {
+            for face in &neighbour.faces {
                 self.count()?;
                 if read.contains(&face.face) {
                     continue;
@@ -800,6 +824,74 @@ impl Search<'_, '_> {
         }
         Ok(())
     }
+}
+
+/// A neighbour's hole-sense cylinder faces near the target, by face: axis
+/// point, direction and radius, in the target's frame. Only air lies
+/// inside one; a shaft's cylinder, even a D-shaft's partial one, is
+/// material.
+fn round_faces(neighbour: &Neighbour<'_>) -> BTreeMap<u64, (V, V, f64)> {
+    let kept: BTreeSet<u64> = neighbour.faces.iter().map(|b| b.face).collect();
+    neighbour
+        .faces
+        .iter()
+        .filter_map(|b| match neighbour.index.and_then(|i| i.at.get(&b.face)) {
+            Some(super::index::FaceAt::Cylinder(k)) => neighbour.part.cylinders.get(*k),
+            _ => None,
+        })
+        .chain(
+            neighbour
+                .index
+                .is_none()
+                .then_some(&neighbour.part.cylinders)
+                .into_iter()
+                .flatten(),
+        )
+        .filter(|c| c.sense == crate::features::Sense::Hole)
+        .flat_map(|c| {
+            let axis = (
+                neighbour.motion.point(c.axis.point_mm.to_array()),
+                neighbour.motion.dir(c.axis.direction.to_array()),
+                c.radius_mm,
+            );
+            c.faces.iter().map(move |f| (*f, axis))
+        })
+        .filter(|(f, _)| kept.contains(f))
+        .collect()
+}
+
+/// A box moved by `motion`: the box of its moved corners.
+fn moved(bounds: ([f64; 3], [f64; 3]), motion: &Motion) -> Aabb {
+    let (low, high) = bounds;
+    let mut out = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for i in 0..8 {
+        let p = motion.point([
+            if i & 1 == 0 { low[0] } else { high[0] },
+            if i & 2 == 0 { low[1] } else { high[1] },
+            if i & 4 == 0 { low[2] } else { high[2] },
+        ]);
+        for ((low, high), x) in out.0.iter_mut().zip(out.1.iter_mut()).zip(p) {
+            *low = low.min(x);
+            *high = high.max(x);
+        }
+    }
+    out
+}
+
+/// An element's box: its axis segment grown by its radius; `None` while a
+/// side is unbounded.
+pub(crate) fn element_box(e: &Element) -> Option<Aabb> {
+    if !(e.lo.is_finite() && e.hi.is_finite()) {
+        return None;
+    }
+    let (p, q) = (
+        add(e.point, scale(e.dir, e.lo)),
+        add(e.point, scale(e.dir, e.hi)),
+    );
+    Some((
+        [0, 1, 2].map(|i| p[i].min(q[i]) - e.radius),
+        [0, 1, 2].map(|i| p[i].max(q[i]) + e.radius),
+    ))
 }
 
 /// I4: the room between target shaft `a`'s free end and what stops it in

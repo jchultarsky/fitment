@@ -6,9 +6,11 @@ mod block;
 mod check;
 mod combine;
 mod geo;
+mod index;
 mod merge;
 mod model;
 mod overlap;
+mod place;
 mod planar;
 mod review;
 mod rules;
@@ -634,6 +636,7 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
             ),
         )
     };
+    let world = World::of(listing, &elements, selection);
     let mut pairs = 0;
     let mut sockets = Vec::new();
     let mut cited = std::collections::BTreeSet::new();
@@ -644,10 +647,10 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
             .ok_or_else(|| internal("a chosen occurrence is missing"))?;
         let around = Around {
             listing,
-            selection,
             elements: &elements,
             index,
             target,
+            world: &world,
         };
         let (neighbours, indices, planes) = around.neighbours(&mut pairs)?.ok_or_else(too_many)?;
         let plane_refs: Vec<(Motion, &Part)> = planes.iter().map(|(m, p)| (*m, *p)).collect();
@@ -750,10 +753,106 @@ fn placed_lists(
 /// What one selected occurrence's neighbours are read from.
 struct Around<'l, 's> {
     listing: &'l Listing,
-    selection: &'s Selection,
     elements: &'s BTreeMap<usize, Vec<axial::Element>>,
     index: usize,
     target: &'l Part,
+    world: &'s World,
+}
+
+/// Every occurrence's box in the root's frame, searchable (N4), and how
+/// far a neighbour may be and still be in reach of any rule bounded by
+/// distance.
+struct World {
+    /// Each accepted definition's index.
+    indices: BTreeMap<usize, index::Index>,
+    /// The chosen occurrences.
+    selected: BTreeSet<usize>,
+    tree: place::Tree,
+    boxes: Vec<Option<place::Aabb>>,
+    to_root: Vec<Option<Motion>>,
+    reach: f64,
+}
+
+impl World {
+    fn of(
+        listing: &Listing,
+        elements: &BTreeMap<usize, Vec<axial::Element>>,
+        selection: &Selection,
+    ) -> Self {
+        let root = crate::geom::Rigid::IDENTITY;
+        let mut boxes = Vec::new();
+        let mut to_root = Vec::new();
+        let mut floor: f64 = 0.0;
+        for there in listing.occurrences() {
+            let motion = Motion::between(&there.transform, &root);
+            let part = accepted_part(listing, there.definition);
+            let bounds = match (part.and_then(|p| p.extent.as_ref()), motion) {
+                (Some(extent), Some(m)) => Some(rules::moved_box(extent, &m)),
+                _ => None,
+            };
+            boxes.push(bounds);
+            to_root.push(motion);
+            floor = floor.max(floor_of(there));
+        }
+        let indices = elements
+            .iter()
+            .filter_map(|(d, e)| {
+                let part = accepted_part(listing, *d)?;
+                let faces = listing
+                    .definitions()
+                    .get(*d)
+                    .map_or(&[][..], |x| x.faces.as_slice());
+                Some((*d, index::Index::of(part, faces, e)))
+            })
+            .collect();
+        Self {
+            indices,
+            selected: selection.occurrences.iter().copied().collect(),
+            tree: place::Tree::new(boxes.clone()),
+            boxes,
+            to_root,
+            reach: rules::reach(floor),
+        }
+    }
+
+    /// The occurrences in reach of occurrence `index`: those its box comes
+    /// near, those along the axes of `holes` (its own, in its frame) at
+    /// any distance (J), and itself; in order. With them, for each, the
+    /// holes whose axes pass it.
+    fn around(
+        &self,
+        index: usize,
+        holes: &[axial::Element],
+    ) -> (Vec<usize>, BTreeMap<usize, Vec<usize>>) {
+        let mut out = match self.boxes.get(index).copied().flatten() {
+            Some(bounds) => self.tree.meeting(&bounds, self.reach),
+            None => (0..self.boxes.len()).collect(),
+        };
+        let mut lines: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        let every = (0..self.boxes.len()).collect::<Vec<_>>();
+        for (h, e) in holes
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.side == axial::Side::Hole)
+        {
+            let crossed = match self.to_root.get(index) {
+                Some(Some(motion)) => self.tree.along(
+                    motion.point(e.point),
+                    motion.dir(e.dir),
+                    e.radius + self.reach,
+                ),
+                _ => every.clone(),
+            };
+            for j in crossed {
+                lines.entry(j).or_default().push(h);
+                out.push(j);
+            }
+        }
+        out.push(index);
+        out.sort_unstable();
+        out.dedup();
+        (out, lines)
+    }
 }
 
 /// One occurrence's neighbours, the indices of their occurrences, and
@@ -761,20 +860,28 @@ struct Around<'l, 's> {
 /// 39's count, passes its limit, each neighbour counting one.
 type Gathered<'l> = (Vec<Neighbour<'l>>, Vec<usize>, Vec<(Motion, &'l Part)>);
 
-impl<'l> Around<'l, '_> {
-    fn neighbours(&self, pairs: &mut u64) -> Result<Option<Gathered<'l>>, Refusal> {
+impl<'l: 's, 's> Around<'l, 's> {
+    fn neighbours(&self, pairs: &mut u64) -> Result<Option<Gathered<'s>>, Refusal> {
         let internal = |m: &str| Refusal::new(RefusalCode::Internal, None, m);
         let listing = self.listing;
         let here = listing
             .occurrences()
             .get(self.index)
             .ok_or_else(|| internal("a chosen occurrence is missing"))?;
-        let selected: BTreeSet<usize> = self.selection.occurrences.iter().copied().collect();
+        let selected = &self.world.selected;
         let target_box = self.target.extent;
         let mut out = Vec::new();
         let mut indices = Vec::new();
         let mut planes = Vec::new();
-        for (j, there) in listing.occurrences().iter().enumerate() {
+        let holes = self
+            .elements
+            .get(&here.definition)
+            .map_or(&[][..], Vec::as_slice);
+        let (around, lines) = self.world.around(self.index, holes);
+        for j in around {
+            let Some(there) = listing.occurrences().get(j) else {
+                continue;
+            };
             let (Some(part), Some(elements)) = (
                 accepted_part(listing, there.definition),
                 self.elements.get(&there.definition),
@@ -798,27 +905,99 @@ impl<'l> Around<'l, '_> {
                 }
                 _ => true,
             };
-            let faces = listing
+            let all_faces = listing
                 .definitions()
                 .get(there.definition)
                 .map_or(&[][..], |d| d.faces.as_slice());
+            let index = self.world.indices.get(&there.definition);
+            // N4: what of the neighbour lies near the target, in its frame.
+            let region = target_box.as_ref().map(|t| {
+                let (low, high) = rules::moved_box(t, &motion.inverse());
+                let by = self.world.reach;
+                (low.map(|x| x - by), high.map(|x| x + by))
+            });
+            let on_lines: Vec<&axial::Element> = lines
+                .get(&j)
+                .into_iter()
+                .flatten()
+                .filter_map(|h| holes.get(*h))
+                .collect();
+            let (kept, faces) = near_parts(
+                index,
+                region.as_ref(),
+                elements,
+                all_faces,
+                &on_lines,
+                &motion,
+                self.world.reach,
+            );
             out.push(Neighbour {
                 path: there.path.instances(),
                 part,
                 faces,
                 motion,
-                elements: elements
+                elements: kept
                     .iter()
+                    .filter_map(|k| elements.get(*k))
                     .map(|e| axial::placed(e, &motion, part.extent.as_ref()))
                     .collect(),
                 floor,
                 selected: selected.contains(&j),
                 near,
+                index,
+                region,
             });
             indices.push(j);
         }
         Ok(Some((out, indices, planes)))
     }
+}
+
+/// N4: the positions of a neighbour's elements and its face boxes that lie
+/// near the target: in `region` (the target's box grown by `reach`, in the
+/// neighbour's frame), or along the axis of one of the target's `holes`
+/// whose axes pass the neighbour (J), with every element of a stack one is
+/// kept from (I4 walks them).
+/// With no index or no region, all of them.
+fn near_parts(
+    index: Option<&index::Index>,
+    region: Option<&place::Aabb>,
+    elements: &[axial::Element],
+    faces: &[crate::features::extent::FaceBox],
+    holes: &[&axial::Element],
+    motion: &Motion,
+    reach: f64,
+) -> (Vec<usize>, Vec<crate::features::extent::FaceBox>) {
+    let (Some(index), Some(region)) = (index, region) else {
+        return ((0..elements.len()).collect(), faces.to_vec());
+    };
+    let back = motion.inverse();
+    let mut kept = index.elements.meeting(region, 0.0);
+    for e in holes {
+        kept.extend(
+            index
+                .elements
+                .along(back.point(e.point), back.dir(e.dir), e.radius + reach),
+        );
+    }
+    let stacks: BTreeSet<FeatureId> = kept
+        .iter()
+        .filter_map(|k| elements.get(*k))
+        .map(|e| e.feature)
+        .collect();
+    let kept: Vec<usize> = elements
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| stacks.contains(&e.feature))
+        .map(|(k, _)| k)
+        .collect();
+    let faces = index
+        .faces
+        .meeting(region, 0.0)
+        .into_iter()
+        .filter_map(|k| faces.get(k).copied())
+        .collect();
+    (kept, faces)
 }
 
 /// U4: one `unresolved` per neighbour definition in reach whose faces or

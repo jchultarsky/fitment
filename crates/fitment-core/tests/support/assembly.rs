@@ -845,8 +845,9 @@ fn touchers_match(
         .flat_map(|c| c.by.iter())
         .map(|t| (t.neighbour.clone(), t.face))
         .collect();
-    let listed_count: usize = contacts.iter().map(|c| c.by.len()).sum();
-    if union != listed || listed_count != listed.len() {
+    // One neighbour face may lie on several target faces (a block on a
+    // tiled plate): listed under each contact it touches.
+    if union != listed {
         return false;
     }
     // Every occurrence of the socket has its touchers.

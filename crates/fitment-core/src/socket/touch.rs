@@ -14,7 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::axial::Element;
 use super::geo::{Motion, V, across, add, cross, dot, norm, perpendiculars, scale, sub};
+use super::index::{FaceAt, Index};
 use super::overlap::{self, P2};
+use super::place::{Aabb, Tree};
 use super::planar::{ConeSeat, Contact};
 use super::rules::{Found, Neighbour, Ring, TooMany};
 use super::{CONTACT_MM, MAX_RELATIONS, PARALLEL_SINE_REL};
@@ -83,55 +85,72 @@ fn moved_bounds(bounds: Option<([f64; 3], [f64; 3])>, motion: &Motion) -> Option
     Some(out)
 }
 
-/// The faces of `part` C6 examines, moved by `motion`; `other` faces are
-/// left out.
-fn faces(part: &Part, boxes: &[FaceBox], elements: &[Element], motion: &Motion) -> Vec<Face> {
-    let bounds: BTreeMap<u64, Option<(V, V)>> = boxes
-        .iter()
-        .map(|b| (b.face, moved_bounds(b.bounds, motion)))
-        .collect();
-    let mut owners: BTreeMap<u64, BTreeSet<FeatureId>> = BTreeMap::new();
-    for e in elements {
-        for f in &e.faces {
-            owners.entry(*f).or_default().insert(e.feature);
-        }
-    }
+/// Every face of `part` with where it lies, in the part's order.
+fn all_faces(part: &Part) -> Vec<(u64, FaceAt)> {
     let mut out = Vec::new();
-    let mut push = |face: u64, surface: Surface, feature: FeatureId| {
-        let mut all: Vec<FeatureId> = owners.get(&face).into_iter().flatten().copied().collect();
-        all.push(feature);
-        out.push(Face {
-            id: face,
-            surface,
-            owners: all,
-            feature,
-            bounds: bounds.get(&face).copied().flatten(),
-        });
-    };
-    for plane in &part.planes {
-        let n = plane.normal.to_array();
-        let normal = motion.dir(n);
-        for f in &plane.faces {
-            let moved = |points: Vec<V>| points.into_iter().map(|p| motion.point(p)).collect();
-            push(
-                f.face,
+    for (i, plane) in part.planes.iter().enumerate() {
+        out.extend(
+            plane
+                .faces
+                .iter()
+                .enumerate()
+                .map(|(j, f)| (f.face, FaceAt::Plane(i, j))),
+        );
+    }
+    for (i, c) in part.cylinders.iter().enumerate() {
+        out.extend(c.faces.iter().map(|f| (*f, FaceAt::Cylinder(i))));
+    }
+    for (i, c) in part.cones.iter().enumerate() {
+        out.extend(c.faces.iter().map(|f| (*f, FaceAt::Cone(i))));
+    }
+    for (i, t) in part.tori.iter().enumerate() {
+        out.extend(t.faces.iter().map(|f| (*f, FaceAt::Torus(i))));
+    }
+    out
+}
+
+/// Face `face` of `part`, at `at`, as C6 reads it, moved by `motion`;
+/// with an index, a plane's holes near the target only.
+fn surface_at(
+    part: &Part,
+    at: FaceAt,
+    face: u64,
+    motion: &Motion,
+    near: Option<(&Index, Option<&Aabb>)>,
+) -> Option<(Surface, FeatureId)> {
+    Some(match at {
+        FaceAt::Plane(i, j) => {
+            let (plane, f) = part
+                .planes
+                .get(i)
+                .and_then(|p| Some((p, p.faces.get(j)?)))?;
+            let n = plane.normal.to_array();
+            let normal = motion.dir(n);
+            let moved = |points: &Vec<V>| points.iter().map(|p| motion.point(*p)).collect();
+            let holes = match near {
+                Some((index, region)) => index
+                    .holes_near(face, region)
+                    .into_iter()
+                    .map(moved)
+                    .collect(),
+                None => overlap::hole_polygons(&f.outline, n)
+                    .iter()
+                    .map(moved)
+                    .collect(),
+            };
+            (
                 Surface::Plane {
                     normal,
                     offset: dot(normal, motion.point(scale(n, f.offset_mm))),
-                    outer: overlap::outer_polygon(&f.outline, n).map(moved),
-                    holes: overlap::hole_polygons(&f.outline, n)
-                        .into_iter()
-                        .map(moved)
-                        .collect(),
+                    outer: overlap::outer_polygon(&f.outline, n).as_ref().map(moved),
+                    holes,
                 },
                 plane.id,
-            );
+            )
         }
-    }
-    for c in &part.cylinders {
-        for f in &c.faces {
-            push(
-                *f,
+        FaceAt::Cylinder(i) => {
+            let c = part.cylinders.get(i)?;
+            (
                 Surface::Cylinder {
                     point: motion.point(c.axis.point_mm.to_array()),
                     dir: motion.dir(c.axis.direction.to_array()),
@@ -149,13 +168,11 @@ fn faces(part: &Part, boxes: &[FaceBox], elements: &[Element], motion: &Motion) 
                     },
                 },
                 c.id,
-            );
+            )
         }
-    }
-    for c in &part.cones {
-        for f in &c.faces {
-            push(
-                *f,
+        FaceAt::Cone(i) => {
+            let c = part.cones.get(i)?;
+            (
                 Surface::Cone {
                     apex: motion.point(c.apex_mm.to_array()),
                     dir: motion.dir(c.axis.direction.to_array()),
@@ -168,21 +185,95 @@ fn faces(part: &Part, boxes: &[FaceBox], elements: &[Element], motion: &Motion) 
                     }),
                 },
                 c.id,
-            );
+            )
+        }
+        FaceAt::Torus(i) => {
+            let t = part.tori.get(i)?;
+            (Surface::Boxed, t.id)
+        }
+    })
+}
+
+/// The faces of `part` C6 examines, of those `boxes` names, moved by
+/// `motion`; `other` faces are left out. A neighbour's come through its
+/// definition's index, with only the hole loops near the target (N4).
+fn faces(
+    part: &Part,
+    boxes: &[FaceBox],
+    elements: &[Element],
+    motion: &Motion,
+    near: Option<(&Index, Option<&Aabb>)>,
+) -> Vec<Face> {
+    let bounds: BTreeMap<u64, Option<(V, V)>> = boxes
+        .iter()
+        .map(|b| (b.face, moved_bounds(b.bounds, motion)))
+        .collect();
+    let mut owners: BTreeMap<u64, BTreeSet<FeatureId>> = BTreeMap::new();
+    for e in elements {
+        for f in &e.faces {
+            owners.entry(*f).or_default().insert(e.feature);
         }
     }
-    for t in &part.tori {
-        for f in &t.faces {
-            push(*f, Surface::Boxed, t.id);
-        }
+    let mut wanted: Vec<(u64, FaceAt)> = match near {
+        Some((index, _)) => boxes
+            .iter()
+            .filter_map(|b| index.at.get(&b.face).map(|at| (b.face, *at)))
+            .collect(),
+        None => all_faces(part)
+            .into_iter()
+            .filter(|(f, _)| bounds.contains_key(f))
+            .collect(),
+    };
+    wanted.sort_by_key(|(f, at)| (at.order(), *f));
+    let mut out = Vec::new();
+    for (face, at) in wanted {
+        let Some((surface, feature)) = surface_at(part, at, face, motion, near) else {
+            continue;
+        };
+        let mut all: Vec<FeatureId> = owners.get(&face).into_iter().flatten().copied().collect();
+        all.push(feature);
+        out.push(Face {
+            id: face,
+            surface,
+            owners: all,
+            feature,
+            bounds: bounds.get(&face).copied().flatten(),
+        });
     }
     out
 }
 
 /// The faces that share an edge with each face, as plane outlines state
 /// them (both ways).
-fn adjacent(part: &Part) -> BTreeMap<u64, BTreeSet<u64>> {
+pub(crate) fn adjacent(part: &Part) -> BTreeMap<u64, BTreeSet<u64>> {
     let by_feature = super::axial::faces_of(part);
+    // Planes all of whose faces state their edges; another (a face of
+    // unknown outline) is taken whole, as any feature is.
+    let planes: BTreeSet<FeatureId> = part
+        .planes
+        .iter()
+        .filter(|p| {
+            p.faces
+                .iter()
+                .all(|f| matches!(f.outline, Outline::Known { .. }))
+        })
+        .map(|p| p.id)
+        .collect();
+    // A plane face across an edge is the one whose outline holds the same
+    // edge: exact, where a plane of many faces (tiles) would otherwise make
+    // every face of it a neighbour of every other.
+    let mut by_edge: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    for plane in &part.planes {
+        for f in &plane.faces {
+            let Outline::Known { loops } = &f.outline else {
+                continue;
+            };
+            for segment in loops.iter().flat_map(|l| l.segments.iter()) {
+                let (Segment::Line { edge, .. } | Segment::Arc { edge, .. }) = segment;
+                by_edge.entry(*edge).or_default().push(f.face);
+            }
+        }
+    }
     let mut out: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
     for plane in &part.planes {
         for f in &plane.faces {
@@ -190,10 +281,22 @@ fn adjacent(part: &Part) -> BTreeMap<u64, BTreeSet<u64>> {
                 continue;
             };
             for segment in loops.iter().flat_map(|l| l.segments.iter()) {
-                let (Segment::Line { across, .. } | Segment::Arc { across, .. }) = segment;
-                for other in by_feature.get(across).into_iter().flatten() {
-                    out.entry(f.face).or_default().insert(*other);
-                    out.entry(*other).or_default().insert(f.face);
+                let (Segment::Line { across, edge, .. } | Segment::Arc { across, edge, .. }) =
+                    segment;
+                let others: Vec<u64> = if planes.contains(across) {
+                    by_edge
+                        .get(edge)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .filter(|g| *g != f.face)
+                        .collect()
+                } else {
+                    by_feature.get(across).cloned().unwrap_or_default()
+                };
+                for other in others {
+                    out.entry(f.face).or_default().insert(other);
+                    out.entry(other).or_default().insert(f.face);
                 }
             }
         }
@@ -291,11 +394,23 @@ fn explained(target: &Part, neighbours: &[Neighbour<'_>], read: &Read<'_>) -> Ex
     // bolt head's hex sides on the face it seats on, a countersink's rim
     // under a flush head's top.
     let ours = adjacent(target);
-    let theirs: Vec<BTreeMap<u64, BTreeSet<u64>>> =
-        neighbours.iter().map(|n| adjacent(n.part)).collect();
+    // A neighbour's from its definition's index, built once (N4).
+    let computed: BTreeMap<usize, BTreeMap<u64, BTreeSet<u64>>> = neighbours
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.index.is_none())
+        .map(|(k, n)| (k, adjacent(n.part)))
+        .collect();
+    let theirs = |n: usize| {
+        neighbours
+            .get(n)
+            .and_then(|x| x.index)
+            .map(|i| &i.adjacent)
+            .or_else(|| computed.get(&n))
+    };
     for &(t, n, f) in &pairs {
         out.faces.insert((t, n, f));
-        for g in theirs.get(n).and_then(|a| a.get(&f)).into_iter().flatten() {
+        for g in theirs(n).and_then(|a| a.get(&f)).into_iter().flatten() {
             out.faces.insert((t, n, *g));
         }
         for u in ours.get(&t).into_iter().flatten() {
@@ -344,8 +459,10 @@ pub(crate) fn relate(
     pairs: &mut u64,
 ) -> Result<BTreeMap<FeatureId, BTreeSet<u64>>, TooMany> {
     let mut count = Count(*pairs);
-    let ours = faces(target, boxes, read.targets, &Motion::IDENTITY);
+    let ours = faces(target, boxes, read.targets, &Motion::IDENTITY, None);
     let why = explained(target, neighbours, read);
+    // N4: each neighbour face against the target faces its box may meet.
+    let tree = Tree::new(ours.iter().map(|t| t.bounds).collect());
     let mut out: BTreeMap<FeatureId, BTreeSet<u64>> = BTreeMap::new();
     for (n, neighbour) in neighbours.iter().enumerate() {
         if !neighbour.near {
@@ -354,12 +471,16 @@ pub(crate) fn relate(
         let tau = CONTACT_MM.max(neighbour.floor);
         let theirs = faces(
             neighbour.part,
-            neighbour.faces,
+            &neighbour.faces,
             &neighbour.elements,
             &neighbour.motion,
+            neighbour.index.map(|i| (i, neighbour.region.as_ref())),
         );
         for f in &theirs {
-            for t in &ours {
+            let near = f
+                .bounds
+                .map_or_else(|| (0..ours.len()).collect(), |b| tree.meeting(&b, tau));
+            for t in near.iter().filter_map(|k| ours.get(*k)) {
                 count.add(1)?;
                 if !boxes_meet(t.bounds, f.bounds, tau) || why.holds(t, n, f) {
                     continue;
@@ -932,16 +1053,19 @@ pub(crate) enum Core {
 }
 
 /// A part's faces as B8 sees them, in the target's frame.
-pub(crate) struct Shapes(Vec<Face>);
+pub(crate) struct Shapes(Vec<Face>, BTreeMap<u64, usize>);
 
 impl Shapes {
-    pub(crate) fn of(
-        part: &Part,
-        boxes: &[FaceBox],
-        elements: &[Element],
-        motion: &Motion,
-    ) -> Self {
-        Self(faces(part, boxes, elements, motion))
+    pub(crate) fn of(neighbour: &Neighbour<'_>) -> Self {
+        let faces = faces(
+            neighbour.part,
+            &neighbour.faces,
+            &neighbour.elements,
+            &neighbour.motion,
+            neighbour.index.map(|i| (i, neighbour.region.as_ref())),
+        );
+        let by_id = faces.iter().enumerate().map(|(k, f)| (f.id, k)).collect();
+        Self(faces, by_id)
     }
 
     /// B8 in closed form: `Some(Core::Apart)` if face `id` cannot meet hole
@@ -950,7 +1074,7 @@ impl Shapes {
     /// along the axis; `None` where only its box can tell (a cone, a torus,
     /// an unknown outline, a cylinder at an angle).
     pub(crate) fn meets_core(&self, id: u64, a: &Element, tau: f64) -> Option<Core> {
-        let face = self.0.iter().find(|f| f.id == id)?;
+        let face = self.0.get(*self.1.get(&id)?)?;
         let core = a.radius - tau;
         let (lo, hi) = (a.lo + tau, a.hi - tau);
         let station = |p: V| dot(sub(p, a.point), a.dir);
