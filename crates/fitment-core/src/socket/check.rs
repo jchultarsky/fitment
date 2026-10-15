@@ -15,7 +15,8 @@ pub(crate) const MAX_NOTE_CHARS: usize = 2000;
 type Checked = Result<(), String>;
 
 /// Every rule of 9.4 that `extracted` must keep.
-pub(crate) fn extracted(extracted: &Extracted) -> Checked {
+/// `guard` is the least guard a clearance margin needs beyond τ (B1).
+pub(crate) fn extracted(extracted: &Extracted, guard: f64) -> Checked {
     for (k, socket) in extracted.sockets.iter().enumerate() {
         if socket.id != format!("socket-{}", k + 1) {
             return Err(format!("socket {} is not numbered in order", socket.id));
@@ -33,16 +34,17 @@ pub(crate) fn extracted(extracted: &Extracted) -> Checked {
                 socket.id
             ));
         }
-        socket_rules(socket, &extracted.target.anchors)?;
+        socket_rules(socket, &extracted.target.anchors, guard)?;
     }
     Ok(())
 }
 
-fn socket_rules(socket: &Socket, anchors: &[FeatureId]) -> Checked {
+fn socket_rules(socket: &Socket, anchors: &[FeatureId], guard: f64) -> Checked {
     let id = &socket.id;
     let mut keys = Vec::new();
     for requirement in &socket.requirements {
-        requirement_rules(requirement).map_err(|e| format!("{id}/{}: {e}", requirement.id))?;
+        requirement_rules(requirement, guard)
+            .map_err(|e| format!("{id}/{}: {e}", requirement.id))?;
         keys.push((
             super::combine::order_key(requirement),
             requirement.id.clone(),
@@ -111,7 +113,7 @@ fn positive(x: f64) -> bool {
     x.is_finite() && x > 0.0
 }
 
-fn requirement_rules(requirement: &Requirement) -> Checked {
+fn requirement_rules(requirement: &Requirement, guard: f64) -> Checked {
     if !requirement.flags.windows(2).all(|w| w[0] < w[1]) {
         return Err("its flags are not sorted and unique".to_owned());
     }
@@ -127,11 +129,11 @@ fn requirement_rules(requirement: &Requirement) -> Checked {
         return Err("its floor is below one of its sources' (Y1)".to_owned());
     }
     lists_and_sources(requirement)?;
-    requires_rules(requirement)
+    requires_rules(requirement, guard)
 }
 
 /// The rules of each kind of requirement.
-fn requires_rules(requirement: &Requirement) -> Checked {
+fn requires_rules(requirement: &Requirement, guard: f64) -> Checked {
     let labelled = requirement.flags.contains(&Flag::ThreadNotConfirmed)
         || requirement.flags.contains(&Flag::Conflict);
     match &requirement.requires {
@@ -149,6 +151,7 @@ fn requires_rules(requirement: &Requirement) -> Checked {
                 }),
                 &requirement.sources,
                 -1.0,
+                guard,
             )?;
         }
         Requires::Shaft { spans, .. } => {
@@ -165,6 +168,7 @@ fn requires_rules(requirement: &Requirement) -> Checked {
                 }),
                 &requirement.sources,
                 1.0,
+                guard,
             )?;
         }
         Requires::Seat {
@@ -335,6 +339,7 @@ fn margins(
     spans: impl Iterator<Item = (f64, f64, Fit, Option<f64>, f64)>,
     sources: &[super::model::SourceRef],
     sign: f64,
+    guard: f64,
 ) -> Checked {
     for (from, to, fit, clear, diameter) in spans {
         let (Fit::Clearance, Some(clear)) = (fit, clear) else {
@@ -349,7 +354,8 @@ fn margins(
             if b.min(to) - a.max(from) <= MERGE_MM {
                 continue;
             }
-            if margin <= CONTACT_MM.max(source.floor_mm) {
+            // B1: a clearance's margin passes τ by the target's guard.
+            if margin <= CONTACT_MM.max(source.floor_mm) + guard {
                 return Err("a clearance span has a source with no clearance".to_owned());
             }
             let limit = diameter + sign * 2.0 * margin;
@@ -379,12 +385,20 @@ fn ordered(spans: impl Iterator<Item = (f64, f64)>) -> Checked {
 /// has a note; notes are at most `MAX_NOTE_CHARS`. A missing entry reads
 /// as unreviewed.
 pub(crate) fn review(extracted: &Extracted, review: &[ReviewEntry]) -> Checked {
+    entries(review, |socket, requirement| {
+        extracted
+            .sockets
+            .iter()
+            .any(|s| s.id == socket && s.requirements.iter().any(|r| r.id == requirement))
+    })
+}
+
+/// The review's rules, the document's requirements known by `holds`
+/// (a socket and requirement id): an older document's too (MF11).
+pub(crate) fn entries(review: &[ReviewEntry], holds: impl Fn(&str, &str) -> bool) -> Checked {
     let mut seen = BTreeSet::new();
     for entry in review {
-        let exists = extracted.sockets.iter().any(|s| {
-            s.id == entry.socket && s.requirements.iter().any(|r| r.id == entry.requirement)
-        });
-        if !exists {
+        if !holds(&entry.socket, &entry.requirement) {
             return Err(format!(
                 "the review names {}/{}, which the document does not hold",
                 entry.socket, entry.requirement

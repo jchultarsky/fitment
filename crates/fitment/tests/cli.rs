@@ -471,6 +471,11 @@ fn an_older_document_s_decisions_carry_over() {
     run(&reviewed.replace("\"contact_mm\": 0.01", "\"contact_mm\": 0.02"))
         .code(2)
         .stderr(contains("not a fitment.socket document"));
+    // A review that breaks 9.4's rules (a removal with no note) is not
+    // read, as in a document of these rules.
+    run(&reviewed.replace("\"note\": \"may be thicker\"", "\"note\": null"))
+        .code(2)
+        .stderr(contains("not a fitment.socket document"));
     // Written by newer rules than these: not read either.
     run(&reviewed.replace(
         "\"socket_rules_version\": 5,",
