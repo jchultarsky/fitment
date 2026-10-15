@@ -1319,13 +1319,14 @@ def perpendiculars(d):
     return u, w
 
 
-def ring(m, axis, station, radius):
-    """Eight points at `radius` about `axis` at `station`, in the root frame."""
+def ring(m, axis, station, radius, count=8):
+    """`count` points at `radius` about `axis` at `station`, in the root
+    frame."""
     p, d = axis["point_mm"], axis["direction"]
     u, w = perpendiculars(d)
     out = []
-    for k in range(8):
-        c, s = math.cos(k * math.pi / 4), math.sin(k * math.pi / 4)
+    for k in range(count):
+        c, s = math.cos(2 * k * math.pi / count), math.sin(2 * k * math.pi / count)
         out.append(apply(m, [p[i] + station * d[i] + radius * (c * u[i] + s * w[i]) for i in range(3)]))
     return out
 
@@ -1347,13 +1348,18 @@ def core_problems(where, requirement, m, target, guard, tally):
         clear = span["clear_diameter_mm"]
         a, b = span["from_mm"], span["to_mm"]
         if span.get("profile_mm") is not None:
+            # A quarter and three quarters along: the profile's radius there,
+            # so a profile reversed or moved is met.
             tally["zone profiles"] = tally.get("zone profiles", 0) + 1
-            r = (span["profile_mm"][0] + span["profile_mm"][1]) / 4
-            airy, solid = (r - 0.02, r + 0.02) if hole else (r + 0.02, r - 0.02)
-            mid = (a + b) / 2
-            if any(inside_any(pt, [target]) for pt in ring(m, q["axis"], mid, airy)) or \
-                    not all(inside_any(pt, [target]) for pt in ring(m, q["axis"], mid, solid)):
-                problems.append(f"{where}: zone profile {span['profile_mm']} is not the part's radius at {mid:.4f}")
+            p0, p1 = span["profile_mm"]
+            for k in (0.25, 0.75):
+                r = (p0 + (p1 - p0) * k) / 2
+                airy, solid = (r - 0.02, r + 0.02) if hole else (r + 0.02, r - 0.02)
+                at = a + (b - a) * k
+                if any(inside_any(pt, [target]) for pt in ring(m, q["axis"], at, airy)) or \
+                        not all(inside_any(pt, [target]) for pt in ring(m, q["axis"], at, solid)):
+                    problems.append(f"{where}: zone profile {span['profile_mm']} is not the part's radius at {at:.4f}")
+                    break
         if flagged or b - a <= 0.05 or span.get("basis") == "past_known_end":
             continue
         if span["pinned"] or span.get("basis") == "zone":
@@ -1363,10 +1369,11 @@ def core_problems(where, requirement, m, target, guard, tally):
         else:
             continue
         tally["cores sampled"] = tally.get("cores sampled", 0) + 1
-        radii = [0.0, rho / 2, rho - 0.02] if hole else [rho + x for x in (0.02, 0.5, 2.0, 8.0, 32.0)]
+        radii = [rho * k / 4 for k in range(4)] + [rho - 0.02] if hole else \
+            [rho + x for x in (0.02, 0.1, 0.3, 0.6, 1, 2, 3, 5, 8, 12, 18, 25, 35, 50, 75, 100)]
         for station in (a + 0.02, (a + b) / 2, b - 0.02):
             for radius in (x for x in radii if x >= 0):
-                hit = next((pt for pt in ring(m, q["axis"], station, radius) if inside_any(pt, [target])), None)
+                hit = next((pt for pt in ring(m, q["axis"], station, radius, 16) if inside_any(pt, [target])), None)
                 if hit is not None:
                     return problems + [f"{where}: the part's own material at radius {radius:.4f}, station "
                                        f"{station:.4f}, inside the core of radius {rho:.4f}, and no core_not_clear"]
@@ -2300,6 +2307,14 @@ def widen_profiles(document):
                 sp["profile_mm"] = [x + 0.5 for x in sp["profile_mm"]]
 
 
+def reverse_profiles(document):
+    """X8: every zone profile end for end."""
+    for _, r in each_requirement(document):
+        for sp in r["requires"].get("spans", []):
+            if sp.get("profile_mm") is not None:
+                sp["profile_mm"] = sp["profile_mm"][::-1]
+
+
 def flip_senses(document):
     """Q3: every conical seat's sense the other way."""
     for _, r in each_requirement(document):
@@ -2369,7 +2384,8 @@ MUTATIONS = {"drop bores": drop("bore"), "drop shafts": drop("shaft"), "drop sea
              "drop grips": drop("grip"), "move axes 0.01 mm": move_axes, "swap fits": swap_fits,
              "shrink contacts": shrink_contacts, "merge sockets": merge_sockets, "null max_extra": null_extras,
              "flip cone senses": flip_senses, "narrow cone ranges": narrow_ranges,
-             "drop core flags": drop_core_flags, "widen zone profiles": widen_profiles}
+             "drop core flags": drop_core_flags, "widen zone profiles": widen_profiles,
+             "reverse zone profiles": reverse_profiles}
 
 
 def mutations_main(argv):

@@ -18,10 +18,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::geo::{V, add, cross, dot, norm, perpendiculars, scale, sub};
 use super::model::{Flag, Requirement, Requires, SpanBasis};
-use super::overlap::{P2, distance_to_segment, flatten, hole_polygons, inside, outer_polygon};
+use super::overlap::{P2, distance_to_segment, flatten, hole_polygon, inside, outer_polygon};
 use super::place::{Aabb, Tree};
 use crate::features::extent::FaceBox;
-use crate::features::{FeatureId, Part, StackEnd};
+use crate::features::{CylinderClass, FeatureId, Outline, Part, Segment, StackEnd};
 
 /// The default linear tolerance (D9): the core's reach past a span's ends.
 const REACH_MM: f64 = 0.01;
@@ -38,8 +38,9 @@ struct Reach {
 
 /// One face of the original, as tested.
 enum Shape {
-    /// A plane face square to the axis: its station and region.
-    Square { at: f64, near: f64, far: f64 },
+    /// A plane face square to the axis, of known outline: its station, and
+    /// the sine of its tilt from square (its region is asked of each core).
+    Square { at: f64, tilt: f64 },
     /// A face on the axis, or a box: what it reaches.
     Reach(Reach),
     /// A cone on the axis: its radius at two stations, straight between.
@@ -51,6 +52,22 @@ enum Shape {
     Anywhere,
 }
 
+/// Where a feature lies in its part.
+#[derive(Debug, Clone, Copy)]
+enum Kind {
+    Plane(usize),
+    Cylinder(usize),
+    Cone(usize),
+    Torus(usize),
+}
+
+/// A plane face's hole loops, by index among its outline's loops, and a
+/// tree over their boxes.
+struct Holes {
+    loops: Vec<usize>,
+    tree: Tree,
+}
+
 /// The original part, its faces and a tree over their boxes, built once.
 pub(crate) struct Own<'p> {
     part: &'p Part,
@@ -60,6 +77,42 @@ pub(crate) struct Own<'p> {
     of: BTreeMap<FeatureId, Vec<usize>>,
     boxes: Vec<Option<Aabb>>,
     tree: Tree,
+    kinds: BTreeMap<FeatureId, Kind>,
+    /// Each plane face's index among its plane's faces, by `#id`.
+    plane_faces: BTreeMap<u64, usize>,
+    /// Each plane face's holes, by `#id`, so a core asks only of those
+    /// near it.
+    holes: BTreeMap<u64, Holes>,
+}
+
+/// A loop's box: its lines' ends, its arcs' whole circles.
+fn loop_box(segments: &[Segment]) -> Option<Aabb> {
+    let mut out: Option<Aabb> = None;
+    let mut take = |low: V, high: V| {
+        out = Some(out.map_or((low, high), |(lo, hi)| {
+            (
+                [0, 1, 2].map(|k| lo[k].min(low[k])),
+                [0, 1, 2].map(|k| hi[k].max(high[k])),
+            )
+        }));
+    };
+    for segment in segments {
+        match segment {
+            Segment::Line { from_mm, to_mm, .. } => {
+                take(from_mm.to_array(), from_mm.to_array());
+                take(to_mm.to_array(), to_mm.to_array());
+            }
+            Segment::Arc {
+                center_mm,
+                radius_mm,
+                ..
+            } => {
+                let c = center_mm.to_array();
+                take(c.map(|x| x - radius_mm), c.map(|x| x + radius_mm));
+            }
+        }
+    }
+    out
 }
 
 impl<'p> Own<'p> {
@@ -78,26 +131,65 @@ impl<'p> Own<'p> {
             faces.extend(t.faces.iter().map(|f| (*f, t.id)));
         }
         faces.extend(part.other_faces.iter().map(|o| (o.face, o.id)));
+        let by_face: BTreeMap<u64, Option<Aabb>> =
+            boxes.iter().map(|b| (b.face, b.bounds)).collect();
         let boxes: Vec<Option<Aabb>> = faces
             .iter()
-            .map(|(face, _)| {
-                boxes
-                    .iter()
-                    .find(|b| b.face == *face)
-                    .and_then(|b| b.bounds)
-            })
+            .map(|(face, _)| by_face.get(face).copied().flatten())
             .collect();
         let tree = Tree::new(boxes.clone());
         let mut of: BTreeMap<FeatureId, Vec<usize>> = BTreeMap::new();
         for (k, (_, feature)) in faces.iter().enumerate() {
             of.entry(*feature).or_default().push(k);
         }
+        let mut kinds = BTreeMap::new();
+        let mut plane_faces = BTreeMap::new();
+        let mut holes = BTreeMap::new();
+        for (i, plane) in part.planes.iter().enumerate() {
+            kinds.insert(plane.id, Kind::Plane(i));
+            for (j, face) in plane.faces.iter().enumerate() {
+                plane_faces.insert(face.face, j);
+                if let Outline::Known { loops } = &face.outline {
+                    let inner: Vec<usize> = (0..loops.len())
+                        .filter(|l| loops.get(*l).is_some_and(|l| !l.outer))
+                        .collect();
+                    let tree = Tree::new(
+                        inner
+                            .iter()
+                            .map(|l| loops.get(*l).and_then(|l| loop_box(&l.segments)))
+                            .collect(),
+                    );
+                    holes.insert(face.face, Holes { loops: inner, tree });
+                }
+            }
+        }
+        kinds.extend(
+            part.cylinders
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c.id, Kind::Cylinder(i))),
+        );
+        kinds.extend(
+            part.cones
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c.id, Kind::Cone(i))),
+        );
+        kinds.extend(
+            part.tori
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (t.id, Kind::Torus(i))),
+        );
         Self {
             part,
             faces,
             of,
             boxes,
             tree,
+            kinds,
+            plane_faces,
+            holes,
         }
     }
 }
@@ -214,58 +306,160 @@ impl Frame {
     }
 }
 
-/// A plane face square to the axis: the least and greatest distance of its
-/// region from the axis. Distances are to its exact edges, lines and arcs;
-/// whether the axis passes through the region is asked of a region
-/// holding it (its outer loop circumscribed, its holes inscribed), so a
-/// doubt reads as through.
-fn square(frame: &Frame, n: V, outline: &crate::features::Outline) -> Option<(f64, f64)> {
-    let crate::features::Outline::Known { loops } = outline else {
-        return None;
-    };
-    let outer = flatten(&outer_polygon(outline, n)?, frame.point, frame.u, frame.w);
-    let holes: Vec<Vec<P2>> = hole_polygons(outline, n)
-        .iter()
-        .map(|h| flatten(h, frame.point, frame.u, frame.w))
-        .collect();
-    // The plane's own turn against the frame's: an arc's sweep is about
-    // the face's normal.
-    let turn = dot(n, cross(frame.u, frame.w)).signum();
-    let (mut near, mut far) = (f64::INFINITY, 0.0_f64);
-    for segment in loops.iter().flat_map(|l| l.segments.iter()) {
-        let (a, b) = match segment {
-            crate::features::Segment::Line { from_mm, to_mm, .. }
-            | crate::features::Segment::Arc { from_mm, to_mm, .. } => (
+/// One edge's least and greatest distance from the axis, across it:
+/// exact for a line and an arc. `turn` is the plane's normal against the
+/// frame's (an arc's sweep is about the face's normal).
+fn segment_reach(frame: &Frame, turn: f64, segment: &Segment) -> (f64, f64) {
+    let length = |p: P2| (p[0] * p[0] + p[1] * p[1]).sqrt();
+    match segment {
+        Segment::Line { from_mm, to_mm, .. } => {
+            let (a, b) = (
                 frame.across(from_mm.to_array()),
                 frame.across(to_mm.to_array()),
-            ),
+            );
+            (
+                distance_to_segment([0.0, 0.0], a, b),
+                length(a).max(length(b)),
+            )
+        }
+        Segment::Arc {
+            from_mm,
+            to_mm,
+            center_mm,
+            radius_mm,
+            sweep_rad,
+            ..
+        } => {
+            let (a, b) = (
+                frame.across(from_mm.to_array()),
+                frame.across(to_mm.to_array()),
+            );
+            let (low, high) = arc(
+                frame.across(center_mm.to_array()),
+                a,
+                *radius_mm,
+                turn * sweep_rad,
+            );
+            (
+                low.min(length(a)).min(length(b)),
+                high.max(length(a)).max(length(b)),
+            )
+        }
+    }
+}
+
+impl Own<'_> {
+    /// Face `k`, if a plane's, with its plane.
+    fn plane_face(
+        &self,
+        k: usize,
+    ) -> Option<(&crate::features::Plane, &crate::features::PlaneFace)> {
+        let &(face, feature) = self.faces.get(k)?;
+        let Some(Kind::Plane(i)) = self.kinds.get(&feature) else {
+            return None;
         };
-        let length = |p: P2| (p[0] * p[0] + p[1] * p[1]).sqrt();
-        far = far.max(length(a)).max(length(b));
-        match segment {
-            crate::features::Segment::Line { .. } => {
-                near = near.min(distance_to_segment([0.0, 0.0], a, b));
+        let plane = self.part.planes.get(*i)?;
+        Some((plane, plane.faces.get(*self.plane_faces.get(&face)?)?))
+    }
+
+    /// A square plane face's region against `core`: its outer loop's
+    /// reach, and for a bore the holes near the axis (asked of a tree),
+    /// exact; whether the axis passes through it asked of a region holding
+    /// it (its outer loop circumscribed, those holes inscribed), so a doubt
+    /// reads as through. Its tilt from square widens its station by its
+    /// reach. Every edge examined counts toward `pairs`.
+    fn square_hit(
+        &self,
+        k: usize,
+        frame: &Frame,
+        core: &Core,
+        (at, tilt): (f64, f64),
+        pairs: &mut u64,
+    ) -> Result<bool, super::rules::TooMany> {
+        let Some((plane, face)) = self.plane_face(k) else {
+            return Ok(true);
+        };
+        let Outline::Known { loops } = &face.outline else {
+            return Ok(true);
+        };
+        let normal = plane.normal.to_array();
+        let turn = dot(normal, cross(frame.u, frame.w)).signum();
+        let mut count = |n: usize| {
+            *pairs += n as u64;
+            if *pairs > super::MAX_RELATIONS {
+                Err(super::rules::TooMany)
+            } else {
+                Ok(())
             }
-            crate::features::Segment::Arc {
-                center_mm,
-                radius_mm,
-                sweep_rad,
-                ..
-            } => {
-                let (low, high) = arc(
-                    frame.across(center_mm.to_array()),
-                    a,
-                    *radius_mm,
-                    turn * sweep_rad,
-                );
-                near = near.min(low).min(length(a)).min(length(b));
+        };
+        let (mut near, mut far) = (f64::INFINITY, 0.0_f64);
+        for outer in loops.iter().filter(|l| l.outer) {
+            count(outer.segments.len())?;
+            for segment in &outer.segments {
+                let (low, high) = segment_reach(frame, turn, segment);
+                near = near.min(low);
                 far = far.max(high);
             }
         }
+        let slack = tilt * far;
+        if !core.meets(at - slack, at + slack) {
+            return Ok(false);
+        }
+        if !core.hole {
+            return Ok(far >= core.rho);
+        }
+        let point = add(frame.point, scale(frame.dir, at));
+        let reach = core.rho.max(0.0) + slack;
+        let query = (point.map(|x| x - reach), point.map(|x| x + reach));
+        let mut through = outer_polygon(&face.outline, normal)
+            .is_none_or(|p| inside([0.0, 0.0], &flatten(&p, frame.point, frame.u, frame.w)));
+        if let Some(holes) = self.holes.get(&face.face) {
+            for h in holes.tree.meeting(&query, 0.0) {
+                let Some(hole) = holes.loops.get(h).and_then(|l| loops.get(*l)) else {
+                    continue;
+                };
+                count(hole.segments.len())?;
+                for segment in &hole.segments {
+                    near = near.min(segment_reach(frame, turn, segment).0);
+                }
+                if hole_polygon(&hole.segments, normal).is_some_and(|p| {
+                    inside([0.0, 0.0], &flatten(&p, frame.point, frame.u, frame.w))
+                }) {
+                    through = false;
+                }
+            }
+        }
+        Ok(through || near <= core.rho)
     }
-    let through = inside([0.0, 0.0], &outer) && !holes.iter().any(|h| inside([0.0, 0.0], h));
-    near.is_finite()
-        .then_some((if through { 0.0 } else { near }, far))
+
+    /// A square plane face's whole reach from the axis, for X7's test of a
+    /// transition: (least, greatest), the least zero where the axis passes
+    /// through it.
+    fn square_reach(&self, k: usize, frame: &Frame) -> Option<(f64, f64)> {
+        let (plane, face) = self.plane_face(k)?;
+        let Outline::Known { loops } = &face.outline else {
+            return None;
+        };
+        let normal = plane.normal.to_array();
+        let turn = dot(normal, cross(frame.u, frame.w)).signum();
+        let (mut near, mut far) = (f64::INFINITY, 0.0_f64);
+        for segment in loops.iter().flat_map(|l| l.segments.iter()) {
+            let (low, high) = segment_reach(frame, turn, segment);
+            near = near.min(low);
+            far = far.max(high);
+        }
+        let flat = |p: Vec<V>| flatten(&p, frame.point, frame.u, frame.w);
+        let through = outer_polygon(&face.outline, normal)
+            .map(flat)
+            .is_none_or(|p| inside([0.0, 0.0], &p))
+            && !loops.iter().filter(|l| !l.outer).any(|l| {
+                hole_polygon(&l.segments, normal)
+                    .map(flat)
+                    .is_some_and(|p| inside([0.0, 0.0], &p))
+            });
+        near.is_finite()
+            .then_some((if through { 0.0 } else { near }, far))
+    }
 }
 
 /// A polygon (station, across) cut to the stations `from` to `to`
@@ -414,29 +608,55 @@ impl Own<'_> {
 
     /// How face `k` lies in `frame`.
     fn shape(&self, k: usize, frame: &Frame) -> Shape {
-        let Some(&(face, feature)) = self.faces.get(k) else {
+        let Some(&(_, feature)) = self.faces.get(k) else {
             return Shape::Anywhere;
         };
         let part = self.part;
-        if let Some(plane) = part.planes.iter().find(|p| p.id == feature) {
-            return plane
-                .faces
-                .iter()
-                .find(|f| f.face == face)
-                .and_then(|f| plane_shape(frame, plane, f))
-                .unwrap_or_else(|| self.boxed(k, frame, Some(plane)));
-        }
-        let found = if let Some(c) = part.cylinders.iter().find(|c| c.id == feature) {
-            cylinder_shape(frame, c)
-        } else if let Some(c) = part.cones.iter().find(|c| c.id == feature) {
-            cone_shape(frame, c)
-        } else {
-            part.tori
-                .iter()
-                .find(|t| t.id == feature)
-                .map(|t| torus_shape(frame, t))
+        let found = match self.kinds.get(&feature) {
+            Some(Kind::Plane(_)) => {
+                let plane = self.plane_face(k);
+                return plane
+                    .and_then(|(plane, f)| plane_shape(frame, plane, f))
+                    .unwrap_or_else(|| self.boxed(k, frame, plane.map(|(p, _)| p)));
+            }
+            Some(Kind::Cylinder(i)) => part
+                .cylinders
+                .get(*i)
+                .and_then(|c| cylinder_shape(frame, c).or_else(|| self.coaxial(k, frame, c))),
+            Some(Kind::Cone(i)) => part.cones.get(*i).and_then(|c| cone_shape(frame, c)),
+            Some(Kind::Torus(i)) => part.tori.get(*i).map(|t| torus_shape(frame, t)),
+            None => None,
         };
         found.unwrap_or_else(|| self.boxed(k, frame, None))
+    }
+}
+
+impl Own<'_> {
+    /// A cylinder on the axis whose stations do not bound it (a partial
+    /// one, or one with an irregular end): every point of it lies at its
+    /// radius, along its box's stations, or anywhere along the axis with
+    /// no box.
+    fn coaxial(
+        &self,
+        k: usize,
+        frame: &Frame,
+        cylinder: &crate::features::Cylinder,
+    ) -> Option<Shape> {
+        let point = cylinder.axis.point_mm.to_array();
+        let dir = cylinder.axis.direction.to_array();
+        if !frame.on_axis(point, dir) {
+            return None;
+        }
+        let (from, to) = match self.boxed(k, frame, None) {
+            Shape::Reach(r) => (r.from, r.to),
+            _ => (f64::NEG_INFINITY, f64::INFINITY),
+        };
+        Some(Shape::Reach(Reach {
+            from,
+            to,
+            near: cylinder.radius_mm,
+            far: cylinder.radius_mm,
+        }))
     }
 }
 
@@ -448,11 +668,11 @@ fn plane_shape(
     face: &crate::features::PlaneFace,
 ) -> Option<Shape> {
     let normal = plane.normal.to_array();
-    if (dot(normal, frame.dir).abs() - 1.0).abs() <= 1e-9 {
-        if let Some((near, far)) = square(frame, normal, &face.outline) {
-            let at = (plane.offset_mm - dot(normal, frame.point)) / dot(normal, frame.dir);
-            return Some(Shape::Square { at, near, far });
-        }
+    let along = dot(normal, frame.dir);
+    if (along.abs() - 1.0).abs() <= 1e-9 && matches!(face.outline, Outline::Known { .. }) {
+        let at = (plane.offset_mm - dot(normal, frame.point)) / along;
+        let tilt = (1.0 - along * along).max(0.0).sqrt();
+        return Some(Shape::Square { at, tilt });
     }
     outer_polygon(&face.outline, normal).map(|points| {
         Shape::Polygon(
@@ -464,9 +684,14 @@ fn plane_shape(
     })
 }
 
-/// A cylinder: on the axis, by its radius over its stations; off it,
-/// between its end circles. `None` with no stations.
+/// A whole cylinder bounded by its end circles: on the axis, by its radius
+/// over its stations; off it, between its end circles. `None` otherwise:
+/// a partial one's wall, or one with an irregular end, may run past the
+/// stations of its circles.
 fn cylinder_shape(frame: &Frame, cylinder: &crate::features::Cylinder) -> Option<Shape> {
+    if !matches!(cylinder.class, CylinderClass::Full { .. }) {
+        return None;
+    }
     let point = cylinder.axis.point_mm.to_array();
     let dir = cylinder.axis.direction.to_array();
     let (low, high) = cylinder
@@ -570,8 +795,17 @@ impl Own<'_> {
                     &s.ends,
                 )
             };
-        let radii = segments.iter().map(|s| s.diameter_mm / 2.0);
-        let (narrow, wide) = radii.fold((f64::INFINITY, 0.0_f64), |(a, b), r| (a.min(r), b.max(r)));
+        let (p, d) = (point.to_array(), dir.to_array());
+        let at = |s: f64| frame.station(add(p, scale(d, s)));
+        // Each segment's stations and radius, where both its ends are
+        // known.
+        let walls: Vec<(f64, f64, f64)> = segments
+            .iter()
+            .filter_map(|g| {
+                let (a, b) = (at(g.from_mm?), at(g.to_mm?));
+                Some((a.min(b), a.max(b), g.diameter_mm / 2.0))
+            })
+            .collect();
         let mut own: BTreeSet<u64> = BTreeSet::new();
         let cylinders = segments.iter().map(|s| (s.cylinder, true));
         let tapers = transitions.iter().map(|t| (*t, false));
@@ -580,12 +814,11 @@ impl Own<'_> {
                 let Some(&(face, _)) = self.faces.get(k) else {
                     continue;
                 };
-                if cylinder || self.safe(k, frame, hole, (narrow, wide)) {
+                if cylinder || self.safe(k, frame, hole, &walls) {
                     own.insert(face);
                 }
             }
         }
-        let (p, d) = (point.to_array(), dir.to_array());
         let closed = ends
             .iter()
             .filter_map(|e| match e {
@@ -604,24 +837,56 @@ impl Own<'_> {
 }
 
 impl Own<'_> {
-    /// X7: a transition's face on the safe side of the stack's cylinders,
-    /// outside a hole's narrowest or inside a shaft's widest.
-    fn safe(&self, k: usize, frame: &Frame, hole: bool, (narrow, wide): (f64, f64)) -> bool {
-        let slack = 1e-6 * wide.max(1.0);
-        let (near, far) = match self.shape(k, frame) {
-            Shape::Square { near, far, .. } => (near, far),
-            Shape::Reach(r) => (r.near, r.far),
-            Shape::Taper { lo, hi } => (lo.1.min(hi.1), lo.1.max(hi.1)),
-            Shape::Polygon(points) => {
-                let (near, far) = polygon_reach(&points);
-                (near, far)
+    /// X7: a transition's face on the safe side of the cylinder that stands
+    /// for its zone: the narrower of the two segments it joins for a hole,
+    /// the wider for a shaft, or at an end the end segment. `walls` are the
+    /// stack's segments (stations, radius) whose ends are known; with no
+    /// such segment beside it, it is not safe.
+    fn safe(&self, k: usize, frame: &Frame, hole: bool, walls: &[(f64, f64, f64)]) -> bool {
+        let shape = self.shape(k, frame);
+        let ((from, to), (near, far)) = match shape {
+            Shape::Square { at, .. } => match self.square_reach(k, frame) {
+                Some(reach) => ((at, at), reach),
+                None => return false,
+            },
+            Shape::Reach(r) => ((r.from, r.to), (r.near, r.far)),
+            Shape::Taper { lo, hi } => (
+                (lo.0.min(hi.0), lo.0.max(hi.0)),
+                (lo.1.min(hi.1), lo.1.max(hi.1)),
+            ),
+            Shape::Polygon(ref points) => {
+                let stations = points.iter().map(|p| p.0);
+                let range = stations.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), s| {
+                    (a.min(s), b.max(s))
+                });
+                (range, polygon_reach(points))
             }
             Shape::Anywhere => return false,
         };
-        if hole {
-            near >= narrow - slack
+        let wide = walls.iter().map(|w| w.2).fold(1.0, f64::max);
+        let slack = 1e-6 * wide;
+        // The segments ending where it begins, and beginning where it ends.
+        let before = walls
+            .iter()
+            .filter(|w| w.1 <= from + slack)
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        let after = walls
+            .iter()
+            .filter(|w| w.0 >= to - slack)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let radii = before.into_iter().chain(after).map(|w| w.2);
+        let bound = if hole {
+            radii.fold(f64::INFINITY, f64::min)
         } else {
-            far <= wide + slack
+            radii.fold(f64::NEG_INFINITY, f64::max)
+        };
+        if !bound.is_finite() {
+            return false;
+        }
+        if hole {
+            near >= bound - slack
+        } else {
+            far <= bound + slack
         }
     }
 }
@@ -636,20 +901,6 @@ struct Core {
 }
 
 impl Core {
-    fn holds(&self, s: f64) -> bool {
-        let above = if self.from.1 {
-            s > self.from.0
-        } else {
-            s >= self.from.0
-        };
-        let below = if self.to.1 {
-            s < self.to.0
-        } else {
-            s <= self.to.0
-        };
-        above && below
-    }
-
     /// True if stations `a` to `b` reach into the core's.
     fn meets(&self, a: f64, b: f64) -> bool {
         let (lo, hi) = (a.min(b), a.max(b));
@@ -677,10 +928,8 @@ impl Core {
             }
         };
         match *shape {
-            Shape::Anywhere => true,
-            // A root's or bottom's own face lies at a station the core
-            // stops short of.
-            Shape::Square { at, near, far } => self.holds(at) && radial(near, far),
+            // A square plane's region is asked by `Own::square_hit`.
+            Shape::Anywhere | Shape::Square { .. } => true,
             Shape::Reach(r) => self.meets(r.from, r.to) && radial(r.near, r.far),
             Shape::Polygon(ref points) => {
                 let clipped = slab(points, self.from.0, self.to.0);
@@ -821,7 +1070,13 @@ fn intruded(
             if stack.own.contains(&face) {
                 continue;
             }
-            if core.intruded(&own.shape(k, &frame)) {
+            let hit = match own.shape(k, &frame) {
+                Shape::Square { at, tilt } => {
+                    own.square_hit(k, &frame, &core, (at, tilt), pairs)?
+                }
+                shape => core.intruded(&shape),
+            };
+            if hit {
                 return Ok(true);
             }
         }
@@ -954,11 +1209,6 @@ mod tests {
         assert!(!bore.intruded(&reach(2.0, 4.0, 3.0 + 1e-9, 5.0)));
         assert!(!bore.intruded(&reach(-2.0, 0.0, 0.0, 5.0)));
         assert!(bore.intruded(&reach(10.0, 12.0, 0.0, 5.0)));
-        assert!(!bore.intruded(&Shape::Square {
-            at: 0.0,
-            near: 0.0,
-            far: 4.0
-        }));
         assert!(bore.intruded(&Shape::Anywhere));
         let shaft = Core {
             hole: false,

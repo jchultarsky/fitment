@@ -220,10 +220,19 @@ fn make_piece(
     if zone {
         piece.pinned = false;
     }
-    // X8: what the piece lies on, and a zone's profile.
-    if x1 <= element.known_lo || x0 >= element.known_hi {
+    // X8: what the piece lies on, and a zone's profile. A touch at an end
+    // lies on that end, not past it.
+    let e = super::MERGE_MM;
+    let beyond = |(lo, hi): (f64, f64)| {
+        if x0 < x1 {
+            x1 <= lo || x0 >= hi
+        } else {
+            x0 < lo - e || x0 > hi + e
+        }
+    };
+    if beyond((element.known_lo, element.known_hi)) || element.known_lo >= element.known_hi {
         piece.basis = SpanBasis::PastKnownEnd;
-    } else if zone {
+    } else if beyond((element.own_lo, element.own_hi)) {
         piece.basis = SpanBasis::Zone;
         piece.profile = element.profile(x0, x1);
     }

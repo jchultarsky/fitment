@@ -1381,16 +1381,19 @@ mod tests {
     /// profile does not.
     #[test]
     fn pieces_that_state_nothing_of_the_original_are_unverifiable() {
-        let Ok(document) = SocketDocument::extract(S01, Some("BRACKET"), None) else {
-            return;
-        };
-        let Some(bore) = document.extracted().and_then(|e| {
-            e.sockets[0]
-                .requirements
-                .iter()
-                .find(|r| matches!(r.requires, Requires::Bore { .. }))
-                .cloned()
-        }) else {
+        let bore = SocketDocument::extract(S01, Some("BRACKET"), None)
+            .ok()
+            .and_then(|d| {
+                d.extracted()?
+                    .sockets
+                    .first()?
+                    .requirements
+                    .iter()
+                    .find(|r| matches!(r.requires, Requires::Bore { .. }))
+                    .cloned()
+            });
+        assert!(bore.is_some(), "s01's bracket has a bore");
+        let Some(bore) = bore else {
             return;
         };
         assert!(bore.verifiable());

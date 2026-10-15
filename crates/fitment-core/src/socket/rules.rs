@@ -165,7 +165,9 @@ fn fit_of(margin: f64, e_max: f64, tau: f64, guard: f64, flags: &mut BTreeSet<Fl
 fn spans_of(a: &Element, p: &Pair, tau: f64) -> ((f64, f64), (f64, f64)) {
     let sure = span(a, p, tau);
     if p.length > tau {
-        (widened((a.lo, a.hi), p, tau), sure)
+        // Within what is known of the element: a neighbour's end past it
+        // is U3's, read as nothing.
+        (widened((a.known_lo, a.known_hi), p, tau), sure)
     } else {
         (sure, sure)
     }
@@ -183,9 +185,9 @@ fn span(a: &Element, p: &Pair, tau: f64) -> (f64, f64) {
 }
 
 /// B5 and I3 (the socket PR, SR7): an end of an overlap inside `a`'s
-/// stations `within` is the neighbour's own end, a position known to τ:
-/// widened by it, never past `within`, so the original's own wall still
-/// spans it. An end where `a` itself ends is `a`'s, and stays; so does a
+/// known stations `within` is the neighbour's own end, a position known
+/// to τ: widened by it, never past `within`, so the original's own wall
+/// still spans it. An end where `a` itself ends is `a`'s, and stays; so does a
 /// touch.
 fn widened(within: (f64, f64), p: &Pair, tau: f64) -> (f64, f64) {
     let from = if p.lo > within.0 + super::MERGE_MM {
