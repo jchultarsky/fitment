@@ -59,6 +59,8 @@ pub enum Flag {
     Interference,
     /// An outline in the contact is unknown (C3, C4).
     UnknownOutline,
+    /// A grip one of whose seats is unverifiable (U10): unverifiable.
+    SeatUnverifiable,
 }
 
 /// One span of a bore: an interval of the hole's stations and what
@@ -268,9 +270,14 @@ pub enum Requires {
         apex_mm: crate::geom::Point3,
         /// The included angle.
         included_angle_rad: f64,
-        /// The radial range both cones cover, if known.
+        /// The radial range the neighbour cones seated on it cover, from
+        /// the least to the greatest of their ranges (Q1); `None` if one
+        /// is unknown.
         #[serde(deserialize_with = "Option::deserialize")]
         radii_mm: Option<[f64; 2]>,
+        /// The target cone's sense: a countersink (`hole`) or a cone on a
+        /// shaft (`shaft`) (Q3).
+        sense: crate::features::Sense,
     },
     /// A partial concave cylinder holding a shaft (U1): M4 v1 cannot
     /// verify it.
@@ -398,14 +405,16 @@ impl Requirement {
     /// until review removes them (Y4): `unresolved`, `partial_bore`,
     /// `partial_shaft`, a bore or shaft flagged `target_undecided`, a bore
     /// flagged `open_at_unknown_end`, a seat with a contact whose basis
-    /// is unknown, and a conical seat whose radial range is unknown.
+    /// is unknown, a grip flagged `seat_unverifiable` (U10), and a conical
+    /// seat whose radial range is unknown. M3's witness test and M4's
+    /// verification both ask this (SR5).
     pub fn verifiable(&self) -> bool {
         match &self.requires {
             Requires::Unresolved { .. }
             | Requires::PartialBore { .. }
             | Requires::PartialShaft { .. } => false,
             Requires::Seat { contacts, .. } => contacts.iter().all(|c| c.basis != Basis::Unknown),
-            Requires::Grip { .. } => true,
+            Requires::Grip { .. } => !self.flags.contains(&Flag::SeatUnverifiable),
             Requires::ConicalSeat { radii_mm, .. } => radii_mm.is_some(),
             Requires::Bore { .. } | Requires::Shaft { .. } => !self
                 .flags
@@ -572,6 +581,8 @@ pub struct SocketConstants {
     pub max_occurrences: u64,
     /// The most candidate pairs examined (check 39).
     pub max_relations: u64,
+    /// The least guard beyond τ a clearance margin needs, in mm (B1).
+    pub guard_mm: f64,
 }
 
 /// One review decision (section 9.4).

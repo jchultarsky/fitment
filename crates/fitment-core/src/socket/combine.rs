@@ -831,6 +831,7 @@ pub(crate) fn planar(
     out.extend(grips(part, faces, &out));
     out.extend(cone_grips(part, &out, &conical));
     out.extend(conical);
+    flag_grips(&mut out);
     for (plane, faces) in &found.unread_contacts {
         out.push(unresolved(
             *plane,
@@ -969,6 +970,31 @@ fn cone_grips(part: &Part, seats: &[Requirement], conical: &[Requirement]) -> Ve
     out
 }
 
+/// U10: a grip either of whose seats is unverifiable (or missing) is
+/// flagged `seat_unverifiable`, so the grip is too.
+pub(crate) fn flag_grips(requirements: &mut [Requirement]) {
+    let verifiable: BTreeMap<FeatureId, bool> = requirements
+        .iter()
+        .filter_map(|r| match &r.requires {
+            Requires::Seat { plane, .. } => Some((*plane, r.verifiable())),
+            Requires::ConicalSeat { cone, .. } => Some((*cone, r.verifiable())),
+            _ => None,
+        })
+        .collect();
+    for r in requirements.iter_mut() {
+        let Requires::Grip { seats, .. } = &r.requires else {
+            continue;
+        };
+        let unverifiable = seats
+            .iter()
+            .any(|s| !verifiable.get(s).copied().unwrap_or(false));
+        if unverifiable && !r.flags.contains(&Flag::SeatUnverifiable) {
+            r.flags.push(Flag::SeatUnverifiable);
+            r.flags.sort_unstable();
+        }
+    }
+}
+
 /// Q1: one conical seat per target cone.
 fn cones(
     part: &Part,
@@ -980,15 +1006,22 @@ fn cones(
     for cone in &part.cones {
         let seats: Vec<&super::planar::ConeSeat> =
             found.cones.iter().filter(|c| c.cone == cone.id).collect();
-        let Some(first) = seats.first() else {
+        if seats.is_empty() {
             continue;
-        };
+        }
+        // Q1: from the least to the greatest radius any neighbour cone
+        // seated on it covers; unknown if one's range is.
+        let radii = seats.iter().try_fold(None, |hull: Option<[f64; 2]>, s| {
+            let [a, b] = s.radii?;
+            Some(Some(hull.map_or([a, b], |[lo, hi]| [lo.min(a), hi.max(b)])))
+        });
         let requires = Requires::ConicalSeat {
             cone: cone.id,
             axis: cone.axis,
             apex_mm: cone.apex_mm,
             included_angle_rad: clean(2.0 * cone.semi_angle_rad),
-            radii_mm: first.radii.map(|[a, b]| [clean(a), clean(b)]),
+            radii_mm: radii.flatten().map(|[a, b]| [clean(a), clean(b)]),
+            sense: cone.sense,
         };
         out.push(Requirement {
             id: id_of(&requires),

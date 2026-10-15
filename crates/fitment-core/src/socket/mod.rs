@@ -47,7 +47,7 @@ pub const SOCKET_FORMAT_VERSION: u32 = 1;
 
 /// The version of the socket rules: it rises whenever a socket rule,
 /// constant, order or field could change any socket (R20).
-pub const SOCKET_RULES_VERSION: u32 = 5;
+pub const SOCKET_RULES_VERSION: u32 = 6;
 
 /// The least contact tolerance, in mm (Z3).
 pub(crate) const CONTACT_MM: f64 = 0.01;
@@ -68,6 +68,12 @@ pub(crate) const MERGE_MM: f64 = 1e-6;
 /// Directions and angles within this merge occurrences (9.1).
 pub(crate) const MERGE_SINE: f64 = 1e-9;
 
+/// The least guard a clearance margin needs beyond τ, in mm (B1): a
+/// margin within τ plus the target's own uncertainty, and never less than
+/// this, is line to line, so no original is a clearance that M4's own
+/// guard (`docs/research/m4-match.md`, VR4) would refuse it.
+pub(crate) const GUARD_MM: f64 = 1e-6;
+
 /// The constants of these rules.
 fn constants() -> SocketConstants {
     SocketConstants {
@@ -78,6 +84,7 @@ fn constants() -> SocketConstants {
         merge_sine: MERGE_SINE,
         max_occurrences: crate::assembly::MAX_OCCURRENCES as u64,
         max_relations: MAX_RELATIONS,
+        guard_mm: GUARD_MM,
     }
 }
 
@@ -319,13 +326,86 @@ impl SocketDocument {
     /// target, over to this one (9.5); those that cannot be carried go to
     /// `stale_reviews`, with `old`'s own stale ones.
     pub fn carry_over(&mut self, old: &Self) -> CarryOver {
-        let (Some(new), Some(previous)) = (&self.extracted, &old.extracted) else {
+        self.carry_over_prior(&PriorReview::of(old))
+    }
+
+    /// As [`Self::carry_over`], from an earlier document read by
+    /// [`Self::prior`], which may be of older socket rules: a decision
+    /// carries when its requirement's id exists and every field both
+    /// versions state is equal (`docs/research/m4-match.md`, MF11).
+    pub fn carry_over_prior(&mut self, old: &PriorReview) -> CarryOver {
+        let Some(new) = &self.extracted else {
             return CarryOver::default();
         };
+        if old.sockets.is_empty() {
+            return CarryOver::default();
+        }
         let mut stale = old.stale_reviews.clone();
-        let outcome = review::carry_over(new, &mut self.review, previous, &old.review, &mut stale);
+        let outcome =
+            review::carry_over(new, &mut self.review, &old.sockets, &old.review, &mut stale);
         self.stale_reviews = stale;
         outcome
+    }
+
+    /// Reads an earlier document for its review decisions only: one of
+    /// these rules through [`Self::from_json`], or one of older socket
+    /// rules or extractor, which these types may no longer read, by its
+    /// JSON, its digest still checked (MF11). Nothing else of an older
+    /// document is used.
+    ///
+    /// # Errors
+    ///
+    /// A [`SocketFormatError`] if the text is no socket document this
+    /// crate reads: not one at all, of another layout, edited by hand, or
+    /// written by newer rules.
+    pub fn prior(text: &str) -> Result<PriorReview, SocketFormatError> {
+        match Self::from_json(text) {
+            Ok(document) => Ok(PriorReview::of(&document)),
+            Err(error) => PriorReview::older(text).ok_or(error),
+        }
+    }
+
+    /// The requirements of `socket` that review has not removed: what M4
+    /// checks (section 11). None for a socket the document does not hold.
+    pub fn active<'d>(&'d self, socket: &'d str) -> impl Iterator<Item = &'d Requirement> + 'd {
+        self.requirements_of(socket)
+            .filter(move |r| self.status_of(socket, &r.id).0 != ReviewStatus::Removed)
+    }
+
+    /// The requirements of `socket` that review removed, with their notes.
+    pub fn removed<'d>(
+        &'d self,
+        socket: &'d str,
+    ) -> impl Iterator<Item = (&'d Requirement, &'d str)> + 'd {
+        self.requirements_of(socket)
+            .filter_map(move |r| match self.status_of(socket, &r.id) {
+                (ReviewStatus::Removed, note) => Some((r, note)),
+                _ => None,
+            })
+    }
+
+    /// The least contact tolerance the document was extracted with, in
+    /// mm (Z3).
+    pub fn contact_mm(&self) -> f64 {
+        self.extraction.socket.contact_mm
+    }
+
+    fn requirements_of<'d>(&'d self, socket: &'d str) -> impl Iterator<Item = &'d Requirement> {
+        self.extracted
+            .iter()
+            .flat_map(|e| e.sockets.iter())
+            .filter(move |s| s.id == socket)
+            .flat_map(|s| s.requirements.iter())
+    }
+
+    /// The decision on `requirement` in `socket`, unreviewed if none.
+    fn status_of(&self, socket: &str, requirement: &str) -> (ReviewStatus, &str) {
+        self.review
+            .iter()
+            .find(|e| e.socket == socket && e.requirement == requirement)
+            .map_or((ReviewStatus::Unreviewed, ""), |e| {
+                (e.status, e.note.as_deref().unwrap_or(""))
+            })
     }
 
     /// The assembly's notes.
@@ -412,6 +492,127 @@ impl SocketDocument {
         check::extracted(extracted)?;
         check::review(extracted, &self.review)
     }
+}
+
+/// An earlier document's review decisions, with what carrying them over
+/// needs: its file, its target and its requirements' values
+/// ([`SocketDocument::prior`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PriorReview {
+    sha256: String,
+    target: Option<u64>,
+    sockets: Vec<review::PriorSocket>,
+    review: Vec<ReviewEntry>,
+    stale_reviews: Vec<StaleReview>,
+}
+
+impl PriorReview {
+    fn of(document: &SocketDocument) -> Self {
+        Self {
+            sha256: document.source.sha256.clone(),
+            target: document
+                .extracted
+                .as_ref()
+                .map(|e| e.target.definition.instance),
+            sockets: document
+                .extracted
+                .as_ref()
+                .map(review::prior_sockets)
+                .unwrap_or_default(),
+            review: document.review.clone(),
+            stale_reviews: document.stale_reviews.clone(),
+        }
+    }
+
+    /// A document of older socket rules or extractor, read by its JSON:
+    /// its format and layout this crate's, its digest its own, its rules
+    /// and extractor no newer than these.
+    fn older(text: &str) -> Option<Self> {
+        let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
+        let number = |key: &str| value.get(key).and_then(serde_json::Value::as_u64);
+        let rules = number("socket_rules_version")?;
+        let extractor = number("extractor_version")?;
+        let older = rules <= u64::from(SOCKET_RULES_VERSION)
+            && extractor <= u64::from(EXTRACTOR_VERSION)
+            && (rules, extractor)
+                != (
+                    u64::from(SOCKET_RULES_VERSION),
+                    u64::from(EXTRACTOR_VERSION),
+                );
+        if value.get("format")? != SOCKET_FORMAT
+            || number("format_version")? != u64::from(SOCKET_FORMAT_VERSION)
+            || !older
+        {
+            return None;
+        }
+        let map = value.as_object_mut()?;
+        let digest = map.remove("digest")?;
+        let review: Vec<ReviewEntry> = serde_json::from_value(map.remove("review")?).ok()?;
+        let stale_reviews: Vec<StaleReview> =
+            serde_json::from_value(map.remove("stale_reviews")?).ok()?;
+        let extracted = map.get("extracted")?;
+        // R19: the digest of what it states, as `compute_digest` makes it.
+        if !extracted.is_null()
+            && digest.as_str()? != format!("sha256:{}", sha256_hex(value.to_string().as_bytes()))
+        {
+            return None;
+        }
+        let sha256 = value.get("source")?.get("sha256")?.as_str()?.to_owned();
+        let extracted = value.get("extracted")?;
+        let target = extracted
+            .get("target")
+            .and_then(|t| t.get("definition")?.get("instance")?.as_u64());
+        let sockets = match extracted.get("sockets") {
+            Some(list) => older_sockets(list)?,
+            None => Vec::new(),
+        };
+        Some(Self {
+            sha256,
+            target,
+            sockets,
+            review,
+            stale_reviews,
+        })
+    }
+
+    /// The SHA-256 of the file it was extracted from.
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    /// Its target's definition `#id`; `None` if it was refused.
+    pub fn target(&self) -> Option<u64> {
+        self.target
+    }
+}
+
+/// An older document's sockets, each requirement's values as
+/// `review::values` states them: `[requires, floor_mm, flags]`.
+fn older_sockets(list: &serde_json::Value) -> Option<Vec<review::PriorSocket>> {
+    list.as_array()?
+        .iter()
+        .map(|socket| {
+            let requirements = socket
+                .get("requirements")?
+                .as_array()?
+                .iter()
+                .map(|r| {
+                    let id = r.get("id")?.as_str()?.to_owned();
+                    let values = serde_json::Value::Array(vec![
+                        r.get("requires")?.clone(),
+                        r.get("floor_mm")?.clone(),
+                        r.get("flags")?.clone(),
+                    ]);
+                    Some((id, values))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(review::PriorSocket {
+                id: socket.get("id")?.as_str()?.to_owned(),
+                occurrences: serde_json::from_value(socket.get("occurrences")?.clone()).ok()?,
+                requirements,
+            })
+        })
+        .collect()
 }
 
 /// Each occurrence is in exactly one socket, the one it names; every
@@ -637,6 +838,12 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
         )
     };
     let world = World::of(listing, &elements, selection);
+    // B1: the target's own uncertainty, never less than the guard.
+    let guard = target
+        .solids
+        .iter()
+        .map(|s| s.max_vertex_offset_mm)
+        .fold(target.max_uncertainty_mm.max(GUARD_MM), f64::max);
     let mut pairs = 0;
     let mut sockets = Vec::new();
     let mut cited = std::collections::BTreeSet::new();
@@ -654,7 +861,7 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
         };
         let (neighbours, indices, planes) = around.neighbours(&mut pairs)?.ok_or_else(too_many)?;
         let plane_refs: Vec<(Motion, &Part)> = planes.iter().map(|(m, p)| (*m, *p)).collect();
-        let found = rules::relate(&targets, &neighbours, &plane_refs, &mut pairs)
+        let found = rules::relate(&targets, &neighbours, &plane_refs, guard, &mut pairs)
             .map_err(|_| too_many())?;
         let paths: Vec<Vec<u64>> = neighbours.iter().map(|n| n.path.clone()).collect();
         let own = occurrence.path.instances();
@@ -1107,6 +1314,88 @@ mod tests {
             SocketDocument::from_json(&document.to_json()),
             Err(SocketFormatError::Invalid(_))
         )
+    }
+
+    /// U10: a grip's `seat_unverifiable` flag is what its seats give.
+    #[test]
+    fn a_grip_flagged_against_its_seats_is_refused() {
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    if matches!(r.requires, Requires::Grip { .. }) {
+                        r.flags.push(Flag::SeatUnverifiable);
+                    }
+                }
+            }
+        }));
+    }
+
+    /// What review leaves of a socket: its active requirements' count and
+    /// those removed, with their notes.
+    type Left = (usize, Vec<(String, String)>);
+
+    /// s01's bracket's socket before and after a removal, and its contact
+    /// tolerance.
+    fn reviewed() -> Option<(Left, Left, f64)> {
+        let mut document = SocketDocument::extract(S01, Some("BRACKET"), None).ok()?;
+        let left = |d: &SocketDocument| {
+            (
+                d.active("socket-1").count(),
+                d.removed("socket-1")
+                    .map(|(r, note)| (r.id.clone(), note.to_owned()))
+                    .collect(),
+            )
+        };
+        let before = left(&document);
+        document
+            .decide(
+                "grip:plane-467+plane-570",
+                None,
+                ReviewStatus::Removed,
+                Some("may be thicker"),
+            )
+            .ok()?;
+        Some((before, left(&document), document.contact_mm()))
+    }
+
+    /// Section 11 (SR4): what M4 checks is what review left.
+    #[test]
+    fn active_and_removed_follow_the_review() {
+        let grip = (
+            "grip:plane-467+plane-570".to_owned(),
+            "may be thicker".to_owned(),
+        );
+        assert_eq!(
+            reviewed(),
+            Some(((7, Vec::new()), (6, vec![grip]), CONTACT_MM))
+        );
+        let none = SocketDocument::extract(S01, Some("BRACKET"), None)
+            .ok()
+            .map(|d| d.active("socket-9").count());
+        assert_eq!(none, Some(0));
+    }
+
+    /// MF11: a document of these rules reads as a prior of itself, and
+    /// text that is no document, or one of newer rules, does not.
+    #[test]
+    fn a_prior_is_read_from_this_or_an_older_document_only() {
+        let extracted = SocketDocument::extract(S01, Some("BRACKET"), None).ok();
+        assert!(extracted.is_some());
+        let Some(document) = extracted else {
+            return;
+        };
+        let text = document.to_json();
+        assert_eq!(
+            SocketDocument::prior(&text).ok(),
+            Some(PriorReview::of(&document))
+        );
+        assert!(SocketDocument::prior("{}").is_err());
+        let newer = text.replace(
+            &format!("\"socket_rules_version\": {SOCKET_RULES_VERSION},"),
+            "\"socket_rules_version\": 9999,",
+        );
+        assert_ne!(newer, text);
+        assert!(SocketDocument::prior(&newer).is_err());
     }
 
     /// 9.4: a clearance span's clear diameter is the strictest its sources'

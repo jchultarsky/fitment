@@ -1434,6 +1434,67 @@ def common_area(face, other, normal, gap):
     return props.Mass()
 
 
+def cone_faces(shape):
+    """Each conical face of `shape`: its apex, axis (the way it widens),
+    semi-angle, the least and greatest distance of its edges from the axis,
+    and its sense: material just outside the surface, away from the axis,
+    makes it a countersink (`hole`), else a cone on a shaft (`shaft`)."""
+    out = []
+    for shape_face in explore(shape, TopAbs_FACE):
+        face = as_face(shape_face)
+        surface = BRepAdaptor_Surface(face)
+        if surface.GetType() != Kind.GeomAbs_Cone:
+            continue
+        cone = surface.Cone()
+        apex = xyz(cone.Apex())
+        d = norm(xyz(cone.Axis().Direction()))
+        radii = []
+        for e in explore(face, TopAbs_EDGE):
+            curve = BRepAdaptor_Curve(as_edge(e))
+            a, b = curve.FirstParameter(), curve.LastParameter()
+            for k in range(65):
+                p = xyz(curve.Value(a + (b - a) * k / 64))
+                along = dot(sub(p, apex), d)
+                radii.append(math.sqrt(max(dot(sub(p, apex), sub(p, apex)) - along * along, 0.0)))
+        mid = xyz(surface.Value(*on_face(face, BRepTools.UVBounds_s(face))))
+        along = dot(sub(mid, apex), d)
+        foot = add(apex, d, along)
+        out.append({"apex": apex, "d": d if along >= 0 else tuple(-x for x in d), "semi": abs(cone.SemiAngle()),
+                    "radii": (min(radii), max(radii)), "mid": mid, "radial": norm(sub(mid, foot))})
+    for f in out:
+        f["sense"] = "hole" if inside_any(add(f["mid"], f["radial"], PROBE), [shape]) else "shaft"
+    return out
+
+
+def cone_problems(where, q, faces, target, others, tally):
+    """Q1 and Q3 against Open CASCADE: the target cone's sense, and its
+    range: from the least to the greatest of the ranges it shares with each
+    other solid's cone on its axis, apex within τ along it."""
+    problems = []
+    if any(f["sense"] != q["sense"] for f in faces):
+        problems.append(f"{where}: sense {q['sense']}, Open CASCADE finds {[f['sense'] for f in faces]}")
+    if q["radii_mm"] is None:
+        return problems
+    own = (min(f["radii"][0] for f in faces), max(f["radii"][1] for f in faces))
+    d, apex = faces[0]["d"], faces[0]["apex"]
+    shares = []
+    for other in others:
+        for g in cone_faces(other):
+            if abs(abs(dot(g["d"], d)) - 1) > 1e-9 or math.dist(g["apex"], apex) > 0.02 \
+                    or abs(g["semi"] - faces[0]["semi"]) > 1e-6:
+                continue
+            lo, hi = max(own[0], g["radii"][0]), min(own[1], g["radii"][1])
+            if lo <= hi + 1e-9:
+                shares.append((lo, hi))
+    tally["cone ranges"] = tally.get("cone ranges", 0) + 1
+    if not shares:
+        problems.append(f"{where}: no other solid's cone shares its range")
+    elif abs(min(s[0] for s in shares) - q["radii_mm"][0]) > 1e-4 or \
+            abs(max(s[1] for s in shares) - q["radii_mm"][1]) > 1e-4:
+        problems.append(f"{where}: radii {q['radii_mm']}, Open CASCADE finds shares {shares}")
+    return problems
+
+
 def seat_problems(where, socket, m, target, others, tally):
     """C1 to C5 and L1, L2 against Open CASCADE, both ways: each seat's
     plane is a face of the target with another solid within the near band
@@ -1489,16 +1550,13 @@ def seat_problems(where, socket, m, target, others, tally):
         elif q["kind"] == "conical_seat":
             tally["conical seats"] += 1
             apexes[q["cone"]] = apply(m, q["apex_mm"])
-            from OCP.BRepAdaptor import BRepAdaptor_Surface as Surface
-            found = False
-            for face in explore(target, TopAbs_FACE):
-                surface = Surface(as_face(face))
-                if surface.GetType() == Kind.GeomAbs_Cone:
-                    cone = surface.Cone()
-                    found = found or (math.dist(xyz(cone.Apex()), apexes[q["cone"]]) <= 1e-5
-                                      and abs(2 * abs(cone.SemiAngle()) - q["included_angle_rad"]) <= 1e-9)
-            if not found:
+            faces = [f for f in cone_faces(target)
+                     if math.dist(f["apex"], apexes[q["cone"]]) <= 1e-5
+                     and abs(2 * f["semi"] - q["included_angle_rad"]) <= 1e-9]
+            if not faces:
                 problems.append(f"{where} {requirement['id']}: the part has no cone with that apex and angle")
+                continue
+            problems += cone_problems(f"{where} {requirement['id']}", q, faces, target, others, tally)
     for requirement in socket["requirements"]:
         q = requirement["requires"]
         if q["kind"] != "grip":
@@ -2180,6 +2238,23 @@ def each_requirement(document):
             yield socket, r
 
 
+def flip_senses(document):
+    """Q3: every conical seat's sense the other way."""
+    for _, r in each_requirement(document):
+        q = r["requires"]
+        if q["kind"] == "conical_seat":
+            q["sense"] = "shaft" if q["sense"] == "hole" else "hole"
+
+
+def narrow_ranges(document):
+    """Q1: every known conical range's greatest radius 0.5 mm less, as one
+    neighbour's range alone states it where another reaches further."""
+    for _, r in each_requirement(document):
+        q = r["requires"]
+        if q["kind"] == "conical_seat" and q["radii_mm"] is not None:
+            q["radii_mm"] = [q["radii_mm"][0], max(q["radii_mm"][0], q["radii_mm"][1] - 0.5)]
+
+
 def drop(kind):
     def mutate(document):
         for socket in document["extracted"]["sockets"]:
@@ -2230,7 +2305,8 @@ def null_extras(document):
 
 MUTATIONS = {"drop bores": drop("bore"), "drop shafts": drop("shaft"), "drop seats": drop("seat"),
              "drop grips": drop("grip"), "move axes 0.01 mm": move_axes, "swap fits": swap_fits,
-             "shrink contacts": shrink_contacts, "merge sockets": merge_sockets, "null max_extra": null_extras}
+             "shrink contacts": shrink_contacts, "merge sockets": merge_sockets, "null max_extra": null_extras,
+             "flip cone senses": flip_senses, "narrow cone ranges": narrow_ranges}
 
 
 def mutations_main(argv):

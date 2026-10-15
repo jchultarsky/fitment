@@ -411,3 +411,72 @@ fn review_records_a_decision_and_socket_carries_it_over() {
         .stderr(contains("digest"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// MF11: a document of older socket rules is the user's own reviewed file:
+/// extracting again onto it carries the decisions on unchanged
+/// requirements, and it is never refused for its age; one edited by hand,
+/// or written by newer rules, is not read.
+#[test]
+fn an_older_document_s_decisions_carry_over() {
+    let dir = scratch("older");
+    let input = dir.join("s01.stp");
+    let out = dir.join("bracket.socket.json");
+    let older = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data/s01_bolted--BRACKET.rules5.json"),
+    )
+    .unwrap();
+    assert!(older.contains("\"socket_rules_version\": 5,"));
+    let decide = |text: String, requirement: &str, status: &str, note: &str| {
+        let from = format!(
+            "\"requirement\": \"{requirement}\",\n      \"status\": \"unreviewed\",\n      \"note\": null"
+        );
+        let to = format!(
+            "\"requirement\": \"{requirement}\",\n      \"status\": \"{status}\",\n      \"note\": {note}"
+        );
+        assert!(text.contains(&from), "{requirement}");
+        text.replacen(&from, &to, 1)
+    };
+    let reviewed = decide(
+        decide(
+            older,
+            "grip:plane-467+plane-570",
+            "removed",
+            "\"may be thicker\"",
+        ),
+        "seat:plane-467",
+        "kept",
+        "null",
+    );
+    let run = |text: &str| {
+        std::fs::write(&out, text).unwrap();
+        let mut command = fitment();
+        command
+            .args(["socket", "--part", "BRACKET"])
+            .arg(&input)
+            .arg("-o")
+            .arg(&out);
+        command.assert()
+    };
+    run(&reviewed)
+        .success()
+        .stderr(contains("2 decisions carried over, 0 stale"));
+    fitment()
+        .arg("review")
+        .arg(&out)
+        .assert()
+        .success()
+        .stdout(contains("removed  grip:plane-467+plane-570"));
+    // Edited by hand: its digest no longer holds, so it is not read.
+    run(&reviewed.replace("\"contact_mm\": 0.01", "\"contact_mm\": 0.02"))
+        .code(2)
+        .stderr(contains("not a fitment.socket document"));
+    // Written by newer rules than these: not read either.
+    run(&reviewed.replace(
+        "\"socket_rules_version\": 5,",
+        "\"socket_rules_version\": 99,",
+    ))
+    .code(2)
+    .stderr(contains("not a fitment.socket document"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

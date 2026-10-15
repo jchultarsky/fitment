@@ -54,10 +54,10 @@ pub use geom::{Dir3, Point3, Rigid, Vec3};
 pub use sha256::{sha256, sha256_hex};
 pub use socket::{
     Basis, BoreSpan, CarryOver, Cause, CauseFaces, Depth, Envelope, Extracted, Fit, Flag, LeftOut,
-    LeftOutReason, Open, PlacedRef, Requirement, Requires, ReviewEntry, ReviewError, ReviewStatus,
-    Ring, SOCKET_FORMAT, SOCKET_FORMAT_VERSION, SOCKET_RULES_VERSION, SeatContact, SelectionRecord,
-    ShaftSpan, Socket, SocketConstants, SocketDocument, SocketExtraction, SocketFormatError,
-    SourceRef, StaleReason, StaleReview, Target, Toucher,
+    LeftOutReason, Open, PlacedRef, PriorReview, Requirement, Requires, ReviewEntry, ReviewError,
+    ReviewStatus, Ring, SOCKET_FORMAT, SOCKET_FORMAT_VERSION, SOCKET_RULES_VERSION, SeatContact,
+    SelectionRecord, ShaftSpan, Socket, SocketConstants, SocketDocument, SocketExtraction,
+    SocketFormatError, SourceRef, StaleReason, StaleReview, Target, Toucher,
 };
 pub use tolerance::{ToleranceError, TolerancePolicy};
 pub use verdict::{Check, RejectReason, RequirementId, Verdict, VerdictKind, decide};

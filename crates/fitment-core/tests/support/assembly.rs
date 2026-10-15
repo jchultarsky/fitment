@@ -973,14 +973,20 @@ fn planar_one(
         } => {
             close(*length_mm, &expect["length"])
                 && expect["holes"].as_u64() == u64::try_from(holes.len()).ok()
+                && flag_names(requirement) == strings(&expect["flags"])
         }
         Requires::ConicalSeat {
             apex_mm,
             included_angle_rad,
             axis,
             radii_mm,
+            sense,
             ..
         } => {
+            let sense = serde_json::to_value(sense).ok();
+            if sense.as_ref() != Some(&expect["sense"]) {
+                return false;
+            }
             let d = axis.direction.to_array();
             let along = point(&expect["axis"])
                 .is_some_and(|e| (d[0] * e[0] + d[1] * e[1] + d[2] * e[2]).abs() >= 1.0 - 1e-9);

@@ -173,18 +173,20 @@ impl PartialEq for Format {
 
 /// 9.5: the decisions of OUT, this part's socket of this file extracted
 /// before, carried over to `document`.
+/// An older document of the same file and target carries the decisions
+/// whose requirements are unchanged (MF11).
 fn carry_over(output: &Path, document: &mut SocketDocument) {
     let Some(old) = std::fs::read_to_string(output)
         .ok()
-        .and_then(|text| SocketDocument::from_json(&text).ok())
+        .and_then(|text| SocketDocument::prior(&text).ok())
     else {
         return;
     };
-    let target = |d: &SocketDocument| d.extracted().map(|e| e.target.definition.instance);
-    if old.source().sha256 != document.source().sha256 || target(&old) != target(document) {
+    let target = document.extracted().map(|e| e.target.definition.instance);
+    if old.sha256() != document.source().sha256 || old.target() != target {
         return;
     }
-    let outcome = document.carry_over(&old);
+    let outcome = document.carry_over_prior(&old);
     if outcome.carried + outcome.stale > 0 {
         note(&format!(
             "fitment: {}: {} decisions carried over, {} stale",
@@ -209,17 +211,19 @@ fn foreign(output: &Path, input: &Path, document: &SocketDocument) -> Option<&'s
         Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
         Err(_) => return Some("it cannot be read as a file"),
     };
+    // A document of older rules is read for its review alone (MF11): the
+    // user's own reviewed file is never refused for its age.
     let Ok(old) = std::str::from_utf8(&bytes)
         .map_err(|_| ())
-        .and_then(|text| SocketDocument::from_json(text).map_err(|_| ()))
+        .and_then(|text| SocketDocument::prior(text).map_err(|_| ()))
     else {
         return Some("it is not a fitment.socket document");
     };
-    if old.source().sha256 != document.source().sha256 {
+    if old.sha256() != document.source().sha256 {
         return Some("it is the socket of another file");
     }
-    let target = |d: &SocketDocument| d.extracted().map(|e| e.target.definition.instance);
-    match (target(&old), target(document)) {
+    let target = document.extracted().map(|e| e.target.definition.instance);
+    match (old.target(), target) {
         (Some(a), Some(b)) if a != b => Some("it is the socket of another part"),
         _ => None,
     }
