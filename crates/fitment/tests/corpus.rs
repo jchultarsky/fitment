@@ -319,8 +319,8 @@ const DEFERRED: [&str; 5] = ["4.2#30", "F3", "Z7", "Y4.original_run", "V1"];
 
 /// The rules that yield a requirement every candidate fails (design 8.4,
 /// Y4): each needs a case that shows it, not a test alone (13.1).
-const UNVERIFIABLE: [&str; 11] = [
-    "U1", "U2", "U4", "U5", "U6", "U7", "U8", "U10", "C4", "C6", "Q1",
+const UNVERIFIABLE: [&str; 13] = [
+    "U1", "U2", "U4", "U5", "U6", "U7", "U8", "U9", "U10", "U11", "C4", "C6", "Q1",
 ];
 
 /// M4's rule prefixes (`docs/research/m4-match.md`): deferred to the PR

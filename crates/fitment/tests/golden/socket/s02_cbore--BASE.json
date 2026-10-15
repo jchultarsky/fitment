@@ -2,7 +2,7 @@
   "format": "fitment.socket",
   "format_version": 1,
   "extractor_version": 6,
-  "socket_rules_version": 6,
+  "socket_rules_version": 7,
   "extraction": {
     "features": {
       "identity_mm": 1e-6,
@@ -399,12 +399,14 @@
               },
               "spans": [
                 {
-                  "from_mm": 1.5,
+                  "from_mm": 1.49,
                   "to_mm": 9.0,
                   "hole_diameter_mm": 5.0,
                   "clear_diameter_mm": 6.0,
                   "fit": "interference",
-                  "pinned": true
+                  "pinned": true,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "open": {
@@ -455,7 +457,7 @@
                 "margin_mm": -0.5,
                 "gap_mm": null,
                 "span_mm": [
-                  1.5,
+                  1.49,
                   9.0
                 ],
                 "floor_mm": 1e-7,
@@ -485,7 +487,7 @@
       }
     }
   },
-  "digest": "sha256:39b328c9ba8b868ec9302444fec11c0e07a2b07a98d17aca68a5a4ecf9010724",
+  "digest": "sha256:7c4e5246698f22be791c27167f509cc716a8dca95a7008ac506b0427f8a4e81d",
   "review": [
     {
       "socket": "socket-1",

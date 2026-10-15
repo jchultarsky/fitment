@@ -2,7 +2,7 @@
   "format": "fitment.socket",
   "format_version": 1,
   "extractor_version": 6,
-  "socket_rules_version": 6,
+  "socket_rules_version": 7,
   "extraction": {
     "features": {
       "identity_mm": 1e-6,
@@ -807,19 +807,23 @@
               "spans": [
                 {
                   "from_mm": 0.0,
-                  "to_mm": 18.0,
+                  "to_mm": 17.99,
                   "shaft_diameter_mm": 6.0,
                   "clear_diameter_mm": 6.6,
                   "fit": "clearance",
-                  "pinned": false
+                  "pinned": false,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 },
                 {
-                  "from_mm": 18.0,
-                  "to_mm": 23.0,
+                  "from_mm": 17.99,
+                  "to_mm": 23.01,
                   "shaft_diameter_mm": 6.0,
                   "clear_diameter_mm": null,
                   "fit": "interference",
-                  "pinned": true
+                  "pinned": true,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "max_extra_mm": null
@@ -846,8 +850,8 @@
                 "margin_mm": 0.2999999999999998,
                 "gap_mm": null,
                 "span_mm": [
-                  8.0,
-                  18.0
+                  7.99,
+                  18.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": []
@@ -870,7 +874,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": []
@@ -892,8 +896,8 @@
                 "margin_mm": -0.5,
                 "gap_mm": null,
                 "span_mm": [
-                  18.0,
-                  23.0
+                  17.99,
+                  23.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -917,8 +921,8 @@
                 "margin_mm": 0.2999999999999998,
                 "gap_mm": null,
                 "span_mm": [
-                  8.0,
-                  18.0
+                  7.99,
+                  18.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": []
@@ -941,7 +945,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": []
@@ -963,8 +967,8 @@
                 "margin_mm": -0.5,
                 "gap_mm": null,
                 "span_mm": [
-                  18.0,
-                  23.0
+                  17.99,
+                  23.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -988,8 +992,8 @@
                 "margin_mm": 0.2999999999999998,
                 "gap_mm": null,
                 "span_mm": [
-                  8.0,
-                  18.0
+                  7.99,
+                  18.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": []
@@ -1012,7 +1016,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": []
@@ -1034,8 +1038,8 @@
                 "margin_mm": -0.5,
                 "gap_mm": null,
                 "span_mm": [
-                  18.0,
-                  23.0
+                  17.99,
+                  23.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -1059,8 +1063,8 @@
                 "margin_mm": 0.2999999999999998,
                 "gap_mm": null,
                 "span_mm": [
-                  8.0,
-                  18.0
+                  7.99,
+                  18.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": []
@@ -1083,7 +1087,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": []
@@ -1105,8 +1109,8 @@
                 "margin_mm": -0.5,
                 "gap_mm": null,
                 "span_mm": [
-                  18.0,
-                  23.0
+                  17.99,
+                  23.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -1135,7 +1139,7 @@
       }
     }
   },
-  "digest": "sha256:ff3136dd97d797a23e072bde93ae80ab00b370b1db19ffb179422e00932420b6",
+  "digest": "sha256:5440e92953ee7d1e1f293c7cb4f75c4205e42fbb85913dc3213aa1f61858ecec",
   "review": [
     {
       "socket": "socket-1",

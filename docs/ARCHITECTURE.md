@@ -90,7 +90,11 @@ Axial rules: bores, shafts, continuations, unread      socket/axial.rs, rules.rs
 Plane rules: seats, grips, conical seats, rings;       socket/planar.rs, overlap.rs, touch.rs
   │   contacts no rule reads (C6)
   ▼
-Requirements per occurrence, then merged sockets       socket/combine.rs, merge.rs
+Requirements per occurrence: what each span lies on,  socket/combine.rs, own.rs
+  │   and whether the original's own material lies in
+  │   a core (U11)
+  ▼
+Merged sockets                                         socket/merge.rs
   ▼
 fitment.socket document (JSON), its digest, the        socket/model.rs, check.rs, review.rs
 review and its carry-over
@@ -118,8 +122,10 @@ the same rule:
   section 9.6): a socket states what it cannot verify as requirements
   every candidate fails until a reviewer removes them: `unresolved` ones,
   partial bores and shafts, bores and shafts flagged `target_undecided` or
-  `open_at_unknown_end`, seats of unknown outline, grips between such
-  seats and conical seats of unknown range. `Requirement::verifiable()` is
+  `open_at_unknown_end`, spans that state nothing of the original (past
+  a known end, or a zone with no profile), cores the original's own
+  material reaches, seats of unknown outline, grips between such seats and
+  conical seats of unknown range. `Requirement::verifiable()` is
   the one predicate M3's tests and M4's verification both ask.
 - **Never state a wrong known value.** Every rule that was found to guess
   in review was withdrawn or made to say `unknown` instead: the seam proof
@@ -189,7 +195,7 @@ them, and every bound is tested so that NaN fails it.
 | Generated corpus | `tools/gen-corpus.py`, `crates/fitment/tests/corpus.rs` | Parts and assemblies with answers from the construction alone: parts also with pcurves (`_pc`) and in a skew frame (`_rot`); every assembly with sockets, but those written by hand edits or with frames Open CASCADE rewrites, also under a skew root (`_rot`), with its targets in a tilted frame (`_tgt`), with pcurves (`_pc`) and with its components in reverse order (`_perm`) |
 | Goldens | `crates/fitment/tests/golden` | The exact bytes of each unit part's `features` document, and of each unit assembly's `parts` and `socket` documents; on three operating systems, the determinism check |
 | Fixtures | `tools/fetch-fixtures.sh`, `fixtures/manifest.json`, `tests/fixtures.rs` | 45 public STEP files: pinned gate results and counts of planes, outlines, cylinders, holes and shafts; sockets pinned for chosen targets of the assemblies, and AS1's exports compared |
-| Oracle | `tools/verify-occt.py` | Open CASCADE 8.0.1, a kernel the generator does not use: `manifest` checks the construction; `features` checks fitment's planes, cylinders, holes and shafts; `socket` checks every socket against the solids, both ways (spans, seats, touchers, grips, floors, touching faces, occupied holes), but s55's, which it skips by name (its 7,440-face plate takes Open CASCADE hours), with the fixtures' tallies pinned but the sampled count of touching faces; `mutations` edits fitment's sockets eleven ways and requires each edit to meet a disagreement |
+| Oracle | `tools/verify-occt.py` | Open CASCADE 8.0.1, a kernel the generator does not use: `manifest` checks the construction; `features` checks fitment's planes, cylinders, holes and shafts; `socket` checks every socket against the solids, both ways (spans, seats, touchers, grips, floors, touching faces, occupied holes, conical seats' senses and ranges, zones' profiles, and cores clear of the part's own material where no requirement says otherwise), but s55's, which it skips by name (its 7,440-face plate takes Open CASCADE hours), with the fixtures' tallies pinned but the sampled count of touching faces; `mutations` edits fitment's sockets thirteen ways and requires each edit to meet a disagreement |
 
 The test parts' answers come from the generator's arguments, never from
 reading a written file; the oracle catches a generator whose part is not

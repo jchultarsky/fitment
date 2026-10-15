@@ -77,6 +77,41 @@ pub(crate) struct Element {
     pub(crate) faces: Vec<u64>,
     /// The cylinder's faces.
     pub(crate) wall: Vec<u64>,
+    /// The stack's cones and tori along its stations (X8's profiles).
+    pub(crate) tapers: Vec<Taper>,
+}
+
+/// A cone or torus of a stack along its stations: for a cone with known
+/// radii, its radius at each end, which it joins straight.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Taper {
+    pub(crate) lo: f64,
+    pub(crate) hi: f64,
+    pub(crate) radii: Option<(f64, f64)>,
+}
+
+impl Element {
+    /// X8: the original's diameters at `from` and `to`, when one cone of
+    /// the stack spans them and nothing else of it reaches between.
+    pub(crate) fn profile(&self, from: f64, to: f64) -> Option<[f64; 2]> {
+        let slack = 1e-6 * self.radius.max(1.0);
+        let mut within = self
+            .tapers
+            .iter()
+            .filter(|t| t.hi > from + slack && t.lo < to - slack);
+        let taper = within.next()?;
+        if within.next().is_some() || taper.lo > from + slack || taper.hi < to - slack {
+            return None;
+        }
+        let (at_lo, at_hi) = taper.radii?;
+        let length = taper.hi - taper.lo;
+        if length <= 0.0 {
+            return None;
+        }
+        let at =
+            |x: f64| 2.0 * (at_lo + (at_hi - at_lo) * ((x - taper.lo) / length).clamp(0.0, 1.0));
+        Some([at(from), at(to)])
+    }
 }
 
 fn end_kind(end: Option<&StackEnd>) -> (EndKind, Option<f64>) {
@@ -252,6 +287,7 @@ fn loose_elements(part: &Part) -> Vec<Element> {
             finish_rim: None,
             faces: cylinder.faces.clone(),
             wall: cylinder.faces.clone(),
+            tapers: Vec::new(),
         });
     }
     for cylinder in &part.cylinders {
@@ -296,6 +332,7 @@ fn loose_elements(part: &Part) -> Vec<Element> {
             finish_rim: None,
             faces: cylinder.faces.clone(),
             wall: cylinder.faces.clone(),
+            tapers: Vec::new(),
         });
     }
     out
@@ -416,15 +453,18 @@ fn stack_elements(
                 finish_rim,
                 faces: all_faces.clone(),
                 wall,
+                tapers: Vec::new(),
             }
         })
         .collect();
     steps(&mut out, planes, stack);
     let zones = Zones(transition_ranges(part, stack));
     stretch(&mut out, stack.side, &zones);
+    let tapers = zones.tapers();
     for element in &mut out {
         element.known_lo = element.lo;
         element.known_hi = element.hi;
+        element.tapers.clone_from(&tapers);
     }
     out
 }
@@ -435,6 +475,8 @@ struct Range {
     lo: f64,
     hi: f64,
     radii: Option<(f64, f64)>,
+    /// A cone's radius at `lo` and at `hi`; `None` for a torus.
+    ends: Option<(f64, f64)>,
 }
 
 /// The cones and tori of a stack, as ranges (planes are steps between
@@ -453,12 +495,14 @@ fn transition_ranges(part: &Part, stack: &Stack<'_>) -> Vec<Range> {
                         lo: x.min(y),
                         hi: x.max(y),
                         radii: Some((a.min(b), a.max(b))),
+                        ends: Some(if x <= y { (a, b) } else { (b, a) }),
                     }
                 }
                 _ => Range {
                     lo: f64::NEG_INFINITY,
                     hi: f64::INFINITY,
                     radii: None,
+                    ends: None,
                 },
             });
         } else if let Some(torus) = part.tori.iter().find(|t| t.id == *id) {
@@ -468,6 +512,7 @@ fn transition_ranges(part: &Part, stack: &Stack<'_>) -> Vec<Range> {
                 lo: centre - minor,
                 hi: centre + minor,
                 radii: Some(((major - minor).max(0.0), major + minor)),
+                ends: None,
             });
         }
     }
@@ -478,6 +523,18 @@ fn transition_ranges(part: &Part, stack: &Stack<'_>) -> Vec<Range> {
 struct Zones(Vec<Range>);
 
 impl Zones {
+    /// Its cones and tori, for X8's profiles.
+    fn tapers(&self) -> Vec<Taper> {
+        self.0
+            .iter()
+            .map(|r| Taper {
+                lo: r.lo,
+                hi: r.hi,
+                radii: r.ends,
+            })
+            .collect()
+    }
+
     /// True if every cone or torus that may reach into the stations `lo`
     /// to `hi` lies outside a hole's cylinder of `radius`, or inside a
     /// shaft's: the element may stand for that zone.

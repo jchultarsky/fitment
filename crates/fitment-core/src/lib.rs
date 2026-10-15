@@ -57,7 +57,7 @@ pub use socket::{
     LeftOutReason, Open, PlacedRef, PriorReview, Requirement, Requires, ReviewEntry, ReviewError,
     ReviewStatus, Ring, SOCKET_FORMAT, SOCKET_FORMAT_VERSION, SOCKET_RULES_VERSION, SeatContact,
     SelectionRecord, ShaftSpan, Socket, SocketConstants, SocketDocument, SocketExtraction,
-    SocketFormatError, SourceRef, StaleReason, StaleReview, Target, Toucher,
+    SocketFormatError, SourceRef, SpanBasis, StaleReason, StaleReview, Target, Toucher,
 };
 pub use tolerance::{ToleranceError, TolerancePolicy};
 pub use verdict::{Check, RejectReason, RequirementId, Verdict, VerdictKind, decide};

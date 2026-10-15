@@ -2,7 +2,7 @@
   "format": "fitment.socket",
   "format_version": 1,
   "extractor_version": 6,
-  "socket_rules_version": 6,
+  "socket_rules_version": 7,
   "extraction": {
     "features": {
       "identity_mm": 1e-6,
@@ -1148,7 +1148,9 @@
                   "hole_diameter_mm": 6.6,
                   "clear_diameter_mm": 6.0,
                   "fit": "clearance",
-                  "pinned": false
+                  "pinned": false,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "open": {
@@ -1249,7 +1251,9 @@
                   "hole_diameter_mm": 6.6,
                   "clear_diameter_mm": 6.0,
                   "fit": "clearance",
-                  "pinned": false
+                  "pinned": false,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "open": {
@@ -1350,7 +1354,9 @@
                   "hole_diameter_mm": 6.6,
                   "clear_diameter_mm": 6.0,
                   "fit": "clearance",
-                  "pinned": false
+                  "pinned": false,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "open": {
@@ -1451,7 +1457,9 @@
                   "hole_diameter_mm": 6.6,
                   "clear_diameter_mm": 6.0,
                   "fit": "clearance",
-                  "pinned": false
+                  "pinned": false,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "open": {
@@ -1548,7 +1556,7 @@
       }
     }
   },
-  "digest": "sha256:c35a5386a32150e948462547792af364e9c68d049e8994cadaa6b0802b70668e",
+  "digest": "sha256:14694a1551db9ae865dc6d38fe0d558e9635a561fc613ef2ffef01b29697d16f",
   "review": [
     {
       "socket": "socket-1",

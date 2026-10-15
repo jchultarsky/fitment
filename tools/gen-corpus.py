@@ -577,7 +577,7 @@ RULES.update({
     "N1": {}, "N2": {}, "N3": {}, "N5": {},
     "N4": {"tests": [f"{M3_CORE}/hostile.rs::ten_thousand_bolts_are_read_in_reach_of_their_own_joints",
                      f"{M3_CORE}/hostile.rs::a_hole_with_a_thousand_coaxial_neighbours_is_read"]},
-    "X1": {}, "X2": {}, "X3": {}, "X4": {}, "X5": {}, "X6": {}, "X7": {},
+    "X1": {}, "X2": {}, "X3": {}, "X4": {}, "X5": {}, "X6": {}, "X7": {}, "X8": {},
     "B1": {}, "B2": {}, "B3": {}, "B5": {}, "B6": {}, "B7": {}, "B8": {},
     "B4": {},
     "I1": {}, "I2": {}, "I3": {},
@@ -589,7 +589,9 @@ RULES.update({
     "U5": {},
     "U6": {},
     "U7": {},
+    "U9": {},
     "U10": {},
+    "U11": {},
     "A1": {},
     "A2": {},
     "A3": {"tests": [f"crates/fitment-core/src/socket/mod.rs::each_structural_rule_refuses_an_edit_with_its_digest_recomputed"]},
@@ -1560,15 +1562,26 @@ def bolted(name, bracket=None, bolt=None, nut=None):
 # points, so the sign M2 gives an axis does not matter.
 
 
+def e_span(a, b, dia, clear, fit, pinned, basis="cylinder", profile=None):
+    """One span's fields: stations `a` to `b`, the original's diameter, the
+    clear diameter, the fit, whether pinned, what it lies on (X8: a
+    segment's `cylinder`, a `zone`, or `past_known_end`), and a zone's
+    original diameters at `a` and `b` where one cone joins them."""
+    return a, b, dia, clear, fit, pinned, basis, profile
+
+
 def e_axial(kind, point, direction, spans, open_at=(), flags=(), depth="known", max_extra=None):
-    """A bore or shaft: `spans` as (from, to, diameter, clear, fit, pinned)
-    stations along `direction` from `point`; `open_at` the stations of rims
-    that must be open (none on a cylinder in no stack); a bore's `depth`."""
+    """A bore or shaft: `spans` as (from, to, diameter, clear, fit, pinned),
+    with a basis and a zone's profile after them where not a cylinder's
+    (`e_span`), stations along `direction` from `point`; `open_at` the
+    stations of rims that must be open (none on a cylinder in no stack); a
+    bore's `depth`."""
     d = unit(direction)
     out = {"kind": kind, "axis_point": r3(point), "axis_direction": r3(d),
            "spans": [{"from": r3(add(point, d, a)), "to": r3(add(point, d, b)), "diameter": r(dia),
-                      "clear": None if clear is None else r(clear), "fit": fit, "pinned": pinned}
-                     for a, b, dia, clear, fit, pinned in spans],
+                      "clear": None if clear is None else r(clear), "fit": fit, "pinned": pinned,
+                      "basis": basis, "profile": None if profile is None else [r(profile[0]), r(profile[1])]}
+                     for a, b, dia, clear, fit, pinned, basis, profile in (e_span(*x) for x in spans)],
            "open": [r3(add(point, d, x)) for x in open_at], "flags": sorted(flags)}
     if kind == "bore":
         out["depth"] = depth
@@ -1631,8 +1644,13 @@ def e_socket(requirements, left_out=(), unresolved=None, at=(0, 0, 0), seats=(),
     each kind in full."""
     unresolved = unresolved or {}
     # Y4: the kinds every candidate fails, the original included.
+    # U9: a piece past a known end, or in a zone with no pin, clear diameter or profile.
+    unknown = lambda sp: sp["basis"] == "past_known_end" or (  # noqa: E731
+        sp["basis"] == "zone" and not sp["pinned"] and sp["clear"] is None and sp["profile"] is None)
     unverifiable = (sum(unresolved.values()) + len(partials)
-                    + sum(1 for q in requirements if {"target_undecided", "open_at_unknown_end"} & set(q["flags"]))
+                    + sum(1 for q in requirements
+                          if {"target_undecided", "open_at_unknown_end", "core_not_clear"} & set(q["flags"])
+                          or any(unknown(sp) for sp in q["spans"]))
                     + sum(1 for q in seats if "unknown" in q["basis"])
                     + sum(1 for q in cones if q["radii"] is None)
                     + sum(1 for q in grips if "seat_unverifiable" in q["flags"]))
@@ -1866,7 +1884,9 @@ def build_assemblies(w: Writer, which):
                          seats=[e_seat((0, 0, 0), Z)]) for x, y in PTS],
         # The bolt, head bearing face at z = 0: bracket z -8 to 0, plate -18 to -8, nut -23 to -18.
         "BOLT": [e_socket([e_axial("shaft", (0, 0, 0), (0, 0, -1),
-                                   [(0, 18, 6, 6.6, "clearance", False), (18, 23, 6, None, "interference", True)],
+                                   # The nut's faces lie inside the shank: positions known to tau, its span
+                                   # widened by it (I3, the socket PR's SR7).
+                                   [(0, 17.99, 6, 6.6, "clearance", False), (17.99, 23.01, 6, None, "interference", True)],
                                    flags=["thread_not_confirmed"])], at=(x, y, 8),
                           seats=[e_seat((0, 0, 0), (0, 0, -1))]) for x, y in PTS],
     }
@@ -1900,17 +1920,17 @@ def build_assemblies(w: Writer, which):
         # The block: shank dia 6 in the dia 6.6 bore to z 8.5, head dia 10 in the dia 11 counterbore to 14.5;
         # the shank runs on into the base.
         "BLOCK": [e_socket([e_axial("bore", (0, 0, 0), Z, [(0, 8.5, 6.6, 6, "clearance", False),
-                                                          (8.5, 14.5, 11, 10, "clearance", False)], open_at=[0])],
+                                                          (8.5, 14.51, 11, 10, "clearance", False)], open_at=[0])],
                            # On the base, and under the head on the counterbore's floor: the head's end face
                            # (C1) and its dia 10 wall on the dia 6.6 hole's rim (H1).
                            seats=[e_seat((0, 0, 0), (0, 0, -1)), e_seat((0, 0, 8.5), Z, by=2, rings=[(6.6, 10)])],
                            grips=[e_grip(8.5)])],
         # The base's dia 5 blind hole, 9 deep from z 0: the dia 6 shank's tip at z -7.5.
-        "BASE": [e_socket([e_axial("bore", (0, 0, -9), Z, [(1.5, 9, 5, 6, "interference", True)], open_at=[9],
+        "BASE": [e_socket([e_axial("bore", (0, 0, -9), Z, [(1.49, 9, 5, 6, "interference", True)], open_at=[9],
                                    flags=["thread_not_confirmed"])], seats=[e_seat((0, 0, 0), Z)])],
         # The screw, head z 0 to 6, shank -16 to 0: base to -8.5, block to 0, counterbore around the head.
-        "SCREW": [e_socket([e_axial("shaft", (0, 0, -16), Z, [(0, 7.5, 6, None, "interference", True),
-                                                             (7.5, 16, 6, 6.6, "clearance", False),
+        "SCREW": [e_socket([e_axial("shaft", (0, 0, -16), Z, [(0, 7.51, 6, None, "interference", True),
+                                                             (7.51, 16, 6, 6.6, "clearance", False),
                                                              (16, 22, 10, 11, "clearance", False)],
                                     flags=["thread_not_confirmed"], max_extra=1.5)], at=(0, 0, 8.5),
                            seats=[e_seat((0, 0, 0), (0, 0, -1))])],
@@ -1956,13 +1976,16 @@ def build_assemblies(w: Writer, which):
     tnc = lambda fit: ["thread_not_confirmed"] if fit != "clearance" else []  # noqa: E731
     sockets03 = {
         # The plate, z 0 to 10: each dowel fills its hole to z 8 and runs on into the base.
-        "PLATE": [e_socket([e_axial("bore", (x, 0, 0), Z, [(0, 8, d, 6, *fits03[d])], open_at=[0], flags=tnc(fits03[d][0]))
+        "PLATE": [e_socket([e_axial("bore", (x, 0, 0), Z, [(0, 8.01, d, 6, *fits03[d])], open_at=[0], flags=tnc(fits03[d][0]))
                             for x, d in zip(xs, holes03)], seats=[e_seat((0, 0, 0), (0, 0, -1))])],
         # Each dowel, z 0 to 16: line to line in the base's dia 6 to z 8, then its plate hole's fit.
         "DOWEL": [e_socket([e_axial("shaft", (0, 0, 0), Z,
-                                    [(0, 8, 6, None, "line_to_line", True)] + (
-                                        [(8, 16, 6, None, "interference", True)] if d == 5.97 else
-                                        [(8, 16, 6, 6.2, "clearance", False)] if d == 6.2 else []),
+                                    # The base's top lies inside the dowel at z 8: the stricter fit there takes
+                                    # tau past it (I3, SR7).
+                                    [(0, 7.99, 6, None, "line_to_line", True), (7.99, 16, 6, None, "interference", True)]
+                                    if d == 5.97 else
+                                    [(0, 8.01, 6, None, "line_to_line", True), (8.01, 16, 6, 6.2, "clearance", False)]
+                                    if d == 6.2 else [(0, 8, 6, None, "line_to_line", True)],
                                     flags=["thread_not_confirmed"], max_extra=0)], at=(x, 0, -8),
                            # Each dowel bottoms on its hole's floor (I4): a seat, and no room to spare.
                            seats=[e_seat((0, 0, 0), (0, 0, -1))]) for x, d in zip(xs, holes03)],
@@ -2110,7 +2133,7 @@ def build_assemblies(w: Writer, which):
     s12 = Node("s12_undecided_target").add(Leaf("ANGLED", angled)).add(pin12, tilt12)
     # The angled cylinder is undecided (its ends are ellipses): a bore it can only fail, its spans unchecked.
     # It is held line to line over the pin's length, and neither end is known.
-    sockets12 = {"ANGLED": [e_socket([e_axial("bore", (20, 20, 10), into12, [(-20, 20, 6, 6, "line_to_line", True)],
+    sockets12 = {"ANGLED": [e_socket([e_axial("bore", (20, 20, 10), into12, [(-20.01, 20.01, 6, 6, "line_to_line", True)],
                                               flags=["extent_unknown", "target_undecided", "thread_not_confirmed"],
                                               depth="unknown_end")],
                                      # The pin crosses the top and bottom faces through the hole's ellipses,
@@ -2138,9 +2161,9 @@ def build_assemblies(w: Writer, which):
         # Each pin, z -10 to 10 about its centre at z 4: the dia 6.6 hole's wall 0.2 mm off, over the plate.
         # The tilted pin sees the dia 7 hole's ends at 4 cos t from its centre, less the hole's tilted disc
         # (X2, shrunk), and the hole's axis |s| tan t off its own at its station s (X3, X4).
-        "PIN": [e_socket([e_axial("shaft", (0, 0, 0), Z, [(-4, 4, 6, 6.2, "clearance", False)], flags=["offset"])],
+        "PIN": [e_socket([e_axial("shaft", (0, 0, 0), Z, [(-4.01, 4.01, 6, 6.2, "clearance", False)], flags=["offset"])],
                          at=(0.2, 0, 4)),
-                e_socket([e_axial("shaft", (0, 0, 0), Z, [(-held16, held16, 6, 2 * (3.5 - held16 * math.tan(t16)),
+                e_socket([e_axial("shaft", (0, 0, 0), Z, [(-held16 - 0.01, held16 + 0.01, 6, 2 * (3.5 - held16 * math.tan(t16)),
                                                           "clearance", False)], flags=["offset"])],
                          at=(15, 0, 4))]}
     a.case("s16_offaxis", s16, "a pin 0.2 mm off its hole's axis, and one tilted 0.5 deg in a dia 7 hole",
@@ -2155,7 +2178,7 @@ def build_assemblies(w: Writer, which):
     sockets19 = {
         "COVER": [e_socket([e_axial("shaft", (0, 0, 0), (0, 0, -1), [(0, 5, 12, 12.1, "clearance", False)], max_extra=3)],
                            seats=[e_seat((0, 0, 0), (0, 0, -1))])],
-        "HOUSING": [e_socket([e_axial("bore", (0, 0, -8), Z, [(3, 8, 12.1, 12, "clearance", False)])],
+        "HOUSING": [e_socket([e_axial("bore", (0, 0, -8), Z, [(2.99, 8, 12.1, 12, "clearance", False)])],
                              seats=[e_seat((0, 0, 0), Z)])],
     }
     a.case("s19_boss", s19, "a dia 12 boss in a dia 12.1 blind bore, 3 mm short of its floor",
@@ -2181,14 +2204,16 @@ def build_assemblies(w: Writer, which):
                   cyl((0, 0, 10), UP, 5.5, 5))
     s40 = Node("s40_cone_step").add(Leaf("PLATE", plate40)).add(Leaf("PIN", cyl((0, 0, -5), UP, 3, 25)))
     sockets40 = {
-        "PLATE": [e_socket([e_axial("bore", (0, 0, 0), Z, [(0, 10, 6.6, 6, "clearance", False),
+        # The dia 6.6 hole stands for the cone to z 10 (X7), a zone whose profile runs from dia 6.6 to 11 (X8).
+        "PLATE": [e_socket([e_axial("bore", (0, 0, 0), Z, [(0, 8, 6.6, 6, "clearance", False),
+                                                          (8, 10, 6.6, 6, "clearance", False, "zone", (6.6, 11)),
                                                           (10, 14, 11, 6, "clearance", False)], open_at=[0, 14])])],
         # The pin, z -5 to 20: at most the hole's narrower dia 6.6 up to the cone's top.
-        "PIN": [e_socket([e_axial("shaft", (0, 0, 0), Z, [(0, 10, 6, 6.6, "clearance", False),
-                                                         (10, 14, 6, 11, "clearance", False)])])],
+        "PIN": [e_socket([e_axial("shaft", (0, 0, 0), Z, [(-0.01, 10.01, 6, 6.6, "clearance", False),
+                                                         (10.01, 14.01, 6, 11, "clearance", False)])])],
     }
     a.case("s40_cone_step", s40, "a dia 6 pin through a hole that steps from dia 6.6 to dia 11 by a cone",
-           ["X7", "B1", "B6", "I1"], False, {"plate": "40 x 40 x 14, dia 6.6 to z 8, cone to z 10, dia 11 to 14",
+           ["X7", "X8", "B1", "B6", "I1"], False, {"plate": "40 x 40 x 14, dia 6.6 to z 8, cone to z 10, dia 11 to 14",
                                            "pin": "dia 6, z -5 to 20"}, asm_expect(s40, sockets=sockets40))
 
     # s41: a screw whose head (dia 10.8, z 12 to 14) meets its dia 6 shank by a cone (z 10 to 12), in a dia 11
@@ -2198,13 +2223,15 @@ def build_assemblies(w: Writer, which):
     s41 = Node("s41_cone_head").add(Leaf("PLATE", plate41)).add(Leaf("SCREW", screw41))
     sockets41 = {
         "PLATE": [e_socket([e_axial("bore", (0, 0, 0), Z, [(0, 8, 6.6, 6, "clearance", False),
-                                                          (8, 10, 11, 6, "clearance", False),
-                                                          (10, 14, 11, 10.8, "clearance", False)], open_at=[0])])],
-        "SCREW": [e_socket([e_axial("shaft", (0, 0, 0), Z, [(0, 8, 6, 6.6, "clearance", False),
-                                                           (8, 10, 6, 11, "clearance", False),
-                                                           (10, 14, 10.8, 11, "clearance", False)])])],
+                                                          (8, 9.99, 11, 6, "clearance", False),
+                                                          (9.99, 14, 11, 10.8, "clearance", False)], open_at=[0])])],
+        "SCREW": [e_socket([e_axial("shaft", (0, 0, 0), Z, [(-0.01, 8.01, 6, 6.6, "clearance", False),
+                                                           (8.01, 10, 6, 11, "clearance", False),
+                                                           # The head's cone, z 10 to 12, is its zone (X8).
+                                                           (10, 12, 10.8, 11, "clearance", False, "zone", (6, 10.8)),
+                                                           (12, 14, 10.8, 11, "clearance", False)])])],
     }
-    a.case("s41_cone_head", s41, "a screw with a cone under its head in a counterbore", ["X7", "B1", "B7", "I1"],
+    a.case("s41_cone_head", s41, "a screw with a cone under its head in a counterbore", ["X7", "X8", "B1", "B7", "I1"],
            False, {"plate": "40 x 40 x 14, dia 6.6 to z 8, dia 11 above",
                    "screw": "dia 6 from z -5, cone z 10 to 12, head dia 10.8 to z 14"},
            asm_expect(s41, sockets=sockets41))
@@ -2216,7 +2243,7 @@ def build_assemblies(w: Writer, which):
     pin42b = fuse(cyl((15, 0, 0.5), UP, 3, 29.5), cone((15, 0, -1), UP, 1.5, 3, 1.5))
     s42 = Node("s42_chamfer").add(Leaf("PLATE", plate42)).add(Leaf("PIN1", pin42a)).add(Leaf("PIN2", pin42b))
     sockets42 = {"PLATE": [e_socket([
-        e_axial("bore", (0, 0, 8), Z, [(0.5, 12, 6.6, 6, "clearance", False)], open_at=[12]),
+        e_axial("bore", (0, 0, 8), Z, [(0.49, 12, 6.6, 6, "clearance", False)], open_at=[12]),
         e_axial("bore", (15, 0, 0), Z, [(0, 20, 6.6, 6, "clearance", False)], open_at=[0, 20])],
         # The first tip's flat end, dia 3, 0.5 mm over the blind hole's floor: in the near band (C5).
         seats=[e_seat((0, 0, 8), Z, flags=["near_gap"], touchers=[("PIN1", 0.5, ["near_gap"])])])]}
@@ -2286,23 +2313,25 @@ def build_assemblies(w: Writer, which):
     sockets18 = {
         # The shank's end at the cone is unknown (air, then the head), so past z 6.8 nothing is read (U3):
         # pinned where the plate's dia 6.6 wall is, free in its countersink's zone.
+        # The countersink is the hole's end zone, its profile dia 6.6 to 12.4 (X8): verifiable.
         "PLATE": [e_socket([e_axial("bore", (0, 0, 0), Z, [(0, 6.8, 6.6, 6, "clearance", False),
                                                           (6.8, 7.1, 6.6, None, "not_read", True),
-                                                          (7.1, 10, 6.6, None, "not_read", False)],
+                                                          (7.1, 10, 6.6, None, "not_read", False, "zone", (6.6, 12.4))],
                                     open_at=[0], flags=["extent_unknown"])],
                            # On the nut; the countersink is a 90 deg conical seat with its apex 6.2 below the
                            # top, which grips 3.8 to the bottom face (L2).
                            seats=[e_seat((0, 0, 0), (0, 0, -1))], cones=[e_cone((0, 0, 3.8), 90, Z, (3.3, 6.2))],
                            grips=[e_grip(3.8)])],
-        "SCREW": [e_socket([e_axial("shaft", (0, 0, 0), Z, [(-5, 0, 6, None, "interference", True),
-                                                           (0, 6.8, 6, 6.6, "clearance", False),
-                                                           (6.8, 10, 6, None, "not_read", False)],
+        "SCREW": [e_socket([e_axial("shaft", (0, 0, 0), Z, [(-5.01, 0.01, 6, None, "interference", True),
+                                                           (0.01, 6.8, 6, 6.6, "clearance", False),
+                                                           # Past the shank's known end (U3): unverifiable (U9).
+                                                           (6.8, 10, 6, None, "not_read", False, "past_known_end")],
                                     flags=["extent_unknown", "thread_not_confirmed"])],
                            # The range both cones cover: the hole's dia 6.6 up to the head's dia 12.4.
                            cones=[e_cone((0, 0, 3.8), 90, Z, (3.3, 6.2), sense="shaft")])],
     }
     a.case("s18_csink", s18, "a 90 deg countersunk screw, flush, with a nut",
-           ["X7", "U3", "B1", "B6", "I1", "I2", "Q1", "Q2", "Q3", "L2"], False,
+           ["X7", "X8", "U3", "U9", "B1", "B6", "I1", "I2", "Q1", "Q2", "Q3", "L2"], False,
            {"plate": "40 x 40 x 10, dia 6.6 through, countersunk 90 deg to dia 12.4 at z 10",
             "screw": "dia 6 from z -8, head cone dia 6 at z 6.8 to dia 12.4 at z 10", "nut": "z -5 to 0"},
            asm_expect(s18, sockets=sockets18))
@@ -2316,14 +2345,17 @@ def build_assemblies(w: Writer, which):
     plate58 = cut(profile58.val().wrapped, tool(h18))
     s58 = Node("s58_csink_tilted").add(Leaf("PLATE", plate58)).add(Leaf("SCREW", screw18))
     a.case("s58_csink_tilted", s58, "a countersunk screw in a plate whose inclined top cuts the countersink",
-           ["Q1", "Y4.witness"], False,
+           ["Q1", "U9", "Y4.witness"], False,
            {"plate": "40 x 20, top inclined 2 deg through z 9.6 on the axis, dia 6.6 through, countersunk 90 deg "
             "to dia 12.4 at z 10", "screw": "s18's"},
            # The head stands proud of the inclined top, which touches its cone along a curve no rule reads (C6).
            asm_expect(s58, sockets={"PLATE": [e_socket(
                [e_axial("bore", (0, 0, 0), Z, [(0, 6.8, 6.6, 6, "not_read", True), (6.8, 7.1, 6.6, None, "not_read", True),
-                                               (7.1, 10, 6.6, None, "not_read", False)],
-                        open_at=[0], flags=["extent_unknown", "occupant_unread"], depth="unknown_end")],
+                                               (7.1, 10, 6.6, None, "not_read", False, "past_known_end")],
+                        # Its inclined top's unread edge leaves the plate unbounded: nothing shows that face
+                        # clear of the core (U11).
+                        open_at=[0], flags=["core_not_clear", "extent_unknown", "occupant_unread"],
+                        depth="unknown_end")],
                unresolved={"contact_no_rule": 1}, cones=[e_cone((0, 0, 3.8), 90, Z, None)])]}))
 
     # s60: s18's countersunk plate with two neighbour cones on its one countersink, apart: a screw whose head stops
@@ -2332,7 +2364,7 @@ def build_assemblies(w: Writer, which):
     screw60 = fuse(cone((0, 0, 6.8), UP, 3, 4.7, 1.7), cyl((0, 0, -8), UP, 3, 14.8))
     plug60 = cone((0, 0, 9), UP, 5.2, 6.2, 1)
     s60 = Node("s60_two_cones").add(Leaf("PLATE", plate18)).add(Leaf("SCREW", screw60)).add(Leaf("PLUG", plug60))
-    a.case("s60_two_cones", s60, "a countersink holding a screw's head and a conical plug apart", ["Q1", "Q3", "B8"],
+    a.case("s60_two_cones", s60, "a countersink holding a screw's head and a conical plug apart", ["Q1", "Q3", "X8", "B8"],
            False,
            {"plate": "s18's", "screw": "s18's, its head cone stopping at dia 9.4, z 8.5",
             "plug": "a cone from dia 10.4 at z 9 to dia 12.4 at z 10"},
@@ -2341,9 +2373,24 @@ def build_assemblies(w: Writer, which):
                # head's top at z 8.5.
                [e_axial("bore", (0, 0, 0), Z, [(0, 6.8, 6.6, 6, "not_read", True),
                                                (6.8, 7.1, 6.6, None, "not_read", True),
-                                               (7.1, 8.5, 6.6, None, "not_read", False)],
+                                               (7.1, 8.5, 6.6, None, "not_read", False, "zone", (6.6, 9.4))],
                         open_at=[0], flags=["extent_unknown", "occupant_unread"])],
                cones=[e_cone((0, 0, 3.8), 90, Z, (3.3, 6.2))])]}))
+
+    # s64: a base with an annular groove, dia 12 to 6 deep, around its own dia 6 post (top 1 below the base's),
+    # and a dia 11.8 / 6.6 sleeve in the groove, on its floor, standing 4 out. The groove's bore holds the base's
+    # own post in its core, and the post's core the groove's wall: both unverifiable (U11).
+    base64 = fuse(cut(box(-20, -20, -10, 40, 40, 10), cyl((0, 0, -6), UP, 6, 7)), cyl((0, 0, -6.5), UP, 3, 5.5))
+    sleeve64 = cut(cyl((0, 0, -6), UP, 5.9, 10), cyl((0, 0, -7), UP, 3.3, 12))
+    s64 = Node("s64_sleeve_post").add(Leaf("BASE", base64)).add(Leaf("SLEEVE", sleeve64))
+    a.case("s64_sleeve_post", s64, "a sleeve in a groove round its base's own post", ["U11"], False,
+           {"base": "40 x 40 x 10, top at z 0, groove dia 12 to z -6 round a dia 6 post to z -1",
+            "sleeve": "dia 11.8 / 6.6, z -6 to 4"},
+           asm_expect(s64, sockets={"BASE": [e_socket(
+               [e_axial("bore", (0, 0, -6), Z, [(0, 6, 12, 11.8, "clearance", False)], open_at=[6],
+                        flags=["core_not_clear"]),
+                e_axial("shaft", (0, 0, -6), Z, [(0, 5, 6, 6.6, "clearance", False)], flags=["core_not_clear"])],
+               seats=[e_seat((0, 0, -6), Z)])]}))
 
     # PR 4's cases: seats, grips, partial cylinders and the near band.
 
@@ -2377,8 +2424,8 @@ def build_assemblies(w: Writer, which):
                  # The bolt, head bearing at z 27.2: the two washers' dia 6.4, the three plates' dia 6.6 (24 mm),
                  # then the nut's dia 5. Nothing of its head touches the washers' outsides (I5, C6).
                  "BOLT": [e_socket([e_axial("shaft", (0, 0, 0), (0, 0, -1),
-                                            [(0, 3.2, 6, 6.4, "clearance", False), (3.2, 27.2, 6, 6.6, "clearance", False),
-                                             (27.2, 32.2, 6, None, "interference", True)],
+                                            [(0, 3.21, 6, 6.4, "clearance", False), (3.21, 27.19, 6, 6.6, "clearance", False),
+                                             (27.19, 32.21, 6, None, "interference", True)],
                                             flags=["thread_not_confirmed"])],
                                    seats=[e_seat((0, 0, 0), (0, 0, -1), touchers=[("WASHER", 0, [])])],
                                    at=(0, 0, 27.2))],
@@ -2451,7 +2498,7 @@ def build_assemblies(w: Writer, which):
         # The pin runs past both ends of the half hole, which are not known ends (U1, B6, U8).
         "PLATE": [e_socket([], partials=[e_partial("partial_bore", (0, 0, 0), Z, 6.6, 6, 0, 10, math.pi,
                                                    flags=["open_at_unknown_end"])])],
-        "PIN": [e_socket([e_axial("shaft", (0, 0, 0), Z, [(0, 10, 6, None, "not_read", True)],
+        "PIN": [e_socket([e_axial("shaft", (0, 0, 0), Z, [(-0.01, 10.01, 6, None, "not_read", True)],
                                   flags=["partial_neighbour"])])],
     }
     a.case("s17_slot", s17, "a dia 6 pin at one end of a 6.6 wide slot", ["U1", "I7"], False,
@@ -2480,7 +2527,7 @@ def build_assemblies(w: Writer, which):
         "BUSHING": [e_socket([e_axial("bore", (-5, 0, 20), (1, 0, 0), [(0, 10, 10, None, "not_read", True)],
                                       open_at=[0, 10], flags=["occupant_unread"])],
                              seats=[e_seat((0, 0, 0), (0, 0, -1))])],
-        "DSHAFT": [e_socket([], partials=[e_partial("partial_shaft", (-30, 0, 20), (1, 0, 0), 10, None, 25, 35,
+        "DSHAFT": [e_socket([], partials=[e_partial("partial_shaft", (-30, 0, 20), (1, 0, 0), 10, None, 24.99, 35.01,
                                                     2 * math.pi, flags=["thread_not_confirmed"])])],
     }
     a.case("s48_dshaft", s48, "a D-shaft line to line in a bushing", ["U1", "B8", "I2"], False,
@@ -2503,14 +2550,14 @@ def build_assemblies(w: Writer, which):
         # The tube: its outside is no interference in the spacer's bore (the ring rule, from the ring's side),
         # but is in the block's hole. The block's top meets its bore's core at the rim (touching counts): B8
         # pins the bore below the spacer.
-        "TUBE": [e_socket([e_axial("shaft", (0, 0, 9.5), Z, [(0, 0.5, 40, None, "interference", True)],
+        "TUBE": [e_socket([e_axial("shaft", (0, 0, 9.5), Z, [(0, 0.51, 40, None, "interference", True)],
                                    flags=["thread_not_confirmed"]),
-                           e_axial("bore", (0, 0, 9.5), Z, [(0, 2.5, 30, None, "not_read", True),
-                                                             (2.5, 10.5, 30, 30, "line_to_line", True)],
+                           e_axial("bore", (0, 0, 9.5), Z, [(0, 2.49, 30, None, "not_read", True),
+                                                             (2.49, 10.5, 30, 30, "line_to_line", True)],
                                    flags=["occupant_unread", "thread_not_confirmed"])],
                           seats=[e_seat((0, 0, 9.5), (0, 0, -1), flags=["interference"],
                                         touchers=[("BLOCK", -0.5, ["interference"])])])],
-        "BLOCK": [e_socket([e_axial("bore", (0, 0, 0), Z, [(9.5, 10, 30, 40, "interference", True)], open_at=[10],
+        "BLOCK": [e_socket([e_axial("bore", (0, 0, 0), Z, [(9.49, 10, 30, 40, "interference", True)], open_at=[10],
                                     flags=["thread_not_confirmed"])],
                            seats=[e_seat((0, 0, 10), Z, flags=["interference"],
                                          touchers=[("TUBE", -0.5, ["interference"])])])],
@@ -2533,12 +2580,16 @@ def build_assemblies(w: Writer, which):
                                    flags=["thread_not_confirmed"])],
                           seats=[e_seat((0, 0, 30), Z)])],
         # The skirt's outside holds nothing and is held by nothing.
+        # The spigot's core holds the cap's own skirt, and the skirt's bore the cap's own spigot: both
+        # unverifiable (U11) until a reviewer removes them.
         "CAP": [e_socket([e_axial("shaft", (0, 0, 30), (0, 0, -1), [(0, 30, 16.1, None, "interference", True)],
-                                  flags=["thread_not_confirmed"]),
-                          e_axial("bore", (0, 0, 30), (0, 0, -1), [(0, 30, 42, 40, "clearance", False)])],
+                                  flags=["core_not_clear", "thread_not_confirmed"]),
+                          e_axial("bore", (0, 0, 30), (0, 0, -1), [(0, 30, 42, 40, "clearance", False)],
+                                  flags=["core_not_clear"])],
                          left_out=[e_left((0, 0, 0), Z, 50, wall=(0, 33))], seats=[e_seat((0, 0, 30), (0, 0, -1))])],
     }
-    a.case("s50_cap", s50, "a cap pressed into a tube's bore, its skirt clear around the tube", ["B3", "I2"], False,
+    a.case("s50_cap", s50, "a cap pressed into a tube's bore, its skirt clear around the tube", ["B3", "I2", "U11"],
+           False,
            {"tube": "dia 40 / 16, z 0 to 30", "cap": "dia 16.1 spigot from z 0, dia 50 / 42 skirt from z 0, "
             "top dia 50 from z 30 to 33"}, asm_expect(s50, sockets=sockets50))
 
@@ -2551,7 +2602,7 @@ def build_assemblies(w: Writer, which):
            asm_expect(s51, sockets={
                "PLATE": [e_socket([e_axial("bore", (0, 0, 0), Z, [(0, 10, 6.6, 7, "interference", True)], open_at=[0, 10],
                                            flags=["conflict"])])],
-               "PIN": [e_socket([e_axial("shaft", (0.5, 0, -5), Z, [(5, 15, 6, None, "interference", True)],
+               "PIN": [e_socket([e_axial("shaft", (0.5, 0, -5), Z, [(4.99, 15.01, 6, None, "interference", True)],
                                          flags=["conflict"])])]}))
 
     # s52: a dia 4 pin at 10 degrees through a 10 mm plate's dia 10 hole, touching nothing: a skew relation,
@@ -2627,13 +2678,16 @@ def build_assemblies(w: Writer, which):
     s54 = Node("s54_stepped").add(Leaf("BASE", base54)).add(Leaf("BLOCK", block54))
     # And a loose dia 6 pin, both ends free, buried in a third, plain blind hole at x 0: 0.5 off its floor.
     s54.add(Leaf("PIN", cyl((0, 0, -9.5), UP, 3, 8)))
-    a.case("s54_stepped", s54, "pins ending in the wider segment of stepped blind holes", ["I4", "I1"], False,
+    a.case("s54_stepped", s54, "pins ending in the wider segment of stepped blind holes", ["I4", "I1", "U11"], False,
            {"base": "50 x 30 x 20, top at z 0; at x -10 and 10: dia 6.2 to z -10, dia 4 to z -15",
             "block": "40 x 20 x 8 on it, with pins dia 6 at x -10 and dia 3.5 at x 10 to z -6",
             "pin": "dia 6, z -9.5 to -1.5, in a dia 6.2 hole to z -10 at x 0"},
+           # Each pin's core, unbounded across its stations, holds the other pin: both unverifiable (U11).
            asm_expect(s54, sockets={"BLOCK": [e_socket(
-               [e_axial("shaft", (-10, 0, 0), (0, 0, -1), [(0, 6, 6, 6.2, "clearance", False)], max_extra=4),
-                e_axial("shaft", (10, 0, 0), (0, 0, -1), [(0, 6, 3.5, 6.2, "clearance", False)], max_extra=9)],
+               [e_axial("shaft", (-10, 0, 0), (0, 0, -1), [(0, 6, 6, 6.2, "clearance", False)], max_extra=4,
+                        flags=["core_not_clear"]),
+                e_axial("shaft", (10, 0, 0), (0, 0, -1), [(0, 6, 3.5, 6.2, "clearance", False)], max_extra=9,
+                        flags=["core_not_clear"])],
                seats=[e_seat((0, 0, 0), (0, 0, -1))])],
                # Both its ends free: the lower meets the floor (I4).
                "PIN": [e_socket([e_axial("shaft", (0, 0, -9.5), Z, [(0, 8, 6, 6.2, "clearance", False)], max_extra=0.5)],

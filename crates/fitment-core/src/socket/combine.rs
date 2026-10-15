@@ -8,7 +8,7 @@ use super::axial::{Element, EndKind, Side};
 use super::model::{Basis, Ring as RingRef, SeatContact, Toucher};
 use super::model::{
     BoreSpan, Cause, CauseFaces, Depth, Fit, Flag, LeftOut, LeftOutReason, Open, Requirement,
-    Requires, ShaftSpan, SourceRef,
+    Requires, ShaftSpan, SourceRef, SpanBasis,
 };
 use super::planar::{PlaneFound, TargetFace};
 use super::rules::{Found, Relation};
@@ -62,6 +62,8 @@ struct Piece {
     fit: Fit,
     clear: Option<f64>,
     pinned: bool,
+    basis: SpanBasis,
+    profile: Option<[f64; 2]>,
 }
 
 /// Element `t`'s stations: an unbounded side (an undecided cylinder with
@@ -113,12 +115,17 @@ fn spans(segments: &[(usize, &Element)], relations: &[&Relation], smallest: bool
         // never pinned.
         let mut cuts: Vec<f64> = vec![lo, hi];
         cuts.extend(
-            [element.own_lo, element.own_hi]
-                .into_iter()
-                .filter(|x| *x > lo && *x < hi),
+            [
+                element.own_lo,
+                element.own_hi,
+                element.known_lo,
+                element.known_hi,
+            ]
+            .into_iter()
+            .filter(|x| *x > lo && *x < hi),
         );
         for r in normal.iter().filter(|r| r.target == t) {
-            if let Some((a, b)) = r.span {
+            for (a, b) in r.span.into_iter().chain(r.sure) {
                 cuts.extend([a, b].into_iter().filter(|x| *x > lo && *x < hi));
             }
         }
@@ -145,19 +152,7 @@ fn spans(segments: &[(usize, &Element)], relations: &[&Relation], smallest: bool
         };
         let pinned_only = !pins.is_empty();
         let make = |x0: f64, x1: f64, holding: &[&&Relation]| {
-            let zone = x1 <= element.own_lo || x0 >= element.own_hi;
-            let mut piece = piece(
-                x0,
-                x1,
-                2.0 * element.radius,
-                holding,
-                pinned_only && !zone,
-                smallest,
-            )?;
-            if zone {
-                piece.pinned = false;
-            }
-            Some(piece)
+            make_piece(element, (x0, x1), holding, pinned_only, smallest)
         };
         for pair in cuts.windows(2) {
             let holding = covering(pair[0], pair[1]);
@@ -186,6 +181,55 @@ fn spans(segments: &[(usize, &Element)], relations: &[&Relation], smallest: bool
     pieces
 }
 
+/// The piece `x0` to `x1` of `element`, from the relations `holding` it,
+/// J's pin if `pinned_only`, and what it lies on (X8).
+fn make_piece(
+    element: &Element,
+    (x0, x1): (f64, f64),
+    holding: &[&&Relation],
+    pinned_only: bool,
+    smallest: bool,
+) -> Option<Piece> {
+    let zone = x1 <= element.own_lo || x0 >= element.own_hi;
+    let mut piece = piece(
+        x0,
+        x1,
+        2.0 * element.radius,
+        holding,
+        pinned_only && !zone,
+        smallest,
+    )?;
+    // SR7: where a neighbour only may be (a span widened past its own
+    // end), the hole may be empty too: J's pin holds as well.
+    let sure = holding.iter().any(|r| {
+        r.sure.or(r.span).is_some_and(|(a, b)| {
+            let e = super::MERGE_MM;
+            a <= x0 + e && x1 <= b + e
+        })
+    });
+    if pinned_only && !zone && !sure {
+        piece.fit = [piece.fit, Fit::NotRead]
+            .into_iter()
+            .max_by_key(|f| strictness(*f))
+            .unwrap_or(Fit::NotRead);
+        // Pinned to the original, which passes the occupant's clear
+        // diameter: one piece with the empty hole's pin.
+        piece.pinned = true;
+        piece.clear = None;
+    }
+    if zone {
+        piece.pinned = false;
+    }
+    // X8: what the piece lies on, and a zone's profile.
+    if x1 <= element.known_lo || x0 >= element.known_hi {
+        piece.basis = SpanBasis::PastKnownEnd;
+    } else if zone {
+        piece.basis = SpanBasis::Zone;
+        piece.profile = element.profile(x0, x1);
+    }
+    Some(piece)
+}
+
 /// The piece `x0` to `x1` of a segment of `diameter`, from the relations
 /// `holding` it; with none, J's pin if `pinned_only`, else nothing.
 fn piece(
@@ -204,6 +248,8 @@ fn piece(
             fit: Fit::NotRead,
             clear: None,
             pinned: true,
+            basis: SpanBasis::Cylinder,
+            profile: None,
         });
     }
     let fit = holding
@@ -226,6 +272,8 @@ fn piece(
         fit,
         clear: if pinned && smallest { None } else { clear },
         pinned,
+        basis: SpanBasis::Cylinder,
+        profile: None,
     })
 }
 
@@ -245,10 +293,26 @@ fn push(pieces: &mut Vec<Piece>, piece: Piece) {
                     _ => false,
                 }
                 && same(last.diameter, piece.diameter)
+                && last.basis == piece.basis
+                && match (last.profile, piece.profile) {
+                    (None, None) => true,
+                    // One cone: a zone's pieces join where the profile runs
+                    // straight on through the joint.
+                    (Some([a, joint]), Some([other, b])) => {
+                        let (first, second) = (last.to - last.from, piece.to - piece.from);
+                        same(joint, other)
+                            && first + second > 0.0
+                            && same(a + (b - a) * first / (first + second), joint)
+                    }
+                    _ => false,
+                }
                 && last.from < last.to
                 && piece.from < piece.to =>
         {
             last.to = piece.to;
+            if let (Some([a, _]), Some([_, b])) = (last.profile, piece.profile) {
+                last.profile = Some([a, b]);
+            }
         }
         _ => pieces.push(piece),
     }
@@ -545,6 +609,8 @@ fn stack_requirement(
                         clear_diameter_mm: p.clear.map(clean),
                         fit: p.fit,
                         pinned: p.pinned,
+                        basis: p.basis,
+                        profile_mm: p.profile.map(|[a, b]| [clean(a), clean(b)]),
                     })
                     .collect(),
                 open: Open {
@@ -577,6 +643,8 @@ fn stack_requirement(
                         clear_diameter_mm: p.clear.map(clean),
                         fit: p.fit,
                         pinned: p.pinned,
+                        basis: p.basis,
+                        profile_mm: p.profile.map(|[a, b]| [clean(a), clean(b)]),
                     })
                     .collect(),
                 max_extra_mm: relations

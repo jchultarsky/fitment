@@ -61,6 +61,24 @@ pub enum Flag {
     UnknownOutline,
     /// A grip one of whose seats is unverifiable (U10): unverifiable.
     SeatUnverifiable,
+    /// The original's own material lies in a span's core (U11):
+    /// unverifiable.
+    CoreNotClear,
+}
+
+/// What a span piece lies on (X8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SpanBasis {
+    /// A segment's own cylinder.
+    Cylinder,
+    /// A transition or end zone a segment stands for (X7): the original
+    /// has no single diameter there.
+    Zone,
+    /// Past a known end of the stack, where an unknown side runs on (U3):
+    /// nothing of the original is known there.
+    PastKnownEnd,
 }
 
 /// One span of a bore: an interval of the hole's stations and what
@@ -84,6 +102,12 @@ pub struct BoreSpan {
     pub fit: Fit,
     /// True if the diameter is pinned to the original's.
     pub pinned: bool,
+    /// What the piece lies on (X8).
+    pub basis: SpanBasis,
+    /// A zone piece's original diameters at its two ends, joined by one
+    /// cone (X8); `None` elsewhere, and where no single cone joins them.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub profile_mm: Option<[f64; 2]>,
 }
 
 /// One span of a shaft requirement.
@@ -104,6 +128,28 @@ pub struct ShaftSpan {
     pub fit: Fit,
     /// True if the diameter is pinned to the original's.
     pub pinned: bool,
+    /// What the piece lies on (X8).
+    pub basis: SpanBasis,
+    /// A zone piece's original diameters at its two ends, joined by one
+    /// cone (X8); `None` elsewhere, and where no single cone joins them.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub profile_mm: Option<[f64; 2]>,
+}
+
+/// True if a piece states nothing of the original a candidate can be
+/// held to (U9): past a known end, or in a zone with neither a pin, a
+/// clear diameter nor a profile.
+fn unknown_piece(
+    basis: SpanBasis,
+    pinned: bool,
+    clear: Option<f64>,
+    profile: Option<[f64; 2]>,
+) -> bool {
+    match basis {
+        SpanBasis::PastKnownEnd => true,
+        SpanBasis::Zone => !pinned && clear.is_none() && profile.is_none(),
+        SpanBasis::Cylinder => false,
+    }
 }
 
 /// Which ends of a hole must be open (B6, J1).
@@ -403,11 +449,13 @@ pub struct Requirement {
 impl Requirement {
     /// False for the kinds every candidate fails, the original included,
     /// until review removes them (Y4): `unresolved`, `partial_bore`,
-    /// `partial_shaft`, a bore or shaft flagged `target_undecided`, a bore
-    /// flagged `open_at_unknown_end`, a seat with a contact whose basis
-    /// is unknown, a grip flagged `seat_unverifiable` (U10), and a conical
-    /// seat whose radial range is unknown. M3's witness test and M4's
-    /// verification both ask this (SR5).
+    /// `partial_shaft`, a bore or shaft flagged `target_undecided` or
+    /// `core_not_clear` (U11), a bore flagged `open_at_unknown_end`, a bore
+    /// or shaft with a piece past a known end or in a zone it states
+    /// nothing of (U9), a seat with a contact whose basis is unknown, a
+    /// grip flagged `seat_unverifiable` (U10), and a conical seat whose
+    /// radial range is unknown. M3's witness test and M4's verification
+    /// both ask this (SR5).
     pub fn verifiable(&self) -> bool {
         match &self.requires {
             Requires::Unresolved { .. }
@@ -416,11 +464,31 @@ impl Requirement {
             Requires::Seat { contacts, .. } => contacts.iter().all(|c| c.basis != Basis::Unknown),
             Requires::Grip { .. } => !self.flags.contains(&Flag::SeatUnverifiable),
             Requires::ConicalSeat { radii_mm, .. } => radii_mm.is_some(),
-            Requires::Bore { .. } | Requires::Shaft { .. } => !self
-                .flags
-                .iter()
-                .any(|f| matches!(f, Flag::TargetUndecided | Flag::OpenAtUnknownEnd)),
+            Requires::Bore { spans, .. } => {
+                self.axial_verifiable()
+                    && !spans.iter().any(|s| {
+                        unknown_piece(s.basis, s.pinned, s.clear_diameter_mm, s.profile_mm)
+                    })
+            }
+            Requires::Shaft { spans, .. } => {
+                self.axial_verifiable()
+                    && !spans.iter().any(|s| {
+                        unknown_piece(s.basis, s.pinned, s.clear_diameter_mm, s.profile_mm)
+                    })
+            }
         }
+    }
+}
+
+impl Requirement {
+    /// A bore's or shaft's flags allow it (U2, U8, U11).
+    fn axial_verifiable(&self) -> bool {
+        !self.flags.iter().any(|f| {
+            matches!(
+                f,
+                Flag::TargetUndecided | Flag::OpenAtUnknownEnd | Flag::CoreNotClear
+            )
+        })
     }
 }
 

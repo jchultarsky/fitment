@@ -10,6 +10,7 @@ mod index;
 mod merge;
 mod model;
 mod overlap;
+mod own;
 mod place;
 mod planar;
 mod review;
@@ -23,7 +24,8 @@ pub use review::{CarryOver, ReviewError, StaleReason, StaleReview};
 pub use model::{
     Basis, BoreSpan, Cause, CauseFaces, Depth, Envelope, Extracted, Fit, Flag, LeftOut,
     LeftOutReason, Notes, Open, PlacedRef, Requirement, Requires, ReviewEntry, ReviewStatus, Ring,
-    SeatContact, SelectionRecord, ShaftSpan, Socket, SocketConstants, SourceRef, Target, Toucher,
+    SeatContact, SelectionRecord, ShaftSpan, Socket, SocketConstants, SourceRef, SpanBasis, Target,
+    Toucher,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,7 +49,7 @@ pub const SOCKET_FORMAT_VERSION: u32 = 1;
 
 /// The version of the socket rules: it rises whenever a socket rule,
 /// constant, order or field could change any socket (R20).
-pub const SOCKET_RULES_VERSION: u32 = 6;
+pub const SOCKET_RULES_VERSION: u32 = 7;
 
 /// The least contact tolerance, in mm (Z3).
 pub(crate) const CONTACT_MM: f64 = 0.01;
@@ -860,6 +862,11 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
         .iter()
         .map(|s| s.max_vertex_offset_mm)
         .fold(target.max_uncertainty_mm.max(GUARD_MM), f64::max);
+    let boxes = listing
+        .definitions()
+        .get(selection.definition)
+        .map_or(&[][..], |d| d.faces.as_slice());
+    let original = own::Own::of(target, boxes);
     let mut pairs = 0;
     let mut sockets = Vec::new();
     let mut cited = std::collections::BTreeSet::new();
@@ -883,10 +890,9 @@ fn extract_listing(listing: &Listing, selection: &Selection) -> Result<Extracted
         let own = occurrence.path.instances();
         let (mut requirements, left_out) =
             combine::requirements(target, &targets, &found, &own, &paths);
-        let boxes = listing
-            .definitions()
-            .get(selection.definition)
-            .map_or(&[][..], |d| d.faces.as_slice());
+        // U11: a bore or shaft whose core the original's own material
+        // reaches.
+        own::flag(&mut requirements, &original, guard, &mut pairs).map_err(|_| too_many())?;
         let planes = Planes {
             target,
             targets: &targets,
@@ -1347,6 +1353,67 @@ mod tests {
                 }
             }
         }));
+    }
+
+    /// X8: a profile only on a zone piece, and a zone piece never pinned.
+    #[test]
+    fn a_span_basis_against_its_rules_is_refused() {
+        let first_bore = |e: &mut Extracted, edit: &dyn Fn(&mut BoreSpan)| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    if let Requires::Bore { spans, .. } = &mut r.requires {
+                        spans.iter_mut().for_each(edit);
+                    }
+                }
+            }
+        };
+        assert!(refused(
+            |e| first_bore(e, &|s| s.profile_mm = Some([6.6, 8.0]))
+        ));
+        assert!(refused(|e| first_bore(e, &|s| {
+            s.basis = SpanBasis::Zone;
+            s.pinned = true;
+        })));
+    }
+
+    /// U9: a piece past a known end, or a zone's with nothing stated of
+    /// the original, makes its requirement unverifiable; a zone with its
+    /// profile does not.
+    #[test]
+    fn pieces_that_state_nothing_of_the_original_are_unverifiable() {
+        let Ok(document) = SocketDocument::extract(S01, Some("BRACKET"), None) else {
+            return;
+        };
+        let Some(bore) = document.extracted().and_then(|e| {
+            e.sockets[0]
+                .requirements
+                .iter()
+                .find(|r| matches!(r.requires, Requires::Bore { .. }))
+                .cloned()
+        }) else {
+            return;
+        };
+        assert!(bore.verifiable());
+        let with = |edit: &dyn Fn(&mut BoreSpan)| {
+            let mut r = bore.clone();
+            if let Requires::Bore { spans, .. } = &mut r.requires {
+                spans.iter_mut().for_each(edit);
+            }
+            r.verifiable()
+        };
+        assert!(!with(&|s| s.basis = SpanBasis::PastKnownEnd));
+        assert!(!with(&|s| {
+            s.basis = SpanBasis::Zone;
+            s.clear_diameter_mm = None;
+        }));
+        assert!(with(&|s| {
+            s.basis = SpanBasis::Zone;
+            s.clear_diameter_mm = None;
+            s.profile_mm = Some([6.6, 12.4]);
+        }));
+        let mut flagged = bore.clone();
+        flagged.flags.push(Flag::CoreNotClear);
+        assert!(!flagged.verifiable());
     }
 
     /// U10: a grip's `seat_unverifiable` flag is what its seats give.

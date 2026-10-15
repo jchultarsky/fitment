@@ -57,6 +57,9 @@ pub(crate) struct Relation {
     pub(crate) gap: Option<f64>,
     /// The stations it covers on the target element's axis.
     pub(crate) span: Option<(f64, f64)>,
+    /// Where the neighbour surely is, within `span`, which B5 and I3
+    /// widen at the neighbour's own ends (SR7); `None` where they agree.
+    pub(crate) sure: Option<(f64, f64)>,
     /// What it asks there; `None` for provenance only.
     pub(crate) fit: Option<Fit>,
     /// The clear diameter (B) or the largest allowed (I).
@@ -88,6 +91,7 @@ impl Relation {
             margin: None,
             gap: None,
             span: None,
+            sure: None,
             fit: None,
             clear: None,
             unoccupied_only: false,
@@ -156,6 +160,17 @@ fn fit_of(margin: f64, e_max: f64, tau: f64, guard: f64, flags: &mut BTreeSet<Fl
     }
 }
 
+/// The span a relation covers on `a`, widened at the neighbour's own ends
+/// (SR7), and where the neighbour surely is.
+fn spans_of(a: &Element, p: &Pair, tau: f64) -> ((f64, f64), (f64, f64)) {
+    let sure = span(a, p, tau);
+    if p.length > tau {
+        (widened((a.lo, a.hi), p, tau), sure)
+    } else {
+        (sure, sure)
+    }
+}
+
 /// The span a relation covers on `a`, a touch giving one station.
 fn span(a: &Element, p: &Pair, tau: f64) -> (f64, f64) {
     if p.to >= p.from {
@@ -165,6 +180,25 @@ fn span(a: &Element, p: &Pair, tau: f64) -> (f64, f64) {
     } else {
         (a.hi, a.hi)
     }
+}
+
+/// B5 and I3 (the socket PR, SR7): an end of an overlap inside `a`'s
+/// stations `within` is the neighbour's own end, a position known to τ:
+/// widened by it, never past `within`, so the original's own wall still
+/// spans it. An end where `a` itself ends is `a`'s, and stays; so does a
+/// touch.
+fn widened(within: (f64, f64), p: &Pair, tau: f64) -> (f64, f64) {
+    let from = if p.lo > within.0 + super::MERGE_MM {
+        (p.from - tau).max(within.0)
+    } else {
+        p.from
+    };
+    let to = if p.hi < within.1 - super::MERGE_MM {
+        (p.to + tau).min(within.1)
+    } else {
+        p.to
+    };
+    (from, to)
 }
 
 /// True if the relation exists only through a side whose extent is not
@@ -393,7 +427,9 @@ impl Search<'_, '_> {
         relation.margin = finite(margin);
         relation.fit = Some(fit);
         relation.clear = finite(2.0 * reach);
-        relation.span = Some(span(a, &p, tau));
+        let (span, sure) = spans_of(a, &p, tau);
+        relation.span = Some(span);
+        relation.sure = Some(sure);
         if through_unknown(a, b, &p) {
             relation.flags.insert(Flag::ExtentUnknown);
         }
@@ -471,7 +507,9 @@ impl Search<'_, '_> {
         if b.partial.is_some() {
             let mut relation = self.relation(t, "I7", n, b, &p);
             relation.fit = Some(Fit::NotRead);
-            relation.span = Some(span(a, &p, tau));
+            let (span, sure) = spans_of(a, &p, tau);
+            relation.span = Some(span);
+            relation.sure = Some(sure);
             relation.flags.insert(Flag::PartialNeighbour);
             self.found.relations.push(relation);
             return;
@@ -496,7 +534,9 @@ impl Search<'_, '_> {
         relation.margin = finite(margin);
         relation.fit = Some(fit);
         relation.clear = finite(2.0 * room).filter(|_| fit == Fit::Clearance);
-        relation.span = Some(span(a, &p, tau));
+        let (span, sure) = spans_of(a, &p, tau);
+        relation.span = Some(span);
+        relation.sure = Some(sure);
         if through_unknown(a, b, &p) {
             relation.flags.insert(Flag::ExtentUnknown);
         }
@@ -544,6 +584,7 @@ impl Search<'_, '_> {
             let mut main = relation.clone();
             if !rest.is_empty() {
                 main.span = main.span.map(|(x, y)| (x.max(from), y.min(to)));
+                main.sure = main.sure.map(|(x, y)| (x.max(from), y.min(to)));
             }
             let fits = main.fit == Some(Fit::Clearance) || main.fit.is_none();
             if fits || own_overlap(&mut main, a, b, grow, tau) {
@@ -558,6 +599,7 @@ impl Search<'_, '_> {
             unread.clear = None;
             unread.margin = None;
             unread.span = Some((x, y));
+            unread.sure = None;
             unread.flags.remove(&Flag::ThreadNotConfirmed);
             unread.flags.insert(Flag::ExtentUnknown);
             if carried {
@@ -1033,7 +1075,8 @@ fn own(e: &Element) -> Element {
 fn own_overlap(relation: &mut Relation, a: &Element, b: &Element, grow: f64, tau: f64) -> bool {
     match axial::pair(&own(a), &own(b), PARALLEL_SINE_REL, grow) {
         Some(q) if q.length > tau => {
-            relation.span = Some((q.from, q.to));
+            relation.span = Some(widened((a.own_lo, a.own_hi), &q, tau));
+            relation.sure = Some((q.from, q.to));
             true
         }
         _ => {

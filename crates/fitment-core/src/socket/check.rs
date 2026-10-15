@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 
 use super::model::{
-    Extracted, Fit, Flag, Requirement, Requires, ReviewEntry, ReviewStatus, Socket,
+    Extracted, Fit, Flag, Requirement, Requires, ReviewEntry, ReviewStatus, Socket, SpanBasis,
 };
 use super::{CONTACT_MM, MERGE_MM};
 use crate::features::FeatureId;
@@ -286,6 +286,7 @@ fn tight(fit: Fit) -> bool {
 fn bore_rules(spans: &[super::model::BoreSpan], labelled: bool) -> Checked {
     ordered(spans.iter().map(|s| (s.from_mm, s.to_mm)))?;
     for s in spans {
+        basis_rules(s.basis, s.pinned, s.profile_mm)?;
         if !positive(s.hole_diameter_mm) {
             return Err("a span's diameter is not positive".to_owned());
         }
@@ -310,6 +311,7 @@ fn bore_rules(spans: &[super::model::BoreSpan], labelled: bool) -> Checked {
 fn shaft_rules(spans: &[super::model::ShaftSpan], labelled: bool) -> Checked {
     ordered(spans.iter().map(|s| (s.from_mm, s.to_mm)))?;
     for s in spans {
+        basis_rules(s.basis, s.pinned, s.profile_mm)?;
         if !positive(s.shaft_diameter_mm) {
             return Err("a span's diameter is not positive".to_owned());
         }
@@ -325,6 +327,21 @@ fn shaft_rules(spans: &[super::model::ShaftSpan], labelled: bool) -> Checked {
         if tight(s.fit) && !s.pinned {
             return Err("a tight fit is not pinned (Y1)".to_owned());
         }
+    }
+    Ok(())
+}
+
+/// X8: a profile only on a zone piece, positive; a zone piece never
+/// pinned (X7).
+fn basis_rules(basis: SpanBasis, pinned: bool, profile: Option<[f64; 2]>) -> Checked {
+    if profile.is_some() && basis != SpanBasis::Zone {
+        return Err("a profile on a piece that is no zone's".to_owned());
+    }
+    if profile.is_some_and(|[a, b]| !(positive(a) && positive(b))) {
+        return Err("a zone's profile is not positive".to_owned());
+    }
+    if pinned && basis == SpanBasis::Zone {
+        return Err("a zone piece is pinned (X7)".to_owned());
     }
     Ok(())
 }
