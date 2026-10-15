@@ -456,13 +456,15 @@ fn as1_exports_share_their_core() {
     };
     let grip = |length: i64| ("grip".to_owned(), String::new(), 0, length);
     let ltl = "line_to_line";
-    // What every export requires, part by part (ac's).
+    // What every export requires, part by part (ac's). A shaft's span
+    // reaches τ past each end of a neighbour inside it (I3, the socket
+    // PR's SR7): the bolt's past its nut, the rod's past both of its.
     let shared: [BTreeSet<_>; 5] = [
         [span("bore", ltl, 1000, 2000), grip(2000)].into(),
         [span("bore", ltl, 1000, 1000), grip(1000)].into(),
-        [span("shaft", ltl, 1000, 3300)].into(),
+        [span("shaft", ltl, 1000, 3301)].into(),
         [span("bore", ltl, 1000, 300)].into(),
-        [span("shaft", ltl, 1000, 1300)].into(),
+        [span("shaft", ltl, 1000, 1302)].into(),
     ];
     // The known differences.
     let differs = |export: &str, part: usize| -> Option<BTreeSet<_>> {
@@ -470,13 +472,15 @@ fn as1_exports_share_their_core() {
             // No nuts on pe's bolts: no grip on the plate, and the bolts
             // engage 30 mm, not 33.
             ("pe", 0) => Some([span("bore", ltl, 1000, 2000)].into()),
-            ("pe", 2) => Some([span("shaft", ltl, 1000, 3000)].into()),
+            // pe's τ is its floor, 0.672 mm: 0.026 of its inch.
+            ("pe", 2) => Some([span("shaft", ltl, 1000, 3003)].into()),
+            ("pe", 4) => Some([span("shaft", ltl, 1000, 1305)].into()),
             // md's and ug's rod nuts stand 12 mm off the uprights: the rod
             // is held in two spans, not one.
             ("md" | "ug", 4) => Some(
                 [
-                    span("shaft", ltl, 1000, 300),
-                    span("shaft", ltl, 1000, 1000),
+                    span("shaft", ltl, 1000, 301),
+                    span("shaft", ltl, 1000, 1002),
                 ]
                 .into(),
             ),

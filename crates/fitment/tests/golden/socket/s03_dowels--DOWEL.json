@@ -2,7 +2,7 @@
   "format": "fitment.socket",
   "format_version": 1,
   "extractor_version": 6,
-  "socket_rules_version": 6,
+  "socket_rules_version": 7,
   "extraction": {
     "features": {
       "identity_mm": 1e-6,
@@ -377,19 +377,23 @@
               "spans": [
                 {
                   "from_mm": 0.0,
-                  "to_mm": 8.0,
+                  "to_mm": 7.99,
                   "shaft_diameter_mm": 6.0,
                   "clear_diameter_mm": null,
                   "fit": "line_to_line",
-                  "pinned": true
+                  "pinned": true,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 },
                 {
-                  "from_mm": 8.0,
+                  "from_mm": 7.99,
                   "to_mm": 16.0,
                   "shaft_diameter_mm": 6.0,
                   "clear_diameter_mm": null,
                   "fit": "interference",
-                  "pinned": true
+                  "pinned": true,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "max_extra_mm": 0.0
@@ -417,7 +421,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -441,7 +445,7 @@
                 "margin_mm": -0.015000000000000124,
                 "gap_mm": null,
                 "span_mm": [
-                  8.0,
+                  7.99,
                   16.0
                 ],
                 "floor_mm": 1e-7,
@@ -570,19 +574,23 @@
               "spans": [
                 {
                   "from_mm": 0.0,
-                  "to_mm": 8.0,
+                  "to_mm": 8.01,
                   "shaft_diameter_mm": 6.0,
                   "clear_diameter_mm": null,
                   "fit": "line_to_line",
-                  "pinned": true
+                  "pinned": true,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 },
                 {
-                  "from_mm": 8.0,
+                  "from_mm": 8.01,
                   "to_mm": 16.0,
                   "shaft_diameter_mm": 6.0,
                   "clear_diameter_mm": 6.2,
                   "fit": "clearance",
-                  "pinned": false
+                  "pinned": false,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "max_extra_mm": 0.0
@@ -610,7 +618,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -634,7 +642,7 @@
                 "margin_mm": 0.10000000000000009,
                 "gap_mm": null,
                 "span_mm": [
-                  8.0,
+                  7.99,
                   16.0
                 ],
                 "floor_mm": 1e-7,
@@ -768,7 +776,9 @@
                   "shaft_diameter_mm": 6.0,
                   "clear_diameter_mm": null,
                   "fit": "line_to_line",
-                  "pinned": true
+                  "pinned": true,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "max_extra_mm": 0.0
@@ -796,7 +806,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -820,7 +830,7 @@
                 "margin_mm": 0.0,
                 "gap_mm": null,
                 "span_mm": [
-                  8.0,
+                  7.99,
                   16.0
                 ],
                 "floor_mm": 1e-7,
@@ -846,7 +856,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -870,7 +880,7 @@
                 "margin_mm": 0.00749999999999984,
                 "gap_mm": null,
                 "span_mm": [
-                  8.0,
+                  7.99,
                   16.0
                 ],
                 "floor_mm": 1e-7,
@@ -1016,7 +1026,7 @@
       }
     }
   },
-  "digest": "sha256:34e5e52177945059da082beb466dcfd0019ec8d4eeffc7a71127649bf5deb9dd",
+  "digest": "sha256:da9a8ca63ec85cd21b5e46d21a3cdf453c0a362dceda8373eefd3cc4f99b5619",
   "review": [
     {
       "socket": "socket-1",

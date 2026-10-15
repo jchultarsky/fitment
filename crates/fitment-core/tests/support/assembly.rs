@@ -567,9 +567,18 @@ fn fit_name(fit: fitment_core::Fit) -> &'static str {
     }
 }
 
-/// A span as fitment states it: stations, diameter, clear diameter, fit
-/// and whether it is pinned.
-type Span = (f64, f64, f64, Option<f64>, fitment_core::Fit, bool);
+/// A span as fitment states it: stations, diameter, clear diameter, fit,
+/// whether it is pinned, what it lies on and a zone's profile (X8).
+type Span = (
+    f64,
+    f64,
+    f64,
+    Option<f64>,
+    fitment_core::Fit,
+    bool,
+    fitment_core::SpanBasis,
+    Option<[f64; 2]>,
+);
 
 /// The spans of an axis through `p` along `d` against the expected ones,
 /// one to one.
@@ -578,7 +587,7 @@ type Span = (f64, f64, f64, Option<f64>, fitment_core::Fit, bool);
 fn spans_match(p: [f64; 3], d: [f64; 3], spans: &[Span], expected: &[Value]) -> Option<String> {
     let at = |s: f64| [p[0] + s * d[0], p[1] + s * d[1], p[2] + s * d[2]];
     let mut left: Vec<&Value> = expected.iter().collect();
-    for (from, to, diameter, clear, fit, pinned) in spans {
+    for (from, to, diameter, clear, fit, pinned, basis, profile) in spans {
         let (a, b) = (at(*from), at(*to));
         let found = left.iter().position(|e| {
             let (Some(x), Some(y)) = (point(&e["from"]), point(&e["to"])) else {
@@ -590,7 +599,25 @@ fn spans_match(p: [f64; 3], d: [f64; 3], spans: &[Span], expected: &[Value]) -> 
                 (Some(c), Some(w)) => (c - w).abs() <= POINT_TOL,
                 _ => false,
             };
+            // A profile follows the span's direction: reversed with it.
+            let wanted = e["profile"].as_array().map(|w| {
+                let w: Vec<f64> = w.iter().filter_map(Value::as_f64).collect();
+                if near(a, x) {
+                    w
+                } else {
+                    w.into_iter().rev().collect()
+                }
+            });
+            let profile_ok = match (profile, wanted) {
+                (None, None) => true,
+                (Some([p, q]), Some(w)) => {
+                    w.len() == 2 && (p - w[0]).abs() <= POINT_TOL && (q - w[1]).abs() <= POINT_TOL
+                }
+                _ => false,
+            };
             ends && clear_ok
+                && profile_ok
+                && serde_json::to_value(basis).ok().as_ref() == Some(&e["basis"])
                 && (diameter - e["diameter"].as_f64().unwrap_or(f64::NAN)).abs() <= POINT_TOL
                 && e["fit"] == fit_name(*fit)
                 && e["pinned"] == *pinned
@@ -601,7 +628,7 @@ fn spans_match(p: [f64; 3], d: [f64; 3], spans: &[Span], expected: &[Value]) -> 
             }
             None => {
                 return Some(format!(
-                    "an unexpected span {from}..{to} Ø{diameter} {fit:?} clear {clear:?}"
+                    "an unexpected span {from}..{to} Ø{diameter} {fit:?} clear {clear:?} {basis:?} profile {profile:?}"
                 ));
             }
         }
@@ -657,6 +684,8 @@ fn axial_matches(
                             s.clear_diameter_mm,
                             s.fit,
                             s.pinned,
+                            s.basis,
+                            s.profile_mm,
                         )
                     })
                     .collect(),
@@ -687,6 +716,8 @@ fn axial_matches(
                             s.clear_diameter_mm,
                             s.fit,
                             s.pinned,
+                            s.basis,
+                            s.profile_mm,
                         )
                     })
                     .collect(),

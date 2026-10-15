@@ -1330,6 +1330,49 @@ def ring(m, axis, station, radius):
     return out
 
 
+def core_problems(where, requirement, m, target, guard, tally):
+    """U11 and X8 against Open CASCADE: a bore's or shaft's core that
+    fitment leaves unflagged holds none of the target's own material at
+    points sampled well inside it (a bore's cylinder of radius c/2 + tau +
+    g or d/2 - tau; a shaft's outside of c/2 - tau - g or d/2 + tau), and a
+    zone piece's profile is the target's own radius halfway along it: air
+    just inside it for a hole, material just inside it for a shaft."""
+    problems = []
+    q = requirement["requires"]
+    hole = q["kind"] == "bore"
+    tau = max(0.01, requirement["floor_mm"], guard)
+    flagged = "core_not_clear" in requirement["flags"]
+    for span in q["spans"]:
+        own = span["hole_diameter_mm" if hole else "shaft_diameter_mm"]
+        clear = span["clear_diameter_mm"]
+        a, b = span["from_mm"], span["to_mm"]
+        if span.get("profile_mm") is not None:
+            tally["zone profiles"] = tally.get("zone profiles", 0) + 1
+            r = (span["profile_mm"][0] + span["profile_mm"][1]) / 4
+            airy, solid = (r - 0.02, r + 0.02) if hole else (r + 0.02, r - 0.02)
+            mid = (a + b) / 2
+            if any(inside_any(pt, [target]) for pt in ring(m, q["axis"], mid, airy)) or \
+                    not all(inside_any(pt, [target]) for pt in ring(m, q["axis"], mid, solid)):
+                problems.append(f"{where}: zone profile {span['profile_mm']} is not the part's radius at {mid:.4f}")
+        if flagged or b - a <= 0.05 or span.get("basis") == "past_known_end":
+            continue
+        if span["pinned"] or span.get("basis") == "zone":
+            rho = own / 2 - 0.01 if hole else own / 2 + 0.01
+        elif clear is not None:
+            rho = clear / 2 + tau + guard if hole else clear / 2 - tau - guard
+        else:
+            continue
+        tally["cores sampled"] = tally.get("cores sampled", 0) + 1
+        radii = [0.0, rho / 2, rho - 0.02] if hole else [rho + x for x in (0.02, 0.5, 2.0, 8.0, 32.0)]
+        for station in (a + 0.02, (a + b) / 2, b - 0.02):
+            for radius in (x for x in radii if x >= 0):
+                hit = next((pt for pt in ring(m, q["axis"], station, radius) if inside_any(pt, [target])), None)
+                if hit is not None:
+                    return problems + [f"{where}: the part's own material at radius {radius:.4f}, station "
+                                       f"{station:.4f}, inside the core of radius {rho:.4f}, and no core_not_clear"]
+    return problems
+
+
 def inside_any(point, shapes):
     return any(BRepClass3d_SolidClassifier(shape, gp_Pnt(*point), 1e-7).State() == TopAbs_IN for shape in shapes)
 
@@ -2197,12 +2240,17 @@ def socket_problems(directory, case, binary, tally):
             problems += touch_problems(where, socket, m, leaves[mine[0]][2], named, face_id, tally, clash_ok)
             problems += detail_problems(where, socket, m, leaves[mine[0]][2], leaves, mine[0],
                                         extracted["neighbours"], face_id, tally, touchers)
+            stated = extracted["target"]
+            guard = max(document["extraction"]["socket"].get("guard_mm", 1e-6), stated["part_uncertainty_mm"],
+                        stated["vertex_offset_mm"])
             for requirement in socket["requirements"]:
                 requires = requirement["requires"]
                 if requires["kind"] in ("bore", "shaft"):
                     for span in requires["spans"]:
                         problems += span_problems(f"{where} {requirement['id']}", requires["kind"],
                                                   requires["axis"], span, m, leaves[mine[0]][2], others, tally)
+                    problems += core_problems(f"{where} {requirement['id']}", requirement, m, leaves[mine[0]][2],
+                                              guard, tally)
             for left in socket["left_out"]:
                 tally["left out holes"] += 1
                 p, d = left["axis"]["point_mm"], left["axis"]["direction"]
@@ -2236,6 +2284,20 @@ def each_requirement(document):
     for socket in document["extracted"]["sockets"]:
         for r in socket["requirements"]:
             yield socket, r
+
+
+def drop_core_flags(document):
+    """U11: every core_not_clear flag dropped."""
+    for _, r in each_requirement(document):
+        r["flags"] = [f for f in r["flags"] if f != "core_not_clear"]
+
+
+def widen_profiles(document):
+    """X8: every zone profile 0.5 mm wider."""
+    for _, r in each_requirement(document):
+        for sp in r["requires"].get("spans", []):
+            if sp.get("profile_mm") is not None:
+                sp["profile_mm"] = [x + 0.5 for x in sp["profile_mm"]]
 
 
 def flip_senses(document):
@@ -2306,7 +2368,8 @@ def null_extras(document):
 MUTATIONS = {"drop bores": drop("bore"), "drop shafts": drop("shaft"), "drop seats": drop("seat"),
              "drop grips": drop("grip"), "move axes 0.01 mm": move_axes, "swap fits": swap_fits,
              "shrink contacts": shrink_contacts, "merge sockets": merge_sockets, "null max_extra": null_extras,
-             "flip cone senses": flip_senses, "narrow cone ranges": narrow_ranges}
+             "flip cone senses": flip_senses, "narrow cone ranges": narrow_ranges,
+             "drop core flags": drop_core_flags, "widen zone profiles": widen_profiles}
 
 
 def mutations_main(argv):

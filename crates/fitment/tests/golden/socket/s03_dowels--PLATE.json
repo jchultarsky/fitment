@@ -2,7 +2,7 @@
   "format": "fitment.socket",
   "format_version": 1,
   "extractor_version": 6,
-  "socket_rules_version": 6,
+  "socket_rules_version": 7,
   "extraction": {
     "features": {
       "identity_mm": 1e-6,
@@ -622,11 +622,13 @@
               "spans": [
                 {
                   "from_mm": 0.0,
-                  "to_mm": 8.0,
+                  "to_mm": 8.01,
                   "hole_diameter_mm": 5.97,
                   "clear_diameter_mm": 6.0,
                   "fit": "interference",
-                  "pinned": true
+                  "pinned": true,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "open": {
@@ -678,7 +680,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -707,11 +709,13 @@
               "spans": [
                 {
                   "from_mm": 0.0,
-                  "to_mm": 8.0,
+                  "to_mm": 8.01,
                   "hole_diameter_mm": 6.2,
                   "clear_diameter_mm": 6.0,
                   "fit": "clearance",
-                  "pinned": false
+                  "pinned": false,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "open": {
@@ -761,7 +765,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": []
@@ -788,11 +792,13 @@
               "spans": [
                 {
                   "from_mm": 0.0,
-                  "to_mm": 8.0,
+                  "to_mm": 8.01,
                   "hole_diameter_mm": 6.0,
                   "clear_diameter_mm": 6.0,
                   "fit": "line_to_line",
-                  "pinned": true
+                  "pinned": true,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "open": {
@@ -844,7 +850,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -873,11 +879,13 @@
               "spans": [
                 {
                   "from_mm": 0.0,
-                  "to_mm": 8.0,
+                  "to_mm": 8.01,
                   "hole_diameter_mm": 6.015,
                   "clear_diameter_mm": 6.0,
                   "fit": "line_to_line",
-                  "pinned": true
+                  "pinned": true,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "open": {
@@ -929,7 +937,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  8.0
+                  8.01
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -958,7 +966,7 @@
       }
     }
   },
-  "digest": "sha256:33c6423a54a9c80cf0a065adb93f7c422357d7dd5d4956a733f461c11343988a",
+  "digest": "sha256:afde50c9132fe6121f5d46b13208485e8bc5bccee037baaaac854a1608dc845f",
   "review": [
     {
       "socket": "socket-1",

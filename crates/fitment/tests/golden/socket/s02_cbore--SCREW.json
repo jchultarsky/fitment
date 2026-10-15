@@ -2,7 +2,7 @@
   "format": "fitment.socket",
   "format_version": 1,
   "extractor_version": 6,
-  "socket_rules_version": 6,
+  "socket_rules_version": 7,
   "extraction": {
     "features": {
       "identity_mm": 1e-6,
@@ -245,19 +245,23 @@
               "spans": [
                 {
                   "from_mm": 0.0,
-                  "to_mm": 7.5,
+                  "to_mm": 7.51,
                   "shaft_diameter_mm": 6.0,
                   "clear_diameter_mm": null,
                   "fit": "interference",
-                  "pinned": true
+                  "pinned": true,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 },
                 {
-                  "from_mm": 7.5,
+                  "from_mm": 7.51,
                   "to_mm": 16.0,
                   "shaft_diameter_mm": 6.0,
                   "clear_diameter_mm": 6.6,
                   "fit": "clearance",
-                  "pinned": false
+                  "pinned": false,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 },
                 {
                   "from_mm": 16.0,
@@ -265,7 +269,9 @@
                   "shaft_diameter_mm": 10.0,
                   "clear_diameter_mm": 11.0,
                   "fit": "clearance",
-                  "pinned": false
+                  "pinned": false,
+                  "basis": "cylinder",
+                  "profile_mm": null
                 }
               ],
               "max_extra_mm": 1.5
@@ -293,7 +299,7 @@
                 "gap_mm": null,
                 "span_mm": [
                   0.0,
-                  7.5
+                  7.51
                 ],
                 "floor_mm": 1e-7,
                 "flags": [
@@ -340,7 +346,7 @@
                 "margin_mm": 0.2999999999999998,
                 "gap_mm": null,
                 "span_mm": [
-                  7.5,
+                  7.49,
                   16.0
                 ],
                 "floor_mm": 1e-7,
@@ -485,7 +491,7 @@
       }
     }
   },
-  "digest": "sha256:6dd706ec69edaa9bc88fdcc9097500eec0ff94cd8bce68a81669027b36882bc1",
+  "digest": "sha256:da6c41a0df6c8472e76455c908528837e89e44152cb15878a54e0cea58725f1a",
   "review": [
     {
       "socket": "socket-1",
