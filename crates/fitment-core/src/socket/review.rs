@@ -78,15 +78,60 @@ pub enum ReviewError {
     Refused,
 }
 
-/// What must be byte-equal for a decision to carry over: the requirement
+/// What must be equal for a decision to carry over: the requirement
 /// without its sources.
-fn values(requirement: &Requirement) -> String {
-    serde_json::to_string(&(
+fn values(requirement: &Requirement) -> serde_json::Value {
+    serde_json::to_value((
         &requirement.requires,
         requirement.floor_mm,
         &requirement.flags,
     ))
     .unwrap_or_default()
+}
+
+/// A socket of an earlier document, as carrying its decisions over needs
+/// it: each requirement's id and values (`values`), as JSON, so a document
+/// of older socket rules is read too (`docs/research/m4-match.md`, MF11).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PriorSocket {
+    pub(crate) id: String,
+    pub(crate) occurrences: Vec<Vec<u64>>,
+    pub(crate) requirements: Vec<(String, serde_json::Value)>,
+}
+
+/// The sockets of a document of these rules, as a prior.
+pub(crate) fn prior_sockets(extracted: &Extracted) -> Vec<PriorSocket> {
+    extracted
+        .sockets
+        .iter()
+        .map(|s| PriorSocket {
+            id: s.id.clone(),
+            occurrences: s.occurrences.clone(),
+            requirements: s
+                .requirements
+                .iter()
+                .map(|r| (r.id.clone(), values(r)))
+                .collect(),
+        })
+        .collect()
+}
+
+/// True if `old` and `new` agree on every field both have: objects on
+/// their shared keys, arrays whole (as long, item by item), anything else
+/// equal. Between documents of the same rules every field is shared, so
+/// this is equality; a field a later version adds is not compared, and a
+/// field it changes is (MF11).
+fn same(old: &serde_json::Value, new: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (old, new) {
+        (Value::Object(a), Value::Object(b)) => a
+            .iter()
+            .all(|(key, x)| b.get(key).is_none_or(|y| same(x, y))),
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same(x, y))
+        }
+        _ => old == new,
+    }
 }
 
 /// What the user decides on: the requirement's values without its
@@ -194,9 +239,9 @@ fn sort(review: &mut [ReviewEntry], extracted: &Extracted) {
 
 /// One old decision, with the requirement it was made on.
 struct Old<'a> {
-    socket: &'a Socket,
+    socket: &'a PriorSocket,
     entry: &'a ReviewEntry,
-    requirement: &'a Requirement,
+    values: &'a serde_json::Value,
 }
 
 /// 9.5: each old decision carried to a new requirement only when every
@@ -206,7 +251,7 @@ struct Old<'a> {
 pub(crate) fn carry_over(
     new: &Extracted,
     review: &mut [ReviewEntry],
-    old: &Extracted,
+    old: &[PriorSocket],
     old_review: &[ReviewEntry],
     stale: &mut Vec<StaleReview>,
 ) -> CarryOver {
@@ -214,15 +259,15 @@ pub(crate) fn carry_over(
         .iter()
         .filter(|e| e.status != ReviewStatus::Unreviewed)
         .filter_map(|entry| {
-            let socket = old.sockets.iter().find(|s| s.id == entry.socket)?;
-            let requirement = socket
+            let socket = old.iter().find(|s| s.id == entry.socket)?;
+            let (_, values) = socket
                 .requirements
                 .iter()
-                .find(|r| r.id == entry.requirement)?;
+                .find(|(id, _)| *id == entry.requirement)?;
             Some(Old {
                 socket,
                 entry,
-                requirement,
+                values,
             })
         })
         .collect();
@@ -254,12 +299,11 @@ pub(crate) fn carry_over(
             let agree = mine.windows(2).all(|w| {
                 w[0].1.entry.status == w[1].1.entry.status && w[0].1.entry.note == w[1].1.entry.note
             });
-            let same = mine
-                .iter()
-                .all(|(_, d)| values(d.requirement) == values(requirement));
+            let now = values(requirement);
+            let unchanged = mine.iter().all(|(_, d)| same(d.values, &now));
             let reason = if !every || !agree {
                 Some(StaleReason::OccurrencesDisagree)
-            } else if !same {
+            } else if !unchanged {
                 Some(StaleReason::RequirementChanged)
             } else {
                 None
@@ -302,4 +346,28 @@ pub(crate) fn carry_over(
         }
     }
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same;
+    use serde_json::json;
+
+    /// MF11: fields both versions state are compared; a field only one
+    /// states is not; arrays are compared whole.
+    #[test]
+    fn values_agree_on_the_fields_both_state() {
+        let old = json!([{"kind": "bore", "spans": [{"from_mm": 0.0, "to_mm": 5.0}]}, 0.01, []]);
+        let added = json!([{"kind": "bore", "spans": [{"from_mm": 0.0, "to_mm": 5.0, "basis": "cylinder"}]}, 0.01, []]);
+        assert!(same(&old, &old));
+        assert!(same(&old, &added));
+        let moved = json!([{"kind": "bore", "spans": [{"from_mm": 0.0, "to_mm": 5.01}]}, 0.01, []]);
+        assert!(!same(&old, &moved));
+        let split = json!([{"kind": "bore", "spans": [{"from_mm": 0.0, "to_mm": 2.0}, {"from_mm": 2.0, "to_mm": 5.0}]}, 0.01, []]);
+        assert!(!same(&old, &split));
+        let flagged = json!([{"kind": "bore", "spans": [{"from_mm": 0.0, "to_mm": 5.0}]}, 0.01, ["seat_unverifiable"]]);
+        assert!(!same(&old, &flagged));
+        let other = json!([{"kind": "shaft", "spans": [{"from_mm": 0.0, "to_mm": 5.0}]}, 0.01, []]);
+        assert!(!same(&old, &other));
+    }
 }

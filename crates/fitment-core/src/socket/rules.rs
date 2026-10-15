@@ -136,9 +136,10 @@ fn finite(x: f64) -> Option<f64> {
     x.is_finite().then_some(x)
 }
 
-/// The fit of a margin (B1 to B4, I1, I2).
-fn fit_of(margin: f64, e_max: f64, tau: f64, flags: &mut BTreeSet<Flag>) -> Fit {
-    if margin > tau {
+/// The fit of a margin (B1 to B4, I1, I2): a clearance needs a margin
+/// beyond τ by the target's own guard (B1); within it, line to line.
+fn fit_of(margin: f64, e_max: f64, tau: f64, guard: f64, flags: &mut BTreeSet<Flag>) -> Fit {
+    if margin > tau + guard {
         if e_max > tau {
             flags.insert(Flag::Offset);
         }
@@ -199,18 +200,23 @@ struct Search<'s, 'a> {
     beyond: BTreeMap<(usize, bool), Vec<Beyond>>,
     /// The target elements' boxes (N4).
     tree: Tree,
+    /// The target's own guard beyond τ for a clearance (B1).
+    guard: f64,
 }
 
 /// Every relation between the target's `targets` (in its own frame) and
 /// `neighbours`, and the unknowns; `TooMany` once `pairs`, check 39's
-/// count, passes its limit.
+/// count, passes its limit. `guard` is the target's own guard beyond τ
+/// (B1).
 pub(crate) fn relate(
     targets: &[Element],
     neighbours: &[Neighbour<'_>],
     planes: &[(Motion, &Part)],
+    guard: f64,
     pairs: &mut u64,
 ) -> Result<Found, TooMany> {
     let mut search = Search {
+        guard,
         targets,
         neighbours,
         pairs,
@@ -377,7 +383,7 @@ impl Search<'_, '_> {
             return;
         }
         let mut relation = self.relation(t, "B", n, b, &p);
-        let fit = fit_of(margin, p.e_max, tau, &mut relation.flags);
+        let fit = fit_of(margin, p.e_max, tau, self.guard, &mut relation.flags);
         relation.rule = match fit {
             Fit::Clearance => "B1",
             Fit::LineToLine => "B2",
@@ -485,7 +491,7 @@ impl Search<'_, '_> {
             return;
         }
         let mut relation = self.relation(t, "I", n, b, &p);
-        let fit = fit_of(margin, p.e_max, tau, &mut relation.flags);
+        let fit = fit_of(margin, p.e_max, tau, self.guard, &mut relation.flags);
         relation.rule = if fit == Fit::Clearance { "I1" } else { "I2" };
         relation.margin = finite(margin);
         relation.fit = Some(fit);

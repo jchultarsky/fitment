@@ -589,6 +589,7 @@ RULES.update({
     "U5": {},
     "U6": {},
     "U7": {},
+    "U10": {},
     "A1": {},
     "A2": {},
     "A3": {"tests": [f"crates/fitment-core/src/socket/mod.rs::each_structural_rule_refuses_an_edit_with_its_digest_recomputed"]},
@@ -604,10 +605,23 @@ RULES.update({
     "V1": {"deferred": "M7 checks the candidate's copies against each other"},
     "V2": {},
     "H1": {}, "H2": {},
-    "Q1": {}, "Q2": {}, "L1": {}, "L2": {},
+    "Q1": {}, "Q2": {}, "Q3": {}, "L1": {}, "L2": {},
     "C1": {}, "C2": {}, "C3": {}, "C4": {}, "C5": {}, "C6": {},
 })
 
+
+# M4's rules (docs/research/m4-match.md), each deferred to the PR of section 22 that builds it until then; the
+# coverage test allows M4's deferrals until M4 closes (PR 7).
+M4_PR = {"CF": 2, "SG": 2, "SL": 2, "AL": 3, "VR": 3, "VD": 4, "EV": 4, "MF": 4, "KC": 5, "KH": 5, "KO": 6}
+M4_IN_PR3 = {"KC2", "KC5", "KC15", "KH1", "KH2", "KH3", "KH10"}
+M4_COUNTS = {"CF": 10, "SG": 11, "SL": 10, "AL": 14, "VR": 22, "VD": 15, "EV": 9, "MF": 11, "KC": 16, "KH": 14,
+             "KO": 8}
+for prefix, count in M4_COUNTS.items():
+    for n in range(1, count + 1):
+        rule = f"{prefix}{n}"
+        RULES[rule] = {"deferred": f"M4 PR {3 if rule in M4_IN_PR3 else M4_PR[prefix]}"}
+# The socket PR (M4 PR 1) builds MF11: a document of older socket rules read for its review alone.
+RULES["MF11"] = {"tests": ["crates/fitment/tests/cli.rs::an_older_document_s_decisions_carry_over"]}
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with
@@ -1586,16 +1600,18 @@ def e_seat(point, normal, by=1, flags=(), rings=(), basis=("target_face",), touc
     return out
 
 
-def e_grip(length, holes=0):
-    """A grip of `length` between two seats, through `holes` target holes."""
-    return {"length": r(length), "holes": holes}
+def e_grip(length, holes=0, flags=()):
+    """A grip of `length` between two seats, through `holes` target holes,
+    with these flags (`seat_unverifiable` when a seat of it is, U10)."""
+    return {"length": r(length), "holes": holes, "flags": sorted(flags)}
 
 
-def e_cone(apex, angle_deg, axis, radii):
+def e_cone(apex, angle_deg, axis, radii, sense="hole"):
     """A conical seat with this apex, included angle, axis direction (either
-    sign) and radial range, or None for an unknown one."""
+    sign), radial range (None for an unknown one: from the least to the
+    greatest of its neighbour cones', Q1) and the target cone's sense (Q3)."""
     return {"apex": r3(apex), "angle": r(math.radians(angle_deg)), "axis": r3(unit(axis)),
-            "radii": None if radii is None else [r(radii[0]), r(radii[1])]}
+            "radii": None if radii is None else [r(radii[0]), r(radii[1])], "sense": sense}
 
 
 def e_partial(kind, point, direction, diameter, clear, a, b, sweep, flags=()):
@@ -1618,7 +1634,8 @@ def e_socket(requirements, left_out=(), unresolved=None, at=(0, 0, 0), seats=(),
     unverifiable = (sum(unresolved.values()) + len(partials)
                     + sum(1 for q in requirements if {"target_undecided", "open_at_unknown_end"} & set(q["flags"]))
                     + sum(1 for q in seats if "unknown" in q["basis"])
-                    + sum(1 for q in cones if q["radii"] is None))
+                    + sum(1 for q in cones if q["radii"] is None)
+                    + sum(1 for q in grips if "seat_unverifiable" in q["flags"]))
     return {"requirements": list(requirements), "left_out": list(left_out), "unresolved": unresolved,
             "at": r3(at), "seats": list(seats), "grips": list(grips), "cones": list(cones),
             "partials": list(partials), "unverifiable": unverifiable}
@@ -2282,7 +2299,7 @@ def build_assemblies(w: Writer, which):
                                                            (6.8, 10, 6, None, "not_read", False)],
                                     flags=["extent_unknown", "thread_not_confirmed"])],
                            # The range both cones cover: the hole's dia 6.6 up to the head's dia 12.4.
-                           cones=[e_cone((0, 0, 3.8), 90, Z, (3.3, 6.2))])],
+                           cones=[e_cone((0, 0, 3.8), 90, Z, (3.3, 6.2), sense="shaft")])],
     }
     a.case("s18_csink", s18, "a 90 deg countersunk screw, flush, with a nut",
            ["X7", "U3", "B1", "B6", "I1", "I2", "Q1", "Q2", "L2"], False,
@@ -2308,6 +2325,25 @@ def build_assemblies(w: Writer, which):
                                                (7.1, 10, 6.6, None, "not_read", False)],
                         open_at=[0], flags=["extent_unknown", "occupant_unread"], depth="unknown_end")],
                unresolved={"contact_no_rule": 1}, cones=[e_cone((0, 0, 3.8), 90, Z, None)])]}))
+
+    # s60: s18's countersunk plate with two neighbour cones on its one countersink, apart: a screw whose head stops
+    # at dia 9.4 (z 8.5) and a conical plug from dia 10.4 (z 9) to the rim's dia 12.4. The conical seat states the
+    # range from the least to the greatest of theirs (Q1, the socket PR's SR8), not the first neighbour's.
+    screw60 = fuse(cone((0, 0, 6.8), UP, 3, 4.7, 1.7), cyl((0, 0, -8), UP, 3, 14.8))
+    plug60 = cone((0, 0, 9), UP, 5.2, 6.2, 1)
+    s60 = Node("s60_two_cones").add(Leaf("PLATE", plate18)).add(Leaf("SCREW", screw60)).add(Leaf("PLUG", plug60))
+    a.case("s60_two_cones", s60, "a countersink holding a screw's head and a conical plug apart", ["Q1", "Q3", "B8"],
+           False,
+           {"plate": "s18's", "screw": "s18's, its head cone stopping at dia 9.4, z 8.5",
+            "plug": "a cone from dia 10.4 at z 9 to dia 12.4 at z 10"},
+           asm_expect(s60, sockets={"PLATE": [e_socket(
+               # The plug is material in the hole that is no shaft (B8): the screw's spans are pinned, to its
+               # head's top at z 8.5.
+               [e_axial("bore", (0, 0, 0), Z, [(0, 6.8, 6.6, 6, "not_read", True),
+                                               (6.8, 7.1, 6.6, None, "not_read", True),
+                                               (7.1, 8.5, 6.6, None, "not_read", False)],
+                        open_at=[0], flags=["extent_unknown", "occupant_unread"])],
+               cones=[e_cone((0, 0, 3.8), 90, Z, (3.3, 6.2))])]}))
 
     # PR 4's cases: seats, grips, partial cylinders and the near band.
 
@@ -2377,20 +2413,25 @@ def build_assemblies(w: Writer, which):
            {"housing": "40 x 40 x 20, dia 18 through, dia 22 from z 13", "bearing": "dia 22 / 8 x 7 at z 13",
             "shaft": "dia 8, z -10 to 30"}, asm_expect(s04, sockets=sockets04))
 
-    # s13: a block whose outline has a spline side sits on a plate: its bottom face's outline is unknown,
-    # so its seat's basis is too (C4, U6), and the spline side is a face no rule reads (U5).
+    # s13: a block whose outline has a spline side sits on a plate, a lid on it: its bottom and top faces'
+    # outlines are unknown, so their seats' bases are too (C4, U6), the grip between them is unverifiable (U10),
+    # and the spline side is a face no rule reads (U5).
     spline13 = (cq.Workplane("XY").moveTo(0, 0).lineTo(30, 0).lineTo(30, 20)
                 .spline([(15, 25), (0, 20)], includeCurrent=True).close().extrude(10)).val().wrapped
-    s13 = Node("s13_unknown_outline").add(Leaf("PLATE", box(-10, -10, -10, 60, 50, 10))).add(Leaf("BLOCK", spline13))
+    s13 = (Node("s13_unknown_outline").add(Leaf("PLATE", box(-10, -10, -10, 60, 50, 10))).add(Leaf("BLOCK", spline13))
+           .add(Leaf("LID", box(-10, -10, 10, 60, 50, 10))))
     sockets13 = {
         "BLOCK": [e_socket([], unresolved={"target_unread_face": 1},
-                           seats=[e_seat((0, 0, 0), (0, 0, -1), flags=["unknown_outline"], basis=("unknown",))])],
+                           seats=[e_seat((0, 0, 0), (0, 0, -1), flags=["unknown_outline"], basis=("unknown",)),
+                                  e_seat((0, 0, 10), Z, flags=["unknown_outline"], basis=("unknown",))],
+                           grips=[e_grip(10, flags=["seat_unverifiable"])])],
         "PLATE": [e_socket([], unresolved={"neighbour_unread": 1},
                            seats=[e_seat((0, 0, 0), Z, flags=["unknown_outline"])])],
     }
-    a.case("s13_unknown_outline", s13, "a block with a spline side on a plate: a seat of unknown outline",
-           ["C3", "C4", "U5", "U6", "U4"], False,
-           {"plate": "60 x 50 x 10, top at z 0", "block": "30 x 20 x 10 with a spline side bulging to y 25"},
+    a.case("s13_unknown_outline", s13, "a block with a spline side between a plate and a lid: seats of unknown outline",
+           ["C3", "C4", "U5", "U6", "U4", "U10", "L1"], False,
+           {"plate": "60 x 50 x 10, top at z 0", "block": "30 x 20 x 10 with a spline side bulging to y 25",
+            "lid": "60 x 50 x 10, bottom at z 10"},
            asm_expect(s13, sockets=sockets13))
 
     # s14: a box overlapping the block by 10 x 10 x 5, with no face of one near a face of the other: no rule

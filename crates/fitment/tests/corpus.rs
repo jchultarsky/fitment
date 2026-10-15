@@ -319,7 +319,15 @@ const DEFERRED: [&str; 5] = ["4.2#30", "F3", "Z7", "Y4.original_run", "V1"];
 
 /// The rules that yield a requirement every candidate fails (design 8.4,
 /// Y4): each needs a case that shows it, not a test alone (13.1).
-const UNVERIFIABLE: [&str; 10] = ["U1", "U2", "U4", "U5", "U6", "U7", "U8", "C4", "C6", "Q1"];
+const UNVERIFIABLE: [&str; 11] = [
+    "U1", "U2", "U4", "U5", "U6", "U7", "U8", "U10", "C4", "C6", "Q1",
+];
+
+/// M4's rule prefixes (`docs/research/m4-match.md`): deferred to the PR
+/// that builds each until M4 closes.
+const M4_PREFIXES: [&str; 11] = [
+    "CF", "SG", "SL", "AL", "VR", "VD", "EV", "MF", "KC", "KH", "KO",
+];
 
 /// Coverage is checked, not claimed (design, section 13.1): every rule
 /// and gate check the corpus manifest lists has a case that cites it, a
@@ -358,8 +366,13 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         }
         // M2 and M3 are closed: only these may wait, each for a reason
         // outside them (a bug's code, a withdrawn rule, a property of the
-        // construction, a later milestone).
-        if deferred && !DEFERRED.contains(&id.as_str()) {
+        // construction, a later milestone). M4's own rules wait for the PR
+        // that builds them until M4 closes, which removes this allowance.
+        let m4 = M4_PREFIXES.iter().any(|p| {
+            id.strip_prefix(p)
+                .is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit()))
+        });
+        if deferred && !DEFERRED.contains(&id.as_str()) && !m4 {
             failures.push(format!(
                 "{id}: deferred, and not among the deferrals M3 closed with"
             ));
@@ -381,7 +394,11 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         rules.contains_key(rule) || rules.keys().any(|k| k.starts_with(&format!("{rule}.")))
     };
     let mut stated = Vec::new();
-    for design in ["docs/research/m2-features.md", "docs/research/m3-socket.md"] {
+    for design in [
+        "docs/research/m2-features.md",
+        "docs/research/m3-socket.md",
+        "docs/research/m4-match.md",
+    ] {
         stated.extend(design_rules(
             &fs::read_to_string(root.join(design)).unwrap(),
         ));
@@ -432,10 +449,18 @@ fn design_rules(design: &str) -> Vec<String> {
             .chars()
             .take_while(char::is_ascii_alphanumeric)
             .collect();
-        let mut chars = id.chars();
-        let shaped = chars.next().is_some_and(|c| c.is_ascii_uppercase())
-            && chars.clone().next().is_some_and(|c| c.is_ascii_digit())
-            && id.len() <= 4;
+        // `[A-Z]{1,2}[0-9]+[a-z]?`: M2's and M3's one letter, M4's two.
+        let letters = id.chars().take_while(char::is_ascii_uppercase).count();
+        let digits = id
+            .chars()
+            .skip(letters)
+            .take_while(char::is_ascii_digit)
+            .count();
+        let tail = id.len() - letters - digits;
+        let shaped = (1..=2).contains(&letters)
+            && digits > 0
+            && (tail == 0 || (tail == 1 && id.ends_with(|c: char| c.is_ascii_lowercase())))
+            && id.len() <= 5;
         if shaped && rest[id.len()..].starts_with('.') && !found.contains(&id) {
             found.push(id);
         }

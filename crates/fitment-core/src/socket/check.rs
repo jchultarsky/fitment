@@ -51,6 +51,17 @@ fn socket_rules(socket: &Socket, anchors: &[FeatureId]) -> Checked {
     if !keys.windows(2).all(|w| w[0] < w[1]) {
         return Err(format!("{id}'s requirements are not in order, or repeat"));
     }
+    // U10: a grip is flagged exactly when a seat of it is unverifiable.
+    let mut flagged = socket.requirements.clone();
+    for r in &mut flagged {
+        r.flags.retain(|f| *f != Flag::SeatUnverifiable);
+    }
+    super::combine::flag_grips(&mut flagged);
+    if flagged != socket.requirements {
+        return Err(format!(
+            "{id}: a grip's seat_unverifiable flag disagrees with its seats"
+        ));
+    }
     if socket.left_out.iter().any(|l| {
         !(positive(l.diameter_mm)
             && l.from_mm.is_finite()

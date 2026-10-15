@@ -2,7 +2,7 @@
   "format": "fitment.socket",
   "format_version": 1,
   "extractor_version": 6,
-  "socket_rules_version": 5,
+  "socket_rules_version": 6,
   "extraction": {
     "features": {
       "identity_mm": 1e-6,
@@ -22,7 +22,8 @@
       "merge_mm": 1e-6,
       "merge_sine": 1e-9,
       "max_occurrences": 100000,
-      "max_relations": 10000000
+      "max_relations": 10000000,
+      "guard_mm": 1e-6
     }
   },
   "source": {
@@ -1547,7 +1548,7 @@
       }
     }
   },
-  "digest": "sha256:4ff2c7a87334948f36f569a921798ee0fdab44227e859b9ed7ed685170fd1260",
+  "digest": "sha256:c35a5386a32150e948462547792af364e9c68d049e8994cadaa6b0802b70668e",
   "review": [
     {
       "socket": "socket-1",
