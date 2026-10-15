@@ -489,7 +489,15 @@ impl SocketDocument {
             }
         }
         check_occurrences(extracted)?;
-        check::extracted(extracted)?;
+        // B1's guard, as extraction took it: the target's own uncertainty
+        // and vertex offset, never less than the stated least.
+        let guard = self
+            .extraction
+            .socket
+            .guard_mm
+            .max(extracted.target.part_uncertainty_mm)
+            .max(extracted.target.vertex_offset_mm);
+        check::extracted(extracted, guard)?;
         check::review(extracted, &self.review)
     }
 }
@@ -566,6 +574,14 @@ impl PriorReview {
             Some(list) => older_sockets(list)?,
             None => Vec::new(),
         };
+        // Its review, outside the digest, by the rules `from_json` holds a
+        // document of these rules to (9.4).
+        check::entries(&review, |socket, requirement| {
+            sockets
+                .iter()
+                .any(|s| s.id == socket && s.requirements.iter().any(|(id, _)| id == requirement))
+        })
+        .ok()?;
         Some(Self {
             sha256,
             target,
@@ -1314,6 +1330,23 @@ mod tests {
             SocketDocument::from_json(&document.to_json()),
             Err(SocketFormatError::Invalid(_))
         )
+    }
+
+    /// B1: a clearance whose margin is within τ plus the guard is refused,
+    /// as extraction would have read it line to line.
+    #[test]
+    fn a_clearance_within_the_guard_is_refused() {
+        assert!(refused(|e| {
+            for s in &mut e.sockets {
+                for r in &mut s.requirements {
+                    for source in &mut r.sources {
+                        if source.rule == "B1" {
+                            source.margin_mm = Some(CONTACT_MM + GUARD_MM / 2.0);
+                        }
+                    }
+                }
+            }
+        }));
     }
 
     /// U10: a grip's `seat_unverifiable` flag is what its seats give.

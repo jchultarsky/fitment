@@ -2302,7 +2302,7 @@ def build_assemblies(w: Writer, which):
                            cones=[e_cone((0, 0, 3.8), 90, Z, (3.3, 6.2), sense="shaft")])],
     }
     a.case("s18_csink", s18, "a 90 deg countersunk screw, flush, with a nut",
-           ["X7", "U3", "B1", "B6", "I1", "I2", "Q1", "Q2", "L2"], False,
+           ["X7", "U3", "B1", "B6", "I1", "I2", "Q1", "Q2", "Q3", "L2"], False,
            {"plate": "40 x 40 x 10, dia 6.6 through, countersunk 90 deg to dia 12.4 at z 10",
             "screw": "dia 6 from z -8, head cone dia 6 at z 6.8 to dia 12.4 at z 10", "nut": "z -5 to 0"},
            asm_expect(s18, sockets=sockets18))

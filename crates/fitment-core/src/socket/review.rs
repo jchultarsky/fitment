@@ -116,17 +116,17 @@ pub(crate) fn prior_sockets(extracted: &Extracted) -> Vec<PriorSocket> {
         .collect()
 }
 
-/// True if `old` and `new` agree on every field both have: objects on
-/// their shared keys, arrays whole (as long, item by item), anything else
-/// equal. Between documents of the same rules every field is shared, so
-/// this is equality; a field a later version adds is not compared, and a
-/// field it changes is (MF11).
+/// True if `new` states every field of `old`, equal: objects key by key
+/// (a key `new` adds is not compared), arrays whole (as long, item by
+/// item), anything else equal. Between documents of the same rules this is
+/// equality; a field a later version adds is not compared, and one it
+/// changes, renames or drops is a change (MF11).
 fn same(old: &serde_json::Value, new: &serde_json::Value) -> bool {
     use serde_json::Value;
     match (old, new) {
         (Value::Object(a), Value::Object(b)) => a
             .iter()
-            .all(|(key, x)| b.get(key).is_none_or(|y| same(x, y))),
+            .all(|(key, x)| b.get(key).is_some_and(|y| same(x, y))),
         (Value::Array(a), Value::Array(b)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same(x, y))
         }
@@ -353,8 +353,8 @@ mod tests {
     use super::same;
     use serde_json::json;
 
-    /// MF11: fields both versions state are compared; a field only one
-    /// states is not; arrays are compared whole.
+    /// MF11: every field the older version states is compared, and must
+    /// still be there; one the newer adds is not; arrays are compared whole.
     #[test]
     fn values_agree_on_the_fields_both_state() {
         let old = json!([{"kind": "bore", "spans": [{"from_mm": 0.0, "to_mm": 5.0}]}, 0.01, []]);
@@ -369,5 +369,7 @@ mod tests {
         assert!(!same(&old, &flagged));
         let other = json!([{"kind": "shaft", "spans": [{"from_mm": 0.0, "to_mm": 5.0}]}, 0.01, []]);
         assert!(!same(&old, &other));
+        let dropped = json!([{"kind": "bore", "spans": [{"from_mm": 0.0}]}, 0.01, []]);
+        assert!(!same(&old, &dropped));
     }
 }
