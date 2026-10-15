@@ -79,37 +79,41 @@ pub(crate) fn hole_polygons(outline: &Outline, n: V) -> Vec<Vec<V>> {
     let Outline::Known { loops } = outline else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    'loops: for inner in loops.iter().filter(|l| !l.outer) {
-        let mut points = Vec::new();
-        for segment in &inner.segments {
-            match segment {
-                Segment::Line { from_mm, .. } => points.push(from_mm.to_array()),
-                Segment::Arc {
-                    from_mm,
-                    center_mm,
-                    sweep_rad,
-                    ..
-                } => {
-                    if *sweep_rad > 0.0 {
-                        continue 'loops;
-                    }
-                    let (a, c) = (from_mm.to_array(), center_mm.to_array());
-                    let pieces = (sweep_rad.abs() / STEP).ceil().max(1.0);
-                    let step = sweep_rad / pieces;
-                    let mut k = 0.0;
-                    while k < pieces {
-                        points.push(add(c, rotate(sub(a, c), n, step * k)));
-                        k += 1.0;
-                    }
+    loops
+        .iter()
+        .filter(|l| !l.outer)
+        .filter_map(|inner| hole_polygon(&inner.segments, n))
+        .collect()
+}
+
+/// One inner loop as [`hole_polygons`] makes it: `None` for a loop with an
+/// arc turning against it, or of fewer than three points.
+pub(crate) fn hole_polygon(segments: &[Segment], n: V) -> Option<Vec<V>> {
+    let mut points = Vec::new();
+    for segment in segments {
+        match segment {
+            Segment::Line { from_mm, .. } => points.push(from_mm.to_array()),
+            Segment::Arc {
+                from_mm,
+                center_mm,
+                sweep_rad,
+                ..
+            } => {
+                if *sweep_rad > 0.0 {
+                    return None;
+                }
+                let (a, c) = (from_mm.to_array(), center_mm.to_array());
+                let pieces = (sweep_rad.abs() / STEP).ceil().max(1.0);
+                let step = sweep_rad / pieces;
+                let mut k = 0.0;
+                while k < pieces {
+                    points.push(add(c, rotate(sub(a, c), n, step * k)));
+                    k += 1.0;
                 }
             }
         }
-        if points.len() >= 3 {
-            out.push(points);
-        }
     }
-    out
+    (points.len() >= 3).then_some(points)
 }
 
 /// An ellipse about `center` in the plane of unit normal `n`, of semi-axis
