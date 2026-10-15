@@ -1,6 +1,6 @@
 # fitment M4: matching a candidate to a socket
 
-As of 2026-10-15. Status: **proposal, for review**, revised after two adversarial reviews (section 28). Nothing here is implemented; section 22 is the order of work. Every default in section 2 is assumed by the rest of the document.
+As of 2026-10-15. Status: **approved** on 2026-10-15 with every default of section 2, after one consistency and three soundness reviews (section 28). Nothing here is implemented; section 22 is the order of work. Every default in section 2 is assumed by the rest of the document.
 
 M4 delivers matching: a candidate part is read, cheaply shortlisted, placed in a socket and checked requirement by requirement, and the result is a verdict with its evidence. `fitment match socket.json candidates/*.stp` runs it, and a known-answer corpus with its harness measures it. It is done when the known-bad set gives zero false positives and the false-negative rate is reported. A false positive is `Match` on any bad case, or any pass on a bad interface. `InterfaceMatch` on the colliding-body case is correct until M7 ([PLAN.md](../PLAN.md), Milestones and the M4 prompt).
 
