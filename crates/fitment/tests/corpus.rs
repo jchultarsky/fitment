@@ -326,9 +326,10 @@ fn every_variant_has_its_base_s_sockets() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// The rules left deferred when M3 closed: `4.2#30` (internal, a bug),
-/// `F3` (withdrawn), `Z7` (holds by construction) and `V1` (M7).
-/// `Y4.original_run` left it with M4's matcher (KH10).
+/// The rules left deferred when M4 closed, all M3's: `4.2#30` (internal, a
+/// bug), `F3` (withdrawn), `Z7` (holds by construction) and `V1` (M7).
+/// `Y4.original_run` left it with M4's matcher (KH10); M4 closed with none
+/// of its own.
 const DEFERRED: [&str; 4] = ["4.2#30", "F3", "Z7", "V1"];
 
 /// The rules that yield a requirement every candidate fails (design 8.4,
@@ -353,12 +354,6 @@ const M4_UNVERIFIABLE: [&str; 9] = [
 /// candidate it rejects (RS10).
 const CAN_FAIL: [&str; 13] = [
     "CF4", "CF5", "CF8", "VR3", "VR4", "VR7", "VR8", "VR9", "VR10", "VR11", "VR12", "VR13", "VR22",
-];
-
-/// M4's rule prefixes (`docs/research/m4-match.md`): deferred to the PR
-/// that builds each until M4 closes.
-const M4_PREFIXES: [&str; 11] = [
-    "CF", "SG", "SL", "AL", "VR", "VD", "EV", "MF", "KC", "KH", "KO",
 ];
 
 /// Coverage is checked, not claimed (design, section 13.1): every rule
@@ -390,25 +385,40 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
             .flatten()
             .filter_map(Value::as_str)
             .collect();
+        let oracle: Vec<&str> = entry["oracle"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
         let deferred = entry["deferred"].as_str().is_some_and(|r| !r.is_empty());
-        if cases == 0 && tests.is_empty() && !deferred {
-            failures.push(format!("{id}: no case, no test and no reason"));
+        if cases == 0 && tests.is_empty() && oracle.is_empty() && !deferred {
+            failures.push(format!(
+                "{id}: no case, no test, no oracle check and no reason"
+            ));
         }
-        if deferred && (cases > 0 || !tests.is_empty()) {
+        if deferred && (cases > 0 || !tests.is_empty() || !oracle.is_empty()) {
             failures.push(format!("{id}: deferred, yet a case or test covers it"));
         }
+        // The match oracle's rules (KO): checked by tools/verify-occt.py in CI.
+        for check in &oracle {
+            let Some((file, name)) = check.split_once("::") else {
+                failures.push(format!("{id}: '{check}' is not file::function"));
+                continue;
+            };
+            let text = fs::read_to_string(root.join(file)).unwrap_or_default();
+            if !text.lines().any(|l| l.starts_with(&format!("def {name}("))) {
+                failures.push(format!("{id}: no function {name} in {file}"));
+            }
+        }
         failures.extend(case_lists(id, entry, &by_id));
-        // M2 and M3 are closed: only these may wait, each for a reason
+        // M2, M3 and M4 are closed: only these may wait, each for a reason
         // outside them (a bug's code, a withdrawn rule, a property of the
-        // construction, a later milestone). M4's own rules wait for the PR
-        // that builds them until M4 closes, which removes this allowance.
-        let m4 = M4_PREFIXES.iter().any(|p| {
-            id.strip_prefix(p)
-                .is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit()))
-        });
-        if deferred && !DEFERRED.contains(&id.as_str()) && !m4 {
+        // construction, a later milestone). M4's exit removed the allowance
+        // its own rules had to wait for the PR that built them (KH14).
+        if deferred && !DEFERRED.contains(&id.as_str()) {
             failures.push(format!(
-                "{id}: deferred, and not among the deferrals M3 closed with"
+                "{id}: deferred, and not among the deferrals M4 closed with"
             ));
         }
         for test in tests {

@@ -13,8 +13,9 @@ authors = ["Julian Chultarsky"]
 license = "MIT"
 repository = "https://github.com/jchultarsky/fitment"
 homepage = "https://github.com/jchultarsky/fitment"
-# Nothing is published before M4; the first release PR flips this.
-publish = false
+# Published from M4 on (docs/research/m4-match.md, section 22.1): `fitment-core`
+# first, then `fitment`.
+publish = true
 
 # One version per dependency for the whole workspace, with the reason for any
 # pin next to it. Members opt in with `foo = { workspace = true }`.

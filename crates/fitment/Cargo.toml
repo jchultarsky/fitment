@@ -14,6 +14,9 @@ readme = "../../README.md"
 documentation = "https://docs.rs/fitment-core"
 keywords = ["step", "cad", "iso-10303", "interchangeability", "cli"]
 categories = ["command-line-utilities", "science"]
+# Only the binary's source ships: tests/ needs the repository (its goldens,
+# corpus and fixtures), and tools/check-core.sh checks the package list.
+include = ["src/**", "LICENSE"]
 
 [[bin]]
 name = "fitment"

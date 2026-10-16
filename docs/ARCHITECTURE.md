@@ -105,7 +105,7 @@ the socket is refused rather than read slowly. A document that breaks a
 structural rule, even with its digest recomputed, is refused on reading
 (`check.rs`).
 
-## Matching a candidate (M4, being built)
+## Matching a candidate
 
 ```text
 socket document ─ one socket: its active requirements,  matching/mod.rs (SocketView)
@@ -140,12 +140,16 @@ The matcher: per socket the first placement passing    matching/matcher.rs, verd
 
 The `fitment.match` document (`matching/document.rs`) states every
 candidate in a fixed order with its evidence, and a digest that is the
-same on every OS; `fitment match` writes it, or a table from it. The
-known-answer corpus's harness and oracle follow
-(`docs/research/m4-match.md`, section 22). Every comparison the shortlist
-makes counts toward a budget; past it the candidate is kept, never
-dropped. Verification's coverage and core tests count toward their own;
-past it the requirement fails, never passes.
+same on every OS; `fitment match` writes it, or a table from it, and exits
+with the best verdict (0 `Match`, 4 `InterfaceMatch`, 5 every candidate
+rejected). Every comparison the shortlist makes counts toward a budget;
+past it the candidate is kept, never dropped. Alignment stops at
+`MAX_PLACEMENTS`, verification's coverage and core tests at
+`MAX_COVERAGE_STEPS`; past either the requirement fails with
+`alignment_exhausted` or `coverage_exhausted`, never passes. The body fit
+is a `FitVerifier` the caller hands the matcher; this build's is
+`NoFitVerifier`, so `InterfaceMatch` is the best verdict until M7. The
+design, every rule and its tests are in `docs/research/m4-match.md`.
 
 ## Soundness: refuse, or say unknown, but never guess
 
@@ -169,7 +173,13 @@ the same rule:
   the original's own material reaches, seats of unknown outline, grips
   between such seats and conical seats of unknown range.
   `Requirement::verifiable()` is the one predicate M3's tests and M4's
-  verification both ask.
+  verification both ask. M4 adds the floor (VD6: a tolerance that leaves
+  nothing above the parts' own uncertainty, or a clearance whose limits
+  leave the original no room, fails every candidate), the clear core
+  (VR22: a bore's core must be free of the candidate's material, from
+  faces boxed soundly), and the original's own run (Y4, VR21): every
+  original in the corpus and the pinned fixtures, read in place, passes
+  every requirement M4 can verify and fails exactly the others.
 - **Never state a wrong known value.** Every rule that was found to guess
   in review was withdrawn or made to say `unknown` instead: the seam proof
   (F3), a walk that turns back along its axis (W7b), a drill point after a
@@ -178,8 +188,13 @@ the same rule:
 ## Formats and versions
 
 - **`features.v1`** (`FEATURES_FORMAT_VERSION`) is the document layout:
-  frozen at the first publish (M4), changed freely before then, together
-  with the extractor version.
+  frozen at the first publish (M4, 0.1.0), as are `fitment.parts`,
+  `fitment.socket` and `fitment.match` v1, with the extractor version.
+- **`MATCH_RULES_VERSION`** rises with every change that could change a
+  verdict or its evidence, and **`SIGNATURE_VERSION`** with every change
+  to a signature or the index's tokens; a `fitment.match` document records
+  both, the false-negative baseline does too, and the baseline refuses to
+  bless a new false negative on a known case without a rise.
 - **`EXTRACTOR_VERSION`** rises with every change that could change any
   features output: a rule, a constant, an order, a field. A document
   records it, and the catalog (M5) re-reads every file whose document has
@@ -234,11 +249,13 @@ them, and every bound is tested so that NaN fails it.
 | Review reproducers | `crates/fitment-core/tests/edits`, `tests/{planes,cylinders,holes}.rs` | Each input a review used to break a rule, with the answer it must give |
 | Gate edits | `tests/features.rs` | Hand-edited STEP for the gate's checks, stage by stage |
 | Unit assemblies | `crates/fitment-core/tests/assemblies`, `tests/assemblies.rs`, `tests/review.rs` | s01, s02, s03 and s08x, and the assembly gate's and review's checks as snippets and text edits |
-| Hostile inputs | `tests/hostile.rs` | Assemblies grown from s08x: 10,008 bolts read, 36,008 coincident ones refused by check 39, 1,000 nuts on one axis |
+| Hostile inputs | `tests/hostile.rs`, `crates/fitment/tests/matching.rs` | Assemblies grown from s08x: 10,008 bolts read, 36,008 coincident ones refused by check 39, 1,000 nuts on one axis; candidates of 10,000 identical holes, a 1,600-bore socket against 1,681 holes, 1,000 tiles and about 29,000 faces round one bore, each judged within its bound and 30 s |
+| Match corpus | `tools/gen-corpus.py`, `crates/fitment/tests/matching.rs`, `tests/original.rs` | 125 match cases with truths from the construction (fits, fails, false negatives by a stated rule, edges, collisions, refusals), under both policies, through the library and the binary: the strict gate per case, the false-negative baseline, the rates (no false positive), the shortlist cross-check, determinism; every corpus and pinned fixture original read in place, AS1's parts across its exports, review runs |
+| Committed candidates | `crates/fitment-core/tests/candidates`, `tests/candidates.rs`, the match goldens | 13 candidates against s01, s02 and s03, checked against their construction on every OS |
 | Generated corpus | `tools/gen-corpus.py`, `crates/fitment/tests/corpus.rs` | Parts and assemblies with answers from the construction alone: parts also with pcurves (`_pc`) and in a skew frame (`_rot`); every assembly with sockets, but those written by hand edits or with frames Open CASCADE rewrites, also under a skew root (`_rot`), with its targets in a tilted frame (`_tgt`), with pcurves (`_pc`) and with its components in reverse order (`_perm`) |
 | Goldens | `crates/fitment/tests/golden` | The exact bytes of each unit part's `features` document, and of each unit assembly's `parts` and `socket` documents; on three operating systems, the determinism check |
 | Fixtures | `tools/fetch-fixtures.sh`, `fixtures/manifest.json`, `tests/fixtures.rs` | 45 public STEP files: pinned gate results and counts of planes, outlines, cylinders, holes and shafts; sockets pinned for chosen targets of the assemblies, and AS1's exports compared |
-| Oracle | `tools/verify-occt.py` | Open CASCADE 8.0.1, a kernel the generator does not use: `manifest` checks the construction; `features` checks fitment's planes, cylinders, holes and shafts; `socket` checks every socket against the solids, both ways (spans, seats, touchers, grips, floors, touching faces, occupied holes, conical seats' senses and ranges, zones' profiles, and cores clear of the part's own material where no requirement says otherwise), but s55's, which it skips by name (its 7,440-face plate takes Open CASCADE hours), with the fixtures' tallies pinned but the sampled count of touching faces; `mutations` edits fitment's sockets fourteen ways and requires each edit to meet a disagreement |
+| Oracle | `tools/verify-occt.py` | Open CASCADE 8.0.1, a kernel the generator does not use: `manifest` checks the construction; `features` checks fitment's planes, cylinders, holes and shafts; `socket` checks every socket against the solids, both ways (spans, seats, touchers, grips, floors, touching faces, occupied holes, conical seats' senses and ranges, zones' profiles, and cores clear of the part's own material where no requirement says otherwise), but s55's, which it skips by name (its 7,440-face plate takes Open CASCADE hours), with the fixtures' tallies pinned but the sampled count of touching faces; `mutations` edits fitment's sockets fourteen ways and requires each edit to meet a disagreement; `match` judges every corpus candidate with the built fitment and checks each document: every pass fits physically at the placement fitment states (KO3), every failure re-measured (KO4), placements rigid with their features on their requirements (KO5), each bad case disturbing only the neighbours its defect concerns (KO2), and ten mutations of the documents each met (KO6); with `--expect`, AS1's parts across its exports, the tallies pinned (KO8); `manifest` also places each candidate by its construction and requires the physics to agree with its truth (KO1) |
 
 The test parts' answers come from the generator's arguments, never from
 reading a written file; the oracle catches a generator whose part is not
