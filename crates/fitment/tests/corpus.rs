@@ -338,10 +338,11 @@ const UNVERIFIABLE: [&str; 13] = [
 ];
 
 /// KH14: M4's rules that yield an unverifiable requirement, a
-/// `floor_above_tolerance` or a refusal: each needs a case, as
-/// `UNVERIFIABLE` does.
-const M4_UNVERIFIABLE: [&str; 10] = [
-    "VR2", "VR4", "VR6", "VR14", "VD5", "VD6", "VD9", "VD10", "CF2", "MF2",
+/// `floor_above_tolerance` or a refusal: each needs a case whose
+/// expectation shows that outcome, as `UNVERIFIABLE` does. VR4's no-room
+/// branch joins with s63 (PR 6).
+const M4_UNVERIFIABLE: [&str; 9] = [
+    "VR2", "VR6", "VR14", "VD5", "VD6", "VD9", "VD10", "CF2", "MF2",
 ];
 
 /// KH14: every rule that can fail a candidate needs a bad case
@@ -372,11 +373,11 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         .expect("the corpus manifest lists its rule_ids");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut failures = Vec::new();
-    let truths: BTreeMap<&str, &str> = manifest["cases"]
+    let by_id: BTreeMap<&str, &Value> = manifest["cases"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|c| (c["id"].as_str().unwrap(), c["truth"].as_str().unwrap_or("")))
+        .map(|c| (c["id"].as_str().unwrap(), c))
         .collect();
     for (id, entry) in rules {
         let cases = entry["cases"].as_array().map_or(0, Vec::len);
@@ -393,7 +394,7 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         if deferred && (cases > 0 || !tests.is_empty()) {
             failures.push(format!("{id}: deferred, yet a case or test covers it"));
         }
-        failures.extend(case_lists(id, entry, &truths));
+        failures.extend(case_lists(id, entry, &by_id));
         // M2 and M3 are closed: only these may wait, each for a reason
         // outside them (a bug's code, a withdrawn rule, a property of the
         // construction, a later milestone). M4's own rules wait for the PR
@@ -459,7 +460,7 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
 
 /// KH14's and 13.1's lists for one rule: those that need a case, and
 /// those that need a bad one.
-fn case_lists(id: &str, entry: &Value, truths: &BTreeMap<&str, &str>) -> Vec<String> {
+fn case_lists(id: &str, entry: &Value, by_id: &BTreeMap<&str, &Value>) -> Vec<String> {
     let mut out = Vec::new();
     let cases: Vec<&str> = entry["cases"]
         .as_array()
@@ -467,14 +468,19 @@ fn case_lists(id: &str, entry: &Value, truths: &BTreeMap<&str, &str>) -> Vec<Str
         .flatten()
         .filter_map(Value::as_str)
         .collect();
-    if M4_UNVERIFIABLE.contains(&id) && cases.is_empty() {
+    let shown = cases
+        .iter()
+        .filter_map(|c| by_id.get(c))
+        .any(|c| shows_blocked(c));
+    if M4_UNVERIFIABLE.contains(&id) && !shown {
         out.push(format!(
             "{id}: yields an unverifiable requirement, a floor or a refusal, and no case shows it"
         ));
     }
     let bad = cases
         .iter()
-        .any(|c| matches!(truths.get(c), Some(&("does_not_fit" | "edge"))));
+        .filter_map(|c| by_id.get(c))
+        .any(|c| matches!(c["truth"].as_str(), Some("does_not_fit" | "edge")));
     if CAN_FAIL.contains(&id) && !bad {
         out.push(format!(
             "{id}: can fail a candidate, and no bad case shows it"
@@ -486,6 +492,28 @@ fn case_lists(id: &str, entry: &Value, truths: &BTreeMap<&str, &str>) -> Vec<Str
         ));
     }
     out
+}
+
+/// True if a match case expects, under some policy, a requirement no
+/// candidate can pass, a floor, or a refusal.
+fn shows_blocked(case: &Value) -> bool {
+    case["expect"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .any(|(_, e)| {
+            let codes = e["must_fail"].as_array().into_iter().flatten().any(|m| {
+                m["codes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|c| c == "unverifiable" || c == "floor_above_tolerance")
+            });
+            codes
+                || e.get("unverifiable").is_some()
+                || e.get("refused").is_some()
+                || e["verdict"] == "socket_refused"
+        })
 }
 
 /// True if `file` has a `#[test]` function `name`.

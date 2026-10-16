@@ -4,6 +4,7 @@
 //! each other one with `unverifiable` or `floor_above_tolerance`. Without
 //! the corpus this passes with a note, unless `FITMENT_REQUIRE_CORPUS=1`.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -525,46 +526,113 @@ fn review_waives_only_what_it_removes() {
             let original = component(&bytes, &part).unwrap();
             let result = matcher.judge_part(&original, fitment_core::CandidateSource::Given);
             let name = format!("{id} {part}");
-            for socket in &result.sockets {
-                // A socket left with nothing active rejects (VD7); others pass.
-                let left = document.active(&socket.socket).count();
-                if left > 0 && socket.verdict.kind() == fitment_core::VerdictKind::Reject {
-                    failures.push(format!(
-                        "{name} {}: rejected after review: {:?}",
-                        socket.socket,
-                        socket.verdict.reasons()
-                    ));
-                }
-                for (socket_id, requirement) in &removed {
-                    if socket_id == &socket.socket {
-                        if socket.checks.iter().any(|(r, _)| r.as_str() == requirement) {
-                            failures.push(format!("{name}: {requirement} checked though removed"));
-                        }
-                        let listed = socket.not_checked.iter().any(|n| matches!(n,
-                            fitment_core::NotChecked::Removed { requirement: r, .. } if r.as_str() == requirement));
-                        if !listed {
-                            failures.push(format!("{name}: {requirement} not listed as removed"));
-                        }
-                    }
-                }
-            }
-            // The plain block has no hole or shaft: where one is still asked,
-            // it fails.
-            let axial = extracted.sockets.iter().any(|s| {
-                document.active(&s.id).any(|r| {
-                    matches!(
-                        r.requires,
-                        fitment_core::Requires::Bore { .. } | fitment_core::Requires::Shaft { .. }
-                    )
-                })
-            });
-            if axial
-                && matcher.judge_step(&plain).verdict.kind() != fitment_core::VerdictKind::Reject
-            {
-                failures.push(format!("{name}: a plain block passes after review"));
-            }
+            failures.extend(reviewed(&name, &extracted, &removed, &result));
+            failures.extend(plain_rejected(
+                &name, &extracted, &removed, &matcher, &plain,
+            ));
         }
     }
     assert!(runs > 5, "{runs} runs");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// What each socket must still check after review: its requirements as
+/// extracted, before review, less those removed.
+fn kept(
+    extracted: &fitment_core::Extracted,
+    removed: &[(String, String)],
+    socket: &str,
+) -> BTreeSet<String> {
+    extracted
+        .sockets
+        .iter()
+        .filter(|s| s.id == socket)
+        .flat_map(|s| &s.requirements)
+        .map(|r| r.id.clone())
+        .filter(|r| !removed.iter().any(|(s, q)| s == socket && q == r))
+        .collect()
+}
+
+/// KC13 on the original after review: each socket checks exactly what
+/// was kept, passes unless nothing was (VD7), and lists what was removed.
+fn reviewed(
+    name: &str,
+    extracted: &fitment_core::Extracted,
+    removed: &[(String, String)],
+    result: &fitment_core::CandidateResult,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for socket in &result.sockets {
+        let want = kept(extracted, removed, &socket.socket);
+        let checked: BTreeSet<String> = socket
+            .checks
+            .iter()
+            .map(|(r, _)| r.as_str().to_owned())
+            .collect();
+        if checked != want {
+            failures.push(format!(
+                "{name} {}: checks {checked:?}, not {want:?}",
+                socket.socket
+            ));
+        }
+        if !want.is_empty() && socket.verdict.kind() == fitment_core::VerdictKind::Reject {
+            failures.push(format!(
+                "{name} {}: rejected after review: {:?}",
+                socket.socket,
+                socket.verdict.reasons()
+            ));
+        }
+        for (_, requirement) in removed.iter().filter(|(s, _)| s == &socket.socket) {
+            let listed = socket.not_checked.iter().any(|n| {
+                matches!(n, fitment_core::NotChecked::Removed { requirement: r, .. }
+                    if r.as_str() == requirement)
+            });
+            if !listed {
+                failures.push(format!("{name}: {requirement} not listed as removed"));
+            }
+        }
+    }
+    failures
+}
+
+/// The plain block has no hole or shaft: where review kept one, the block
+/// fails it, for a reason of its own rather than one no candidate can
+/// pass.
+fn plain_rejected(
+    name: &str,
+    extracted: &fitment_core::Extracted,
+    removed: &[(String, String)],
+    matcher: &Matcher<'_>,
+    plain: &[u8],
+) -> Option<String> {
+    let axial: BTreeSet<(String, String)> = extracted
+        .sockets
+        .iter()
+        .flat_map(|s| s.requirements.iter().map(move |r| (s, r)))
+        .filter(|(s, r)| {
+            matches!(
+                r.requires,
+                fitment_core::Requires::Bore { .. } | fitment_core::Requires::Shaft { .. }
+            ) && kept(extracted, removed, &s.id).contains(&r.id)
+        })
+        .map(|(s, r)| (s.id.clone(), r.id.clone()))
+        .collect();
+    if axial.is_empty() {
+        return None;
+    }
+    let block = matcher.judge_step(plain);
+    let fails_own = block.sockets.iter().any(|s| {
+        s.checks.iter().any(|(r, c)| {
+            axial.contains(&(s.socket.clone(), r.as_str().to_owned()))
+                && !c.passed()
+                && c.evidence().failures().iter().any(|f| {
+                    !matches!(
+                        f.code,
+                        FailureCode::Unverifiable | FailureCode::FloorAboveTolerance
+                    )
+                })
+        })
+    });
+    (block.verdict.kind() != fitment_core::VerdictKind::Reject || !fails_own)
+        .then(|| format!("{name}: a plain block is not rejected by a kept hole or shaft"))
 }

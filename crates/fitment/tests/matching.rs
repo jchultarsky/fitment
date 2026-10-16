@@ -61,28 +61,27 @@ enum Input {
 }
 
 impl Input {
-    fn read(dir: &Path, case: &Value, document: &SocketDocument) -> Self {
+    fn read(dir: &Path, case: &Value) -> Self {
         let candidate = &case["candidate"];
         if let Some(file) = candidate["file"].as_str() {
             return Self::File(fs::read(dir.join(file)).unwrap());
         }
-        let source = candidate["component"]["case"].as_str().unwrap();
+        let component = &candidate["component"];
+        let source = component["case"].as_str().unwrap();
+        assert!(
+            component["occurrence"].is_null(),
+            "a component by occurrence"
+        );
         let bytes = fs::read(dir.join(format!("{source}.stp"))).unwrap();
-        let instance = document.extracted().unwrap().target.definition.instance;
         let read = read_assembly(&bytes);
-        let part = read
-            .listing()
-            .unwrap()
-            .definitions()
-            .iter()
-            .find_map(|d| match &d.read {
-                Some(ComponentRead::Accepted(part)) if d.definition.instance == instance => {
-                    Some((**part).clone())
-                }
-                _ => None,
-            })
-            .unwrap();
-        Self::Component(Box::new(part), fitment_core::sha256_hex(&bytes), instance)
+        let listing = read.listing().unwrap();
+        let selection = listing.select(component["part"].as_str(), None).unwrap();
+        let definition = &listing.definitions()[selection.definition];
+        let Some(ComponentRead::Accepted(part)) = &definition.read else {
+            panic!("{source}: the component is not read");
+        };
+        let instance = definition.definition.instance;
+        Self::Component(part.clone(), fitment_core::sha256_hex(&bytes), instance)
     }
 
     fn judge(&self, matcher: &Matcher<'_>) -> CandidateResult {
@@ -156,7 +155,7 @@ fn compute(dir: &Path) -> Vec<Run> {
                 SocketDocument::extract(&bytes, Some(&part), None).unwrap()
             });
         let sockets = document.extracted().unwrap().sockets.clone();
-        let input = Input::read(dir, case, document);
+        let input = Input::read(dir, case);
         for name in POLICIES {
             let matcher = Matcher::new(
                 document,
@@ -325,7 +324,10 @@ fn the_false_negatives_are_the_baseline() {
         .unwrap_or_default();
     let added: Vec<&Value> = found.iter().filter(|f| !old.contains(f)).collect();
     let removed: Vec<&Value> = old.iter().filter(|f| !found.contains(f)).collect();
-    if added.is_empty() && removed.is_empty() {
+    // The whole record: a case added, or a version risen, is blessed too,
+    // so the refusal below always judges against the cases and the rules
+    // version of the last run.
+    if committed.as_ref() == Some(&document) {
         return;
     }
     if bless {
@@ -357,7 +359,7 @@ fn the_false_negatives_are_the_baseline() {
         return;
     }
     panic!(
-        "the false negatives differ from {}:\nadded: {added:#?}\nremoved: {removed:#?}\n\
+        "the false negatives, the cases or the versions differ from {}:\nadded: {added:#?}\nremoved: {removed:#?}\n\
          if intended, run FITMENT_BLESS=1 cargo test -p fitment --test matching",
         path.display()
     );
@@ -534,6 +536,15 @@ fn the_binary_agrees_with_the_library() {
                 .unwrap();
             let doc: Value = serde_json::from_slice(&output.stdout).unwrap();
             let at = format!("{source} {part} {policy}");
+            // KH2.6: the document states the run's policy.
+            let clearance = if policy == "functional" {
+                "functional"
+            } else {
+                "strict"
+            };
+            if doc["policy"]["clearance"] != clearance || doc["policy"]["name"] != "default" {
+                problems.push(format!("{at}: the document's policy is {}", doc["policy"]));
+            }
             problems.extend(
                 checker::problems(&doc)
                     .into_iter()
@@ -570,6 +581,7 @@ fn the_binary_agrees_with_the_library() {
             }
         }
     }
+    let _ = fs::remove_dir_all(&scratch);
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
@@ -601,6 +613,13 @@ fn the_socket_gate_refuses_before_any_candidate() {
         );
         let mut doc: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         let mut args = vec!["match".to_owned()];
+        // Each refused for its own reason, not another's.
+        let reason = match socket["edit"].as_str() {
+            Some("stale") => "extract it again",
+            Some("digest") => "digest does not match",
+            Some("unreviewed") => "unreviewed",
+            _ => "holds no socket",
+        };
         match socket["edit"].as_str() {
             Some("stale") => {
                 doc["socket_rules_version"] =
@@ -619,7 +638,9 @@ fn the_socket_gate_refuses_before_any_candidate() {
         // A candidate that cannot be read: the gate must refuse first.
         args.push(dir.join("no-such-candidate.stp").display().to_string());
         let output = fitment().args(&args).output().unwrap();
-        if output.status.code() != Some(3) || !output.stdout.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if output.status.code() != Some(3) || !output.stdout.is_empty() || !stderr.contains(reason)
+        {
             problems.push(format!(
                 "{id}: exit {:?}: {}",
                 output.status.code(),
@@ -628,6 +649,7 @@ fn the_socket_gate_refuses_before_any_candidate() {
         }
     }
     assert!(seen >= 4, "{seen} socket gate cases");
+    let _ = fs::remove_dir_all(&scratch);
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
@@ -637,6 +659,7 @@ fn fitment() -> std::process::Command {
 
 fn scratch(test: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("fitment-matching-{test}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
 }
