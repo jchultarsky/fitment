@@ -822,7 +822,7 @@ M5_COUNTS = {"ST": 11, "DB": 9, "GT": 9, "ID": 9, "CR": 11, "RX": 11, "IX": 10, 
              "SZ": 5, "VF": 5, "PR": 7, "CL": 10, "CM": 11, "IN": 9}
 M5_PR = {"ST": 2, "DB": 2, "GT": 2, "ID": 2, "PH": 2, "SZ": 2, "CL": 2, "CR": 3, "IN": 3, "VF": 3, "QR": 4,
          "CM": 4, "PR": 5, "RX": 6, "IX": 4, "CC": 2}
-M5_OTHER_PR = {"ST5": 3, "CR8": 2, "CR9": 4, "CC3": 3, "CC4": 3, "RX1": 4, "RX2": 4, "RX3": 4}
+M5_OTHER_PR = {"ST5": 3, "CR8": 4, "CR9": 4, "CC3": 3, "CC4": 3, "RX1": 4, "RX2": 4, "RX3": 4}
 for prefix, count in M5_COUNTS.items():
     for n in range(1, count + 1):
         rule = f"{prefix}{n}"
@@ -849,6 +849,77 @@ RULES.update({
     "CL7": {"tests": ["crates/fitment/src/cmd/mod.rs::a_write_lands_whole_or_leaves_nothing",
                       "crates/fitment/src/cmd/mod.rs::a_write_only_directory_takes_the_write"]},
 })
+# PR 2 builds the store, ingest, and init, list and get. What it cannot show yet waits for the PR that can:
+# concurrency for PR 3's races (CT14), the rest for M5's exit, where each gets a test or a stated reason.
+T = "crates/fitment-catalog/tests"
+C = "crates/fitment/tests/catalog_cli.rs"
+S = "crates/fitment-catalog/src"
+M5_PR2 = {
+    "ST1": [f"{T}/store.rs::every_committed_part_is_stored_as_the_gate_reads_it"],
+    "ST2": [f"{T}/store.rs::the_source_is_read_once"],
+    "ST3": [f"{T}/fault.rs::every_named_blob_has_its_directory_synced_before_commit",
+            f"{T}/fault.rs::a_reused_orphan_has_its_directory_synced"],
+    "ST4": [f"{T}/edges.rs::a_link_at_a_blobs_name_is_never_followed"],
+    "ST6": [f"{T}/fault.rs::every_named_blob_has_its_directory_synced_before_commit"],
+    "ST7": [f"{T}/fault.rs::an_ingest_is_all_or_nothing_under_any_fault",
+            f"{T}/edges.rs::a_taken_temporary_name_is_passed_over"],
+    "ST9": [f"{T}/edges.rs::the_database_is_durable"],
+    "ST10": [f"{T}/store.rs::an_input_inside_the_catalog_is_refused",
+             f"{T}/edges.rs::init_refuses_a_directory_whose_tmp_is_not_ours",
+             f"{C}::get_shows_an_entry_its_document_and_its_bytes"],
+    "ST11": [f"{C}::get_step_refuses_a_damaged_blob"],
+    "DB1": [f"{T}/store.rs::init_makes_a_catalog_once_and_refuses_what_is_not_one",
+            f"{T}/edges.rs::init_leaves_a_foreign_database_as_it_was"],
+    "DB3": [f"{T}/edges.rs::a_batch_holds_at_most_64_files"],
+    "DB5": [f"{S}/schema.rs::migration_runs_each_step_once_and_records_it",
+            f"{T}/store.rs::init_makes_a_catalog_once_and_refuses_what_is_not_one"],
+    "DB6": [f"{S}/schema.rs::hex_columns_refuse_what_is_not_a_sha256"],
+    "DB7": [f"{S}/schema.rs::tokens_need_an_accepted_document_and_rows_never_change",
+            f"{T}/snapshot.rs::each_preimage_field_is_bound"],
+    "DB8": [f"{T}/store.rs::every_committed_part_is_stored_as_the_gate_reads_it"],
+    "DB9": [f"{T}/snapshot.rs::no_read_depends_on_unordered_selects"],
+    "GT1": [f"{T}/store.rs::every_committed_part_is_stored_as_the_gate_reads_it"],
+    "GT2": [f"{T}/snapshot.rs::each_preimage_field_is_bound",
+            f"{T}/snapshot.rs::a_features_row_copied_to_another_key_fails_its_hash",
+            f"{C}::get_shows_an_entry_its_document_and_its_bytes"],
+    "GT3": [f"{T}/store.rs::files_refused_at_the_door_store_nothing"],
+    "GT4": [f"{S}/schema.rs::tokens_need_an_accepted_document_and_rows_never_change"],
+    "GT5": [f"{C}::list_writes_a_catalog_document"],
+    "GT6": [f"{T}/store.rs::every_committed_part_is_stored_as_the_gate_reads_it"],
+    "GT7": [f"{T}/store.rs::ids_go_to_exact_stems_first"],
+    "ID1": [f"{S}/ids.rs::the_mapping_gives_an_id_or_none_and_keeps_ids"],
+    "ID2": [f"{S}/schema.rs::the_partial_indexes_hold_identity", f"{T}/store.rs::ids_go_to_exact_stems_first"],
+    "ID3": [f"{S}/ids.rs::default_ids_follow_id3"],
+    "ID4": [f"{T}/store.rs::ids_go_to_exact_stems_first",
+            f"{T}/edges.rs::lines_keep_their_order_and_links_inside_are_refused"],
+    "ID5": [f"{T}/store.rs::ids_go_to_exact_stems_first", f"{C}::ingest_reports_each_file_and_exits_by_the_worst"],
+    "ID7": [f"{C}::references_are_strict", f"{T}/snapshot.rs::a_shared_content_prefix_is_ambiguous"],
+    "ID8": [f"{C}::list_writes_a_catalog_document"],
+    "PH1": [f"{S}/hex.rs::only_lower_case_hex_of_64_digits_is_a_sha256",
+            f"{S}/schema.rs::hex_columns_refuse_what_is_not_a_sha256"],
+    "PH2": [f"{T}/store.rs::a_planted_link_is_refused", f"{T}/edges.rs::a_link_at_a_blobs_name_is_never_followed"],
+    "PH3": [f"{T}/store.rs::hostile_names_are_stored_and_mapped"],
+    "PH4": [f"{T}/store.rs::files_refused_at_the_door_store_nothing"],
+    "PH6": [f"{C}::hostile_names_are_escaped", f"{T}/snapshot.rs::a_hand_edited_id_or_revision_is_corrupt"],
+    "PH7": [f"{C}::get_shows_an_entry_its_document_and_its_bytes"],
+    "PH8": [f"{C}::references_are_strict"],
+    "SZ1": [f"{T}/store.rs::files_refused_at_the_door_store_nothing"],
+    "SZ5": [f"{T}/edges.rs::a_full_database_commits_nothing"],
+    "CL1": [f"{C}::init_and_what_is_not_a_catalog", f"{C}::a_catalog_named_like_a_uri_is_a_directory"],
+    "CL2": [f"{C}::ingest_reports_each_file_and_exits_by_the_worst"],
+    "CL3": [f"{C}::list_writes_a_catalog_document"],
+    "CL4": [f"{C}::ingest_reports_each_file_and_exits_by_the_worst"],
+    "CL8": ["crates/fitment/tests/no_catalog.rs::a_build_without_the_catalog_says_so"],
+    "CL9": [f"{C}::list_writes_a_catalog_document", f"{C}::ingest_reports_each_file_and_exits_by_the_worst"],
+    "CC5": [f"{T}/edges.rs::the_database_is_durable"],
+    "CC6": [f"{T}/edges.rs::a_busy_catalog_stops_the_run"],
+}
+for rule, tests in M5_PR2.items():
+    RULES[rule] = {"tests": tests}
+for rule in ("DB2", "DB4", "ID6", "ID9", "CC1", "CC2"):
+    RULES[rule] = {"deferred": "M5 PR 3" if rule in ("DB2", "ID6", "ID9", "CC1", "CC2") else "M5 PR 4"}
+for rule in ("ST8", "GT8", "GT9", "PH5", "SZ2", "SZ3", "CL5", "CL6", "CL10"):
+    RULES[rule] = {"deferred": "M5 PR 7"}
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with

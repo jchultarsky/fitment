@@ -41,6 +41,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # M5's CT20: the CLI builds without the catalog and its SQLite.
       - run: cargo clippy -p fitment --all-targets --no-default-features --locked -- -D warnings
+      - run: cargo test -p fitment --no-default-features --locked --test no_catalog
 
   corpus:
     name: test parts and Open CASCADE oracle

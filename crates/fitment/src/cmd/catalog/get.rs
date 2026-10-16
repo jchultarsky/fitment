@@ -60,7 +60,7 @@ fn read(
         Err(bad) => return Ok(Err(bad.to_string())),
     };
     let listed = snapshot.entry(&named)?;
-    let history = snapshot.history(&named.id)?;
+    let history = snapshot.history(&named)?;
     let current = named.current == Some(named.revision);
     let features = if format == GetFormat::Features && current {
         Some(snapshot.features(&named.sha256)?)
@@ -220,7 +220,8 @@ fn step(catalog: &Catalog, dir: &Path, read: &Read, out: &Path) -> u8 {
     0
 }
 
-/// ST10: an output inside the catalog's directory.
+/// ST10: an output that is the catalog's directory or inside it, the
+/// target itself and not only its parent (`-o DIR/` names DIR).
 fn inside(dir: &Path, out: &Path) -> bool {
     let parent = match out.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
@@ -229,7 +230,10 @@ fn inside(dir: &Path, out: &Path) -> bool {
     let (Ok(dir), Ok(parent)) = (std::fs::canonicalize(dir), std::fs::canonicalize(parent)) else {
         return false;
     };
-    parent.starts_with(dir)
+    let target = out
+        .file_name()
+        .map_or(parent.clone(), |name| parent.join(name));
+    target.starts_with(dir)
 }
 
 pub(super) fn run(args: &Args, dir: &Path, catalog: &mut Catalog) -> ExitCode {
@@ -247,6 +251,10 @@ pub(super) fn run(args: &Args, dir: &Path, catalog: &mut Catalog) -> ExitCode {
         }
         (GetFormat::Step, Some(out)) if inside(dir, out) => {
             note("error: -o names a file inside the catalog: write it elsewhere");
+            return ExitCode::from(USAGE);
+        }
+        (GetFormat::Step, Some(out)) if out.is_dir() => {
+            note("error: -o names a directory: name the file to write");
             return ExitCode::from(USAGE);
         }
         (GetFormat::Step, Some(out)) => Some(out.clone()),
@@ -269,8 +277,9 @@ pub(super) fn run(args: &Args, dir: &Path, catalog: &mut Catalog) -> ExitCode {
         |o| printable(&o.display().to_string()),
     );
     let said = format!(
-        "fitment: {}: {} r{} sha256:{} -> {target}",
+        "fitment: {}: generation {}: {} r{} sha256:{} -> {target}",
         shown(dir),
+        read.generation,
         read.named.id,
         read.named.revision,
         read.named.sha256

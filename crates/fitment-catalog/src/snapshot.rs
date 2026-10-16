@@ -101,14 +101,22 @@ pub struct HistoryStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Named {
-    /// The id, as stored.
+    /// The id, as its entry stores it.
     pub id: String,
     /// The revision named.
     pub revision: u32,
-    /// The id's current revision, if the entry is live.
+    /// Its entry's current revision, if that entry is live: the revision
+    /// named is current, superseded by this, or (`None`) deleted.
     pub current: Option<u32>,
+    /// The current revision of the id's live entry, if it has one: what
+    /// a strict `ID@rN` must name (ID9).
+    pub id_current: Option<u32>,
     /// The content of the revision named.
     pub sha256: Sha256Hex,
+    /// The revision's row.
+    key: i64,
+    /// The id, case-folded, as its revisions are keyed.
+    fold: String,
 }
 
 /// Why a reference names nothing usable (exit 2).
@@ -193,12 +201,14 @@ impl Catalog {
     }
 }
 
+/// A revision's columns: id, revision, content, file name, and the
+/// entry's deletion, the revision's supersession and prune generations.
 type Row = (
     String,
     i64,
     String,
     Option<String>,
-    i64,
+    Option<i64>,
     Option<i64>,
     Option<i64>,
 );
@@ -232,8 +242,8 @@ impl Snapshot<'_> {
     /// The database's.
     pub fn list(&self) -> Result<Vec<Listed>, Error> {
         let mut stmt = self.tx.prepare(
-            "SELECT e.id, r.revision, r.sha256, r.file_name, e.key, r.superseded_generation,
-                    r.pruned_generation
+            "SELECT e.id, r.revision, r.sha256, r.file_name, e.deleted_generation,
+                    r.superseded_generation, r.pruned_generation
              FROM entry e JOIN revision r ON r.entry = e.key AND r.superseded_generation IS NULL
              WHERE e.deleted_generation IS NULL
              ORDER BY e.id_fold, e.id",
@@ -261,12 +271,17 @@ impl Snapshot<'_> {
     ///
     /// The database's.
     pub fn kept_revisions(&self) -> Result<(u64, u64), Error> {
+        // Revisions kept; and the bytes a prune could release: contents
+        // held by them and by no live revision, each once.
         let (n, bytes): (i64, i64) = self.tx.query_row(
-            "SELECT count(*), coalesce(sum(b.bytes), 0)
-             FROM revision r JOIN entry e ON e.key = r.entry
-             JOIN blob b ON b.sha256 = r.sha256
-             WHERE e.deleted_generation IS NULL AND r.superseded_generation IS NOT NULL
-               AND r.pruned_generation IS NULL",
+            "WITH kept AS (
+               SELECT r.sha256 FROM revision r JOIN entry e ON e.key = r.entry
+               WHERE e.deleted_generation IS NULL AND r.superseded_generation IS NOT NULL
+                 AND r.pruned_generation IS NULL)
+             SELECT (SELECT count(*) FROM kept),
+                    (SELECT coalesce(sum(b.bytes), 0) FROM blob b
+                     WHERE b.sha256 IN (SELECT sha256 FROM kept)
+                       AND b.sha256 NOT IN (SELECT sha256 FROM live))",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
@@ -277,18 +292,23 @@ impl Snapshot<'_> {
     }
 
     fn listed(&self, row: Row, live: bool) -> Result<Listed, Error> {
-        let (id, revision, sha, file_name, _key, superseded, _pruned) = row;
+        let (id, revision, sha, file_name, deleted, superseded, pruned) = row;
+        let id = stored_id(id)?;
         let sha256 = Sha256Hex::parse(&sha).map_err(|_| corrupt("a content key"))?;
-        let bytes: Option<i64> = self
-            .tx
-            .query_row("SELECT bytes FROM blob WHERE sha256 = ?1", [&sha], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        let current = superseded.is_none();
+        // Its size while its bytes are kept: not pruned, its entry live.
+        let bytes: Option<i64> = if pruned.is_none() && deleted.is_none() {
+            self.tx
+                .query_row("SELECT bytes FROM blob WHERE sha256 = ?1", [&sha], |r| {
+                    r.get(0)
+                })
+                .optional()?
+        } else {
+            None
+        };
+        let current = superseded.is_none() && deleted.is_none();
         let mut out = Listed {
             id,
-            revision: u32::try_from(revision).unwrap_or_default(),
+            revision: u32::try_from(revision).map_err(|_| corrupt("a revision"))?,
             current,
             sha256,
             bytes: bytes.and_then(|b| u64::try_from(b).ok()),
@@ -314,7 +334,8 @@ impl Snapshot<'_> {
             .tx
             .query_row(
                 "SELECT extractor_version, status, product_id, product_name, holes, shafts, planes,
-                        cones, other_faces, complete, doc
+                        cones, other_faces, complete,
+                        CASE WHEN status = 'refused' THEN doc ELSE x'' END
                  FROM features WHERE sha256 = ?1
                  ORDER BY extractor_version = ?2 DESC, extractor_version DESC LIMIT 1",
                 params![sha, EXTRACTOR_VERSION],
@@ -400,75 +421,100 @@ impl Snapshot<'_> {
 
     fn by_id(&self, id: &Id, revision: Option<u32>) -> Result<Result<Named, BadName>, Error> {
         let fold = id.fold();
-        // The newest entry of the id: the live one if any.
-        let entry: Option<(i64, String, bool)> = self
-            .tx
-            .query_row(
-                "SELECT key, id, deleted_generation IS NULL FROM entry WHERE id_fold = ?1
-                 ORDER BY deleted_generation IS NULL DESC, key DESC LIMIT 1",
-                [&fold],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
-        let Some((key, stored, live)) = entry else {
-            return Ok(Err(BadName::Unknown {
+        let unknown = |this: &Self| -> Result<Result<Named, BadName>, Error> {
+            Ok(Err(BadName::Unknown {
                 asked: id.to_string(),
-                suggestions: self.suggestions(&fold)?,
-            }));
+                suggestions: this.suggestions(&fold)?,
+            }))
         };
-        let current: Option<(u32, String)> = self
-            .tx
-            .query_row(
-                "SELECT revision, sha256 FROM revision
-                 WHERE entry = ?1 AND superseded_generation IS NULL",
-                [key],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let named = match revision {
+        let key: Option<i64> = match revision {
+            // ID9: any revision the id ever had, across delete (ID6).
             Some(n) => self
                 .tx
                 .query_row(
-                    "SELECT revision, sha256 FROM revision WHERE id_fold = ?1 AND revision = ?2",
+                    "SELECT key FROM revision WHERE id_fold = ?1 AND revision = ?2",
                     params![&fold, n],
-                    |r| Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?)),
+                    |r| r.get(0),
                 )
                 .optional()?,
-            // A tombstone: its last revision.
-            None => match &current {
-                Some(c) => Some(c.clone()),
-                None => self
-                    .tx
-                    .query_row(
-                        "SELECT revision, sha256 FROM revision WHERE entry = ?1
-                         ORDER BY revision DESC LIMIT 1",
-                        [key],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .optional()?,
-            },
+            // The live entry's current revision, or else the latest
+            // tombstone's last.
+            None => self
+                .tx
+                .query_row(
+                    "SELECT r.key FROM entry e JOIN revision r ON r.entry = e.key
+                     WHERE e.id_fold = ?1
+                     ORDER BY e.deleted_generation IS NULL DESC, e.key DESC, r.revision DESC
+                     LIMIT 1",
+                    [&fold],
+                    |r| r.get(0),
+                )
+                .optional()?,
         };
-        let Some((n, sha)) = named else {
-            return Ok(Err(BadName::NoRevision {
-                id: stored,
-                asked: revision.unwrap_or_default(),
-            }));
-        };
-        Ok(Ok(Named {
-            id: stored,
-            revision: n,
-            current: current.filter(|_| live).map(|c| c.0),
+        match (key, revision) {
+            (Some(key), _) => self.named(key).map(Ok),
+            (None, Some(n)) => {
+                let known: bool = self.tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM entry WHERE id_fold = ?1)",
+                    [&fold],
+                    |r| r.get(0),
+                )?;
+                if known {
+                    Ok(Err(BadName::NoRevision {
+                        id: id.to_string(),
+                        asked: n,
+                    }))
+                } else {
+                    unknown(self)
+                }
+            }
+            (None, None) => unknown(self),
+        }
+    }
+
+    /// The revision of row `key`, with its entry's state and the id's.
+    fn named(&self, key: i64) -> Result<Named, Error> {
+        let (id, revision, sha, fold, current): (String, i64, String, String, Option<i64>) =
+            self.tx.query_row(
+                "SELECT e.id, r.revision, r.sha256, r.id_fold,
+                        (SELECT c.revision FROM revision c
+                         WHERE c.entry = e.key AND c.superseded_generation IS NULL
+                           AND e.deleted_generation IS NULL)
+                 FROM revision r JOIN entry e ON e.key = r.entry WHERE r.key = ?1",
+                [key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )?;
+        let id_current: Option<i64> = self
+            .tx
+            .query_row(
+                "SELECT r.revision FROM entry e JOIN revision r
+                   ON r.entry = e.key AND r.superseded_generation IS NULL
+                 WHERE e.id_fold = ?1 AND e.deleted_generation IS NULL",
+                [&fold],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let revision_of = |v: i64| u32::try_from(v).map_err(|_| corrupt("a revision"));
+        Ok(Named {
+            id: stored_id(id)?,
+            revision: revision_of(revision)?,
+            current: current.map(revision_of).transpose()?,
+            id_current: id_current.map(revision_of).transpose()?,
             sha256: Sha256Hex::parse(&sha).map_err(|_| corrupt("a content key"))?,
-        }))
+            key,
+            fold,
+        })
     }
 
     fn by_content(&self, prefix: &str) -> Result<Result<Named, BadName>, Error> {
         let mut stmt = self.tx.prepare(
-            "SELECT id, revision, sha256 FROM live
-             WHERE substr(sha256, 1, length(?1)) = ?1 ORDER BY sha256",
+            "SELECT r.key, e.id FROM entry e JOIN revision r
+               ON r.entry = e.key AND r.superseded_generation IS NULL
+             WHERE e.deleted_generation IS NULL AND substr(r.sha256, 1, length(?1)) = ?1
+             ORDER BY r.sha256",
         )?;
-        let found: Vec<(String, u32, String)> = stmt
-            .query_map([prefix], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        let found: Vec<(i64, String)> = stmt
+            .query_map([prefix], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;
         let asked = format!("sha256:{prefix}");
         match found.as_slice() {
@@ -476,28 +522,29 @@ impl Snapshot<'_> {
                 asked,
                 suggestions: Vec::new(),
             })),
-            [(id, n, sha)] => Ok(Ok(Named {
-                id: id.clone(),
-                revision: *n,
-                current: Some(*n),
-                sha256: Sha256Hex::parse(sha).map_err(|_| corrupt("a content key"))?,
-            })),
+            [(key, _)] => self.named(*key).map(Ok),
             several => Ok(Err(BadName::Ambiguous {
                 asked,
-                ids: several.iter().map(|(id, ..)| id.clone()).collect(),
+                ids: several
+                    .iter()
+                    .map(|(_, id)| stored_id(id.clone()))
+                    .collect::<Result<_, _>>()?,
             })),
         }
     }
 
     /// ID7: up to five ids, live or not, sharing the longest prefix with
-    /// `fold`, case-folded.
+    /// `fold`, case-folded; a stored id that is not one is not suggested.
     fn suggestions(&self, fold: &str) -> Result<Vec<String>, Error> {
         let mut stmt = self
             .tx
             .prepare("SELECT DISTINCT id FROM entry WHERE id_fold != ?1 ORDER BY id_fold, id")?;
         let ids: Vec<String> = stmt
             .query_map([fold], |r| r.get(0))?
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<Vec<String>, _>>()?
+            .into_iter()
+            .filter(|id| Id::parse(id).is_ok())
+            .collect();
         let common = |id: &str| {
             id.to_ascii_lowercase()
                 .bytes()
@@ -524,11 +571,11 @@ impl Snapshot<'_> {
     /// The database's.
     pub fn entry(&self, named: &Named) -> Result<Listed, Error> {
         let row: Row = self.tx.query_row(
-            "SELECT e.id, r.revision, r.sha256, r.file_name, e.key, r.superseded_generation,
-                    r.pruned_generation
+            "SELECT e.id, r.revision, r.sha256, r.file_name, e.deleted_generation,
+                    r.superseded_generation, r.pruned_generation
              FROM revision r JOIN entry e ON e.key = r.entry
-             WHERE r.id_fold = ?1 AND r.revision = ?2",
-            params![named.id.to_ascii_lowercase(), named.revision],
+             WHERE r.key = ?1",
+            [named.key],
             |r| {
                 Ok((
                     r.get(0)?,
@@ -541,10 +588,7 @@ impl Snapshot<'_> {
                 ))
             },
         )?;
-        let live = named.current.is_some();
-        let mut listed = self.listed(row, live)?;
-        listed.current &= live;
-        Ok(listed)
+        self.listed(row, true)
     }
 
     /// The history of `id`, across delete and re-ingest (ID6), by revision.
@@ -552,7 +596,7 @@ impl Snapshot<'_> {
     /// # Errors
     ///
     /// The database's.
-    pub fn history(&self, id: &str) -> Result<Vec<HistoryStep>, Error> {
+    pub fn history(&self, named: &Named) -> Result<Vec<HistoryStep>, Error> {
         let mut stmt = self.tx.prepare(
             "SELECT r.revision, r.sha256, r.added_generation,
                     coalesce((SELECT kind FROM op WHERE op.generation = r.added_generation
@@ -563,7 +607,7 @@ impl Snapshot<'_> {
              WHERE r.id_fold = ?1 ORDER BY r.revision",
         )?;
         let rows: Vec<Step> = stmt
-            .query_map([id.to_ascii_lowercase()], |r| {
+            .query_map([&named.fold], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -727,6 +771,13 @@ pub fn has_internal(refusals: &[StoredRefusal]) -> bool {
     refusals
         .iter()
         .any(|r| r.code == RefusalCode::Internal.name())
+}
+
+/// An id as stored, checked against ID1 like every other column read
+/// back: a hand-edited one is a damaged row, never printed raw.
+fn stored_id(id: String) -> Result<String, Error> {
+    Id::parse(&id).map_err(|_| corrupt("an id"))?;
+    Ok(id)
 }
 
 fn corrupt(what: &'static str) -> Error {

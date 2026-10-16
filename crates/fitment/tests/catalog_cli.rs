@@ -2,6 +2,8 @@
 //! (`docs/research/m5-catalog.md`, section 7, CT15, CT16): exit codes,
 //! lines, documents, references, and bytes handed out only checked (ST11).
 
+#![cfg(feature = "catalog")]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -235,9 +237,8 @@ fn get_shows_an_entry_its_document_and_its_bytes() {
         .0,
         2
     );
-    let (code, _, _) = catalog(
-        &dir,
-        &[
+    for inside in ["parts/x.stp", "parts/", "parts", "parts/.", "in"] {
+        let args = [
             "get",
             "-C",
             "parts",
@@ -245,10 +246,10 @@ fn get_shows_an_entry_its_document_and_its_bytes() {
             "--format",
             "step",
             "-o",
-            "parts/x.stp",
-        ],
-    );
-    assert_eq!(code, 2);
+            inside,
+        ];
+        assert_eq!(catalog(&dir, &args).0, 2, "{inside}");
+    }
     let (code, _, _) = catalog(
         &dir,
         &[

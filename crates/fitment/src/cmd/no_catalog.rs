@@ -8,6 +8,8 @@ use std::process::ExitCode;
 use super::text::note;
 
 #[derive(clap::Args)]
+// `--help` too is an argument it does not have: it exits 2, never 0.
+#[command(disable_help_flag = true)]
 pub struct Args {
     /// Whatever was given.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]

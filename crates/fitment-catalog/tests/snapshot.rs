@@ -8,7 +8,7 @@ mod common;
 use std::path::Path;
 
 use common::{catalog, copy, scratch};
-use fitment_catalog::{BadRow, Catalog, Reference, Sha256Hex};
+use fitment_catalog::{BadName, BadRow, Catalog, Error, Reference, Sha256Hex};
 use rusqlite::{Connection, params};
 
 /// A catalog holding the bracket and p01, with their SHA-256s.
@@ -118,7 +118,11 @@ fn no_read_depends_on_unordered_selects() {
         let snapshot = catalog.snapshot().unwrap();
         let list = snapshot.list().unwrap();
         let unknown = snapshot.resolve(&Reference::parse("a_").unwrap()).unwrap();
-        let history = snapshot.history("bracket").unwrap();
+        let bracket = snapshot
+            .resolve(&Reference::parse("bracket").unwrap())
+            .unwrap()
+            .unwrap();
+        let history = snapshot.history(&bracket).unwrap();
         (list, unknown, history)
     };
     let plain = read(&mut catalog);
@@ -129,4 +133,84 @@ fn no_read_depends_on_unordered_selects() {
     assert_eq!(read(&mut catalog), plain);
     let ids: Vec<&str> = plain.0.iter().map(|l| l.id.as_str()).collect();
     assert_eq!(ids, ["a", "A_2", "b", "Bracket"]);
+}
+
+/// A hand-edited id or revision is a damaged row: never printed raw, never
+/// shown as another value (PH6, the PR 2b review).
+#[test]
+fn a_hand_edited_id_or_revision_is_corrupt() {
+    for edit in [
+        "UPDATE entry SET id = 'm_bracket' || char(27) || '[31m'",
+        "UPDATE revision SET revision = 4294967297",
+    ] {
+        let (mut catalog, _, _) = two(&format!("edited-{}", edit.len()));
+        let conn = Connection::open(catalog.root().join("catalog.db")).unwrap();
+        conn.execute_batch(&format!("PRAGMA ignore_check_constraints = ON; {edit}"))
+            .unwrap();
+        let snapshot = catalog.snapshot().unwrap();
+        assert!(matches!(snapshot.list(), Err(Error::Corrupt(_))), "{edit}");
+    }
+}
+
+/// ID7: a content prefix two live entries share names neither.
+#[test]
+fn a_shared_content_prefix_is_ambiguous() {
+    let (mut catalog, x, _) = two("ambiguous");
+    let twin = format!("{}{}", &x.as_str()[..12], "0".repeat(52));
+    let conn = Connection::open(catalog.root().join("catalog.db")).unwrap();
+    conn.execute_batch(&format!(
+        "INSERT INTO name VALUES ('twin', 1);
+         INSERT INTO entry (id, id_fold, created_generation) VALUES ('twin', 'twin', 2);
+         INSERT INTO revision (entry, id_fold, revision, sha256, added_generation)
+           VALUES (last_insert_rowid(), 'twin', 1, '{twin}', 2);"
+    ))
+    .unwrap();
+    let snapshot = catalog.snapshot().unwrap();
+    let asked = Reference::parse(&format!("sha256:{}", &x.as_str()[..12])).unwrap();
+    let Ok(Err(BadName::Ambiguous { ids, .. })) = snapshot.resolve(&asked) else {
+        panic!("not ambiguous");
+    };
+    assert_eq!(ids.len(), 2);
+}
+
+/// ID6 and ID9 (the PR 2b review's F2): a revision of an earlier, deleted
+/// entry of an id ingested again is shown as deleted, without bytes, under
+/// its own entry's id; the live entry's revision is the id's current one.
+#[test]
+fn a_deleted_entrys_revision_is_shown_as_deleted() {
+    let (mut catalog, x, _) = two("reborn");
+    let conn = Connection::open(catalog.root().join("catalog.db")).unwrap();
+    // As PR 3's delete will: tombstone the entry, supersede its revision;
+    // then the same bytes under the id again, as r2 of a new entry.
+    conn.execute_batch(&format!(
+        "UPDATE clock SET generation = 3;
+         UPDATE entry SET deleted_generation = 3 WHERE id = 'm_bracket';
+         UPDATE revision SET superseded_generation = 3 WHERE id_fold = 'm_bracket';
+         UPDATE name SET last_revision = 2 WHERE id_fold = 'm_bracket';
+         INSERT INTO entry (id, id_fold, created_generation) VALUES ('M_Bracket', 'm_bracket', 3);
+         INSERT INTO revision (entry, id_fold, revision, sha256, added_generation)
+           VALUES (last_insert_rowid(), 'm_bracket', 2, '{x}', 3);"
+    ))
+    .unwrap();
+    let snapshot = catalog.snapshot().unwrap();
+    let old = snapshot
+        .resolve(&Reference::parse("m_bracket@r1").unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (old.id.as_str(), old.current, old.id_current),
+        ("m_bracket", None, Some(2))
+    );
+    let listed = snapshot.entry(&old).unwrap();
+    assert_eq!(listed.bytes, None);
+    assert!(!listed.current);
+    let now = snapshot
+        .resolve(&Reference::parse("m_bracket").unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (now.id.as_str(), now.revision, now.current),
+        ("M_Bracket", 2, Some(2))
+    );
+    assert!(snapshot.entry(&now).unwrap().bytes.is_some());
 }
