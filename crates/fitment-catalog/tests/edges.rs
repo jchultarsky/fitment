@@ -3,7 +3,8 @@
 //! busy catalog stops the run; init and open change nothing that is not
 //! theirs; a torn marker is an unfinished init; a planted link is unlinked,
 //! never followed; a taken temporary name is passed over, never removed;
-//! lines keep ID4's order.
+//! lines keep ID4's order; and the database's durability (ST9), batches
+//! (DB3) and quota (SZ5).
 
 mod common;
 
@@ -203,4 +204,76 @@ fn lines_keep_their_order_and_links_inside_are_refused() {
             Err(Error::InsideCatalog(_))
         ));
     }
+}
+
+/// ST9 and CC5: the database is WAL with full syncs and foreign keys on
+/// every connection.
+#[test]
+fn the_database_is_durable() {
+    let dir = scratch("durable");
+    let catalog = common::catalog(&dir);
+    let conn = catalog.connection();
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    let synchronous: i64 = conn
+        .query_row("PRAGMA synchronous", [], |r| r.get(0))
+        .unwrap();
+    let keys: i64 = conn
+        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+        .unwrap();
+    let trusted: i64 = conn
+        .query_row("PRAGMA trusted_schema", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        (mode.as_str(), synchronous, keys, trusted),
+        ("wal", 2, 1, 0)
+    );
+}
+
+/// DB3: a write transaction holds at most 64 files: 70 files commit in two
+/// generations.
+#[test]
+fn a_batch_holds_at_most_64_files() {
+    let dir = scratch("batches");
+    let inputs = dir.join("in");
+    fs::create_dir_all(&inputs).unwrap();
+    for n in 0..70 {
+        fs::write(
+            inputs.join(format!("junk{n:02}.stp")),
+            format!("not STEP {n}"),
+        )
+        .unwrap();
+    }
+    let mut catalog = common::catalog(&dir);
+    let run = catalog.ingest(&[inputs], None).unwrap();
+    assert_eq!(run.len(), 70);
+    assert!(run.iter().all(|l| l.outcome == Outcome::Added));
+    assert_eq!(catalog.generation().unwrap(), 3);
+}
+
+/// SZ5: a database at its page quota refuses the batch whole, the run
+/// stops, and a gc's orphans are all it leaves (IN1 to IN9 hold).
+#[test]
+fn a_full_database_commits_nothing() {
+    let dir = scratch("full");
+    let root = dir.join("cat");
+    Catalog::init(&root, Options::default()).unwrap();
+    let pages: i64 = Connection::open(root.join("catalog.db"))
+        .unwrap()
+        .query_row("PRAGMA page_count", [], |r| r.get(0))
+        .unwrap();
+    let options = Options::default().with_max_db_pages(u64::try_from(pages).unwrap() + 1);
+    let mut catalog = Catalog::open(&root, options).unwrap();
+    let source = copy("candidates/m_bracket.stp", &dir, "m_bracket.stp");
+    let run = catalog.ingest(&[source], None).unwrap();
+    assert!(
+        matches!(run.stopped, Some(Error::Database(_))),
+        "{:?}",
+        run.stopped
+    );
+    assert!(matches!(run[0].outcome, Outcome::Error { .. }));
+    assert_eq!(catalog.generation().unwrap(), 1);
+    drop(catalog);
+    assert_eq!(invariants(&root), Vec::<String>::new());
 }
