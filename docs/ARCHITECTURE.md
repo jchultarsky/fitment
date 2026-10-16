@@ -118,13 +118,23 @@ candidate Part ─ its signature: stacks, planes, cones,  matching/signature.rs
   │   in values a rigid motion keeps
   ▼
 Shortlist: keep or drop, never pass (level 2); an       matching/shortlist.rs, index.rs
-    index of tokens for a catalog (level 1)
+  │   index of tokens for a catalog (level 1)
+  ▼
+candidate view: stacks with their usable profiles,      matching/candidate.rs
+  │   zones taken only where every face stays outside;
+  │   a tree over the faces, each boxed from the part
+  ▼
+Verification at a placement, requirement by            matching/verify.rs, axial.rs,
+    requirement: axes, spans, openings, the core       region.rs
+    clear, seats covered, grips, cones; every measure
+    recorded, every failure coded
 ```
 
-Alignment, verification, verdicts and the `fitment.match` document follow
+Alignment, verdicts and the `fitment.match` document follow
 (`docs/research/m4-match.md`, section 22). Every comparison the shortlist
 makes counts toward a budget; past it the candidate is kept, never
-dropped.
+dropped. Verification's coverage and core tests count toward their own;
+past it the requirement fails, never passes.
 
 ## Soundness: refuse, or say unknown, but never guess
 

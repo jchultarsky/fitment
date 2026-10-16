@@ -54,10 +54,11 @@ pub use gate::{Refusal, RefusalCode};
 pub use geom::{Dir3, Point3, Rigid, Vec3};
 pub use matching::{
     At, Band, BandWidth, Blocked, CandidateView, Clearance, EndSide, Evidence, Failure,
-    FailureCode, GUARD_MM, Grip, IndexTokens, Kept, MAX_SHORTLIST_CHECKS, MatchOptions,
-    MatchPolicy, Measure, MeasureValue, Missing, MissingElement, PairToken, PartSignature,
-    Quantity, SIGNATURE_VERSION, ShortlistIndex, SigCone, SigPlane, SigStack, SocketSignature,
-    SocketView, Unread, Warning, WarningCode, Window, shortlist,
+    FailureCode, GUARD_MM, Grip, IndexTokens, Kept, MATCH_RULES_VERSION, MAX_COVERAGE_STEPS,
+    MAX_SHORTLIST_CHECKS, MatchOptions, MatchPolicy, Measure, MeasureValue, Missing,
+    MissingElement, PairToken, PartSignature, Placement, Quantity, SIGNATURE_VERSION, Seed,
+    ShortlistIndex, SigCone, SigPlane, SigStack, SocketSignature, SocketView, Unread, Warning,
+    WarningCode, Window, shortlist, verify,
 };
 pub use sha256::{sha256, sha256_hex};
 pub use socket::{

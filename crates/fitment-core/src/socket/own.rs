@@ -86,7 +86,7 @@ pub(crate) struct Own<'p> {
 }
 
 /// A loop's box: its lines' ends, its arcs' whole circles.
-fn loop_box(segments: &[Segment]) -> Option<Aabb> {
+pub(crate) fn loop_box(segments: &[Segment]) -> Option<Aabb> {
     let mut out: Option<Aabb> = None;
     let mut take = |low: V, high: V| {
         out = Some(out.map_or((low, high), |(lo, hi)| {
@@ -195,7 +195,7 @@ impl<'p> Own<'p> {
 }
 
 /// The axis frame of a requirement.
-struct Frame {
+pub(crate) struct Frame {
     point: V,
     dir: V,
     u: V,
@@ -203,12 +203,24 @@ struct Frame {
 }
 
 impl Frame {
-    fn new(point: V, dir: V) -> Self {
+    /// The frame of the line through `point` along unit `dir`.
+    pub(crate) fn new(point: V, dir: V) -> Self {
         let (u, w) = perpendiculars(dir);
         Self { point, dir, u, w }
     }
 
-    fn station(&self, p: V) -> f64 {
+    /// Its axis direction.
+    pub(crate) fn dir(&self) -> V {
+        self.dir
+    }
+
+    /// The distance of `p` from the axis.
+    pub(crate) fn distance(&self, p: V) -> f64 {
+        let [x, y] = self.across(p);
+        (x * x + y * y).sqrt()
+    }
+
+    pub(crate) fn station(&self, p: V) -> f64 {
         dot(sub(p, self.point), self.dir)
     }
 
@@ -374,19 +386,19 @@ impl Own<'_> {
         frame: &Frame,
         core: &Core,
         (at, tilt): (f64, f64),
-        pairs: &mut u64,
-    ) -> Result<bool, super::rules::TooMany> {
+        (pairs, limit): (&mut u64, u64),
+    ) -> Result<Option<f64>, super::rules::TooMany> {
         let Some((plane, face)) = self.plane_face(k) else {
-            return Ok(true);
+            return Ok(Some(f64::NAN));
         };
         let Outline::Known { loops } = &face.outline else {
-            return Ok(true);
+            return Ok(Some(f64::NAN));
         };
         let normal = plane.normal.to_array();
         let turn = dot(normal, cross(frame.u, frame.w)).signum();
         let mut count = |n: usize| {
             *pairs += n as u64;
-            if *pairs > super::MAX_RELATIONS {
+            if *pairs > limit {
                 Err(super::rules::TooMany)
             } else {
                 Ok(())
@@ -403,10 +415,10 @@ impl Own<'_> {
         }
         let slack = tilt * far;
         if !core.meets(at - slack, at + slack) {
-            return Ok(false);
+            return Ok(None);
         }
         if !core.hole {
-            return Ok(far >= core.rho);
+            return Ok((far >= core.rho).then_some(far));
         }
         let point = add(frame.point, scale(frame.dir, at));
         let reach = core.rho.max(0.0) + slack;
@@ -429,7 +441,11 @@ impl Own<'_> {
                 }
             }
         }
-        Ok(through || near <= core.rho)
+        Ok(if through {
+            Some(0.0)
+        } else {
+            (near <= core.rho).then_some(near)
+        })
     }
 
     /// A square plane face's whole reach from the axis, for X7's test of a
@@ -836,32 +852,79 @@ impl Own<'_> {
     }
 }
 
+/// A face's stations and its least and greatest distance from an axis, and
+/// for a cone on the axis its radius at two stations, straight between.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FaceReach {
+    /// Its lowest station.
+    pub(crate) from: f64,
+    /// Its highest.
+    pub(crate) to: f64,
+    /// Its least distance from the axis.
+    pub(crate) near: f64,
+    /// Its greatest.
+    pub(crate) far: f64,
+    /// A cone on the axis: (station, radius) at its two circles.
+    pub(crate) taper: Option<((f64, f64), (f64, f64))>,
+}
+
 impl Own<'_> {
+    /// Face `k`'s stations and reach in `frame`: `None` where nothing bounds
+    /// it.
+    pub(crate) fn reach(&self, k: usize, frame: &Frame) -> Option<FaceReach> {
+        let reach = |(from, to): (f64, f64), (near, far): (f64, f64)| FaceReach {
+            from,
+            to,
+            near,
+            far,
+            taper: None,
+        };
+        match self.shape(k, frame) {
+            Shape::Square { at, .. } => self.square_reach(k, frame).map(|r| reach((at, at), r)),
+            Shape::Reach(r) => Some(reach((r.from, r.to), (r.near, r.far))),
+            Shape::Taper { lo, hi } => Some(FaceReach {
+                taper: Some((lo, hi)),
+                ..reach(
+                    (lo.0.min(hi.0), lo.0.max(hi.0)),
+                    (lo.1.min(hi.1), lo.1.max(hi.1)),
+                )
+            }),
+            Shape::Polygon(ref points) => {
+                let stations = points.iter().map(|p| p.0);
+                let range = stations.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), s| {
+                    (a.min(s), b.max(s))
+                });
+                Some(reach(range, polygon_reach(points)))
+            }
+            Shape::Anywhere => None,
+        }
+    }
+
+    /// The indices of feature `feature`'s faces.
+    pub(crate) fn faces_of(&self, feature: FeatureId) -> &[usize] {
+        self.of.get(&feature).map_or(&[], Vec::as_slice)
+    }
+
+    /// Face `k`'s `#id`.
+    pub(crate) fn face(&self, k: usize) -> Option<u64> {
+        self.faces.get(k).map(|f| f.0)
+    }
+
     /// X7: a transition's face on the safe side of the cylinder that stands
     /// for its zone: the narrower of the two segments it joins for a hole,
     /// the wider for a shaft, or at an end the end segment. `walls` are the
     /// stack's segments (stations, radius) whose ends are known; with no
     /// such segment beside it, it is not safe.
     fn safe(&self, k: usize, frame: &Frame, hole: bool, walls: &[(f64, f64, f64)]) -> bool {
-        let shape = self.shape(k, frame);
-        let ((from, to), (near, far)) = match shape {
-            Shape::Square { at, .. } => match self.square_reach(k, frame) {
-                Some(reach) => ((at, at), reach),
-                None => return false,
-            },
-            Shape::Reach(r) => ((r.from, r.to), (r.near, r.far)),
-            Shape::Taper { lo, hi } => (
-                (lo.0.min(hi.0), lo.0.max(hi.0)),
-                (lo.1.min(hi.1), lo.1.max(hi.1)),
-            ),
-            Shape::Polygon(ref points) => {
-                let stations = points.iter().map(|p| p.0);
-                let range = stations.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), s| {
-                    (a.min(s), b.max(s))
-                });
-                (range, polygon_reach(points))
-            }
-            Shape::Anywhere => return false,
+        let Some(FaceReach {
+            from,
+            to,
+            near,
+            far,
+            ..
+        }) = self.reach(k, frame)
+        else {
+            return false;
         };
         let wide = walls.iter().map(|w| w.2).fold(1.0, f64::max);
         let slack = 1e-6 * wide;
@@ -891,13 +954,54 @@ impl Own<'_> {
     }
 }
 
+impl Own<'_> {
+    /// VR22 on a candidate: the first face not `exempt` that may meet
+    /// `core` about `frame`'s axis, with its `#id` and its distance from
+    /// the axis (NaN where nothing bounds it). Every face tested and every
+    /// edge examined counts toward `pairs`, which may not pass `limit`.
+    pub(crate) fn intrusion(
+        &self,
+        frame: &Frame,
+        core: &Core,
+        exempt: &BTreeSet<u64>,
+        (pairs, limit): (&mut u64, u64),
+    ) -> Result<Option<(u64, f64)>, super::rules::TooMany> {
+        for k in self.candidates(frame, core) {
+            *pairs += 1;
+            if *pairs > limit {
+                return Err(super::rules::TooMany);
+            }
+            let Some(face) = self.face(k) else {
+                continue;
+            };
+            if exempt.contains(&face) {
+                continue;
+            }
+            let hit = match self.shape(k, frame) {
+                Shape::Square { at, tilt } => {
+                    self.square_hit(k, frame, core, (at, tilt), (&mut *pairs, limit))?
+                }
+                shape => core.intruded(&shape),
+            };
+            if let Some(distance) = hit {
+                return Ok(Some((face, distance)));
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// One span's core: its radius, which side of it is held clear, and its
 /// stations, each end open or closed (a root's or bottom's, exclusive).
-struct Core {
-    rho: f64,
-    hole: bool,
-    from: (f64, bool),
-    to: (f64, bool),
+pub(crate) struct Core {
+    /// Its radius.
+    pub(crate) rho: f64,
+    /// True for a bore's: the inside is held clear; else a shaft's outside.
+    pub(crate) hole: bool,
+    /// Where it starts, and whether that end is exclusive.
+    pub(crate) from: (f64, bool),
+    /// Where it ends.
+    pub(crate) to: (f64, bool),
 }
 
 impl Core {
@@ -917,33 +1021,42 @@ impl Core {
         after && before
     }
 
-    /// True if a face of `shape` may hold material inside the core; the
-    /// edge counts.
-    fn intruded(&self, shape: &Shape) -> bool {
+    /// Where a face of `shape` may hold material inside the core, the edge
+    /// counting: its distance from the axis there (its least for a bore,
+    /// its greatest for a shaft; NaN where nothing bounds it), or `None` if
+    /// it stays clear.
+    fn intruded(&self, shape: &Shape) -> Option<f64> {
         let radial = |near: f64, far: f64| {
             if self.hole {
-                near <= self.rho
+                (near <= self.rho).then_some(near)
             } else {
-                far >= self.rho
+                (far >= self.rho).then_some(far)
             }
         };
         match *shape {
             // A square plane's region is asked by `Own::square_hit`.
-            Shape::Anywhere | Shape::Square { .. } => true,
-            Shape::Reach(r) => self.meets(r.from, r.to) && radial(r.near, r.far),
+            Shape::Anywhere | Shape::Square { .. } => Some(f64::NAN),
+            Shape::Reach(r) => {
+                if self.meets(r.from, r.to) {
+                    radial(r.near, r.far)
+                } else {
+                    None
+                }
+            }
             Shape::Polygon(ref points) => {
                 let clipped = slab(points, self.from.0, self.to.0);
-                !clipped.is_empty() && {
-                    let (near, far) = polygon_reach(&clipped);
-                    radial(near, far)
+                if clipped.is_empty() {
+                    return None;
                 }
+                let (near, far) = polygon_reach(&clipped);
+                radial(near, far)
             }
             Shape::Taper { lo, hi } => {
                 // Clipped to the core's stations, the cone's radius runs
                 // straight between its values there.
                 let (a, b) = if lo.0 <= hi.0 { (lo, hi) } else { (hi, lo) };
                 if !self.meets(a.0, b.0) {
-                    return false;
+                    return None;
                 }
                 if b.0 <= a.0 {
                     return radial(a.1.min(b.1), a.1.max(b.1));
@@ -1072,11 +1185,11 @@ fn intruded(
             }
             let hit = match own.shape(k, &frame) {
                 Shape::Square { at, tilt } => {
-                    own.square_hit(k, &frame, &core, (at, tilt), pairs)?
+                    own.square_hit(k, &frame, &core, (at, tilt), (pairs, super::MAX_RELATIONS))?
                 }
                 shape => core.intruded(&shape),
             };
-            if hit {
+            if hit.is_some() {
                 return Ok(true);
             }
         }
@@ -1205,24 +1318,24 @@ mod tests {
                 far,
             })
         };
-        assert!(bore.intruded(&reach(2.0, 4.0, 3.0, 5.0)));
-        assert!(!bore.intruded(&reach(2.0, 4.0, 3.0 + 1e-9, 5.0)));
-        assert!(!bore.intruded(&reach(-2.0, 0.0, 0.0, 5.0)));
-        assert!(bore.intruded(&reach(10.0, 12.0, 0.0, 5.0)));
-        assert!(bore.intruded(&Shape::Anywhere));
+        assert_eq!(bore.intruded(&reach(2.0, 4.0, 3.0, 5.0)), Some(3.0));
+        assert!(bore.intruded(&reach(2.0, 4.0, 3.0 + 1e-9, 5.0)).is_none());
+        assert!(bore.intruded(&reach(-2.0, 0.0, 0.0, 5.0)).is_none());
+        assert!(bore.intruded(&reach(10.0, 12.0, 0.0, 5.0)).is_some());
+        assert!(bore.intruded(&Shape::Anywhere).is_some_and(f64::is_nan));
         let shaft = Core {
             hole: false,
             ..bore
         };
-        assert!(shaft.intruded(&reach(2.0, 4.0, 0.0, 3.0)));
-        assert!(!shaft.intruded(&reach(2.0, 4.0, 0.0, 2.9)));
+        assert_eq!(shaft.intruded(&reach(2.0, 4.0, 0.0, 3.0)), Some(3.0));
+        assert!(shaft.intruded(&reach(2.0, 4.0, 0.0, 2.9)).is_none());
         // A cone on the axis, clipped to the core's stations: from radius
         // 1 at station -10 to 6 at station 10, it is 3.5 at 0.
         let cone = Shape::Taper {
             lo: (-10.0, 1.0),
             hi: (10.0, 6.0),
         };
-        assert!(shaft.intruded(&cone));
-        assert!(!bore.intruded(&cone));
+        assert!(shaft.intruded(&cone).is_some());
+        assert!(bore.intruded(&cone).is_none());
     }
 }
