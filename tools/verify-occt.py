@@ -751,6 +751,9 @@ def check_assembly(directory, case):
 def check_case(directory, case):
     if case.get("kind") == "assembly":
         return check_assembly(directory, case)
+    if case.get("kind") == "match":
+        # A candidate's physics against its socket's assembly is `match` mode's (KO1, M4 PR 6).
+        return []
     problems = []
     name = case["id"]
     path = directory / case["file"]
@@ -1251,7 +1254,7 @@ def step_files(path):
         listed = json.loads(manifest.read_text(encoding="utf-8"))
         if "cases" in listed:
             # Assemblies are not parts: `manifest` mode checks them.
-            return [path / case["file"] for case in listed["cases"] if case.get("kind") != "assembly"]
+            return [path / case["file"] for case in listed["cases"] if case.get("kind", "part") == "part"]
         return [path / fixture["path"] for fixture in listed["fixtures"]]
     return sorted(p for p in path.rglob("*") if p.suffix.lower() in (".stp", ".step")
                   and "ocp" not in p.relative_to(path).parts)
