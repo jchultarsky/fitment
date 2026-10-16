@@ -210,6 +210,8 @@ CREATE TABLE features (
   holes             INTEGER,
   shafts            INTEGER,
   planes            INTEGER,
+  cones             INTEGER,
+  other_faces       INTEGER,
   complete          INTEGER,
   first_refusal     TEXT,
   CHECK ((status = 'accepted') = (first_refusal IS NULL)),

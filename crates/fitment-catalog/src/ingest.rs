@@ -69,6 +69,22 @@ pub enum Outcome {
     },
 }
 
+/// An accepted part's feature counts (GT5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Counts {
+    /// Planes.
+    pub planes: u32,
+    /// Holes.
+    pub holes: u32,
+    /// Shafts.
+    pub shafts: u32,
+    /// Cones.
+    pub cones: u32,
+    /// Faces no rule reads.
+    pub other_faces: u32,
+}
+
 /// What a stored document says, for people (GT5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -79,8 +95,8 @@ pub struct Summary {
     pub product_id: Option<String>,
     /// PRODUCT.name.
     pub product_name: Option<String>,
-    /// Holes, shafts and planes, if accepted.
-    pub counts: Option<(u32, u32, u32)>,
+    /// The feature counts, if accepted.
+    pub counts: Option<Counts>,
     /// Whether every face was read, if accepted.
     pub complete: Option<bool>,
     /// The first refusal, as `code: message`, if refused.
@@ -197,12 +213,12 @@ fn summarize(doc: &FeaturesDocument) -> Summary {
         },
         product_id: product.and_then(|p| p.id.clone()),
         product_name: product.and_then(|p| p.name.clone()),
-        counts: part.map(|p| {
-            (
-                count(p.holes.len()),
-                count(p.shafts.len()),
-                count(p.planes.len()),
-            )
+        counts: part.map(|p| Counts {
+            planes: count(p.planes.len()),
+            holes: count(p.holes.len()),
+            shafts: count(p.shafts.len()),
+            cones: count(p.cones.len()),
+            other_faces: count(p.other_faces.len()),
         }),
         complete: part.map(|p| p.complete),
         first_refusal: first.map(|r| format!("{}: {}", r.code.name(), r.message)),
@@ -625,12 +641,12 @@ fn insert_features(tx: &Transaction<'_>, p: &Prepared) -> rusqlite::Result<()> {
         p.doc.as_bytes(),
     );
     let s = &p.summary;
-    let (holes, shafts, planes) = s.counts.unzip3();
+    let c = s.counts;
     tx.execute(
         "INSERT INTO features (sha256, extractor_version, status, doc, doc_sha256, part_digest,
-                               product_id, product_name, holes, shafts, planes, complete,
-                               first_refusal)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                               product_id, product_name, holes, shafts, planes, cones,
+                               other_faces, complete, first_refusal)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT (sha256, extractor_version) DO NOTHING",
         params![
             p.sha256.as_str(),
@@ -641,9 +657,11 @@ fn insert_features(tx: &Transaction<'_>, p: &Prepared) -> rusqlite::Result<()> {
             p.part_digest.as_ref().map(Sha256Hex::as_str),
             s.product_id,
             s.product_name,
-            holes,
-            shafts,
-            planes,
+            c.map(|c| c.holes),
+            c.map(|c| c.shafts),
+            c.map(|c| c.planes),
+            c.map(|c| c.cones),
+            c.map(|c| c.other_faces),
             s.complete,
             s.first_refusal,
         ],
@@ -703,18 +721,4 @@ fn insert_tokens(
         ])?;
     }
     Ok(())
-}
-
-/// Three optional counts as three options.
-trait Unzip3 {
-    fn unzip3(self) -> (Option<u32>, Option<u32>, Option<u32>);
-}
-
-impl Unzip3 for Option<(u32, u32, u32)> {
-    fn unzip3(self) -> (Option<u32>, Option<u32>, Option<u32>) {
-        match self {
-            Some((a, b, c)) => (Some(a), Some(b), Some(c)),
-            None => (None, None, None),
-        }
-    }
 }

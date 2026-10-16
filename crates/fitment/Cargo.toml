@@ -24,8 +24,15 @@ path = "src/main.rs"
 
 # The CLI never depends on stepq directly (deny.toml) and never on an async
 # runtime: the server is a separate package.
+[features]
+# The catalog (M5) and its SQLite; without it, `fitment catalog` exits 2
+# (docs/research/m5-catalog.md, CL8).
+default = ["catalog"]
+catalog = ["dep:fitment-catalog"]
+
 [dependencies]
 fitment-core = { workspace = true }
+fitment-catalog = { workspace = true, optional = true }
 clap = { workspace = true }
 # The table view names values as the document does; both already build for
 # fitment-core.

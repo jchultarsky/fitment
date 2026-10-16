@@ -1,7 +1,8 @@
 //! The `fitment` command line.
 //!
 //! Commands arrive with the milestones that build them: `features` (M2),
-//! `parts`, `socket` and `review` (M3), `match` (M4), `catalog` (M5).
+//! `parts`, `socket` and `review` (M3), `match` (M4), `catalog` (M5, behind
+//! the default `catalog` feature).
 
 mod cmd;
 
@@ -49,6 +50,12 @@ enum Command {
     /// (its body fit not checked), 5 every candidate rejected, 1 error,
     /// 2 usage, 3 the socket document refused.
     Match(cmd::match_::Args),
+    /// Store STEP parts by content, indexed for matching: init, ingest,
+    /// list and get, in the catalog named by -C DIR.
+    ///
+    /// Exit codes: 0 done, 1 error, 2 usage (and not a catalog), 3 refused
+    /// input.
+    Catalog(cmd::catalog::Args),
 }
 
 /// Exit codes shared by every command.
@@ -65,5 +72,6 @@ fn main() -> ExitCode {
         Command::Socket(args) => cmd::socket::run(&args),
         Command::Review(args) => cmd::review::run(&args),
         Command::Match(args) => cmd::match_::run(&args),
+        Command::Catalog(args) => cmd::catalog::run(&args),
     }
 }

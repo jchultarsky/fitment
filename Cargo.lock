@@ -196,6 +196,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "fitment-catalog",
  "fitment-core",
  "predicates",
  "serde",

@@ -28,6 +28,15 @@ Until 1.0, minor versions may contain breaking changes.
   names, exact stems first; duplicates, conflicts and quarantine. Only
   `fitment-catalog` may depend on rusqlite (`deny.toml`).
 
+- **M5, PR 2b (the catalog's CLI):** `fitment catalog init`, `ingest`,
+  `list` and `get -C DIR`, behind the default `catalog` feature: one line
+  per file and a summary on stderr; `list` with each entry's status
+  (indexed, quarantined or stale); `get` by id, `ID@rN` or `sha256:`, as a
+  table, a `fitment.catalog` document, the stored features document
+  (checked against its row's hash, and byte-identical to `fitment
+  features`), or the file's bytes to `-o`, re-hashed first. Without the
+  feature, `fitment catalog` exits 2.
+
 ### Changed
 
 - `signature_version` is 2: pair tokens name their two stacks by index
