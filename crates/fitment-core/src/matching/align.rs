@@ -348,6 +348,11 @@ impl Builder<'_, '_> {
                 seed: seed.clone(),
                 index,
             });
+            // Reaching the bound is exhaustion: every caller stops here, so
+            // the placement past it is never pushed to say so (AL11).
+            if self.out.len() >= MAX_PLACEMENTS {
+                self.exhausted = true;
+            }
         }
     }
 

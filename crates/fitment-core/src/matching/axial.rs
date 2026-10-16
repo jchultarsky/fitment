@@ -959,27 +959,25 @@ fn extend(
 
 #[cfg(test)]
 mod tests {
-    use super::{Found, Map, Span, no_room, zone_profile};
+    use super::{Found, Map, Span, zone_profile};
     use crate::geom::Rigid;
     use crate::matching::candidate::{CandidateView, Piece};
     use crate::matching::evidence::At;
     use crate::matching::verify::Ctx;
+    use crate::matching::verify::{Budget, check};
     use crate::matching::{MatchPolicy, Placement, SocketView};
+    use crate::socket::Requires;
     use crate::socket::{SocketDocument, SpanBasis};
 
-    /// VR4's no-room branch (VD6): a clearance span whose clear diameter and
-    /// the original's leave no margin above τ + u fails every candidate with
-    /// `floor_above_tolerance`; s01's bracket's bore, clear Ø6 in its Ø6.6,
-    /// has room, and the same with a clear Ø6.59 has none.
+    /// VR4's no-room branch (VD6), through verification's own entry: a
+    /// clearance span whose clear diameter and the original's leave no
+    /// margin above τ + u fails with `floor_above_tolerance` before any
+    /// candidate is looked at, and SG7's `blocked` says so too. s01's
+    /// bracket's bore, clear Ø6 in its Ø6.6, has room; with a clear Ø6.59
+    /// it has none. s01's bolt's shaft, Ø6 in the bracket's Ø6.6 hole, has
+    /// room; against a Ø6.01 limit it has none.
     #[test]
     fn a_clearance_with_no_room_fails_every_candidate() {
-        let bytes = include_bytes!("../../tests/assemblies/s01_bolted.stp");
-        let Ok(document) = SocketDocument::extract(bytes, Some("BRACKET"), None) else {
-            unreachable!()
-        };
-        let Some(view) = SocketView::new(&document, "socket-1") else {
-            unreachable!()
-        };
         let read = crate::features::FeaturesDocument::read(include_bytes!(
             "../../tests/data/p01_through.stp"
         ));
@@ -988,39 +986,55 @@ mod tests {
         };
         let cand = CandidateView::of(part);
         let at = Placement::given(Rigid::IDENTITY);
-        let ctx = Ctx::new(&view, &cand, &at, &MatchPolicy::default());
-        let Some(bore) = view
-            .active()
-            .iter()
-            .find(|r| matches!(r.requires, crate::socket::Requires::Bore { .. }))
-        else {
-            unreachable!()
-        };
-        let span = |clear: f64| Span {
-            from: 0.0,
-            to: 8.0,
-            d: 6.6,
-            clear: Some(clear),
-            pinned: false,
-            basis: SpanBasis::Cylinder,
-            profile: None,
-        };
-        assert!(no_room(&ctx, bore, true, &[span(6.0)]).is_none());
-        let Some(evidence) = no_room(&ctx, bore, true, &[span(6.59)]) else {
-            unreachable!()
-        };
-        assert!(
-            evidence
-                .failures()
-                .iter()
-                .all(|f| f.code == crate::matching::FailureCode::FloorAboveTolerance)
-        );
-        // A pinned span states no clearance: VR4's no-room test is not its.
-        let pinned = Span {
-            pinned: true,
-            ..span(6.59)
-        };
-        assert!(no_room(&ctx, bore, true, &[pinned]).is_none());
+        let policy = MatchPolicy::default();
+        for (target, hole, room, none) in [("BRACKET", true, 6.0, 6.59), ("BOLT", false, 6.6, 6.01)]
+        {
+            let bytes = include_bytes!("../../tests/assemblies/s01_bolted.stp");
+            let Ok(document) = SocketDocument::extract(bytes, Some(target), None) else {
+                unreachable!()
+            };
+            let Some(view) = SocketView::new(&document, "socket-1") else {
+                unreachable!()
+            };
+            let Some(original) = view.active().iter().copied().find(|r| {
+                matches!(
+                    (&r.requires, hole),
+                    (Requires::Bore { .. }, true) | (Requires::Shaft { .. }, false)
+                )
+            }) else {
+                unreachable!()
+            };
+            let with_clear = |clear: f64| {
+                let mut r = original.clone();
+                match &mut r.requires {
+                    Requires::Bore { spans, .. } => {
+                        for s in spans.iter_mut() {
+                            s.clear_diameter_mm = Some(clear);
+                        }
+                    }
+                    Requires::Shaft { spans, .. } => {
+                        for s in spans.iter_mut() {
+                            s.clear_diameter_mm = Some(clear);
+                        }
+                    }
+                    _ => {}
+                }
+                r
+            };
+            let floor = |r: &crate::socket::Requirement| {
+                check(&view, r, &cand, &at, &policy, &mut Budget::new())
+                    .evidence()
+                    .failures()
+                    .iter()
+                    .any(|f| f.code == crate::matching::FailureCode::FloorAboveTolerance)
+            };
+            let roomy = with_clear(room);
+            assert!(!floor(&roomy), "{target}: room");
+            assert!(!view.blocked(&roomy, &policy), "{target}: room");
+            let tight = with_clear(none);
+            assert!(floor(&tight), "{target}: no room");
+            assert!(view.blocked(&tight, &policy), "{target}: no room");
+        }
     }
 
     /// A zone of the profile whose radius is unknown (no single cone)

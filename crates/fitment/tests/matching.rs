@@ -722,27 +722,64 @@ fn hostile_inputs_stay_within_their_bounds() {
         if !cfg!(debug_assertions) && took > bound {
             problems.push(format!("{id}: {took:.1} s, past its {bound} s"));
         }
-        let codes: Vec<String> = result
-            .sockets
-            .iter()
-            .flat_map(|s| s.checks.iter())
-            .flat_map(|(_, c)| c.evidence().failures().iter())
-            .filter_map(|f| serde_json::to_value(f.code).ok())
-            .filter_map(|v| v.as_str().map(str::to_owned))
-            .collect();
-        let rejected = result.verdict.kind() == VerdictKind::Reject;
-        let bounds = ["alignment_exhausted", "coverage_exhausted"];
-        match case["truth"].as_str().unwrap() {
-            "fits" if rejected && !codes.iter().all(|c| bounds.contains(&c.as_str())) => {
-                problems.push(format!("{id}: fits, rejected by {codes:?}"));
-            }
-            "does_not_fit" | "fn_rule" if !rejected => {
-                problems.push(format!("{id}: passed"));
-            }
-            _ => {}
-        }
+        problems.extend(hostile_problems(id, case, &result));
         eprintln!("{id}: {:?} in {took:.2} s", result.verdict.kind());
     }
     assert!(seen >= 4, "{seen} hostile cases");
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// One hostile case's verdict against its truth and the bound it states:
+/// a fit rejected only by a bound (read, never dropped by the shortlist,
+/// every failed check carrying a bound's code); a non-fit rejected; the
+/// bound it names fired, and alignment's placement bound reached where it
+/// says so.
+fn hostile_problems(id: &str, case: &Value, result: &CandidateResult) -> Vec<String> {
+    let bounds = ["alignment_exhausted", "coverage_exhausted"];
+    let codes_of = |c: &fitment_core::Check| -> Vec<String> {
+        c.evidence()
+            .failures()
+            .iter()
+            .filter_map(|f| serde_json::to_value(f.code).ok())
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect()
+    };
+    let failed: Vec<Vec<String>> = result
+        .sockets
+        .iter()
+        .flat_map(|s| s.checks.iter())
+        .filter(|(_, c)| !c.passed())
+        .map(|(_, c)| codes_of(c))
+        .collect();
+    let rejected = result.verdict.kind() == VerdictKind::Reject;
+    let mut out = Vec::new();
+    match case["truth"].as_str().unwrap_or("") {
+        "fits" if rejected => {
+            let read = result.status == fitment_core::Status::Accepted;
+            let dropped = result.sockets.iter().any(|s| s.stage == Stage::Shortlist);
+            let by_bound = !failed.is_empty()
+                && failed
+                    .iter()
+                    .all(|codes| codes.iter().any(|c| bounds.contains(&c.as_str())));
+            if !read || dropped || !by_bound {
+                out.push(format!(
+                    "{id}: fits, rejected otherwise than by a bound (read {read}, dropped {dropped}): {failed:?}"
+                ));
+            }
+        }
+        "does_not_fit" | "fn_rule" if !rejected => out.push(format!("{id}: passed")),
+        "fits" | "does_not_fit" | "fn_rule" => {}
+        other => out.push(format!("{id}: an unknown truth {other:?}")),
+    }
+    if let Some(bound) = case["expect"]["bound"].as_str() {
+        if !failed.iter().flatten().any(|c| c == bound) {
+            out.push(format!("{id}: {bound} did not fire: {failed:?}"));
+        }
+    }
+    if case["expect"]["placements_exhausted"] == true
+        && !result.sockets.iter().any(|s| s.placements.1)
+    {
+        out.push(format!("{id}: alignment's placement bound was not reached"));
+    }
+    out
 }
