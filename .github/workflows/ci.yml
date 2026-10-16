@@ -75,6 +75,10 @@ jobs:
       # Every mutation of fitment's sockets meets a disagreement.
       - run: tools/verify-occt.py mutations corpus/out
       - run: tools/verify-occt.py socket --expect fixtures/manifest.json fixtures
+      # fitment's match documents against Open CASCADE: every pass fits at the
+      # placement it states, its features on their requirements, and every
+      # mutation of a document meets a disagreement (KO3, KO5, KO6).
+      - run: tools/verify-occt.py match corpus/out
       - run: cargo test -p fitment --test corpus --test fixtures --test shortlist --test original --test matching --locked
         env:
           FITMENT_REQUIRE_CORPUS: "1"
