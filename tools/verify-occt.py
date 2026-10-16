@@ -59,8 +59,13 @@ no common volume where the original has none, an interference changed by
 no more than a radius change of tol/2 over its interface, and no contact
 lost beyond tol times the original contact's boundary (planes exactly,
 by face booleans within one tolerance band; cylinders and cones sampled).
-`fits` and `fn_rule` must fit, `does_not_fit` and `fits_functional` must
-not, `collides` may depart by common volume alone; `edge`, `refused`,
+Volumes gained and lost, and contact lost, are each measured as regions,
+so a gain never hides a loss; the target's other occurrences are
+neighbours too, as the candidate replacing them. `fits` and `fn_rule`
+must fit, `does_not_fit` and `fits_functional` must not, `collides` may
+depart by common volume alone, outside every region of M3's expected
+sockets (each bore's core, each shaft's hole and the near band beyond,
+each seat's faces swept through the near band); `edge`, `refused`,
 component candidates and grip-only thickness changes (M4-8, M7's) are not
 judged.
 
@@ -74,8 +79,7 @@ plane or axis line within the tolerance; and each mutation of a document
 (a reject turned interface_match, a placement moved 0.01 mm across an
 axis, turned 0.02 degrees, or turned 180 degrees about a hole's axis)
 meets a disagreement somewhere in the corpus. A `collides` pass may
-depart by common volume alone; that the volume lies outside every
-requirement's region is not yet checked.
+depart by common volume alone, none of it inside a requirement's region.
 
 `features` checks fitment against Open CASCADE instead. PATH is a STEP
 file, or a directory: a generated corpus (its manifest's cases), the
@@ -820,6 +824,7 @@ def check_case(directory, case):
 TOL = 0.01  # mm: the default policy's linear tolerance, which every case's truth is stated under
 VOLUME = 1e-6  # mm³: a common volume no larger is none
 SAMPLES = 16  # a curved face's contact, sampled on an n x n grid of its parameters
+NEAR = 1.0  # mm: fitment's NEAR_MM, the band of a seat's region about its plane
 
 # Classes whose truth KO1 cannot judge at the construction's placement, each for its reason.
 UNJUDGED = {
@@ -828,9 +833,12 @@ UNJUDGED = {
     "b_thickness": "the neighbours reseat (M4-8): M7's",
 }
 
-
 # How many cases KO1 judged, by truth: printed, and none at all is a disagreement.
 KO1_TALLY = {}
+
+
+class BooleanFailed(Exception):
+    """An Open CASCADE boolean that did not finish: a disagreement of its own, never a volume of zero."""
 
 
 def compose(a, b):
@@ -847,6 +855,10 @@ def moved(shape, m):
     return BRepBuilderAPI_Transform(shape, t, True).Shape()
 
 
+def translated(shape, v):
+    return moved(shape, [[1.0 * (i == j) for j in range(3)] + [v[i]] for i in range(3)])
+
+
 def one_solid(path):
     """The one solid a candidate file holds, in millimetres."""
     reader = STEPControl_Reader()
@@ -858,6 +870,8 @@ def one_solid(path):
 
 
 def volume_of(shape):
+    if shape is None:
+        return 0.0
     props = GProp_GProps()
     BRepGProp.VolumeProperties_s(shape, props)
     return abs(props.Mass())
@@ -878,7 +892,20 @@ def length_of(shape):
 def common(a, b):
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
     op = BRepAlgoAPI_Common(a, b)
-    return op.Shape() if op.IsDone() else None
+    if not op.IsDone():
+        raise BooleanFailed("a common")
+    return op.Shape()
+
+
+def without(a, b):
+    """a less b; a or b None is nothing."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    if a is None or b is None:
+        return a
+    op = BRepAlgoAPI_Cut(a, b)
+    if not op.IsDone():
+        raise BooleanFailed("a cut")
+    return op.Shape()
 
 
 def apart(a, b, gap):
@@ -895,118 +922,227 @@ def apart(a, b, gap):
 
 
 def planar_contact(x, n, band):
-    """The area and boundary length of x's planar faces that lie on a face of n, facing it within `band`: each
-    pair of opposed planes at most `band` apart, n's face moved onto x's plane and intersected exactly."""
-    area = boundary = 0.0
-    theirs = [(g, plane_facts(g)) for g in (as_face(f) for f in explore(n, TopAbs_FACE))]
-    theirs = [(g, facts) for g, facts in theirs if facts is not None]
-    for f in explore(x, TopAbs_FACE):
-        f = as_face(f)
-        mine = plane_facts(f)
-        if mine is None:
+    """x's contact with n's planar faces, as pieces of n's faces by index: each face of x opposed to a face g of n
+    and at most `band` from g's plane, moved onto g's plane and intersected with g exactly."""
+    mine = [(f, plane_facts(f)) for f in (as_face(e) for e in explore(x, TopAbs_FACE))]
+    mine = [(f, facts) for f, facts in mine if facts is not None]
+    out = {}
+    for k, g in enumerate(as_face(e) for e in explore(n, TopAbs_FACE)):
+        theirs = plane_facts(g)
+        if theirs is None or apart(g, x, band):
             continue
-        normal, point, _ = mine
-        for g, (other, at, _) in theirs:
-            if dot(normal, other) > -1 + 1e-9:
+        normal, point, _ = theirs
+        pieces = []
+        for f, (fn, fp, _) in mine:
+            if dot(fn, normal) > -1 + 1e-9:
                 continue
-            gap = dot(sub(at, point), normal)
+            gap = dot(sub(fp, point), normal)
             if not -band <= gap <= band or apart(f, g, band):
                 continue
-            from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-            from OCP.gp import gp_Trsf, gp_Vec
-            t = gp_Trsf()
-            t.SetTranslation(gp_Vec(*[-gap * c for c in normal]))
-            shared = common(f, BRepBuilderAPI_Transform(g, t, True).Shape())
-            if shared is None:
-                continue
-            a = area_of(shared)
-            if a > 1e-9:
-                area += a
-                boundary += length_of(shared)
-    return area, boundary
+            shared = common(g, translated(f, [-gap * c for c in normal]))
+            if area_of(shared) > 1e-9:
+                pieces.append(shared)
+        if pieces:
+            out[k] = pieces
+    return out
 
 
-def curved_contact(x, n, band):
-    """The area of x's cylindrical and conical faces that n's material lies against within `band`, sampled: a
-    point of the face counts when the point `band`/2 outside it is inside n; and the boundary of that area, as
-    the perimeter of each touched face's sampled share."""
+def curved_touch(x_shapes, n, band):
+    """For each cylindrical or conical face of n near some shape of `x_shapes`: (area, boundary length, and per
+    shape the share of its sampled points that shape lies against: the point `band`/2 inside n's surface, on the
+    shape's side, is inside the shape)."""
     from OCP.BRepClass import BRepClass_FaceClassifier
     from OCP.BRepGProp import BRepGProp_Face
     from OCP.gp import gp_Pnt2d, gp_Vec
-    classifier = BRepClass3d_SolidClassifier(n)
-    area = boundary = 0.0
-    for f in explore(x, TopAbs_FACE):
-        f = as_face(f)
-        kind = BRepAdaptor_Surface(f).GetType()
-        if kind not in (Kind.GeomAbs_Cylinder, Kind.GeomAbs_Cone) or apart(f, n, band):
+    classifiers = [BRepClass3d_SolidClassifier(x) for x in x_shapes]
+    out = []
+    for g in (as_face(e) for e in explore(n, TopAbs_FACE)):
+        if BRepAdaptor_Surface(g).GetType() not in (Kind.GeomAbs_Cylinder, Kind.GeomAbs_Cone):
             continue
-        normals = BRepGProp_Face(f)
-        u0, u1, v0, v1 = BRepTools.UVBounds_s(f)
-        inside = touched = 0
+        if all(apart(g, x, band) for x in x_shapes):
+            continue
+        normals = BRepGProp_Face(g)
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(g)
+        touched = [[] for _ in x_shapes]
         for i in range(SAMPLES):
             for j in range(SAMPLES):
                 u, v = u0 + (i + 0.5) / SAMPLES * (u1 - u0), v0 + (j + 0.5) / SAMPLES * (v1 - v0)
-                if BRepClass_FaceClassifier(f, gp_Pnt2d(u, v), 1e-7).State() != TopAbs_IN:
+                if BRepClass_FaceClassifier(g, gp_Pnt2d(u, v), 1e-7).State() != TopAbs_IN:
                     continue
-                inside += 1
                 at, normal = gp_Pnt(), gp_Vec()
                 normals.Normal(u, v, at, normal)
                 if normal.Magnitude() == 0:
                     continue
                 normal.Normalize()
                 probe = [c + band / 2 * d for c, d in zip(xyz(at), (normal.X(), normal.Y(), normal.Z()))]
-                classifier.Perform(gp_Pnt(*probe), 1e-7)
-                touched += classifier.State() == TopAbs_IN
-        if inside and touched:
-            share = touched / inside
-            face_area = area_of(f)
-            area += share * face_area
-            boundary += share * length_of(f)
-    return area, boundary
+                for k, classifier in enumerate(classifiers):
+                    classifier.Perform(gp_Pnt(*probe), 1e-7)
+                    touched[k].append(classifier.State() == TopAbs_IN)
+        if touched[0]:
+            out.append((area_of(g), length_of(g), touched))
+    return out
 
 
-def against(x, n, band):
-    """x against a neighbour n: their common volume, the surface of that common (twice the interface of a thin
-    interference), and x's contact with n (area, boundary length)."""
-    if apart(x, n, band):
-        return 0.0, 0.0, 0.0, 0.0
-    shared = common(x, n)
-    v = volume_of(shared) if shared is not None else math.inf
-    s = area_of(shared) if shared is not None and v > VOLUME else 0.0
-    pa, pb = planar_contact(x, n, band)
-    ca, cb = curved_contact(x, n, band)
-    return v, s, pa + ca, pb + cb
+def contact_lost(t, c, n_t, n_c, band):
+    """The contact t makes with n_t that c no longer makes with n_c, and the boundary length of t's contact.
+    One neighbour (n_t is n_c): region by region, planes exactly and curved faces sample by sample, so a contact
+    gained elsewhere never hides one lost. Two (a copy of the target, replaced too): by totals."""
+    pt, pc = planar_contact(t, n_t, band), planar_contact(c, n_c, band)
+    boundary = sum(length_of(p) for pieces in pt.values() for p in pieces)
+    if n_t is n_c:
+        lost = 0.0
+        for k, pieces in pt.items():
+            for p in pieces:
+                kept = sum(area_of(common(p, q)) for q in pc.get(k, []))
+                lost += max(area_of(p) - kept, 0.0)
+        for area, length, (by_t, by_c) in curved_touch([t, c], n_t, band):
+            share = sum(1 for a, b in zip(by_t, by_c) if a and not b) / len(by_t)
+            lost += share * area
+            boundary += sum(by_t) / len(by_t) * length
+        return lost, boundary
+    total = lambda pieces: sum(area_of(p) for ps in pieces.values() for p in ps)  # noqa: E731
+    lost = total(pt) - total(pc)
+    for shape, n in ((t, n_t), (c, n_c)):
+        for area, length, (by,) in curved_touch([shape], n, band):
+            share = sum(by) / len(by)
+            lost += share * area if shape is t else -share * area
+            if shape is t:
+                boundary += share * length
+    return max(lost, 0.0), boundary
 
 
 def physics(target, candidate, neighbours, name):
-    """KO1's judgment of one placed candidate against the original it replaces: for every neighbour, no common
-    volume where the original has none, an interference within the engagement the tolerance allows, and no
-    contact lost beyond the tolerance times the original contact's boundary. Returns the departures."""
+    """KO1's judgment of one placed candidate against the original it replaces, neighbour by neighbour (each
+    `(label, as the original meets it, as the candidate meets it)`): no common volume the original's lacks, nor
+    any of the original's lost, beyond the engagement a radius change of tol/2 allows over an interference's
+    interface (half its common's surface; none without one); and no contact lost beyond tol times the original
+    contact's boundary. Returns the departures as (kind, text, neighbour as the candidate meets it, gained
+    common)."""
     out = []
-    for label, n in neighbours:
-        vt, st, at, bt = against(target, n, TOL)
-        vc, _, ac, _ = against(candidate, n, TOL)
-        # An interference may change by the engagement a radius change of tol/2 makes over its interface
-        # (half the common's surface); no common, by nothing.
-        allowed = TOL / 2 * st / 2 + VOLUME
-        if vc - vt > allowed:
-            out.append(("volume", f"{name}: {vc:.6g} mm³ common with {label}, the original's {vt:.6g} "
-                                  f"(allowed {allowed:.6g} more)", n))
-        elif vt - vc > allowed:
-            out.append(("interference", f"{name}: the interference with {label} is {vc:.6g} mm³, the original's "
-                                        f"{vt:.6g} (allowed {allowed:.6g} less)", n))
-        if ac - at < -(TOL * bt) - 1e-6:
-            out.append(("contact", f"{name}: {at - ac:.6g} mm² of the original's contact with {label} lost "
-                                   f"(allowed {TOL * bt:.6g})", n))
+    for label, n_t, n_c in neighbours:
+        near_t, near_c = not apart(target, n_t, TOL), not apart(candidate, n_c, TOL)
+        if not near_t and not near_c:
+            continue
+        tn = common(target, n_t) if near_t else None
+        cn = common(candidate, n_c) if near_c else None
+        vt = volume_of(tn)
+        allowed = (TOL / 2 * area_of(tn) / 2 if vt > VOLUME else 0.0) + VOLUME
+        gained_shape = without(cn, tn) if vt > VOLUME else cn
+        gained, lost = volume_of(gained_shape), volume_of(without(tn, cn) if cn is not None else tn)
+        if gained > allowed:
+            out.append(("volume", f"{name}: {gained:.6g} mm³ more common with {label} than the original's "
+                                  f"(allowed {allowed:.6g})", n_c, gained_shape))
+        if lost > allowed:
+            out.append(("interference", f"{name}: {lost:.6g} mm³ of the original's common with {label} lost "
+                                        f"(allowed {allowed:.6g})", n_c, None))
+        area, boundary = contact_lost(target, candidate, n_t, n_c, TOL)
+        if area > TOL * boundary + 1e-6:
+            out.append(("contact", f"{name}: {area:.6g} mm² of the original's contact with {label} lost "
+                                   f"(allowed {TOL * boundary:.6g})", n_c, None))
     return out
+
+
+def neighbours_at(leaves, part, k, originals, candidates):
+    """The neighbours of the target's occurrence k: every other leaf as itself, and every other occurrence of the
+    target as the original and as the candidate that replaces it too."""
+    out = [(f"{product} #{j}", shape, shape) for j, (product, _, shape) in enumerate(leaves) if product != part]
+    out += [(f"{part} copy {j}", originals[j], candidates[j]) for j in range(len(originals)) if j != k]
+    return out
+
+
+def region_spec_from_document(socket):
+    """A socket document's socket as regions to place: each bore's core (its clear diameter, or with none its
+    own, over each span), each shaft's neighbour hole and the band beyond (its clear diameter, or its own, plus
+    NEAR), each seat's plane."""
+    out = []
+    for requirement in socket["requirements"]:
+        q = requirement["requires"]
+        if q["kind"] in ("bore", "shaft"):
+            own = "hole_diameter_mm" if q["kind"] == "bore" else "shaft_diameter_mm"
+            spans = [(s_["from_mm"], s_["to_mm"], (s_.get("clear_diameter_mm") or s_[own]) / 2
+                      + (NEAR if q["kind"] == "shaft" else 0.0)) for s_ in q.get("spans", [])]
+            out.append({"axis": (q["axis"]["point_mm"], norm(q["axis"]["direction"])), "spans": spans})
+        elif q["kind"] == "seat":
+            out.append({"plane": (q["normal"], q["offset_mm"])})
+    return out
+
+
+def region_spec_from_expectation(socket):
+    """The same regions from M3's expected socket (gen-corpus.py's e_socket), stated from the construction."""
+    out = []
+    for q in socket.get("requirements", []):
+        point, d = q["axis_point"], norm(q["axis_direction"])
+        spans = []
+        for s_ in q["spans"]:
+            own = (s_["clear"] or s_["diameter"]) / 2 + (NEAR if q["kind"] == "shaft" else 0.0)
+            spans.append((dot(sub(s_["from"], point), d), dot(sub(s_["to"], point), d), own))
+        out.append({"axis": (point, d), "spans": spans})
+    for q in socket.get("seats", []):
+        out.append({"plane": (q["normal"], dot(q["point"], q["normal"]))})
+    return out
+
+
+def regions(spec, at, original):
+    """KO1's regions placed by `at`: cylinders along each axis over each span, and the original's faces on each
+    seat's plane swept through NEAR either side of it."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Vec
+    out = []
+    planes = [(f, plane_facts(f)) for f in (as_face(e) for e in explore(original, TopAbs_FACE))]
+    planes = [(f, facts) for f, facts in planes if facts is not None]
+    for item in spec:
+        if "axis" in item:
+            point, d = item["axis"]
+            for a, b, radius in item["spans"]:
+                lo, hi = min(a, b), max(a, b)
+                if hi - lo <= 0 or radius <= 0:
+                    continue
+                base = apply_point(at, add(point, d, lo))
+                out.append(BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*base), gp_Dir(*turn(at, d))), radius,
+                                                    hi - lo).Shape())
+        else:
+            normal, offset = item["plane"]
+            n = turn(at, normal)
+            o = dot(n, apply_point(at, [c * offset for c in normal]))
+            for face, (fn, fp, _) in planes:
+                if dot(fn, n) >= 1 - 1e-9 and abs(dot(fp, n) - o) <= 1e-6:
+                    start = translated(face, [-NEAR * c for c in n])
+                    out.append(BRepPrimAPI_MakePrism(start, gp_Vec(*[2 * NEAR * c for c in n])).Shape())
+    return out
+
+
+def inside_regions(gained, places):
+    """True if any of a candidate's gained common volume lies in some region (RS9: a defect, not a collision)."""
+    return any(volume_of(common(gained, region)) > VOLUME for region in places)
+
+
+def collisions_problems(departures, places):
+    """A `collides` candidate's departures: none but gained volume, and none of it inside a requirement's
+    region."""
+    if {d[0] for d in departures} != {"volume"}:
+        return [d[1] for d in departures]
+    return [f"{d[1]}: inside a requirement's region (RS9)" for d in departures if inside_regions(d[3], places)]
+
+
+MANIFESTS = {}
+
+
+def expected_sockets(directory, source, part):
+    """M3's expected sockets of `part` in `source`, from the corpus manifest; [] for a source with none."""
+    if directory not in MANIFESTS:
+        MANIFESTS[directory] = {c["id"]: c for c in
+                                json.loads((directory / "manifest.json").read_text(encoding="utf-8"))["cases"]}
+    case = MANIFESTS[directory].get(source, {})
+    return (case.get("expect", {}).get("sockets") or {}).get(part, [])
 
 
 def match_physics(directory, case):
     """KO1: the candidate placed by the construction (the occurrence's transform after the case's placement)
     into its socket's source assembly, at every occurrence of the target, judged against the original; the
     physics must agree with the truth: `fits` and `fn_rule` fit, `does_not_fit` and `fits_functional` do not
-    (strict), `collides` departs by common volume alone. `edge` hits a stated limit exactly, so physics cannot
-    side with either label, `refused` inputs have no physics, and the classes of UNJUDGED wait for M7."""
+    (strict), `collides` departs by common volume alone, outside every region of M3's expected sockets. `edge`
+    hits a stated limit exactly, so physics cannot side with either label, `refused` inputs have no physics,
+    component candidates are the original, and the classes of UNJUDGED wait for M7."""
     name, truth = case["id"], case["truth"]
     socket = case["socket"]
     if truth in ("edge", "refused") or "file" not in case["candidate"]:
@@ -1018,24 +1154,32 @@ def match_physics(directory, case):
     if leaves is None:
         return [f"{name}: Open CASCADE cannot read {socket['case']}"]
     targets = [(m, shape) for product, m, shape in leaves if product == socket["part"]]
-    others = [(f"{product} #{k}", shape) for k, (product, _, shape) in enumerate(leaves) if product != socket["part"]]
     candidate = one_solid(directory / case["candidate"]["file"])
     if not targets or candidate is None:
         return [f"{name}: no target {socket['part']}, or no one candidate solid"]
     KO1_TALLY[truth] = KO1_TALLY.get(truth, 0) + 1
-    departures = []
-    for k, (m, original) in enumerate(targets):
-        placed = moved(candidate, compose(m, case["placement"]))
-        departures += physics(original, placed, others, f"{name} at occurrence {k}")
-    kinds = {d[0] for d in departures}
-    fits = not departures
-    if truth in ("fits", "fn_rule") and not fits:
+    originals = [shape for _, shape in targets]
+    placed = [moved(candidate, compose(m, case["placement"])) for m, _ in targets]
+    spec = [r_ for s_ in expected_sockets(directory, socket["case"], socket["part"])
+            for r_ in region_spec_from_expectation(s_)]
+    departures, problems = [], []
+    try:
+        for k, (m, original) in enumerate(targets):
+            found = physics(original, placed[k], neighbours_at(leaves, socket["part"], k, originals, placed),
+                            f"{name} at occurrence {k}")
+            if truth == "collides":
+                if not spec:
+                    return [f"{name}: labelled collides, and its source states no socket to bound the collision"]
+                problems += collisions_problems(found, regions(spec, m, original))
+            departures += found
+    except BooleanFailed as failed:
+        return [f"{name}: {failed} failed in Open CASCADE"]
+    if truth in ("fits", "fn_rule") and departures:
         return [f"{name}: labelled {truth}, but {d[1]}" for d in departures]
-    if truth in ("does_not_fit", "fits_functional") and fits:
+    if truth in ("does_not_fit", "fits_functional") and not departures:
         return [f"{name}: labelled {truth}, but it fits the original's place at the construction's placement"]
-    if truth == "collides" and kinds != {"volume"}:
-        return [f"{name}: labelled collides, so it may depart by common volume alone: "
-                + "; ".join(d[1] for d in departures)]
+    if truth == "collides":
+        return [f"{name}: labelled collides, but {text}" for text in problems]
     return []
 
 
@@ -1063,66 +1207,150 @@ def apply_point(m, p):
     return [sum(m[i][j] * p[j] for j in range(3)) + m[i][3] for i in range(3)]
 
 
-def feature_problems(where, requirement, feature, faces, m, linear, angular_rad):
-    """KO5: a passed check's candidate feature, placed, on the requirement's plane or axis line: a seat's plane
-    within the tolerance in angle and offset; a bore's or shaft's cylinder on its axis line, its axis within the
-    angle and every point of it that the line meets within the tolerance."""
+def off_line(point, line_point, line_dir):
+    off = sub(point, line_point)
+    off = sub(off, [line_dir[i] * dot(off, line_dir) for i in range(3)])
+    return math.sqrt(dot(off, off))
+
+
+def plane_problem(where, name, face, m, normal, offset, linear, angular_rad):
+    """A face's plane, placed, against a requirement's: within the angle, and within the tolerance of offset."""
+    facts = plane_facts(face)
+    if facts is None:
+        return [f"{where}: {name} is no plane"]
+    n = turn(m, facts[0])
     out = []
-    q = requirement["requires"]
-    for name in feature.split("+"):
-        number = int(name.rsplit("-", 1)[1])
-        face = faces.get(number)
-        if face is None:
-            out.append(f"{where}: {name} names no face of the candidate")
-            continue
-        surface = BRepAdaptor_Surface(face)
-        if q["kind"] == "seat" and surface.GetType() == Kind.GeomAbs_Plane:
-            normal, point, _ = plane_facts(face)
-            n = turn(m, normal)
-            if dot(n, q["normal"]) < math.cos(angular_rad) - 1e-12:
-                out.append(f"{where}: {name}'s plane is turned from the seat's")
-            off = dot(apply_point(m, point), q["normal"]) - q["offset_mm"]
-            if abs(off) > linear:
-                out.append(f"{where}: {name}'s plane lies {off:.6g} mm off the seat's")
-        elif q["kind"] in ("bore", "shaft") and surface.GetType() == Kind.GeomAbs_Cylinder:
-            c = surface.Cylinder()
-            d = norm(turn(m, xyz(c.Axis().Direction())))
-            if abs(dot(d, norm(q["axis"]["direction"]))) < math.cos(angular_rad) - 1e-12:
-                out.append(f"{where}: {name}'s axis is turned from the requirement's")
-            at = apply_point(m, xyz(c.Location()))
-            line_point, line_dir = q["axis"]["point_mm"], norm(q["axis"]["direction"])
-            off = sub(at, line_point)
-            off = sub(off, [line_dir[i] * dot(off, line_dir) for i in range(3)])
-            if math.sqrt(dot(off, off)) > linear:
-                out.append(f"{where}: {name}'s axis lies {math.sqrt(dot(off, off)):.6g} mm off the requirement's")
+    if dot(n, normal) < math.cos(angular_rad) - 1e-12:
+        out.append(f"{where}: {name}'s plane is turned from the requirement's")
+    off = dot(apply_point(m, facts[1]), normal) - offset
+    if abs(off) > linear:
+        out.append(f"{where}: {name}'s plane lies {off:.6g} mm off the requirement's")
     return out
 
 
-def ring_excused(original, socket_doc, socket_result, at):
-    """D6 functional: the original with each clearance bore widened to the candidate's diameter there, so the
-    ring a larger hole takes from its seats is excused (KO3). `at` places the target's frame."""
+def cylinder_problem(where, name, face, m, q, linear, angular_rad):
+    """A face's cylinder, placed, on a requirement's axis line: its axis within the angle, and both ends of its
+    extent along the axis within the tolerance of the line."""
+    surface = BRepAdaptor_Surface(face)
+    if surface.GetType() != Kind.GeomAbs_Cylinder:
+        return [f"{where}: {name} is no cylinder"]
+    c = surface.Cylinder()
+    axis = norm(xyz(c.Axis().Direction()))
+    line_point, line_dir = q["axis"]["point_mm"], norm(q["axis"]["direction"])
+    out = []
+    if abs(dot(norm(turn(m, axis)), line_dir)) < math.cos(angular_rad) - 1e-12:
+        out.append(f"{where}: {name}'s axis is turned from the requirement's")
+    _, _, v0, v1 = BRepTools.UVBounds_s(face)
+    for v in (v0, v1):
+        at = apply_point(m, add(xyz(c.Location()), axis, v))
+        if off_line(at, line_point, line_dir) > linear:
+            out.append(f"{where}: {name}'s axis lies {off_line(at, line_point, line_dir):.6g} mm off the "
+                       f"requirement's at one end")
+    return out
+
+
+def cone_problem(where, name, face, m, q, linear, angular_rad):
+    """A face's cone, placed, on a conical seat: its apex within the tolerance, its axis and half angle within the
+    angle."""
+    surface = BRepAdaptor_Surface(face)
+    if surface.GetType() != Kind.GeomAbs_Cone:
+        return [f"{where}: {name} is no cone"]
+    c = surface.Cone()
+    out = []
+    apex = apply_point(m, xyz(c.Apex()))
+    gap = math.sqrt(dot(sub(apex, q["apex_mm"]), sub(apex, q["apex_mm"])))
+    if gap > linear:
+        out.append(f"{where}: {name}'s apex lies {gap:.6g} mm off the seat's")
+    if abs(dot(norm(turn(m, xyz(c.Axis().Direction()))), norm(q["axis"]["direction"]))) < math.cos(angular_rad) - 1e-12:
+        out.append(f"{where}: {name}'s axis is turned from the seat's")
+    if abs(abs(c.SemiAngle()) - q["included_angle_rad"] / 2) > angular_rad:
+        out.append(f"{where}: {name}'s half angle is not the seat's")
+    return out
+
+
+def feature_problems(where, requirement, feature, faces, m, linear, angular_rad, requirements, tally):
+    """KO5: a passed check's candidate features, placed, on the requirement: a seat's plane, a bore's or shaft's
+    cylinder on its axis line, a conical seat's cone, and a grip's two features each on its seat's plane or
+    cone. A feature of another surface than the requirement's is a disagreement."""
+    out = []
+    q = requirement["requires"]
+    names = feature.split("+")
+    if q["kind"] == "grip":
+        seats = {}
+        for r_ in requirements.values():
+            key = r_["requires"].get("plane") or r_["requires"].get("cone")
+            if r_["requires"]["kind"] in ("seat", "conical_seat") and key:
+                seats[key] = r_["requires"]
+        # The features in the order the grip's id names its seats.
+        order = requirement["id"].split(":", 1)[1].split("+")
+        targets = [seats.get(s_) for s_ in order]
+        if len(targets) != len(names) or None in targets:
+            return [f"{where}: the grip's features do not pair with its seats"]
+    else:
+        targets = [q] * len(names)
+    for name, target in zip(names, targets):
+        face = faces.get(int(name.rsplit("-", 1)[1]))
+        if face is None:
+            out.append(f"{where}: {name} names no face of the candidate")
+            continue
+        tally["features"] += 1
+        if target["kind"] == "seat":
+            out += plane_problem(where, name, face, m, target["normal"], target["offset_mm"], linear, angular_rad)
+        elif target["kind"] in ("bore", "shaft"):
+            out += cylinder_problem(where, name, face, m, target, linear, angular_rad)
+        elif target["kind"] == "conical_seat":
+            out += cone_problem(where, name, face, m, target, linear, angular_rad)
+        else:
+            out.append(f"{where}: a {target['kind']} feature the oracle cannot place")
+    return out
+
+
+def hole_radius_on(candidate, axis_point, axis_dir):
+    """The largest radius of the placed candidate's holes on an axis line (concave cylinders whose axis lies
+    within TOL of it), from Open CASCADE alone; None with none."""
+    from OCP.BRepGProp import BRepGProp_Face
+    from OCP.gp import gp_Vec
+    best = None
+    for face in (as_face(e) for e in explore(candidate, TopAbs_FACE)):
+        surface = BRepAdaptor_Surface(face)
+        if surface.GetType() != Kind.GeomAbs_Cylinder:
+            continue
+        c = surface.Cylinder()
+        d, loc = norm(xyz(c.Axis().Direction())), xyz(c.Location())
+        if abs(dot(d, axis_dir)) < 1 - 1e-9 or off_line(loc, axis_point, axis_dir) > TOL:
+            continue
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+        at, normal = gp_Pnt(), gp_Vec()
+        BRepGProp_Face(face).Normal((u0 + u1) / 2, (v0 + v1) / 2, at, normal)
+        foot = add(loc, d, dot(sub(xyz(at), loc), d))
+        if dot((normal.X(), normal.Y(), normal.Z()), sub(xyz(at), foot)) < 0:
+            best = max(best or 0.0, c.Radius())
+    return best
+
+
+def ring_excused(original, candidate, socket, at):
+    """D6 functional: the original with each clearance span of each bore widened to the candidate's own hole on
+    that axis, measured by Open CASCADE, so the ring a larger clearance hole takes from its seats is excused
+    (KO3). Pinned and interference spans are never widened: functional excuses no lost engagement."""
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Ax2, gp_Dir
     shape = original
-    requirements = {r["id"]: r for r in socket_doc["requirements"]}
-    for check in socket_result["checks"]:
-        q = requirements.get(check["requirement"], {}).get("requires", {})
-        if q.get("kind") != "bore" or not q.get("spans") or check["result"] != "passed":
+    for requirement in socket["requirements"]:
+        q = requirement["requires"]
+        if q["kind"] != "bore":
             continue
-        found = [m_["found"] for m_ in check.get("measures", []) if m_["quantity"] == "diameter_mm"]
-        nominal = [m_["nominal"] for m_ in check.get("measures", []) if m_["quantity"] == "diameter_mm"]
-        if not found or max(found) <= max(nominal):
-            continue
-        d = norm(q["axis"]["direction"])
-        lo = min(s_["from_mm"] for s_ in q["spans"]) - 1
-        hi = max(s_["to_mm"] for s_ in q["spans"]) + 1
-        base = add(q["axis"]["point_mm"], d, lo)
-        tool = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*apply_point(at, base)), gp_Dir(*turn(at, d))),
-                                        max(found) / 2, hi - lo).Shape()
-        from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
-        cut = BRepAlgoAPI_Cut(shape, tool)
-        if cut.IsDone():
-            shape = cut.Shape()
+        d = norm(turn(at, q["axis"]["direction"]))
+        point = apply_point(at, q["axis"]["point_mm"])
+        radius = hole_radius_on(candidate, point, d)
+        for span in q.get("spans", []):
+            if span["fit"] != "clearance" or span["pinned"] or radius is None:
+                continue
+            if radius <= span["hole_diameter_mm"] / 2:
+                continue
+            base = add(point, d, span["from_mm"])
+            tool = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*base), gp_Dir(*d)), radius,
+                                            span["to_mm"] - span["from_mm"]).Shape()
+            shape = without(shape, tool)
     return shape
 
 
@@ -1137,7 +1365,7 @@ def rotation_about(point, axis, degrees):
 
 
 def first_axis(socket, result):
-    """The axis line of the first bore or shaft requirement a socket result checked, in the target's frame."""
+    """The axis line of the first bore or shaft requirement of a socket result's socket, in the target's frame."""
     sockets = {s_["id"]: s_ for s_ in socket["extracted"]["sockets"]}
     for r_ in sockets[result["socket"]]["requirements"]:
         if r_["requires"]["kind"] in ("bore", "shaft"):
@@ -1146,25 +1374,24 @@ def first_axis(socket, result):
 
 
 def with_placements(doc, socket, change, rejected=False):
-    """A copy of `doc` whose passes' (or, with `rejected`, rejects') placements are changed by `change`, and with
-    those rejects turned into interface matches; None if nothing changed."""
+    """A copy of `doc` whose passes' (or, with `rejected`, placed rejects') placements are changed by `change`,
+    those rejects turned into interface matches with every check passed; None if nothing changed."""
     import copy
     out = copy.deepcopy(doc)
     changed = False
     for entry in out["candidates"]:
         if (entry["verdict"] == "reject") != rejected:
             continue
-        if rejected and any(r_.get("placement") is None for r_ in entry["sockets"]):
+        if rejected and (not entry["sockets"] or any(r_.get("placement") is None for r_ in entry["sockets"])):
             continue
         for result in entry["sockets"]:
-            axis = first_axis(socket, result)
-            m = change(placement_rows(result["placement"]), axis)
+            m = change(placement_rows(result["placement"]), first_axis(socket, result))
             if m is None:
                 continue
             result["placement"]["rotation"] = [row[:3] for row in m]
             result["placement"]["translation_mm"] = [row[3] for row in m]
             changed = True
-        if rejected and entry["sockets"]:
+        if rejected:
             entry["verdict"] = "interface_match"
             for result in entry["sockets"]:
                 for check in result["checks"]:
@@ -1174,7 +1401,7 @@ def with_placements(doc, socket, change, rejected=False):
 
 
 def across(m, axis):
-    """Moved 0.01 mm square to the first axis (or along x, with none)."""
+    """Moved 0.0101 mm square to the first axis (or along x, with none)."""
     d = norm(axis[1]) if axis else [0.0, 0.0, 1.0]
     side = norm(cross(d, [1.0, 0.0, 0.0] if abs(d[0]) < 0.9 else [0.0, 1.0, 0.0]))
     return [row[:3] + [row[3] + 0.0101 * side[i]] for i, row in enumerate(m)]
@@ -1203,59 +1430,22 @@ MATCH_MUTATIONS = [
 ]
 
 
-def requirement_regions(socket_doc, at, original, socket):
-    """KO1's regions of one socket, placed by `at`: each bore's core (its clear diameter over its spans), each
-    shaft's neighbour-hole region (its limit over its spans), each seat's contact faces swept through the near band
-    of its plane."""
-    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
-    from OCP.gp import gp_Ax2, gp_Dir, gp_Vec
-    near = socket["extraction"]["socket"]["near_mm"]
-    out = []
-    ids = {}
-    for f in explore(original, TopAbs_FACE):
-        f = as_face(f)
-        facts = plane_facts(f)
-        if facts is not None:
-            ids.setdefault(round(dot(facts[0], facts[1]), 6), []).append((f, facts))
-    for requirement in socket_doc["requirements"]:
-        q = requirement["requires"]
-        if q["kind"] in ("bore", "shaft") and q.get("spans"):
-            d = norm(q["axis"]["direction"])
-            for span in q["spans"]:
-                clear = span.get("clear_diameter_mm")
-                if not clear:
-                    continue
-                base = add(q["axis"]["point_mm"], d, span["from_mm"])
-                out.append(BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*apply_point(at, base)), gp_Dir(*turn(at, d))),
-                                                    clear / 2, span["to_mm"] - span["from_mm"]).Shape())
-        elif q["kind"] == "seat":
-            normal = turn(at, q["normal"])
-            for face, facts in ids.get(round(dot(turn(at, q["normal"]), apply_point(at, [c * q["offset_mm"]
-                                                                                         for c in q["normal"]])),
-                                             6), []):
-                if dot(facts[0], normal) < 1 - 1e-9:
-                    continue
-                start = moved(face, [[1.0 * (i == j) for j in range(3)] + [-near * normal[i]] for i in range(3)])
-                out.append(BRepPrimAPI_MakePrism(start, gp_Vec(*[2 * near * c for c in normal])).Shape())
-    return out
-
-
-def in_regions(placed, original, neighbour, regions):
-    """True if the candidate shares more volume with `neighbour` inside some region than the original does."""
-    mine, theirs = common(placed, neighbour), common(original, neighbour)
-    for region in regions:
-        a = volume_of(common(mine, region)) if mine is not None else 0.0
-        b = volume_of(common(theirs, region)) if theirs is not None else 0.0
-        if a - b > VOLUME:
-            return True
-    return False
+def run_fitment(binary, args, codes, cwd=None):
+    """fitment's JSON on stdout, or the problem: an exit code outside `codes`, with its stderr."""
+    run = subprocess.run([str(binary), *args], capture_output=True, cwd=cwd)
+    if run.returncode not in codes:
+        return None, f"fitment {' '.join(args[:2])}: exit {run.returncode}: {run.stderr.decode(errors='replace')}"
+    try:
+        return json.loads(run.stdout), None
+    except json.JSONDecodeError as error:
+        return None, f"fitment {' '.join(args[:2])}: no JSON ({error}): {run.stderr.decode(errors='replace')}"
 
 
 def match_main(argv):
     """`match DIR`: every match case's file candidate judged by the built fitment against its source's socket,
     under both policies M4 offers, each document then checked by Open CASCADE: every pass fits physically at the
     placement fitment states, at every occurrence (KO3), and its placement is rigid with each passed check's
-    feature on the requirement (KO5)."""
+    feature on the requirement (KO5); and each mutation of a document meets a disagreement somewhere (KO6)."""
     import tempfile
     directory = Path(argv[0])
     binary = Path(os.environ.get("FITMENT", Path(__file__).resolve().parent.parent / "target/release/fitment"))
@@ -1268,48 +1458,71 @@ def match_main(argv):
             continue
         groups.setdefault((case["socket"]["case"], case["socket"]["part"]), []).append(case)
     tally = {"documents": 0, "passes": 0, "occurrences": 0, "features": 0, "collisions excused": 0}
-    problems = []
-    met = set()
-    scratch = Path(tempfile.mkdtemp(prefix="fitment-match-oracle-"))
-    for (source, part), group in sorted(groups.items()):
-        socket_path = scratch / f"{source}--{part}.json"
-        run = subprocess.run([str(binary), "socket", str(directory / f"{source}.stp"), "--part", part, "--format",
-                              "json"], capture_output=True)
-        socket_path.write_bytes(run.stdout)
-        socket = json.loads(run.stdout)
-        leaves = xcaf_leaves(directory / f"{source}.stp")
-        files = sorted({c["candidate"]["file"] for c in group})
-        for clearance in ("strict", "functional"):
-            run = subprocess.run([str(binary), "match", str(socket_path), *files, "--format", "json", "--clearance",
-                                  clearance], capture_output=True, cwd=directory)
-            doc = json.loads(run.stdout)
-            tally["documents"] += 1
-            problems += document_problems(directory, doc, socket, leaves, group, clearance, tally)
-            for name, mutate in MATCH_MUTATIONS:
-                mutated = mutate(doc, socket)
-                if mutated is not None and document_problems(directory, mutated, socket, leaves, group, clearance,
-                                                             dict(tally)):
-                    met.add(name)
-        print(f"{'ok  ' if not problems else 'FAIL'} {source} {part}")
+    problems, met = [], set()
+    with tempfile.TemporaryDirectory(prefix="fitment-match-oracle-") as scratch:
+        for (source, part), group in sorted(groups.items()):
+            before = len(problems)
+            socket_path = Path(scratch) / f"{source}--{part}.json"
+            socket, problem = run_fitment(binary, ["socket", str(directory / f"{source}.stp"), "--part", part,
+                                                   "--format", "json"], (0,))
+            if problem:
+                problems.append(f"{source} {part}: {problem}")
+                continue
+            socket_path.write_text(json.dumps(socket), encoding="utf-8")
+            leaves = xcaf_leaves(directory / f"{source}.stp")
+            files = sorted({c["candidate"]["file"] for c in group})
+            for clearance in ("strict", "functional"):
+                doc, problem = run_fitment(binary, ["match", str(socket_path), *files, "--format", "json",
+                                                    "--clearance", clearance], (0, 4, 5), cwd=directory)
+                if problem:
+                    problems.append(f"{source} {part} {clearance}: {problem}")
+                    continue
+                tally["documents"] += 1
+                problems += document_problems(directory, doc, socket, leaves, group, clearance, tally)
+                for name, mutate in MATCH_MUTATIONS:
+                    mutated = mutate(doc, socket)
+                    if mutated is not None and document_problems(directory, mutated, socket, leaves, group,
+                                                                 clearance, dict(tally)):
+                        met.add(name)
+            print(f"{'ok  ' if len(problems) == before else 'FAIL'} {source} {part}")
     unmet = [name for name, _ in MATCH_MUTATIONS if name not in met]
     if unmet:
         problems.append(f"mutations no check disagreed with anywhere (KO6): {unmet}")
-    for problem in problems:
-        print(problem, file=sys.stderr)
     if any(v == 0 for k, v in tally.items() if k != "collisions excused"):
         problems.append("a match check examined nothing: " + ", ".join(f"{v} {k}" for k, v in tally.items()))
-        print(problems[-1], file=sys.stderr)
+    for problem in problems:
+        print(problem, file=sys.stderr)
     print(", ".join(f"{v} {k}" for k, v in tally.items()) + f"; {len(problems)} disagreements with Open CASCADE")
     sys.exit(1 if problems else 0)
 
 
+def occurrence_leaves(where, socket, leaves):
+    """Each of fitment's occurrences with its XCAF leaf (the one whose transform agrees within 1e-9), and the
+    problems: an occurrence with no leaf, or a leaf of the part fitment's extraction left out."""
+    part = socket["selection"]["part"]
+    mine = [(t, shape) for name, t, shape in leaves if name == part]
+    out, problems, used = [], [], set()
+    for occurrence in socket["extracted"]["occurrences"]:
+        o = placement_rows(occurrence["transform"])
+        k = next((k for k, (t, _) in enumerate(mine)
+                  if all(abs(t[i][j] - o[i][j]) <= 1e-9 for i in range(3) for j in range(4))), None)
+        if k is None:
+            problems.append(f"{where}: no XCAF leaf at occurrence {occurrence['path']}")
+            continue
+        used.add(k)
+        out.append((occurrence, o, k))
+    problems += [f"{where}: an XCAF leaf of {part} no occurrence of fitment's names" for k in range(len(mine))
+                 if k not in used]
+    return out, [shape for _, shape in mine], problems
+
+
 def document_problems(directory, doc, socket, leaves, group, clearance, tally):
     """KO3 and KO5 on one fitment.match document."""
-    problems = []
     linear = doc["policy"]["linear_mm"]
     angular = math.radians(doc["policy"]["angular_deg"])
-    extracted = socket["extracted"]
-    by_socket = {s["id"]: s for s in extracted["sockets"]}
+    by_socket = {s_["id"]: s_ for s_ in socket["extracted"]["sockets"]}
+    occurrences, originals, problems = occurrence_leaves(socket["selection"]["part"], socket, leaves)
+    part = socket["selection"]["part"]
     for entry in doc["candidates"]:
         if entry["verdict"] == "reject":
             continue
@@ -1317,48 +1530,47 @@ def document_problems(directory, doc, socket, leaves, group, clearance, tally):
         label = entry["labels"][0]
         truths = {c["truth"] for c in group if c["candidate"]["file"] in entry["labels"]}
         where = f"{label} ({clearance})"
+        if {r_["socket"] for r_ in entry["sockets"]} != set(by_socket):
+            problems.append(f"{where}: a pass whose socket results are not the document's sockets")
+            continue
         _, faces, _ = bound_faces(directory / label)
         candidate = one_solid(directory / label)
+        placements = {}
         for result in entry["sockets"]:
             m = placement_rows(result["placement"])
             problem = rigid_problem(f"{where} {result['socket']}", m)
             if problem:
                 problems.append(problem)
-            requirements = {r["id"]: r for r in by_socket[result["socket"]]["requirements"]}
+            requirements = {r_["id"]: r_ for r_ in by_socket[result["socket"]]["requirements"]}
             for check in result["checks"]:
                 if check["result"] == "passed" and check.get("feature") and check["requirement"] in requirements:
-                    tally["features"] += 1
                     problems += feature_problems(f"{where} {result['socket']}/{check['requirement']}",
                                                  requirements[check["requirement"]], check["feature"], faces, m,
-                                                 linear, angular)
-            for occurrence in extracted["occurrences"]:
-                if occurrence.get("socket") != result["socket"]:
-                    continue
-                o = placement_rows(occurrence["transform"])
-                leaf = next(((name, shape) for name, t, shape in leaves
-                             if name == socket["selection"]["part"]
-                             and all(abs(t[i][j] - o[i][j]) <= 1e-9 for i in range(3) for j in range(4))), None)
-                if leaf is None:
-                    problems.append(f"{where}: no XCAF leaf at occurrence {occurrence['path']}")
-                    continue
+                                                 linear, angular, requirements, tally)
+            placements[result["socket"]] = m
+        # The candidate at every occurrence, each by its socket's placement.
+        placed = list(originals)
+        for occurrence, o, k in occurrences:
+            placed[k] = moved(candidate, compose(o, placements[occurrence["socket"]]))
+        try:
+            for occurrence, o, k in occurrences:
                 tally["occurrences"] += 1
-                original = leaf[1]
+                result_socket = by_socket[occurrence["socket"]]
+                original = originals[k]
                 if clearance == "functional":
-                    original = ring_excused(original, by_socket[result["socket"]], result, o)
-                others = [(f"{name} #{k}", shape) for k, (name, t, shape) in enumerate(leaves)
-                          if not (name == leaf[0] and shape.IsSame(leaf[1]))
-                          and name != socket["selection"]["part"]]
-                placed = moved(candidate, compose(o, m))
-                departures = physics(original, placed, others, f"{where} at {occurrence['path']}")
-                if "collides" in truths and {d[0] for d in departures} == {"volume"}:
-                    regions = requirement_regions(by_socket[result["socket"]], o, leaf[1], socket)
-                    inside = [d[1] for d in departures if in_regions(placed, leaf[1], d[2], regions)]
+                    original = ring_excused(original, placed[k], result_socket, o)
+                found = physics(original, placed[k], neighbours_at(leaves, part, k, originals, placed),
+                                f"{where} at {occurrence['path']}")
+                if "collides" in truths and found:
+                    inside = collisions_problems(found, regions(region_spec_from_document(result_socket), o,
+                                                                originals[k]))
                     if not inside:
                         tally["collisions excused"] += 1
-                        continue
-                    problems += [f"{text}: a collision inside a requirement's region (RS9)" for text in inside]
+                    problems += [f"{text}: a collides pass that does not merely collide" for text in inside]
                     continue
-                problems += [f"{d[1]}: a pass that does not fit" for d in departures]
+                problems += [f"{d[1]}: a pass that does not fit" for d in found]
+        except BooleanFailed as failed:
+            problems.append(f"{where}: {failed} failed in Open CASCADE")
     return problems
 
 
