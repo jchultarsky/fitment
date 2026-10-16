@@ -356,7 +356,14 @@ impl Builder<'_, '_> {
 
     /// One pair comparison; false past the bound.
     fn compare(&mut self) -> bool {
-        self.pairs += 1;
+        self.charge(1)
+    }
+
+    /// `n` comparisons; false past the bound, which ends alignment.
+    fn charge(&mut self, n: usize) -> bool {
+        self.pairs = self
+            .pairs
+            .saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
         if self.pairs > MAX_PAIR_CHECKS {
             self.exhausted = true;
         }
@@ -609,10 +616,11 @@ fn slides(b: &mut Builder<'_, '_>, pose: &Pose, ds: V, anchors: &[(&Line, &Stack
 
 /// AL7 (a): of the seats across the axis that some candidate plane faces,
 /// the one with fewest such planes; a slide per plane.
-fn seat_slides(b: &Builder<'_, '_>, pose: &Pose, ds: V) -> Vec<f64> {
+fn seat_slides(b: &mut Builder<'_, '_>, pose: &Pose, ds: V) -> Vec<f64> {
     let cos = libm::cos(b.policy.angular_rad());
     let mut best: Option<Vec<f64>> = None;
-    for r in &b.active {
+    let planes = b.cand.part().planes.len();
+    for r in b.active.clone() {
         let Requires::Seat {
             normal, offset_mm, ..
         } = &r.requires
@@ -621,7 +629,7 @@ fn seat_slides(b: &Builder<'_, '_>, pose: &Pose, ds: V) -> Vec<f64> {
         };
         let n = normal.to_array();
         let along = dot(n, ds);
-        if along.abs() < cos {
+        if along.abs() < cos || !b.charge(planes) {
             continue;
         }
         let lams: Vec<f64> = shell_planes(b.cand)
@@ -765,14 +773,15 @@ fn angle_about(axis: V, from: V, to: V) -> f64 {
 /// candidate line edge on a plane facing the same way), from seats along
 /// it (candidate planes at the same angle to it), and from off-axis arcs
 /// of one radius at one distance from it. Ascending, each once.
-fn turns(b: &Builder<'_, '_>, base: &Pose, p: V, axis: V) -> Vec<f64> {
+fn turns(b: &mut Builder<'_, '_>, base: &Pose, p: V, axis: V) -> Vec<f64> {
     if symmetric(b, p, axis) {
         return vec![0.0];
     }
     let cos = libm::cos(b.policy.angular_rad());
     let t = b.policy.linear_mm();
     let mut out = Vec::new();
-    for r in &b.active {
+    let cand = b.cand;
+    for r in b.active.clone() {
         let Requires::Seat {
             normal, contacts, ..
         } = &r.requires
@@ -781,8 +790,7 @@ fn turns(b: &Builder<'_, '_>, base: &Pose, p: V, axis: V) -> Vec<f64> {
         };
         let n = normal.to_array();
         let target = edges(contacts.iter().map(|c| &c.outline), &|x| x);
-        let facing = b
-            .cand
+        let facing = cand
             .part()
             .planes
             .iter()
@@ -790,6 +798,10 @@ fn turns(b: &Builder<'_, '_>, base: &Pose, p: V, axis: V) -> Vec<f64> {
         if norm(cross(n, axis)) < 1e-9 {
             for cp in facing {
                 let placed = edges(cp.faces.iter().map(|f| &f.outline), &|x| base.point(x));
+                // Each pair of edges is a comparison (AL11).
+                if !b.charge(placed.len().saturating_mul(target.len()).max(1)) {
+                    break;
+                }
                 for (dc, arc_c) in &placed {
                     for (dt, arc_t) in &target {
                         match (arc_c, arc_t) {
@@ -809,8 +821,8 @@ fn turns(b: &Builder<'_, '_>, base: &Pose, p: V, axis: V) -> Vec<f64> {
                     }
                 }
             }
-        } else {
-            for (cn, _) in shell_planes(b.cand) {
+        } else if b.charge(cand.part().planes.len()) {
+            for (cn, _) in shell_planes(cand) {
                 let placed = base.dir(cn);
                 if (dot(placed, axis) - dot(n, axis)).abs() < 1e-6 {
                     out.push(angle_about(axis, placed, n));
@@ -968,6 +980,10 @@ fn landmarks(b: &mut Builder<'_, '_>) {
     for plane in b.cand.part().planes.iter().filter(|p| p.shell == 0) {
         let cn = plane.normal.to_array();
         let candidate = marks(plane.faces.iter().map(|f| &f.outline));
+        // Each pair of landmarks is a comparison (AL11).
+        if !b.charge(candidate.len().saturating_mul(target.len()).max(1)) {
+            break;
+        }
         for c in &candidate {
             for m in &target {
                 let (rank, from, to, at_c, at_t) = match (c, m) {

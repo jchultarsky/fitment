@@ -72,6 +72,12 @@ fn every_match_case_meets_its_construction() {
             let matcher = Matcher::new(document, policy, MatchOptions::default()).unwrap();
             let result = matcher.judge_step(&bytes);
             problems.extend(gate::gate(case, name, socket, &result));
+            if !case["defect"].as_array().is_none_or(Vec::is_empty) {
+                let part = fitment_core::read_part(&bytes).unwrap();
+                let at = gate::placement(case).unwrap();
+                let built = matcher.verify_at(&part, &socket.id, &at).unwrap();
+                problems.extend(gate::defect(case, socket, &built));
+            }
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));

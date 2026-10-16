@@ -5,7 +5,9 @@
 //! Shared by fitment-core's tests (the committed candidates) and fitment's
 //! (the corpus).
 
-use fitment_core::{CandidateResult, Requirement, Requires, Socket, VerdictKind};
+use fitment_core::{
+    CandidateResult, Requirement, Requires, Rigid, Socket, SocketResult, VerdictKind,
+};
 use serde_json::Value;
 
 /// How far a locator's numbers may lie from the requirement's: the
@@ -114,10 +116,11 @@ struct Entry<'s> {
 
 fn entry<'s>(socket: &'s Socket, value: &Value) -> Result<Entry<'s>, String> {
     let requirement = locate(socket, value)?;
-    let codes = value["codes"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    let Some(listed) = value["codes"].as_array() else {
+        return Err(format!("{value} lists no codes"));
+    };
+    let codes = listed
+        .iter()
         .filter_map(Value::as_str)
         .filter(|c| !c.is_empty())
         .map(str::to_owned)
@@ -139,35 +142,22 @@ impl Entry<'_> {
 /// policy it equals.
 pub fn expectation<'c>(case: &'c Value, policy: &str) -> &'c Value {
     let mut at = &case["expect"][policy];
-    while let Some(other) = at.as_str() {
-        at = &case["expect"][other];
+    // Each name once at most: a cycle ends at no expectation, which fails.
+    for _ in 0..4 {
+        match at.as_str() {
+            Some(other) => at = &case["expect"][other],
+            None => return at,
+        }
     }
-    at
+    &Value::Null
 }
 
-/// KH2 and KH3 on one candidate's result against one socket: every way
-/// it departs from the case's expectation under `policy`.
-pub fn gate(case: &Value, policy: &str, socket: &Socket, result: &CandidateResult) -> Vec<String> {
-    let id = case["id"].as_str().unwrap_or("?");
-    let expect = expectation(case, policy);
-    let mut problems = Vec::new();
-    let want = match expect["verdict"].as_str() {
-        Some("interface_match") => VerdictKind::InterfaceMatch,
-        Some("match") => VerdictKind::Match,
-        _ => VerdictKind::Reject,
-    };
-    if result.verdict.kind() != want {
-        problems.push(format!(
-            "{id} {policy}: {:?}, expected {want:?}",
-            result.verdict.kind()
-        ));
-    }
-    // F: each failed requirement with its codes.
-    let failed: Vec<(String, Vec<String>)> = result
-        .sockets
+/// The failed checks of `socket` in a socket result: requirement and codes.
+fn failures(
+    checks: &[(fitment_core::RequirementId, fitment_core::Check)],
+) -> Vec<(String, Vec<String>)> {
+    checks
         .iter()
-        .filter(|s| s.socket == socket.id)
-        .flat_map(|s| s.checks.iter())
         .filter(|(_, c)| !c.passed())
         .map(|(r, c)| {
             let codes = c
@@ -179,6 +169,78 @@ pub fn gate(case: &Value, policy: &str, socket: &Socket, result: &CandidateResul
                 .collect();
             (r.as_str().to_owned(), codes)
         })
+        .collect()
+}
+
+/// The construction's placement of `case` (KC2: its 3 x 4 rows).
+pub fn placement(case: &Value) -> Option<Rigid> {
+    let rows = case["placement"].as_array()?;
+    let row = |i: usize| -> Option<[f64; 4]> {
+        let r = rows.get(i)?.as_array()?;
+        Some([
+            r.first()?.as_f64()?,
+            r.get(1)?.as_f64()?,
+            r.get(2)?.as_f64()?,
+            r.get(3)?.as_f64()?,
+        ])
+    };
+    let (a, b, c) = (row(0)?, row(1)?, row(2)?);
+    Rigid::new(
+        [[a[0], a[1], a[2]], [b[0], b[1], b[2]], [c[0], c[1], c[2]]],
+        [a[3], b[3], c[3]],
+    )
+}
+
+/// KH8 for a bad case: at the construction's own placement, every
+/// requirement its defect breaks fails, with a code it allows; wherever
+/// alignment placed it, the defect is there.
+pub fn defect(case: &Value, socket: &Socket, at_construction: &SocketResult) -> Vec<String> {
+    let id = case["id"].as_str().unwrap_or("?");
+    let failed = failures(&at_construction.checks);
+    let mut problems = Vec::new();
+    for value in case["defect"].as_array().into_iter().flatten() {
+        match entry(socket, value) {
+            Ok(e) if failed.iter().any(|(r, codes)| e.meets(r, codes)) => {}
+            Ok(e) => problems.push(format!(
+                "{id}: at the construction's placement {} did not fail as its defect; failed: {failed:?}",
+                e.requirement
+            )),
+            Err(e) => problems.push(format!("{id}: harness: {e}")),
+        }
+    }
+    problems
+}
+
+/// KH2 and KH3 on one candidate's result against one socket: every way
+/// it departs from the case's expectation under `policy`.
+pub fn gate(case: &Value, policy: &str, socket: &Socket, result: &CandidateResult) -> Vec<String> {
+    let id = case["id"].as_str().unwrap_or("?");
+    let expect = expectation(case, policy);
+    let mut problems = Vec::new();
+    let want = match expect["verdict"].as_str() {
+        Some("interface_match") => VerdictKind::InterfaceMatch,
+        Some("match") => VerdictKind::Match,
+        Some("reject") => VerdictKind::Reject,
+        other => return vec![format!("{id} {policy}: harness: verdict {other:?}")],
+    };
+    if result.verdict.kind() != want {
+        problems.push(format!(
+            "{id} {policy}: {:?}, expected {want:?}",
+            result.verdict.kind()
+        ));
+    }
+    // F: each failed requirement with its codes.
+    if result.sockets.len() != 1 {
+        return vec![format!(
+            "{id} {policy}: harness: {} sockets",
+            result.sockets.len()
+        )];
+    }
+    let failed: Vec<(String, Vec<String>)> = result
+        .sockets
+        .iter()
+        .filter(|s| s.socket == socket.id)
+        .flat_map(|s| failures(&s.checks))
         .collect();
     let list = |key: &str| -> Result<Vec<Vec<Entry<'_>>>, String> {
         expect[key]
@@ -218,8 +280,10 @@ pub fn gate(case: &Value, policy: &str, socket: &Socket, result: &CandidateResul
     }
     // A bad case names its defect: `must` is never empty.
     let truth = case["truth"].as_str().unwrap_or("");
-    if matches!(truth, "does_not_fit" | "edge") && must.is_empty() {
-        problems.push(format!("{id} {policy}: a bad case names no requirement"));
+    if matches!(truth, "does_not_fit" | "edge")
+        && (must.is_empty() || case["defect"].as_array().is_none_or(Vec::is_empty))
+    {
+        problems.push(format!("{id} {policy}: a bad case names no defect"));
     }
     if truth == "fn_rule" && failed.is_empty() && want == VerdictKind::Reject {
         problems.push(format!(
