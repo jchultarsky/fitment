@@ -44,6 +44,15 @@ Until 1.0, minor versions may contain breaking changes.
   no row names it; verify checks every stored file, row hash, part digest
   and posting, and with `--deep` extracts every part again.
 
+- **M5, PR 4 (the catalog match):** `fitment match SOCKET --catalog DIR`,
+  with `--id`, `--exhaustive` and `--rejects`: level 1 finds the
+  candidates in the catalog's index, each survivor's stored document is
+  checked and judged as its file would be, and the document is the file
+  run's over those files, labelled `catalog:<id>@r<n>`. A stale catalog,
+  an empty one or a blocked socket refuses the run before any candidate.
+  `--jobs N` judges N candidates at once, in file runs too, and changes no
+  byte of the result.
+
 ### Changed
 
 - `signature_version` is 2: pair tokens name their two stacks by index
