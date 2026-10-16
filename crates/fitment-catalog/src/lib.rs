@@ -362,6 +362,14 @@ impl Catalog {
         Ok(schema::generation(&self.conn)?)
     }
 
+    /// CC3: folds the WAL back into the database where no reader still
+    /// needs it; a catalog match calls it once its snapshot is over.
+    pub fn checkpoint(&self) {
+        let _ = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
+    }
+
     /// The database connection, for the tests' raw edits.
     #[cfg(feature = "test-support")]
     pub fn connection(&self) -> &Connection {

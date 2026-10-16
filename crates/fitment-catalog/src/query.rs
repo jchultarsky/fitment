@@ -83,6 +83,9 @@ pub struct CatalogRun {
     pub corrupt: Vec<String>,
     /// How many judgments were made: one per group of equal parts (QR6).
     pub judged: usize,
+    /// Entries whose judgment panicked: a fitment bug (exit 1), not
+    /// damage in the catalog.
+    pub bugs: Vec<String>,
 }
 
 /// Core's level 1 over the stored postings and tokens (IX1 to IX3, IX9,
@@ -239,6 +242,7 @@ impl Snapshot<'_> {
             results: Vec::new(),
             corrupt: Vec::new(),
             judged: 0,
+            bugs: Vec::new(),
         };
         let keys = match keys(conn, matcher, selection, &mut run)? {
             Ok(keys) => keys,
@@ -251,13 +255,32 @@ impl Snapshot<'_> {
                 Err(id) => run.corrupt.push(id),
             }
         }
-        let (results, judged, bad) = judge(matcher, rows, jobs);
-        run.results = results;
-        run.judged = judged;
-        run.corrupt.extend(bad);
+        let judged = judge(matcher, rows, jobs);
+        run.results = judged.results;
+        run.judged = judged.made;
+        run.corrupt.extend(judged.corrupt);
+        run.bugs = judged.bugs;
+        run.bugs.sort();
         run.corrupt.sort();
         run.corrupt.dedup();
         Ok(Ok(run))
+    }
+}
+
+impl Snapshot<'_> {
+    /// Level 1 over this snapshot's stored index alone, for CT3's
+    /// comparison with the in-memory index.
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    #[cfg(feature = "test-support")]
+    pub fn admitted(&self, matcher: &Matcher<'_>) -> Result<Admitted, Error> {
+        let source = SqlSource {
+            conn: self.connection(),
+            corrupt: RefCell::new(BTreeSet::new()),
+        };
+        matcher.admitted(&source)
     }
 }
 
@@ -359,20 +382,34 @@ fn keys(
                     Ok(Ok(candidates))
                 }
                 Admitted::Blocked { socket, why, .. } => Ok(Err(NotRun::Blocked { socket, why })),
-                _ => Ok(Ok(Vec::new())),
+                _ => Err(Error::Corrupt(
+                    "an answer of level 1 this build cannot read",
+                )),
             }
         }
         Selection::Exhaustive => {
             if let Some(refused) = stale(conn, None)? {
                 return Ok(Err(refused));
             }
-            let all: Vec<i64> = conn
+            // A live entry without its blob row is damage, named, never
+            // silently left out of the run meant to miss nothing (QR10).
+            let all: Vec<(Option<i64>, String, i64)> = conn
                 .prepare(
-                    "SELECT b.key FROM live l JOIN blob b ON b.sha256 = l.sha256 ORDER BY b.key",
+                    "SELECT b.key, l.id, l.revision FROM live l
+                     LEFT JOIN blob b ON b.sha256 = l.sha256 ORDER BY b.key, l.id",
                 )?
-                .query_map([], |r| r.get(0))?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
                 .collect::<Result<_, _>>()?;
-            Ok(Ok(all.into_iter().map(id).collect::<Result<_, _>>()?))
+            let mut keys = Vec::new();
+            for (key, entry, revision) in all {
+                match key {
+                    Some(key) => keys.push(id(key)?),
+                    None => run
+                        .corrupt
+                        .push(format!("{}@r{revision}", stored_id(entry)?)),
+                }
+            }
+            Ok(Ok(keys))
         }
         Selection::Named(references) => named(conn, references),
     }
@@ -461,7 +498,8 @@ fn load(conn: &Connection, key: u64) -> Result<Result<CheckedRow, String>, Error
         stored_id(id.clone()),
         u64::try_from(bytes),
     ) else {
-        return Ok(Err(format!("{id}@r{revision}")));
+        // The id itself may be the damage: named by its content key.
+        return Ok(Err(format!("content {key}")));
     };
     let label = format!("{id}@r{revision}");
     match check(&key_hex, &sha, ev, &status, digest.as_deref(), &doc, &hash) {
@@ -484,16 +522,29 @@ fn load(conn: &Connection, key: u64) -> Result<Result<CheckedRow, String>, Error
     }
 }
 
+/// What judging one group's representative came to.
+enum Judgment {
+    Done(Box<CandidateResult>),
+    /// `judge_document` refused it as not current: a damaged row.
+    NotCurrent,
+    /// The judgment panicked: a fitment bug.
+    Panicked,
+}
+
+/// What judging the groups came to: the results, the judgments made, the
+/// entries refused as not current, and those whose judgment panicked.
+struct Judged {
+    results: Labelled,
+    made: usize,
+    corrupt: Vec<String>,
+    bugs: Vec<String>,
+}
+
 /// QR6 to QR8: the rows grouped by their recomputed part digest (only
 /// while the fit verifier names no kernel), one representative of each,
 /// its lowest key, judged on `jobs` threads; each member gets a copy with
-/// its own source. Returns the results, the judgments made, and the
-/// entries `judge_document` refused as not current.
-fn judge(
-    matcher: &Matcher<'_>,
-    rows: Vec<CheckedRow>,
-    jobs: usize,
-) -> (Labelled, usize, Vec<String>) {
+/// its own source.
+fn judge(matcher: &Matcher<'_>, rows: Vec<CheckedRow>, jobs: usize) -> Judged {
     let share = matcher.fit_kernel().is_none();
     let mut groups: BTreeMap<String, Vec<CheckedRow>> = BTreeMap::new();
     for row in rows {
@@ -507,38 +558,60 @@ fn judge(
     for group in &mut groups {
         group.sort_by_key(|r| r.key);
     }
-    let judged = judge_representatives(matcher, &groups, jobs);
-    let mut results = Vec::new();
-    let mut bad = Vec::new();
-    for (group, result) in groups.iter().zip(judged) {
-        let Some(result) = result else {
-            bad.extend(group.iter().map(|r| r.label.clone()));
-            continue;
-        };
-        for row in group {
-            let mut copy = result.clone();
-            copy.source = CandidateSource::File(row.source.clone());
-            results.push((copy, vec![format!("catalog:{}", row.label)]));
+    let mut judged = Judged {
+        results: Vec::new(),
+        made: 0,
+        corrupt: Vec::new(),
+        bugs: Vec::new(),
+    };
+    for (group, judgment) in groups
+        .iter()
+        .zip(judge_representatives(matcher, &groups, jobs))
+    {
+        let labels = group.iter().map(|r| r.label.clone());
+        match judgment {
+            Judgment::Done(result) => {
+                judged.made += 1;
+                for row in group {
+                    let mut copy = (*result).clone();
+                    copy.source = CandidateSource::File(row.source.clone());
+                    judged
+                        .results
+                        .push((copy, vec![format!("catalog:{}", row.label)]));
+                }
+            }
+            Judgment::NotCurrent => judged.corrupt.extend(labels),
+            Judgment::Panicked => judged.bugs.extend(labels),
         }
     }
-    (results, groups.len(), bad)
+    judged
 }
 
-/// Each group's representative judged, on up to `jobs` threads; `None`
-/// where `judge_document` refused the document as not current.
+/// No more threads than this, whatever `jobs` asks.
+const MAX_JOBS: usize = 256;
+
+/// Each group's representative judged, on up to `jobs` threads, in order.
+/// A panic is caught per group, the same on one thread or many, so the
+/// result never depends on `jobs` (QR8).
 fn judge_representatives(
     matcher: &Matcher<'_>,
     groups: &[Vec<CheckedRow>],
     jobs: usize,
-) -> Vec<Option<CandidateResult>> {
+) -> Vec<Judgment> {
     let one = |group: &Vec<CheckedRow>| {
-        group.first().and_then(|row| {
-            matcher
-                .judge_document(&row.document, row.source.clone())
-                .ok()
-        })
+        let Some(row) = group.first() else {
+            return Judgment::NotCurrent;
+        };
+        let judged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            matcher.judge_document(&row.document, row.source.clone())
+        }));
+        match judged {
+            Ok(Ok(result)) => Judgment::Done(Box::new(result)),
+            Ok(Err(_)) => Judgment::NotCurrent,
+            Err(_) => Judgment::Panicked,
+        }
     };
-    let jobs = jobs.clamp(1, groups.len().max(1));
+    let jobs = jobs.clamp(1, groups.len().clamp(1, MAX_JOBS));
     if jobs == 1 {
         return groups.iter().map(one).collect();
     }
@@ -553,11 +626,12 @@ fn judge_representatives(
                 )
             })
             .collect();
-        // A worker that panicked judged none of its part: each is reported,
-        // and the results stay aligned with their groups.
         handles
             .into_iter()
-            .flat_map(|(n, h)| h.join().unwrap_or_else(|_| vec![None; n]))
+            .flat_map(|(n, h)| {
+                h.join()
+                    .unwrap_or_else(|_| (0..n).map(|_| Judgment::Panicked).collect())
+            })
             .collect()
     })
 }

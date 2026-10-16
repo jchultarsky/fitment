@@ -115,8 +115,9 @@ fn a_catalog_run_is_the_file_run_restricted() {
     assert!(passes > 0);
 }
 
-/// CT6 (QR11): a catalog run, full or exhaustive, makes no file call at
-/// all: it reads only the index.
+/// CT6 (QR11): a catalog run, full or exhaustive, makes no call through
+/// the catalog's file seam, so opens no path under `blobs/`: it reads the
+/// index alone (SQLite's own reads of the database bypass the seam).
 #[test]
 fn a_match_reads_only_the_index() {
     let (catalog, _) = committed("index-only");
@@ -295,4 +296,267 @@ fn a_blocked_socket_refuses_a_full_run() {
         .unwrap();
     assert_eq!(run.results.len(), 1);
     assert_eq!(run.results[0].0.verdict.kind(), VerdictKind::Reject);
+}
+
+/// CT3 (IX1): level 1 over the stored postings and tokens admits exactly
+/// what it admits over the in-memory index of the same tokens, id for id,
+/// for every committed socket under three policies.
+#[test]
+fn the_sql_source_agrees_with_the_index_in_memory() {
+    let (mut catalog, _) = committed("sources");
+    let mut memory = fitment_core::ShortlistIndex::new();
+    {
+        let conn = catalog.connection();
+        let mut stmt = conn
+            .prepare("SELECT b.key, t.tokens FROM tokens t JOIN blob b ON b.sha256 = t.sha256")
+            .unwrap();
+        let rows: Vec<(i64, Vec<u8>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for (key, tokens) in rows {
+            let tokens =
+                fitment_core::IndexTokens::from_json(std::str::from_utf8(&tokens).unwrap())
+                    .unwrap();
+            memory.insert(u64::try_from(key).unwrap(), &tokens);
+        }
+    }
+    let mut compared = 0;
+    for (case, part) in SOCKETS {
+        let document = socket(case, part);
+        let coarse = MatchPolicy::new(
+            TolerancePolicy::new("coarse", 0.5, 1.0).unwrap(),
+            Clearance::Functional,
+            Grip::Hard,
+        );
+        for policy in policies().into_iter().chain([coarse]) {
+            let matcher =
+                Matcher::new(&document, policy, MatchOptions::default(), &NoFitVerifier).unwrap();
+            let snapshot = catalog.snapshot().unwrap();
+            let sql = snapshot.admitted(&matcher).unwrap();
+            assert_eq!(sql, matcher.admitted(&memory).unwrap(), "{case} {part}");
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, 12);
+}
+
+fn bracket_matcher(document: &SocketDocument) -> Matcher<'_> {
+    Matcher::new(
+        document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &NoFitVerifier,
+    )
+    .unwrap()
+}
+
+/// QR2, CR7 and DB4 (CT9): a run reads one snapshot: a replace committed
+/// after the snapshot opened is not seen; the old revision is judged.
+#[test]
+fn a_run_reads_one_snapshot() {
+    let (mut catalog, _) = committed("snapshot");
+    let root = catalog.root().to_owned();
+    let document = socket("s01_bolted", "BRACKET");
+    let matcher = bracket_matcher(&document);
+    let snapshot = catalog.snapshot().unwrap();
+    let _ = snapshot.generation();
+    let mut writer = Catalog::open(&root, Options::default()).unwrap();
+    // The bracket's part in new bytes: its header changed.
+    let text = fs::read_to_string(core_tests().join("candidates/m_bracket.stp")).unwrap();
+    let again = root.parent().unwrap().join("again.stp");
+    fs::write(
+        &again,
+        text.replacen("FILE_NAME(", "FILE_NAME( /* again */ ", 1),
+    )
+    .unwrap();
+    writer
+        .replace(
+            &fitment_catalog::Reference::parse("m_bracket").unwrap(),
+            &again,
+        )
+        .unwrap()
+        .unwrap();
+    let run = snapshot
+        .match_catalog(&matcher, &Selection::Exhaustive, 2)
+        .unwrap()
+        .unwrap();
+    let labels: Vec<&str> = run.results.iter().map(|(_, l)| l[0].as_str()).collect();
+    assert!(labels.contains(&"catalog:m_bracket@r1"), "{labels:?}");
+    drop(snapshot);
+    let fresh = catalog.snapshot().unwrap();
+    let run = fresh
+        .match_catalog(&matcher, &Selection::Exhaustive, 2)
+        .unwrap()
+        .unwrap();
+    assert!(
+        run.results
+            .iter()
+            .any(|(_, l)| l[0] == "catalog:m_bracket@r2")
+    );
+}
+
+/// IX9: a tokens row whose hash fails is a damaged row: named, not judged.
+#[test]
+fn a_damaged_tokens_row_is_named() {
+    let (mut catalog, _) = committed("tokens");
+    catalog
+        .connection()
+        .execute_batch(
+            "DROP TRIGGER tokens_immutable;
+             UPDATE tokens SET tokens_sha256 = lower(hex(randomblob(32)))
+             WHERE sha256 = (SELECT sha256 FROM live WHERE id = 'm_bracket');",
+        )
+        .unwrap();
+    let document = socket("s01_bolted", "BRACKET");
+    let matcher = bracket_matcher(&document);
+    let snapshot = catalog.snapshot().unwrap();
+    let run = snapshot
+        .match_catalog(&matcher, &Selection::Full, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.corrupt, ["m_bracket@r1"]);
+    assert!(
+        !run.results
+            .iter()
+            .any(|(_, l)| l[0] == "catalog:m_bracket@r1")
+    );
+}
+
+/// IX10: a content key that is no level-1 id refuses the run, never wraps.
+#[test]
+fn a_negative_key_is_damage() {
+    let (mut catalog, _) = committed("key");
+    catalog
+        .connection()
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             UPDATE posting SET content = -5
+             WHERE content = (SELECT b.key FROM blob b JOIN live l ON l.sha256 = b.sha256
+                              WHERE l.id = 'm_bracket');",
+        )
+        .unwrap();
+    let document = socket("s01_bolted", "BRACKET");
+    let matcher = bracket_matcher(&document);
+    let snapshot = catalog.snapshot().unwrap();
+    let run = snapshot.match_catalog(&matcher, &Selection::Full, 1);
+    assert!(
+        matches!(run, Err(fitment_catalog::Error::Corrupt(_))),
+        "{run:?}"
+    );
+}
+
+/// CR8 and CR9: quarantined entries are counted, never searched; named,
+/// one is judged as its refused document: a Reject.
+#[test]
+fn quarantine_is_counted_and_judged_only_when_named() {
+    let (mut catalog, _) = committed("quarantine");
+    let document = socket("s01_bolted", "BRACKET");
+    let matcher = bracket_matcher(&document);
+    let snapshot = catalog.snapshot().unwrap();
+    let full = snapshot
+        .match_catalog(&matcher, &Selection::Full, 1)
+        .unwrap()
+        .unwrap();
+    assert!(full.quarantined > 0);
+    assert!(
+        !full
+            .results
+            .iter()
+            .any(|(_, l)| l[0] == "catalog:r04_assembly@r1")
+    );
+    let named = vec![fitment_catalog::Reference::parse("r04_assembly").unwrap()];
+    let run = snapshot
+        .match_catalog(&matcher, &Selection::Named(named), 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.results.len(), 1);
+    assert_eq!(run.results[0].0.status, fitment_core::Status::Refused);
+    assert_eq!(run.results[0].0.verdict.kind(), VerdictKind::Reject);
+}
+
+/// QR8: one job or four give the same document on a run of many groups.
+#[test]
+fn jobs_change_no_byte() {
+    let (mut catalog, _) = committed("jobs");
+    let document = socket("s01_bolted", "BRACKET");
+    let matcher = bracket_matcher(&document);
+    let snapshot = catalog.snapshot().unwrap();
+    let documents: Vec<String> = [1, 4]
+        .into_iter()
+        .map(|jobs| {
+            let run = snapshot
+                .match_catalog(&matcher, &Selection::Exhaustive, jobs)
+                .unwrap()
+                .unwrap();
+            assert!(run.judged > 20);
+            MatchDocument::new(&matcher, run.results).to_json()
+        })
+        .collect();
+    assert_eq!(documents[0], documents[1]);
+}
+
+/// A verifier that panics on every part.
+struct Panics;
+
+impl fitment_core::FitVerifier for Panics {
+    fn check(&self, _: &fitment_core::FitRequest<'_>) -> fitment_core::FitStatus {
+        panic!("a fit verifier's bug");
+    }
+}
+
+/// The PR 4a reviews: a judgment that panics is a fitment bug, reported
+/// apart from damage, the same on one thread or two.
+#[test]
+fn a_panicking_judgment_is_a_bug_not_damage() {
+    let (mut catalog, _) = committed("panics");
+    let document = socket("s01_bolted", "BRACKET");
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &Panics,
+    )
+    .unwrap();
+    let snapshot = catalog.snapshot().unwrap();
+    let named = vec![
+        fitment_catalog::Reference::parse("m_bracket").unwrap(),
+        fitment_catalog::Reference::parse("m_bracket_lug").unwrap(),
+    ];
+    let runs: Vec<_> = [1, 2]
+        .into_iter()
+        .map(|jobs| {
+            let run = snapshot
+                .match_catalog(&matcher, &Selection::Named(named.clone()), jobs)
+                .unwrap()
+                .unwrap();
+            (run.bugs, run.corrupt, run.results.len())
+        })
+        .collect();
+    assert_eq!(runs[0], runs[1]);
+    assert_eq!(runs[0].0, ["m_bracket@r1", "m_bracket_lug@r1"]);
+    assert_eq!(runs[0].1, Vec::<String>::new());
+}
+
+/// QR10: an exhaustive run names a live entry whose blob row is gone,
+/// never leaving it out silently.
+#[test]
+fn an_exhaustive_run_names_an_entry_without_its_row() {
+    let (mut catalog, _) = committed("no-row");
+    catalog
+        .connection()
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DELETE FROM blob WHERE sha256 = (SELECT sha256 FROM live WHERE id = 'm_bracket');",
+        )
+        .unwrap();
+    let document = socket("s01_bolted", "BRACKET");
+    let matcher = bracket_matcher(&document);
+    let snapshot = catalog.snapshot().unwrap();
+    let run = snapshot
+        .match_catalog(&matcher, &Selection::Exhaustive, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.corrupt, ["m_bracket@r1"]);
 }
