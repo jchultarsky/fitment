@@ -597,7 +597,8 @@ impl<'a> Matcher<'a> {
                 .filter_map(|occurrence| at.then(occurrence))
                 .collect();
             // Every occurrence placed, or no verifier is asked: a fit seen
-            // at fewer occurrences than the socket has proves nothing.
+            // at fewer occurrences than the socket has proves nothing, and
+            // one never attempted is not checked (VD4).
             let fit = if placements.len() == view.socket().occurrences.len() {
                 self.fit.check(&FitRequest {
                     socket: &view.socket().id,
@@ -606,7 +607,7 @@ impl<'a> Matcher<'a> {
                     placements,
                 })
             } else {
-                FitStatus::NotVerified {
+                FitStatus::NotChecked {
                     reason: "an occurrence of the socket could not be placed".to_owned(),
                 }
             };
