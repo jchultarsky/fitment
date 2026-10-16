@@ -127,7 +127,7 @@ pub struct Ingested {
 }
 
 impl Ingested {
-    fn failed(input: &Path, id: Option<Id>, outcome: Outcome) -> Self {
+    pub(crate) fn failed(input: &Path, id: Option<Id>, outcome: Outcome) -> Self {
         Self {
             input: input.to_owned(),
             id,
@@ -170,21 +170,21 @@ impl std::ops::Deref for Ingest {
 }
 
 /// A file read and gated, ready to be decided on.
-struct Prepared {
-    input: PathBuf,
-    file_name: String,
-    id: Id,
-    explicit: bool,
-    bytes: Vec<u8>,
-    sha256: Sha256Hex,
-    doc: String,
-    status: Status,
-    part_digest: Option<Sha256Hex>,
-    tokens: Option<IndexTokens>,
-    summary: Summary,
-    replaced_blob: bool,
+pub(crate) struct Prepared {
+    pub(crate) input: PathBuf,
+    pub(crate) file_name: String,
+    pub(crate) id: Id,
+    pub(crate) explicit: bool,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) sha256: Sha256Hex,
+    pub(crate) doc: String,
+    pub(crate) status: Status,
+    pub(crate) part_digest: Option<Sha256Hex>,
+    pub(crate) tokens: Option<IndexTokens>,
+    pub(crate) summary: Summary,
+    pub(crate) replaced_blob: bool,
     /// Whether `prepare` put the blob in place, hashed.
-    placed: bool,
+    pub(crate) placed: bool,
 }
 
 /// PH3: the final component, lossily if not UTF-8, at most 4096 bytes.
@@ -341,9 +341,40 @@ impl Catalog {
         })
     }
 
-    /// Reads, hashes and gates one file (ST2, GT1, GT6), and puts its blob
-    /// in place unless it is surely not added.
+    /// Reads, hashes and gates one file, and puts its blob in place unless
+    /// it is surely not added.
     fn prepare(&self, path: &Path, id: Option<&Id>) -> Result<Prepared, Box<Ingested>> {
+        let mut prepared = self.read_file(path, id)?;
+        if self.likely_added(&prepared) {
+            match self.blobs().put(&prepared.sha256, &prepared.bytes) {
+                Ok(placed) => {
+                    prepared.replaced_blob = placed == Placed::Replaced;
+                    prepared.placed = true;
+                }
+                Err(e) => {
+                    let mut failed = Box::new(Ingested::failed(
+                        path,
+                        Some(prepared.id),
+                        Outcome::Error {
+                            message: format!("cannot store it: {e}"),
+                        },
+                    ));
+                    failed.sha256 = Some(prepared.sha256);
+                    failed.summary = Some(prepared.summary);
+                    return Err(failed);
+                }
+            }
+        }
+        Ok(prepared)
+    }
+
+    /// Reads, hashes and gates one file (ST2, SZ1, PH4, GT1, GT6), under
+    /// `id` or the id its name gives (ID3).
+    pub(crate) fn read_file(
+        &self,
+        path: &Path,
+        id: Option<&Id>,
+    ) -> Result<Prepared, Box<Ingested>> {
         let name = file_name(path);
         let (id, explicit) = match id {
             Some(id) => (Some(id.clone()), true),
@@ -380,7 +411,7 @@ impl Catalog {
         let summary = summarize(&read);
         let tokens = read.part().map(|p| IndexTokens::of(&PartSignature::of(p)));
         let part_digest = read.part_digest().and_then(|d| Sha256Hex::parse(&d).ok());
-        let mut prepared = Prepared {
+        Ok(Prepared {
             input: path.to_owned(),
             file_name: name,
             id,
@@ -394,27 +425,7 @@ impl Catalog {
             bytes,
             replaced_blob: false,
             placed: false,
-        };
-        if self.likely_added(&prepared) {
-            match self.blobs().put(&prepared.sha256, &prepared.bytes) {
-                Ok(placed) => {
-                    prepared.replaced_blob = placed == Placed::Replaced;
-                    prepared.placed = true;
-                }
-                Err(e) => {
-                    let mut failed = fail(
-                        Some(prepared.id),
-                        Outcome::Error {
-                            message: format!("cannot store it: {e}"),
-                        },
-                    );
-                    failed.sha256 = Some(prepared.sha256);
-                    failed.summary = Some(prepared.summary);
-                    return Err(failed);
-                }
-            }
-        }
-        Ok(prepared)
+        })
     }
 
     /// A first look, outside the transaction, so a file surely not added
@@ -632,7 +643,7 @@ fn insert(tx: &Transaction<'_>, p: &Prepared, g: i64, n: i64) -> rusqlite::Resul
 /// GT2 and GT5: the stored document with its preimage hash, and the
 /// columns for people. A row of this content and version already there
 /// (a kept revision's bytes ingested again) is left as it is.
-fn insert_features(tx: &Transaction<'_>, p: &Prepared) -> rusqlite::Result<()> {
+pub(crate) fn insert_features(tx: &Transaction<'_>, p: &Prepared) -> rusqlite::Result<()> {
     let hash = preimage::features(
         &p.sha256,
         EXTRACTOR_VERSION,
@@ -671,7 +682,7 @@ fn insert_features(tx: &Transaction<'_>, p: &Prepared) -> rusqlite::Result<()> {
 
 /// GT6 and IX2: the tokens with their preimage hash, and their postings
 /// under the blob's key.
-fn insert_tokens(
+pub(crate) fn insert_tokens(
     tx: &Transaction<'_>,
     p: &Prepared,
     tokens: &IndexTokens,

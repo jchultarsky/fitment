@@ -246,3 +246,120 @@ fn a_reused_orphan_has_its_directory_synced() {
     );
     assert_eq!(synced_before_commit(&calls, &named), Vec::<String>::new());
 }
+
+/// A catalog where BRKT went bracket (r1), thick (r2), p03 (r3), and `a`
+/// holds p01; and the bytes to replace BRKT with.
+fn changed(dir: &Path) -> PathBuf {
+    let root = dir.join("cat");
+    Catalog::init(&root, Options::default()).unwrap();
+    let mut catalog = Catalog::open(&root, Options::default()).unwrap();
+    let brkt = fitment_catalog::Id::parse("BRKT").unwrap();
+    let file = |from: &str, name: &str| copy(from, dir, name);
+    catalog
+        .ingest(&[file("candidates/m_bracket.stp", "b.stp")], Some(&brkt))
+        .unwrap();
+    catalog
+        .ingest(&[file("data/p01_through.stp", "a.stp")], None)
+        .unwrap();
+    for next in ["candidates/m_bracket_thick.stp", "data/p03_blind_flat.stp"] {
+        let path = file(next, "next.stp");
+        catalog
+            .replace(&fitment_catalog::Reference::parse("BRKT").unwrap(), &path)
+            .unwrap()
+            .unwrap();
+    }
+    file("data/p05_cbore.stp", "new.stp");
+    root
+}
+
+type Op = fn(&mut Catalog, &Path);
+
+fn prune(catalog: &mut Catalog, _: &Path) {
+    let _ = catalog.prune_revisions();
+}
+
+fn delete(catalog: &mut Catalog, _: &Path) {
+    let brkt = fitment_catalog::Reference::parse("BRKT").unwrap();
+    let _ = catalog.delete(&[brkt]);
+}
+
+fn replace(catalog: &mut Catalog, dir: &Path) {
+    let brkt = fitment_catalog::Reference::parse("BRKT").unwrap();
+    let _ = catalog.replace(&brkt, &dir.join("new.stp"));
+}
+
+/// CT13 for each change, `fault.rs::prune_is_all_or_nothing` among them
+/// (review F4(b)): a fault at any file call leaves the database before the
+/// change or after it, the invariants holding, and a rerun completes it.
+#[test]
+fn prune_is_all_or_nothing() {
+    for (name, op) in [
+        ("prune", prune as Op),
+        ("delete", delete),
+        ("replace", replace),
+    ] {
+        let probe = scratch(&format!("{name}-probe"));
+        let root = changed(&probe);
+        let seam = Arc::new(CountingFs::new());
+        let mut catalog =
+            Catalog::open_with(&root, Options::default(), Box::new(Shared(seam.clone()))).unwrap();
+        let opened = seam.calls().len();
+        let g0 = catalog.generation().unwrap();
+        op(&mut catalog, &probe);
+        let total = seam.calls().len();
+        assert_eq!(catalog.generation().unwrap(), g0 + 1, "{name} commits");
+        drop(catalog);
+        let after = invariants_and_rows(&root);
+        for k in opened..total {
+            for kind in [io::ErrorKind::StorageFull, io::ErrorKind::Other] {
+                let dir = scratch(&format!("{name}-{k}"));
+                let root = changed(&dir);
+                let seam = CountingFs::failing_at(k, kind);
+                let mut catalog =
+                    Catalog::open_with(&root, Options::default(), Box::new(seam)).unwrap();
+                op(&mut catalog, &dir);
+                let g = catalog.generation().unwrap();
+                drop(catalog);
+                assert!(g == g0 || g == g0 + 1, "{name} k {k}: generation {g}");
+                let problems: Vec<String> = invariants(&root)
+                    .into_iter()
+                    .filter(|p| !p.starts_with("IN6"))
+                    .collect();
+                assert!(problems.is_empty(), "{name} k {k} {kind:?}: {problems:?}");
+                let mut again = Catalog::open(&root, Options::default()).unwrap();
+                if g == g0 {
+                    op(&mut again, &dir);
+                }
+                drop(again);
+                assert_eq!(
+                    invariants_and_rows(&root),
+                    after,
+                    "{name} k {k} {kind:?}: rerun"
+                );
+                let _ = fs::remove_dir_all(&dir);
+            }
+        }
+    }
+}
+
+/// The invariants' problems, and the rows a change touches, to compare a
+/// faulted and rerun change with an unfaulted one.
+fn invariants_and_rows(root: &Path) -> (Vec<String>, Vec<String>) {
+    let conn = Connection::open(root.join("catalog.db")).unwrap();
+    let rows: Vec<String> = conn
+        .prepare(
+            "SELECT r.id_fold || ' r' || r.revision || ' ' || r.sha256 || ' '
+                    || (r.superseded_generation IS NULL) || (r.pruned_generation IS NULL)
+                    || (e.deleted_generation IS NULL)
+             FROM revision r JOIN entry e ON e.key = r.entry
+             UNION ALL SELECT 'blob ' || sha256 FROM blob
+             UNION ALL SELECT 'features ' || sha256 FROM features
+             ORDER BY 1",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    (invariants(root), rows)
+}

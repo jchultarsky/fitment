@@ -111,6 +111,14 @@ impl Layout {
         out
     }
 
+    /// The 256 fan-out directories, `blobs/sha256/00` to `ff`.
+    pub fn fan_outs(&self) -> Vec<PathBuf> {
+        let sha256 = self.sha256();
+        (0..=255_u8)
+            .map(|b| sha256.join(format!("{b:02x}")))
+            .collect()
+    }
+
     /// The directories whose entries `init` creates: `blobs/sha256`,
     /// `blobs` and the root, to be synced so the new names are durable.
     pub fn containers(&self) -> Vec<PathBuf> {
