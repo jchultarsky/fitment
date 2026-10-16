@@ -1,0 +1,2 @@
+round trip: 232 equal, 0 differ, 230 refused; features JSON median 27216 B, p90 39090 B, max 80836372 B; read 3.29 ms/part, from_json 0.617 ms/part
+judge_step == judge_part(stored): 105 equal, 0 differ; sockets missing 1

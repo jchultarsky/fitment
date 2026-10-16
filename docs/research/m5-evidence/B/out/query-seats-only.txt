@@ -1,0 +1,2 @@
+c5 seats-only: catalog 100083; level1 98766 hits in 269.51 ms; level2 kept 202 dropped 98564; wall judge 1951.9 ms (16 threads): cpu load 4443.2 ms parse 5209.9 ms level2 418.9 ms judge 15099.4 ms; slowest part 369.2 ms (id 43); document 9.4 ms; (202, 18, 184); total 2234.2 ms
+d5 seats-only: catalog 100092; level1 98775 hits in 245.61 ms; level2 kept 11853 dropped 86922; wall judge 84530.4 ms (16 threads): cpu load 1838.8 ms parse 4532.0 ms level2 312.2 ms judge 1262764.2 ms; slowest part 515.5 ms (id 14695); document 1489.0 ms; (11853, 7902, 3951); total 86267.7 ms

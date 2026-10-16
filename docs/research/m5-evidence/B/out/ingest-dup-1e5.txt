@@ -1,0 +1,1 @@
+ingest: 100092 stored (0 duplicate), 100092 in catalog, 220817 postings; wall 8.28 s with 16 threads; read 22.70 s cpu (0.227 ms/part); db 3013.4 MB (features JSON 2842.6 MB, tokens JSON 46.1 MB); total 9.61 s

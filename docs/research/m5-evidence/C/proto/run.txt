@@ -1,0 +1,159 @@
+$ catalog list
+error: /private/tmp/claude-501/-Users-julian-projects-fitment/3971a646-2013-4399-8622-60a902cb28df/scratchpad/m5/C/proto/work/cat is not a catalog (fitment catalog init)
+[exit 2]
+$ catalog init
+fitment: /private/tmp/claude-501/-Users-julian-projects-fitment/3971a646-2013-4399-8622-60a902cb28df/scratchpad/m5/C/proto/work/cat: catalog created
+[exit 0]
+$ catalog init
+fitment: /private/tmp/claude-501/-Users-julian-projects-fitment/3971a646-2013-4399-8622-60a902cb28df/scratchpad/m5/C/proto/work/cat: already a catalog: unchanged
+[exit 0]
+error: /private/tmp/claude-501/-Users-julian-projects-fitment/3971a646-2013-4399-8622-60a902cb28df/scratchpad/m5/C/proto/work/other is not empty and not a catalog
+[exit 2 init on a non-empty dir]
+$ catalog add /private/tmp/claude-501/-Users-julian-projects-fitment/3971a646-2013-4399-8622-60a902cb28df/scratchpad/m5/C/proto/work/in
+fitment: 8 files: 4 added, 1 conflict, 1 duplicate, 2 quarantined
+added        a_b                      b3795fa5  1 holes, 0 shafts, 7 planes
+quarantined  junk                     f3ccaf5b  refused: unparseable: the file is not ISO 10303-21: syntax error at line 2, column 1: expected HEADER, found '
+added        m_bracket                1b77ea97  5 holes, 0 shafts, 6 planes
+added        m_bracket_missing_hole   1e4e1790  4 holes, 0 shafts, 6 planes
+quarantined  r04_assembly             f8386a47  refused: assembly: the file is an assembly with 2 usages of 3 product definitions; features reads one part
+conflict     a_b                      e0382a9d  the id a_b is taken by another file (give --id)
+duplicate    copy_of_m_bracket        1b77ea97  the same bytes are m_bracket: not added
+added        evil_31mred_             622fec33  1 holes, 0 shafts, 7 planes
+[exit 2]
+$ catalog add /private/tmp/claude-501/-Users-julian-projects-fitment/3971a646-2013-4399-8622-60a902cb28df/scratchpad/m5/C/proto/work/in
+fitment: 8 files: 1 conflict, 1 duplicate, 6 unchanged
+unchanged    a_b                      b3795fa5  
+unchanged    junk                     f3ccaf5b  
+unchanged    m_bracket                1b77ea97  
+unchanged    m_bracket_missing_hole   1e4e1790  
+unchanged    r04_assembly             f8386a47  
+conflict     a_b                      e0382a9d  the id a_b is taken by another file (give --id)
+duplicate    copy_of_m_bracket        1b77ea97  the same bytes are m_bracket: not added
+unchanged    evil_31mred_             622fec33  
+[exit 2]
+$ catalog add --id BRKT-1 /Users/julian/projects/fitment/crates/fitment-core/tests/candidates/m_bracket.stp
+fitment: 1 files: 1 duplicate
+duplicate    BRKT-1                   1b77ea97  the same bytes are m_bracket: not added
+[exit 2]
+$ catalog add /Users/julian/projects/fitment/fixtures/nist/NIST-PMI-STEP-Files/nist_ctc_05_asme1_ap242-e1.stp /Users/julian/projects/fitment/fixtures/nist/NIST-PMI-STEP-Files/nist_stc_09_asme1_ap242-e3.stp /Users/julian/projects/fitment/fixtures/nist/NIST-PMI-STEP-Files/nist_ctc_04_asme1_ap242-e1.stp
+fitment: 3 files: 2 added, 1 quarantined
+quarantined  nist_ctc_04_asme1_ap242-e1 20b43b54  refused: unread_shape_item: #17462 (SHELL_BASED_SURFACE_MODEL) is in the part's shape but is not read; a canon
+added        nist_ctc_05_asme1_ap242-e1 59bbc09a  21 holes, 1 shafts, 39 planes
+added        nist_stc_09_asme1_ap242-e3 737423af  29 holes, 0 shafts, 48 planes
+[exit 3]
+$ catalog add /Users/julian/projects/fitment/fixtures/nist-edm/clevis21.stp /Users/julian/projects/fitment/fixtures/nist-edm/gear.stp
+fitment: 2 files: 2 added
+added        clevis21                 4fff4203  6 holes, 0 shafts, 16 planes
+added        gear                     4c7ecc54  0 holes, 2 shafts, 27 planes
+[exit 0]
+$ catalog list
+a_b                      r1   indexed      b3795fa5  'p03_blind_flat'  a_b.stp
+clevis21                 r1   indexed      4fff4203  '1'  clevis21.stp
+evil_31mred_             r1   indexed      622fec33  'p05_cbore'  evil\x1b[31mred\u202e.stp
+gear                     r1   indexed      4c7ecc54  '1'  gear.stp
+junk                     r1   quarantined  f3ccaf5b  ''  junk.stp
+m_bracket                r1   indexed      1b77ea97  'm_bracket'  m_bracket.stp
+m_bracket_missing_hole   r1   indexed      1e4e1790  'm_bracket_missing_hole'  m_bracket_missing_hole.stp
+nist_ctc_04_asme1_ap242-e1 r1   quarantined  20b43b54  ''  nist_ctc_04_asme1_ap242-e1.stp
+nist_ctc_05_asme1_ap242-e1 r1   indexed      59bbc09a  'nist_ctc_05_asme1'  nist_ctc_05_asme1_ap242-e1.stp
+nist_stc_09_asme1_ap242-e3 r1   indexed      737423af  ''  nist_stc_09_asme1_ap242-e3.stp
+r04_assembly             r1   quarantined  f8386a47  ''  r04_assembly.stp
+[exit 0]
+$ catalog quarantine
+junk                     r1   quarantined  f3ccaf5b  ''  junk.stp
+    unparseable: the file is not ISO 10303-21: syntax error at line 2, column 1: expected HEADER, found 'not'
+nist_ctc_04_asme1_ap242-e1 r1   quarantined  20b43b54  ''  nist_ctc_04_asme1_ap242-e1.stp
+    unread_shape_item: #17462 (SHELL_BASED_SURFACE_MODEL) is in the part's shape but is not read; a canonical part's shape is one solid, plus c
+r04_assembly             r1   quarantined  f8386a47  ''  r04_assembly.stp
+    assembly: the file is an assembly with 2 usages of 3 product definitions; features reads one part
+[exit 0]
+$ catalog get nist_stc_09_asme1_ap242-e3
+{
+ "id_key": "nist_stc_09_asme1_ap242-e3",
+ "id": "nist_stc_09_asme1_ap242-e3",
+ "revision": 1,
+ "status": "indexed",
+ "sha256": "737423afcb223b87d92a4ea7646a97d8d55fb21cc24ba2fb72b952336bcf1fad",
+ "bytes": 5287678,
+ "file_name": "nist_stc_09_asme1_ap242-e3.stp",
+ "product_id": null,
+ "product_name": null,
+ "extractor_version": 6,
+ "refusals": "[]",
+ "properties": "[{\"name\": \"MaterialMultipleAssigned\", \"value\": \"FALSE\", \"measure\": null, \"instance\": 7264}, {\"name\": \"MaterialMissingAssignments\", \"value\": \"TRUE\", \"measure\": null, \"instance\": 7270}, {\"name\": \"$SH_SHEET_PROJECTION_ANGLE\", \"value\": \"<%3RDANG>\", \"measure\": null, \"instance\": 7276}, {\"name\": \"$SH_SHEET_SIZE\", \"value\": \"A0\", \"measure\": null, \"instance\": 7282}, {\"name\": \"$SH_SHEET_UNITS\", \"value\": \"MM\", \"measure\": null, \"instance\": 7288}, {\"name\": \"Machine Format\", \"value\": \"x64/Windows NT\", \"measure\": null, \"instance\": 7294}, {\"name\": \"Part File Format\", \"value\": \"NXV2007\", \"measure\": null, \"instance\": 7300}, {\"name\": \"Part File Type\", \"value\": \"Default\", \"measure\": null, \"instance\": 7306}, {\"name\": \"Header Status\", \"value\": \"0\", \"measure\": null, \"instance\": 7312}, {\"name\": \"Header Description\", \"value\": \" \", \"measure\": null, \"instance\": 7318}, {\"name\": \"File Compression\", \"value\": \"On\", \"measure\": null, \"instance\": 7324}, {\"name\": \"Creation Date\", \"value\": \"Fri Aug 11 2023\", \"mea
+  history r1 737423afcb22 generation 9 added
+[exit 0]
+$ catalog replace m_bracket /Users/julian/projects/fitment/crates/fitment-core/tests/candidates/m_bracket_thick.stp
+replaced     m_bracket                46cd8a91  5 holes, 0 shafts, 6 planes
+[exit 0]
+$ catalog replace m_bracket /private/tmp/claude-501/-Users-julian-projects-fitment/3971a646-2013-4399-8622-60a902cb28df/scratchpad/m5/C/proto/work/junk2.stp
+refused      m_bracket                a4ddb153  unparseable: the file is not ISO 10303-21: syntax error at line 2, column 1: expected HEADER, found 'other' (e
+[exit 3]
+$ catalog get m_bracket
+{
+ "id_key": "m_bracket",
+ "id": "m_bracket",
+ "revision": 2,
+ "status": "indexed",
+ "sha256": "46cd8a915536c6a99b131673568cf1e4e4b3304eedeaa6dad68eabf483a59cd9",
+ "bytes": 14729,
+ "file_name": "m_bracket_thick.stp",
+ "product_id": "m_bracket_thick",
+ "product_name": "m_bracket_thick",
+ "extractor_version": 6,
+ "refusals": "[]",
+ "properties": "[]"
+}
+  history r1 1b77ea9724e6 generation 3 added
+  history r2 46cd8a915536 generation 12 replaced
+[exit 0]
+$ catalog remove m_bracket nosuch
+error: unknown ids: nothing removed: nosuch
+[exit 2]
+$ catalog remove m_bracket
+removed      m_bracket                46cd8a91
+[exit 0]
+$ catalog add /Users/julian/projects/fitment/crates/fitment-core/tests/candidates/m_bracket.stp
+fitment: 1 files: 1 added
+added        m_bracket                1b77ea97  5 holes, 0 shafts, 6 planes
+[exit 0]
+$ catalog get M_BRACKET
+{
+ "id_key": "m_bracket",
+ "id": "m_bracket",
+ "revision": 3,
+ "status": "indexed",
+ "sha256": "1b77ea9724e67c4bdc709a871a00a05580dfebb36e4109f3c027d84afe826c33",
+ "bytes": 14698,
+ "file_name": "m_bracket.stp",
+ "product_id": "m_bracket",
+ "product_name": "m_bracket",
+ "extractor_version": 6,
+ "refusals": "[]",
+ "properties": "[]"
+}
+  history r1 1b77ea9724e6 generation 3 added
+  history r2 46cd8a915536 generation 12 replaced
+  history r2 46cd8a915536 generation 13 removed
+  history r3 1b77ea9724e6 generation 14 added
+[exit 0]
+$ catalog verify
+fitment: 0 problems
+[exit 0]
+$ catalog verify
+fitment: 2 problems
+damaged  clevis21  4fff420338c4
+orphan   blobs/tmp/leftover.1234
+[exit 3]
+a_b                      r1   stale        b3795fa5  'p03_blind_flat'  a_b.stp
+clevis21                 r1   stale        4fff4203  '1'  clevis21.stp
+evil_31mred_             r1   stale        622fec33  'p05_cbore'  evil\x1b[31mred\u202e.stp
+gear                     r1   stale        4c7ecc54  '1'  gear.stp
+junk                     r1   stale        f3ccaf5b  ''  junk.stp
+m_bracket                r3   stale        1b77ea97  'm_bracket'  m_bracket.stp
+m_bracket_missing_hole   r1   stale        1e4e1790  'm_bracket_missing_hole'  m_bracket_missing_hole.stp
+nist_ctc_04_asme1_ap242-e1 r1   stale        20b43b54  ''  nist_ctc_04_asme1_ap242-e1.stp
+nist_ctc_05_asme1_ap242-e1 r1   stale        59bbc09a  'nist_ctc_05_asme1'  nist_ctc_05_asme1_ap242-e1.stp
+nist_stc_09_asme1_ap242-e3 r1   stale        737423af  ''  nist_stc_09_asme1_ap242-e3.stp
+r04_assembly             r1   stale        f8386a47  ''  r04_assembly.stp
+[exit 0 list under a newer extractor]

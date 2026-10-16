@@ -1,0 +1,803 @@
+{
+  "format": "fitment.match",
+  "format_version": 1,
+  "extractor_version": 6,
+  "socket_rules_version": 7,
+  "signature_version": 1,
+  "match_rules_version": 1,
+  "policy": {
+    "name": "default",
+    "linear_mm": 0.01,
+    "angular_deg": 0.01,
+    "clearance": "strict",
+    "grip": "hard"
+  },
+  "options": {
+    "require_fit": false,
+    "require_reviewed": false
+  },
+  "fit_verifier": null,
+  "socket": {
+    "digest": "sha256:da6c41a0df6c8472e76455c908528837e89e44152cb15878a54e0cea58725f1a",
+    "source": {
+      "sha256": "2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a",
+      "bytes": 25494
+    },
+    "target": {
+      "instance": 502,
+      "product": {
+        "id": "SCREW",
+        "instance": 504,
+        "name": "SCREW"
+      }
+    },
+    "selection": {
+      "matched_by": "product_id",
+      "occurrence": null,
+      "part": "SCREW"
+    },
+    "sockets": [
+      {
+        "id": "socket-1",
+        "occurrences": 1,
+        "active": 2,
+        "unreviewed": 2,
+        "removed": [],
+        "unverifiable": [],
+        "left_out": []
+      }
+    ]
+  },
+  "summary": {
+    "candidates": 2,
+    "match": 0,
+    "interface_match": 2,
+    "reject": 0,
+    "refused": 0
+  },
+  "candidates": [
+    {
+      "labels": [
+        "catalog:88"
+      ],
+      "source": {
+        "bytes": 6255,
+        "header": {
+          "implementation_level": "2;1",
+          "originating_system": "Open CASCADE 7.9",
+          "preprocessor_version": "Open CASCADE STEP processor 7.9",
+          "schema": "ap214",
+          "schema_identifiers": [
+            "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+          ]
+        },
+        "kind": "file",
+        "sha256": "23c19d42cd05db33f08f50db20ca1827f1d026435e591c30666730fcca2ee0db"
+      },
+      "product": {
+        "instance": 7,
+        "id": "m_screw02",
+        "name": "m_screw02"
+      },
+      "status": "accepted",
+      "refusals": [],
+      "read": {
+        "complete": true,
+        "extractor_version": 6,
+        "max_uncertainty_mm": 1e-7,
+        "max_vertex_offset_mm": 6.070623350030272e-12
+      },
+      "verdict": "interface_match",
+      "fit": {
+        "status": "not_checked",
+        "reason": "no fit verifier in this build"
+      },
+      "flags": [
+        "thread_not_confirmed",
+        "material_not_compared",
+        "requirements_unreviewed"
+      ],
+      "warnings": [],
+      "properties": {
+        "material": {
+          "reason": "no property fitment maps in either file",
+          "status": "not_compared"
+        }
+      },
+      "reasons": [],
+      "sockets": [
+        {
+          "socket": "socket-1",
+          "stage": "verification",
+          "verdict": "interface_match",
+          "fit": {
+            "status": "not_checked",
+            "reason": "no fit verifier in this build"
+          },
+          "placement": {
+            "rotation": [
+              [
+                0.9452785045043474,
+                0.28273956284583157,
+                0.16280936251878356
+              ],
+              [
+                0.0,
+                -0.4990102920473981,
+                0.8665960583978967
+              ],
+              [
+                0.3262645382538908,
+                -0.8191746260917258,
+                -0.4717037025988421
+              ]
+            ],
+            "translation_mm": [
+              19.92331115237517,
+              -46.00763999930502,
+              49.55157650791743
+            ],
+            "seeded_by": {
+              "one_axis": {
+                "axis": [
+                  "shaft:shaft-510",
+                  "shaft-17"
+                ]
+              }
+            },
+            "tried": 3,
+            "exhausted": false,
+            "chosen": "first_passing",
+            "u_mm": 1e-6,
+            "epsilon_mm": 0.009999000000000001
+          },
+          "missing": [],
+          "failed": 0,
+          "checks": [
+            {
+              "requirement": "shaft:shaft-510",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "shaft-17",
+              "measures": [
+                {
+                  "quantity": "axis_sine",
+                  "at": {},
+                  "found": 1.1188630228279524e-16,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431324016,
+                  "passed": true
+                },
+                {
+                  "quantity": "axis_offset_mm",
+                  "at": {},
+                  "found": 7.519712330879989e-15,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009998999999992481,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      7.51
+                    ]
+                  },
+                  "found": -6.03961325396085e-14,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000060397,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      7.51
+                    ]
+                  },
+                  "found": 22.00000000000282,
+                  "nominal": 7.51,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 7.500001,
+                  "max": null,
+                  "margin": 14.49999900000282,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      7.51
+                    ]
+                  },
+                  "found": 6.0,
+                  "nominal": 6.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 5.990001,
+                  "max": 6.009999,
+                  "margin": 0.009998999999999647,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      7.51,
+                      16.0
+                    ]
+                  },
+                  "found": -6.03961325396085e-14,
+                  "nominal": 7.51,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 7.519998999999999,
+                  "margin": 7.51999900000006,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      7.51,
+                      16.0
+                    ]
+                  },
+                  "found": 22.00000000000282,
+                  "nominal": 16.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 15.990001,
+                  "max": null,
+                  "margin": 6.009999000002821,
+                  "passed": true
+                },
+                {
+                  "quantity": "clear_margin_mm",
+                  "at": {
+                    "span_mm": [
+                      7.51,
+                      16.0
+                    ]
+                  },
+                  "found": 0.29999999999999255,
+                  "nominal": null,
+                  "band": "tau_guard",
+                  "band_mm": 0.010001,
+                  "min": 0.010001,
+                  "max": null,
+                  "margin": 0.28999899999999257,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      7.51,
+                      16.0
+                    ]
+                  },
+                  "found": 6.0,
+                  "nominal": 6.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 5.990001,
+                  "max": null,
+                  "margin": 0.009998999999999647,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      16.0,
+                      22.0
+                    ]
+                  },
+                  "found": -6.03961325396085e-14,
+                  "nominal": 16.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 16.009999,
+                  "margin": 16.00999900000006,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      16.0,
+                      22.0
+                    ]
+                  },
+                  "found": 22.00000000000282,
+                  "nominal": 22.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 21.990001,
+                  "max": null,
+                  "margin": 0.00999900000282139,
+                  "passed": true
+                },
+                {
+                  "quantity": "clear_margin_mm",
+                  "at": {
+                    "span_mm": [
+                      16.0,
+                      22.0
+                    ]
+                  },
+                  "found": 0.4999999999999964,
+                  "nominal": null,
+                  "band": "tau_guard",
+                  "band_mm": 0.010001,
+                  "min": 0.010001,
+                  "max": null,
+                  "margin": 0.4899989999999964,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      16.0,
+                      22.0
+                    ]
+                  },
+                  "found": 10.0,
+                  "nominal": 10.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 9.990001,
+                  "max": null,
+                  "margin": 0.009999000000000535,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            },
+            {
+              "requirement": "seat:plane-552",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "plane-59",
+              "measures": [
+                {
+                  "quantity": "plane_sine",
+                  "at": {},
+                  "found": 1.1188630228279524e-16,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431324016,
+                  "passed": true
+                },
+                {
+                  "quantity": "plane_offset_mm",
+                  "at": {},
+                  "found": 8.283355538597584e-15,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009998999999991718,
+                  "passed": true
+                },
+                {
+                  "quantity": "covers",
+                  "at": {
+                    "contact_face": 552
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            }
+          ],
+          "not_checked": [
+            {
+              "what": "max_extra_mm",
+              "requirement": "shaft:shaft-510",
+              "mm": 1.5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "labels": [
+        "catalog:82070"
+      ],
+      "source": {
+        "bytes": 6451,
+        "header": {
+          "implementation_level": "2;1",
+          "originating_system": "Open CASCADE 7.9",
+          "preprocessor_version": "Open CASCADE STEP processor 7.9",
+          "schema": "ap214",
+          "schema_identifiers": [
+            "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+          ]
+        },
+        "kind": "file",
+        "sha256": "c7b5acd5c8111d1523c2c4751d63db951652429d2515ab0e39deae8d7c0c170b"
+      },
+      "product": {
+        "instance": 7,
+        "id": "m_screw02",
+        "name": "m_screw02"
+      },
+      "status": "accepted",
+      "refusals": [],
+      "read": {
+        "complete": true,
+        "extractor_version": 6,
+        "max_uncertainty_mm": 9.99928e-8,
+        "max_vertex_offset_mm": 6.06850905251611e-12
+      },
+      "verdict": "interface_match",
+      "fit": {
+        "status": "not_checked",
+        "reason": "no fit verifier in this build"
+      },
+      "flags": [
+        "thread_not_confirmed",
+        "material_not_compared",
+        "requirements_unreviewed"
+      ],
+      "warnings": [],
+      "properties": {
+        "material": {
+          "reason": "no property fitment maps in either file",
+          "status": "not_compared"
+        }
+      },
+      "reasons": [],
+      "sockets": [
+        {
+          "socket": "socket-1",
+          "stage": "verification",
+          "verdict": "interface_match",
+          "fit": {
+            "status": "not_checked",
+            "reason": "no fit verifier in this build"
+          },
+          "placement": {
+            "rotation": [
+              [
+                0.9452785045043474,
+                0.28273956284583157,
+                0.16280936251878356
+              ],
+              [
+                0.0,
+                -0.4990102920473981,
+                0.8665960583978967
+              ],
+              [
+                0.3262645382538908,
+                -0.8191746260917258,
+                -0.4717037025988421
+              ]
+            ],
+            "translation_mm": [
+              19.9218766739722,
+              -46.00432744922507,
+              49.548008794408844
+            ],
+            "seeded_by": {
+              "one_axis": {
+                "axis": [
+                  "shaft:shaft-510",
+                  "shaft-17"
+                ]
+              }
+            },
+            "tried": 3,
+            "exhausted": false,
+            "chosen": "first_passing",
+            "u_mm": 1e-6,
+            "epsilon_mm": 0.009999000000000001
+          },
+          "missing": [],
+          "failed": 0,
+          "checks": [
+            {
+              "requirement": "shaft:shaft-510",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "shaft-17",
+              "measures": [
+                {
+                  "quantity": "axis_sine",
+                  "at": {},
+                  "found": 1.1188630228279524e-16,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431324016,
+                  "passed": true
+                },
+                {
+                  "quantity": "axis_offset_mm",
+                  "at": {},
+                  "found": 7.519696509103829e-15,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009998999999992481,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      7.51
+                    ]
+                  },
+                  "found": 0.0011519999999229922,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.008847000000077009,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      7.51
+                    ]
+                  },
+                  "found": 21.999568000002803,
+                  "nominal": 7.51,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 7.500001,
+                  "max": null,
+                  "margin": 14.499567000002802,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      7.51
+                    ]
+                  },
+                  "found": 5.999568,
+                  "nominal": 6.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 5.990001,
+                  "max": 6.009999,
+                  "margin": 0.009566999999999659,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      7.51,
+                      16.0
+                    ]
+                  },
+                  "found": 0.0011519999999229922,
+                  "nominal": 7.51,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 7.519998999999999,
+                  "margin": 7.518847000000076,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      7.51,
+                      16.0
+                    ]
+                  },
+                  "found": 21.999568000002803,
+                  "nominal": 16.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 15.990001,
+                  "max": null,
+                  "margin": 6.009567000002804,
+                  "passed": true
+                },
+                {
+                  "quantity": "clear_margin_mm",
+                  "at": {
+                    "span_mm": [
+                      7.51,
+                      16.0
+                    ]
+                  },
+                  "found": 0.30021599999999254,
+                  "nominal": null,
+                  "band": "tau_guard",
+                  "band_mm": 0.010001,
+                  "min": 0.010001,
+                  "max": null,
+                  "margin": 0.29021499999999256,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      7.51,
+                      16.0
+                    ]
+                  },
+                  "found": 5.999568,
+                  "nominal": 6.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 5.990001,
+                  "max": null,
+                  "margin": 0.009566999999999659,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      16.0,
+                      22.0
+                    ]
+                  },
+                  "found": 0.0011519999999229922,
+                  "nominal": 16.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 16.009999,
+                  "margin": 16.008847000000078,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      16.0,
+                      22.0
+                    ]
+                  },
+                  "found": 21.999568000002803,
+                  "nominal": 22.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 21.990001,
+                  "max": null,
+                  "margin": 0.009567000002803638,
+                  "passed": true
+                },
+                {
+                  "quantity": "clear_margin_mm",
+                  "at": {
+                    "span_mm": [
+                      16.0,
+                      22.0
+                    ]
+                  },
+                  "found": 0.5003599999999978,
+                  "nominal": null,
+                  "band": "tau_guard",
+                  "band_mm": 0.010001,
+                  "min": 0.010001,
+                  "max": null,
+                  "margin": 0.4903589999999978,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      16.0,
+                      22.0
+                    ]
+                  },
+                  "found": 9.99928,
+                  "nominal": 10.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 9.990001,
+                  "max": null,
+                  "margin": 0.009279000000001147,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            },
+            {
+              "requirement": "seat:plane-552",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "plane-59",
+              "measures": [
+                {
+                  "quantity": "plane_sine",
+                  "at": {},
+                  "found": 1.1188630228279524e-16,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431324016,
+                  "passed": true
+                },
+                {
+                  "quantity": "plane_offset_mm",
+                  "at": {},
+                  "found": 1.1778836492363722e-15,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009998999999998823,
+                  "passed": true
+                },
+                {
+                  "quantity": "covers",
+                  "at": {
+                    "contact_face": 552
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            }
+          ],
+          "not_checked": [
+            {
+              "what": "max_extra_mm",
+              "requirement": "shaft:shaft-510",
+              "mm": 1.5
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "digest": "sha256:7af60b4c678627167487279d0f755a163fcb0f52293573427c691227322bea04"
+}

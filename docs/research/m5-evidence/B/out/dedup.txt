@@ -1,0 +1,6 @@
+plain: level1 54875 hits total 8628.2 ms
+dedup: level1 54875 hits, kept 9219, distinct parts 21; phase A 622.6 ms, judge 27.9 ms; total 1839.9 ms
+s02_cbore__BLOCK: dedup document byte-identical
+plain: level1 15365 hits total 48539.5 ms
+dedup: level1 15365 hits, kept 9219, distinct parts 21; phase A 227.7 ms, judge 175.9 ms; total 1764.8 ms
+s01_bolted__BRACKET: dedup document byte-identical

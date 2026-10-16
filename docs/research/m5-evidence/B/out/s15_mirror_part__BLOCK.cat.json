@@ -1,0 +1,357 @@
+{
+  "format": "fitment.match",
+  "format_version": 1,
+  "extractor_version": 6,
+  "socket_rules_version": 7,
+  "signature_version": 1,
+  "match_rules_version": 1,
+  "policy": {
+    "name": "default",
+    "linear_mm": 0.01,
+    "angular_deg": 0.01,
+    "clearance": "strict",
+    "grip": "hard"
+  },
+  "options": {
+    "require_fit": false,
+    "require_reviewed": false
+  },
+  "fit_verifier": null,
+  "socket": {
+    "digest": "sha256:4369746053bb0b78d9ad2688c4ce5f99889fc67d58693d031f85fd19c645993d",
+    "source": {
+      "sha256": "51c7f433d6d47538d9108d2a53b4f7dc35f5542adb00e3463c693b39e61259c5",
+      "bytes": 32174
+    },
+    "target": {
+      "instance": 290,
+      "product": {
+        "id": "BLOCK",
+        "instance": 292,
+        "name": "BLOCK"
+      }
+    },
+    "selection": {
+      "matched_by": "product_id",
+      "occurrence": null,
+      "part": "BLOCK"
+    },
+    "sockets": [
+      {
+        "id": "socket-1",
+        "occurrences": 1,
+        "active": 3,
+        "unreviewed": 3,
+        "removed": [],
+        "unverifiable": [],
+        "left_out": []
+      }
+    ]
+  },
+  "summary": {
+    "candidates": 1,
+    "match": 0,
+    "interface_match": 1,
+    "reject": 0,
+    "refused": 0
+  },
+  "candidates": [
+    {
+      "labels": [
+        "catalog:45"
+      ],
+      "source": {
+        "bytes": 10782,
+        "header": {
+          "implementation_level": "2;1",
+          "originating_system": "Open CASCADE 7.9",
+          "preprocessor_version": "Open CASCADE STEP processor 7.9",
+          "schema": "ap214",
+          "schema_identifiers": [
+            "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+          ]
+        },
+        "kind": "file",
+        "sha256": "aa4053c4ccfe578508e66227a5802ffc8a0185311e86e9e48873431e7a180282"
+      },
+      "product": {
+        "instance": 7,
+        "id": "m_mirror15",
+        "name": "m_mirror15"
+      },
+      "status": "accepted",
+      "refusals": [],
+      "read": {
+        "complete": true,
+        "extractor_version": 6,
+        "max_uncertainty_mm": 1e-7,
+        "max_vertex_offset_mm": 1.3736865629718896e-11
+      },
+      "verdict": "interface_match",
+      "fit": {
+        "status": "not_checked",
+        "reason": "no fit verifier in this build"
+      },
+      "flags": [
+        "material_not_compared",
+        "requirements_unreviewed"
+      ],
+      "warnings": [],
+      "properties": {
+        "material": {
+          "reason": "no property fitment maps in either file",
+          "status": "not_compared"
+        }
+      },
+      "reasons": [],
+      "sockets": [
+        {
+          "socket": "socket-1",
+          "stage": "verification",
+          "verdict": "interface_match",
+          "fit": {
+            "status": "not_checked",
+            "reason": "no fit verifier in this build"
+          },
+          "placement": {
+            "rotation": [
+              [
+                -0.4113185189603607,
+                0.32626453825341545,
+                -0.8510984238256708
+              ],
+              [
+                -0.8510984238254885,
+                -0.47170370259917094,
+                0.23049314505208643
+              ],
+              [
+                -0.3262645382538908,
+                0.8191746260917259,
+                0.4717037025988422
+              ]
+            ],
+            "translation_mm": [
+              32.754582806888266,
+              -37.95758910582064,
+              -41.551576507916366
+            ],
+            "seeded_by": {
+              "one_axis": {
+                "axis": [
+                  "bore:hole-468",
+                  "hole-187"
+                ]
+              }
+            },
+            "tried": 8,
+            "exhausted": false,
+            "chosen": "first_passing",
+            "u_mm": 1e-6,
+            "epsilon_mm": 0.009999000000000001
+          },
+          "missing": [],
+          "failed": 0,
+          "checks": [
+            {
+              "requirement": "seat:plane-298",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "plane-17",
+              "measures": [
+                {
+                  "quantity": "plane_sine",
+                  "at": {},
+                  "found": 6.900904772784993e-13,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192362326157,
+                  "passed": true
+                },
+                {
+                  "quantity": "plane_offset_mm",
+                  "at": {},
+                  "found": 1.2522930371269323e-11,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.00999899998747707,
+                  "passed": true
+                },
+                {
+                  "quantity": "covers",
+                  "at": {
+                    "contact_face": 298
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            },
+            {
+              "requirement": "seat:plane-428",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "plane-88",
+              "measures": [
+                {
+                  "quantity": "plane_sine",
+                  "at": {},
+                  "found": 2.7755575615628914e-17,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.0001745319243133243,
+                  "passed": true
+                },
+                {
+                  "quantity": "plane_offset_mm",
+                  "at": {},
+                  "found": 1.3310904907698661e-15,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.00999899999999867,
+                  "passed": true
+                },
+                {
+                  "quantity": "covers",
+                  "at": {
+                    "contact_face": 428
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            },
+            {
+              "requirement": "bore:hole-468",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "hole-187",
+              "measures": [
+                {
+                  "quantity": "axis_sine",
+                  "at": {},
+                  "found": 2.7755575615628914e-17,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.0001745319243133243,
+                  "passed": true
+                },
+                {
+                  "quantity": "axis_offset_mm",
+                  "at": {},
+                  "found": 3.559645809643488e-15,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009998999999996441,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.0
+                    ]
+                  },
+                  "found": 4.718003765447065e-12,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009998999995281997,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.0
+                    ]
+                  },
+                  "found": 8.000000000004755,
+                  "nominal": 8.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 7.990001,
+                  "max": null,
+                  "margin": 0.009999000004754954,
+                  "passed": true
+                },
+                {
+                  "quantity": "clear_margin_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.0
+                    ]
+                  },
+                  "found": 0.29999999999999627,
+                  "nominal": null,
+                  "band": "tau_guard",
+                  "band_mm": 0.010001,
+                  "min": 0.010001,
+                  "max": null,
+                  "margin": 0.2899989999999963,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.0
+                    ]
+                  },
+                  "found": 6.6,
+                  "nominal": 6.6,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 6.609998999999999,
+                  "margin": 0.009998999999999647,
+                  "passed": true
+                },
+                {
+                  "quantity": "open_start",
+                  "at": {
+                    "end": "start"
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            }
+          ],
+          "not_checked": []
+        }
+      ]
+    }
+  ],
+  "digest": "sha256:e2ae991fc00cb085e300681fbdba4235beb45ffd49dde784d4b234dc0126c6ea"
+}

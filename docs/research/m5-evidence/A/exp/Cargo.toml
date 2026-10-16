@@ -1,0 +1,17 @@
+[package]
+name = "m5exp"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+fitment-core = { path = "/Users/julian/projects/fitment/.claude/worktrees/m4-corpus/crates/fitment-core" }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+sha2 = "0.10"
+libc = "0.2"
+
+[profile.release]
+debug = false
+
+[workspace]

@@ -1,0 +1,1 @@
+db/c4.db: 583 of 10032 parts admitted by the grip token (5.81%); opposed pairs per part 4.0; tilted-opposed pairs 0
