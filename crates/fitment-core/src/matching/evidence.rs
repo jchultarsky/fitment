@@ -77,19 +77,24 @@ pub enum EndSide {
 }
 
 /// Where in a requirement a measure or failure applies; whichever fields
-/// apply are set.
+/// apply are set, and only they are written.
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
 #[non_exhaustive]
 pub struct At {
     /// A span, in the requirement's stations.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub span_mm: Option<[f64; 2]>,
     /// A candidate segment.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub segment: Option<FeatureId>,
     /// A seat's contact face, by the target's `#id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub contact_face: Option<u64>,
     /// An end.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub end: Option<EndSide>,
     /// A station.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub at_mm: Option<f64>,
 }
 
@@ -106,6 +111,13 @@ impl At {
             ..Self::default()
         }
     }
+
+    /// Its numbers stored: finite, never −0.0 (EV8).
+    fn stored(mut self) -> Self {
+        self.span_mm = self.span_mm.map(|s| s.map(finite));
+        self.at_mm = self.at_mm.map(finite);
+        self
+    }
 }
 
 /// One comparison and its outcome (EV2).
@@ -115,15 +127,27 @@ pub struct Measure {
     quantity: Quantity,
     at: At,
     #[serde(flatten)]
-    value: Value,
+    value: MeasureValue,
     passed: bool,
+}
+
+/// A band's width (EV2): `band_mm`, or `band_rad` for an angle.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[non_exhaustive]
+pub enum BandWidth {
+    /// In millimetres.
+    #[serde(rename = "band_mm")]
+    Mm(f64),
+    /// In radians.
+    #[serde(rename = "band_rad")]
+    Rad(f64),
 }
 
 /// What a measure found, against what.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 #[non_exhaustive]
-pub enum Value {
+pub enum MeasureValue {
     /// A number between limits.
     Number {
         /// The candidate's value.
@@ -132,8 +156,9 @@ pub enum Value {
         nominal: Option<f64>,
         /// The band the rule used.
         band: Band,
-        /// Its width: mm, or radians for an angle.
-        band_value: f64,
+        /// Its width.
+        #[serde(flatten)]
+        width: BandWidth,
         /// The effective lower limit; `None` when unbounded.
         min: Option<f64>,
         /// The effective upper limit.
@@ -152,37 +177,52 @@ pub enum Value {
 
 impl Measure {
     /// A numeric comparison: it passes exactly when `found` lies strictly
-    /// inside the limits (an edge rejects); at least one limit is given,
-    /// and a value that is not finite fails.
+    /// inside the limits (an edge rejects). Everything is stored first,
+    /// finite and never −0.0, and the margin and the result follow from
+    /// what is stored, so the evidence alone recomputes them (EV7): a value
+    /// that is not finite is stored as the extreme that violates a limit
+    /// given, a limit that is not a number as one no value meets, and a
+    /// measure with no limit fails.
     pub fn number(
         quantity: Quantity,
         at: At,
         (found, nominal): (f64, Option<f64>),
-        (band, band_value): (Band, f64),
+        (band, width): (Band, f64),
         (min, max): (Option<f64>, Option<f64>),
     ) -> Self {
-        let below = min.map_or(f64::INFINITY, |m| found - m);
-        let above = max.map_or(f64::INFINITY, |m| m - found);
-        let margin = below.min(above);
-        let margin = if margin.is_finite() {
-            margin
+        let min = min.map(|m| if m.is_nan() { f64::MAX } else { finite(m) });
+        let max = max.map(|m| if m.is_nan() { f64::MIN } else { finite(m) });
+        let found = if found.is_finite() {
+            finite(found)
+        } else if max.is_some() {
+            f64::MAX
         } else {
-            f64::NEG_INFINITY
+            f64::MIN
         };
-        let passed = margin > 0.0;
+        let margin = match (min.map(|m| found - m), max.map(|m| m - found)) {
+            (Some(below), Some(above)) => below.min(above),
+            (Some(one), None) | (None, Some(one)) => one,
+            (None, None) => f64::MIN,
+        };
+        let margin = finite(margin);
+        let width = finite(width);
         Self {
             quantity,
-            at,
-            value: Value::Number {
-                found: finite(found),
+            at: at.stored(),
+            value: MeasureValue::Number {
+                found,
                 nominal: nominal.map(finite),
                 band,
-                band_value: finite(band_value),
-                min: min.map(finite),
-                max: max.map(finite),
-                margin: finite(margin),
+                width: if band == Band::Angle {
+                    BandWidth::Rad(width)
+                } else {
+                    BandWidth::Mm(width)
+                },
+                min,
+                max,
+                margin,
             },
-            passed,
+            passed: margin > 0.0,
         }
     }
 
@@ -190,8 +230,8 @@ impl Measure {
     pub fn flag(quantity: Quantity, at: At, found: bool, required: bool) -> Self {
         Self {
             quantity,
-            at,
-            value: Value::Flag { found, required },
+            at: at.stored(),
+            value: MeasureValue::Flag { found, required },
             passed: found || !required,
         }
     }
@@ -207,7 +247,7 @@ impl Measure {
     }
 
     /// Its values.
-    pub fn value(&self) -> &Value {
+    pub fn value(&self) -> &MeasureValue {
         &self.value
     }
 
@@ -325,7 +365,7 @@ impl Failure {
     pub fn new(code: FailureCode, at: At, detail: impl Into<String>) -> Self {
         Self {
             code,
-            at,
+            at: at.stored(),
             detail: detail.into(),
         }
     }
@@ -410,7 +450,7 @@ impl Evidence {
 
 #[cfg(test)]
 mod tests {
-    use super::{At, Band, Measure, Quantity};
+    use super::{At, Band, Measure, MeasureValue, Quantity};
 
     /// EV2: a measure passes exactly when its margin is positive; the edge
     /// rejects; a value with no limit or not finite fails.
@@ -455,5 +495,44 @@ mod tests {
         assert!(!nan.passed());
         assert!(Measure::flag(Quantity::OpenStart, at(), false, false).passed());
         assert!(!Measure::flag(Quantity::OpenStart, at(), false, true).passed());
+    }
+
+    /// EV7: the result recomputes from what is stored, whatever came in:
+    /// values and limits that are not finite, and −0.0.
+    #[test]
+    fn a_measure_recomputes_from_what_it_stores() {
+        let cases = [
+            (f64::NAN, None, Some(6.01)),
+            (f64::NEG_INFINITY, None, Some(6.01)),
+            (f64::INFINITY, Some(5.99), None),
+            (6.0, Some(f64::NAN), Some(6.01)),
+            (6.0, Some(5.99), Some(f64::NAN)),
+            (-0.0, Some(-1.0), Some(1.0)),
+        ];
+        for (found, min, max) in cases {
+            let m = Measure::number(
+                Quantity::DiameterMm,
+                At::whole(),
+                (found, None),
+                (Band::Epsilon, 0.01),
+                (min, max),
+            );
+            let MeasureValue::Number {
+                found,
+                min,
+                max,
+                margin,
+                ..
+            } = *m.value()
+            else {
+                return;
+            };
+            let again = min
+                .map_or(f64::INFINITY, |lo| found - lo)
+                .min(max.map_or(f64::INFINITY, |hi| hi - found));
+            assert!(found.is_finite() && found.to_bits() != (-0.0_f64).to_bits());
+            assert_eq!(margin.to_bits(), again.to_bits());
+            assert_eq!(m.passed(), again > 0.0);
+        }
     }
 }

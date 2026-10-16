@@ -5,6 +5,13 @@ use serde::Serialize;
 /// The reason given when no fit verifier is configured.
 pub const NO_FIT_VERIFIER: &str = "no fit verifier in this build";
 
+/// The reason a socket whose interface failed gets no fit check
+/// (`docs/research/m4-match.md`, VD4).
+pub const INTERFACE_REJECTED: &str = "interface rejected";
+
+/// The reason a candidate M2's gate refused gets none (VD10).
+pub const CANDIDATE_REFUSED: &str = "candidate refused";
+
 /// Whether the candidate's body fits among the assembly's other solids.
 ///
 /// Only [`FitStatus::Verified`] can make a [`Match`](crate::VerdictKind::Match),

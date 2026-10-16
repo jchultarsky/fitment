@@ -203,6 +203,11 @@ fn blocked_and_removed_requirements_demand_nothing() {
     let blocked = SocketSignature::of(&view, &tiny);
     assert_eq!(blocked.blocked_by().len(), view.active().len());
     assert!(blocked.is_empty());
+    // SL8: a catalog query on it returns nothing, and says why.
+    assert!(matches!(
+        ShortlistIndex::new().query(&blocked),
+        Err(fitment_core::Blocked::FailsEvery { .. })
+    ));
     document
         .decide(
             "grip:plane-467+plane-570",
@@ -214,4 +219,25 @@ fn blocked_and_removed_requirements_demand_nothing() {
     let view = SocketView::new(&document, "socket-1").unwrap();
     let reviewed = SocketSignature::of(&view, &MatchPolicy::default());
     assert_eq!(reviewed.removed().len(), 1);
+    // A grip alone still demands its seats' planes: not empty (SL8).
+    let mut grip_only = SocketDocument::extract(ASSEMBLIES[0].1, Some("BRACKET"), None).unwrap();
+    let ids: Vec<String> = grip_only.extracted().unwrap().sockets[0]
+        .requirements
+        .iter()
+        .map(|r| r.id.clone())
+        .filter(|id| !id.starts_with("grip:"))
+        .collect();
+    for id in ids {
+        grip_only
+            .decide(
+                &id,
+                None,
+                fitment_core::ReviewStatus::Removed,
+                Some("not this"),
+            )
+            .unwrap();
+    }
+    let view = SocketView::new(&grip_only, "socket-1").unwrap();
+    assert_eq!(view.active().len(), 1);
+    assert!(!SocketSignature::of(&view, &MatchPolicy::default()).is_empty());
 }

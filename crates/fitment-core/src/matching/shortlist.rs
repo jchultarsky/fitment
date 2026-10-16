@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use super::MAX_SHORTLIST_CHECKS;
 use super::signature::{
-    PartSignature, ReqLine, SigStack, SocketSignature, Window, angle, line_angle, point_line,
+    EXACT, PartSignature, ReqLine, SigStack, SocketSignature, Window, angle, line_angle, point_line,
 };
 use crate::features::{FeatureId, Sense};
 use crate::socket::geo::{V, add, dot, scale, sub};
@@ -116,6 +116,10 @@ struct Test<'a> {
     lines: Vec<Vec<usize>>,
     seats: Vec<Vec<usize>>,
     cones: Vec<Vec<usize>>,
+    /// SG5's groups: requirements one candidate element may serve
+    /// together.
+    line_groups: Vec<usize>,
+    seat_groups: Vec<usize>,
     budget: Budget,
 }
 
@@ -138,17 +142,23 @@ pub fn shortlist(socket: &SocketSignature, part: &PartSignature) -> Result<Kept,
         lines: Vec::new(),
         seats: Vec::new(),
         cones: Vec::new(),
+        line_groups: Vec::new(),
+        seat_groups: Vec::new(),
         budget: Budget(0),
     };
+    let (nl, ns) = (socket.lines.len(), socket.seats.len());
+    if !test.budget.spend(nl * nl + ns * ns) {
+        return Ok(test.untested());
+    }
+    (test.line_groups, test.seat_groups) = socket.groups(wl, wa);
     let Some(clusters) = clusters(part.stacks(), wl, wa, &mut test.budget) else {
         return Ok(test.untested());
     };
     test.clusters = clusters;
-    if let Some(missing) = test.domains() {
-        return Err(vec![missing]);
-    }
-    if test.budget.0 > MAX_SHORTLIST_CHECKS {
-        return Ok(test.kept(true));
+    match test.domains() {
+        Prune::Missing(missing) => return Err(vec![missing]),
+        Prune::Exhausted => return Ok(test.untested()),
+        Prune::Done => {}
     }
     match test.prune() {
         Prune::Missing(missing) => return Err(vec![missing]),
@@ -293,25 +303,40 @@ impl Test<'_> {
     }
 
     /// SL2: each requirement's domain; the first empty one as missing.
-    fn domains(&mut self) -> Option<Missing> {
+    fn domains(&mut self) -> Prune {
         for r in &self.socket.lines {
-            self.budget.spend(self.clusters.len());
+            if !self.budget.spend(self.clusters.len()) {
+                return Prune::Exhausted;
+            }
             let domain: Vec<usize> = (0..self.clusters.len())
                 .filter(|&k| self.clusters.get(k).is_some_and(|c| serves(c, r, self.wl)))
                 .collect();
             if domain.is_empty() {
-                return Some(self.why_no_line(r));
+                return Prune::Missing(self.why_no_line(r));
             }
             self.lines.push(domain);
         }
         let planes = self.part.planes();
+        // Each plane's known area with its near planes', once: it does not
+        // depend on the seat.
+        let mut areas = Vec::with_capacity(planes.len());
+        if !self.socket.seats.is_empty() {
+            for k in 0..planes.len() {
+                if !self.budget.spend(planes.len()) {
+                    return Prune::Exhausted;
+                }
+                areas.push(self.area_near(k));
+            }
+        }
         for s in &self.socket.seats {
-            self.budget.spend(planes.len() * planes.len());
-            let domain: Vec<usize> = (0..planes.len())
-                .filter(|&k| self.area_near(k) >= s.needed)
+            if !self.budget.spend(planes.len()) {
+                return Prune::Exhausted;
+            }
+            let domain: Vec<usize> = (0..areas.len())
+                .filter(|&k| areas.get(k).is_some_and(|a| *a >= s.needed))
                 .collect();
             if domain.is_empty() {
-                return Some(Missing {
+                return Prune::Missing(Missing {
                     requirements: s.ids.clone(),
                     element: MissingElement::Plane,
                     window: Some(Window::new(Some(s.needed), None)),
@@ -321,7 +346,9 @@ impl Test<'_> {
         }
         let sigma = self.socket.sigma;
         for c in &self.socket.cones {
-            self.budget.spend(self.part.cones().len());
+            if !self.budget.spend(self.part.cones().len()) {
+                return Prune::Exhausted;
+            }
             let domain: Vec<usize> = (0..self.part.cones().len())
                 .filter(|&k| {
                     self.part.cones().get(k).is_some_and(|x| {
@@ -335,7 +362,7 @@ impl Test<'_> {
                 })
                 .collect();
             if domain.is_empty() {
-                return Some(Missing {
+                return Prune::Missing(Missing {
                     requirements: vec![c.id.clone()],
                     element: MissingElement::Cone,
                     window: None,
@@ -343,11 +370,14 @@ impl Test<'_> {
             }
             self.cones.push(domain);
         }
-        None
+        Prune::Done
     }
 
-    /// The known area of plane `k` with the planes within `W_L` and `W_A` of it
-    /// (SL2): one seat may be covered by several coplanar faces.
+    /// The known area of plane `k` with the planes within `W_L` and `W_A`
+    /// of it (SL2): one seat may be covered by several coplanar faces. An
+    /// offset is compared only across exactly parallel normals; a plane
+    /// tilted within `W_A` is counted whatever its offset, which depends on
+    /// the frame.
     fn area_near(&self, k: usize) -> f64 {
         let planes = self.part.planes();
         let Some(p) = planes.get(k) else {
@@ -357,8 +387,8 @@ impl Test<'_> {
         planes
             .iter()
             .filter(|q| {
-                let m = q.normal.to_array();
-                angle(n, m) <= self.wa && (q.offset_mm - p.offset_mm).abs() <= self.wl
+                let tilt = angle(n, q.normal.to_array());
+                tilt <= self.wa && (tilt > EXACT || (q.offset_mm - p.offset_mm).abs() <= self.wl)
             })
             .map(|q| q.known_area_mm2)
             .sum()
@@ -523,8 +553,15 @@ impl Test<'_> {
     /// as the requirements `a` and `b` do, within the windows.
     fn related(&self, a: (Kind, usize), b: (Kind, usize), x: usize, y: usize) -> bool {
         match (a.0, b.0) {
-            (Kind::Line, Kind::Line) => x != y && self.lines_related(a.1, b.1, x, y),
-            (Kind::Seat, Kind::Seat) => x != y && self.seats_related(a.1, b.1, x, y),
+            // One witness may serve requirements of one group (SG5).
+            (Kind::Line, Kind::Line) => {
+                (x != y || self.line_groups.get(a.1) == self.line_groups.get(b.1))
+                    && self.lines_related(a.1, b.1, x, y)
+            }
+            (Kind::Seat, Kind::Seat) => {
+                (x != y || self.seat_groups.get(a.1) == self.seat_groups.get(b.1))
+                    && self.seats_related(a.1, b.1, x, y)
+            }
             (Kind::Seat, Kind::Line) => self.seat_line(a.1, b.1, x, y),
             (Kind::Line, Kind::Seat) => self.seat_line(b.1, a.1, y, x),
             (Kind::Cone, Kind::Line) => self.cone_line(a.1, b.1, x, y),
@@ -564,10 +601,16 @@ impl Test<'_> {
         };
         let (na, nb) = (ca.normal.to_array(), cb.normal.to_array());
         let required = angle(ra.normal, rb.normal);
-        if (required - angle(na, nb)).abs() > self.wa {
+        let found = angle(na, nb);
+        if (required - found).abs() > self.wa {
             return false;
         }
-        if required <= PARALLEL {
+        // Offsets compare only between exactly parallel planes: across a
+        // tilt they depend on where the part sits in its frame.
+        let exact = found <= EXACT || found >= std::f64::consts::PI - EXACT;
+        if !exact {
+            true
+        } else if required <= PARALLEL {
             ((rb.offset - ra.offset) - (cb.offset_mm - ca.offset_mm)).abs() <= self.wl
         } else if required >= std::f64::consts::PI - PARALLEL {
             ((rb.offset + ra.offset) - (cb.offset_mm + ca.offset_mm)).abs() <= self.wl
@@ -610,20 +653,35 @@ impl Test<'_> {
                 && point_line(candidate.apex_mm, cluster.point, cluster.dir) <= self.wl)
     }
 
-    /// SL5: distinct required lines need distinct witness stacks, distinct
-    /// seats distinct planes.
+    /// SL5: distinct groups of required lines need distinct witness
+    /// stacks, distinct groups of seats distinct planes; a group's witness
+    /// is any of its members'.
     fn distinct(&mut self) -> Option<Missing> {
-        for (kind, domains) in [
-            (Kind::Line, self.lines.clone()),
-            (Kind::Seat, self.seats.clone()),
+        for (kind, domains, groups) in [
+            (Kind::Line, self.lines.clone(), self.line_groups.clone()),
+            (Kind::Seat, self.seats.clone(), self.seat_groups.clone()),
         ] {
             let n = match kind {
                 Kind::Line => self.clusters.len(),
                 _ => self.part.planes().len(),
             };
-            if let Some(i) = matching(&domains, n, &mut self.budget) {
+            // Each group, by its least member, with its members' domains.
+            let mut united: std::collections::BTreeMap<usize, (usize, Vec<usize>)> =
+                std::collections::BTreeMap::new();
+            for (k, d) in domains.iter().enumerate() {
+                let g = groups.get(k).copied().unwrap_or(k);
+                let entry = united.entry(g).or_insert((k, Vec::new()));
+                entry.1.extend(d.iter().copied());
+            }
+            let (members, mut sets): (Vec<usize>, Vec<Vec<usize>>) = united.into_values().unzip();
+            for set in &mut sets {
+                set.sort_unstable();
+                set.dedup();
+            }
+            if let Some(i) = matching(&sets, n, &mut self.budget) {
+                let first = members.get(i).copied().unwrap_or(0);
                 return Some(Missing {
-                    requirements: self.ids((kind, i)),
+                    requirements: self.ids((kind, first)),
                     element: MissingElement::Distinct,
                     window: None,
                 });
