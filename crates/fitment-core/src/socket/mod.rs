@@ -10,7 +10,7 @@ mod index;
 mod merge;
 mod model;
 mod overlap;
-mod own;
+pub(crate) mod own;
 mod place;
 mod planar;
 mod review;

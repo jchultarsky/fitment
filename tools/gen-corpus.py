@@ -675,10 +675,46 @@ M4_TESTS = {
             f"{M4_CORE_TESTS}::level_one_returns_whatever_level_two_keeps"],
     "SL10": [f"{M4_CORE_SIG}::a_hostile_candidate_is_judged_within_the_budget"],
 }
+# PR 3a builds verification at a given placement: the candidate's stacks and profiles, VR1 to VR22 but the matcher's
+# own (VR16, VR17, VR19), and Y4 at the identity. Alignment, the matcher and the committed candidates follow (3b, 3c).
+M4_VERIFY = "crates/fitment-core/tests/verify.rs"
+M4_ORIGINAL = "crates/fitment/tests/original.rs"
+M4_CAND = "crates/fitment-core/src/matching/candidate.rs"
+M4_Y4 = [f"{M4_ORIGINAL}::every_original_passes_what_m4_can_verify_at_the_identity",
+         f"{M4_ORIGINAL}::every_pinned_fixture_original_passes_what_m4_can_verify_at_the_identity"]
+M4_EDGE = [f"{M4_VERIFY}::a_placement_off_by_the_tolerance_rejects"]
+M4_TESTS.update({
+    "AL14": M4_EDGE + [f"{M4_VERIFY}::every_original_passes_its_own_sockets_at_the_identity"],
+    "VR1": M4_Y4 + [f"{M4_VERIFY}::every_original_passes_its_own_sockets_at_the_identity"],
+    "VR2": M4_EDGE + M4_Y4[1:],
+    "VR3": M4_EDGE + [f"{M4_VERIFY}::a_turn_is_judged_by_where_it_moves_the_features"],
+    "VR4": M4_Y4,
+    "VR5": M4_Y4[1:],
+    "VR6": M4_Y4,
+    "VR7": M4_Y4 + M4_EDGE,
+    "VR8": [f"{M4_CAND}::a_profile_takes_the_zones_whose_faces_stay_outside"] + M4_Y4,
+    "VR9": M4_Y4,
+    "VR10": M4_EDGE + M4_Y4,
+    "VR11": ["crates/fitment-core/src/matching/region.rs::a_region_is_covered_to_within_the_tolerance",
+             "crates/fitment-core/src/matching/region.rs::a_whole_circle_winds_once_from_inside",
+             "crates/fitment-core/src/matching/region.rs::coverage_stops_at_its_bound"],
+    "VR12": M4_Y4,
+    "VR13": M4_Y4,
+    "VR14": M4_Y4,
+    "VR15": M4_Y4,
+    "VR18": [f"{M4_CAND}::a_profile_takes_the_zones_whose_faces_stay_outside"],
+    "VR20": ["crates/fitment-core/src/matching/evidence.rs::a_measure_passes_strictly_inside_its_limits"] + M4_EDGE,
+    "VR21": M4_Y4,
+    "VR22": [f"{M4_CAND}::a_core_meets_every_face_inside_it_but_the_stack_s_own",
+             f"{M4_CAND}::a_cylinder_s_surface_is_boxed_within_the_part"] + M4_Y4,
+})
 for rule, tests in M4_TESTS.items():
     RULES[rule] = {"tests": tests}
-for rule in ("CF1", "CF2", "CF8"):
-    RULES[rule] = {"deferred": "M4 PR 3: read by the matcher and verification"}
+for rule in ("CF1", "CF2", *(f"AL{n}" for n in range(1, 14)), "VR17"):
+    RULES[rule] = {"deferred": "M4 PR 3b: alignment and the matcher"}
+RULES["CF8"] = {"deferred": "M4 PR 3c: a wall opening needs a candidate that has one, from the generator"}
+for rule in ("VR16", "VR19"):
+    RULES[rule] = {"deferred": "M4 PR 4: the verdict lists removed requirements and carries flags"}
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with

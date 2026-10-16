@@ -3,13 +3,18 @@
 //! holds what PR 2 builds: the policy, the evidence a check records, the
 //! candidate's and the socket's signatures, the shortlist and its index.
 
+mod align;
+mod axial;
 mod candidate;
 mod evidence;
 mod index;
 mod policy;
+mod region;
 mod shortlist;
 mod signature;
+mod verify;
 
+pub use align::{Placement, Seed};
 pub use candidate::CandidateView;
 pub use evidence::{
     At, Band, BandWidth, EndSide, Evidence, Failure, FailureCode, Measure, MeasureValue, Quantity,
@@ -19,6 +24,7 @@ pub use index::{Blocked, IndexTokens, PairToken, ShortlistIndex};
 pub use policy::{Clearance, Grip, MatchOptions, MatchPolicy};
 pub use shortlist::{Kept, Missing, MissingElement, shortlist};
 pub use signature::{PartSignature, SigCone, SigPlane, SigStack, SocketSignature, Unread, Window};
+pub use verify::verify;
 
 use crate::socket::{Requirement, Requires, Socket, SocketDocument};
 
@@ -26,6 +32,14 @@ use crate::socket::{Requirement, Requires, Socket, SocketDocument};
 /// to what `PartSignature::of` computes; M5 recomputes stored signatures of
 /// another.
 pub const SIGNATURE_VERSION: u32 = 1;
+
+/// The version of the matching rules (M4-27): it rises with any change to
+/// the shortlist, alignment, verification or the verdicts they give.
+pub const MATCH_RULES_VERSION: u32 = 1;
+
+/// The most steps of coverage marching (VR11) and core face tests (VR22)
+/// for one candidate and socket (AL11); past them the socket rejects.
+pub const MAX_COVERAGE_STEPS: u64 = 20_000_000;
 
 /// The least uncertainty a part is taken to have (VR2): M3's B1 guard.
 pub const GUARD_MM: f64 = crate::socket::GUARD_MM;

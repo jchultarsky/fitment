@@ -62,6 +62,14 @@ impl Motion {
         })
     }
 
+    /// The motion `rigid` states.
+    pub(crate) fn of(rigid: &Rigid) -> Self {
+        Self {
+            rotation: rigid.rotation(),
+            translation: rigid.translation(),
+        }
+    }
+
     pub(crate) fn point(&self, p: V) -> V {
         add(self.rotation.map(|row| dot(row, p)), self.translation)
     }
