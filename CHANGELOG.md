@@ -14,15 +14,20 @@ Until 1.0, minor versions may contain breaking changes.
   stored features document exactly as `judge_step` judges its file, and
   refuses one another extractor version wrote (`NotCurrent`);
   `Matcher::admitted` runs level 1 over any `IndexSource`, the trait a
-  catalog's store implements; `IndexTokens` read back from JSON, checked;
-  `FeaturesDocument::to_compact_json` and `part_digest`; `Source::new`.
+  catalog's store implements, each socket within the ones before;
+  `IndexTokens` read back from JSON, checked (finite, `-0.0` refused,
+  pairs in order); `FeaturesDocument::to_compact_json` and `part_digest`;
+  `Source::new`.
 
 ### Changed
 
 - `signature_version` is 2: pair tokens name their two stacks by index
   instead of copying their senses and diameters, and level 1 takes each
   candidate's lever, rounded up to a power of two, in place of the
-  largest indexed. What level 1 returns still holds whatever level 2 keeps.
+  largest indexed. Level 1 never hides a part verification passes; it no
+  longer claims to return everything level 2 keeps, which level 2's
+  budget and borrowed diameters do not allow. The pair filter now steps
+  aside at level 2's own angular window.
 - `fitment socket`, `match` and `review` sync an output file's temporary
   copy and its directory around the rename, so a crash leaves the old file
   or the new one.

@@ -1377,6 +1377,37 @@ mod tests {
                 &part(stacks.into_iter().flatten().collect(), Vec::new(), &[])
             ));
         }
+
+        /// M5's CT3 (the IX5 note): at a part's seat bucket the seats fall
+        /// into no more groups than at its own lever, so level 1's plane
+        /// count asks no more than level 2's: on every power of two and an
+        /// ulp either side, and on levers between.
+        #[test]
+        fn a_seat_bucket_never_splits_a_seat_group() {
+            use crate::matching::index::{Groups, seat_bucket};
+            let seats: Vec<ReqSeat> = (0_i32..24)
+                .map(|k| seat("S", [0.0, 0.0, 1.0], 0.03 * f64::from(k * k) / 8.0, 1.0))
+                .collect();
+            let s = socket(Vec::new(), seats, (0.01, 0.01), &[]);
+            let mut levers = Vec::new();
+            for k in -10_i32..13 {
+                let p = libm::exp2(f64::from(k));
+                levers.extend([
+                    p,
+                    f64::from_bits(p.to_bits() + 1),
+                    f64::from_bits(p.to_bits() - 1),
+                ]);
+            }
+            levers.extend((0_i32..10_000).map(|k| 1e-3 * libm::pow(1.0017, f64::from(k))));
+            let mut seen = std::collections::BTreeSet::new();
+            for x in levers {
+                let b = seat_bucket(x);
+                let (at_x, at_b) = (Groups::at(&s, x).seats, Groups::at(&s, b).seats);
+                assert!(b >= x && at_b <= at_x, "{x}: {at_x} groups, {at_b} at {b}");
+                seen.insert(at_x);
+            }
+            assert!(seen.len() > 3, "the levers move the groups: {seen:?}");
+        }
     }
 }
 

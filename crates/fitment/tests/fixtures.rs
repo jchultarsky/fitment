@@ -514,3 +514,63 @@ fn as1_exports_share_their_core() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// M5's CT5 on the fixtures: each one's features document reads back from
+/// its compact form equal and writing the same JSON, its tokens read back
+/// as written (IX9), and judged from it against a committed socket it gets
+/// the result its bytes get.
+#[test]
+fn every_fixture_is_judged_from_its_stored_document_as_from_its_file() {
+    use fitment_core::{
+        FeaturesDocument, IndexTokens, MatchOptions, MatchPolicy, Matcher, NoFitVerifier,
+        PartSignature, SocketDocument, Source, sha256_hex,
+    };
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("manifest.json")).unwrap()).unwrap();
+    let present: Vec<&str> = manifest["fixtures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .filter(|path| root.join(path).is_file())
+        .collect();
+    if present.is_empty() {
+        let required = std::env::var_os("FITMENT_REQUIRE_FIXTURES").is_some_and(|v| v == "1");
+        assert!(
+            !required,
+            "FITMENT_REQUIRE_FIXTURES=1 but fixtures are missing"
+        );
+        eprintln!("skipped: run tools/fetch-fixtures.sh core");
+        return;
+    }
+    let assembly = include_bytes!("../../fitment-core/tests/assemblies/s01_bolted.stp");
+    let socket = SocketDocument::extract(assembly, Some("BRACKET"), None).unwrap();
+    let matcher = Matcher::new(
+        &socket,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &NoFitVerifier,
+    )
+    .unwrap();
+    for path in present {
+        let bytes = fs::read(root.join(path)).unwrap();
+        let read = FeaturesDocument::read(&bytes);
+        let back = FeaturesDocument::from_json(&read.to_compact_json()).unwrap();
+        assert_eq!(back, read, "{path}");
+        assert_eq!(back.to_json(), read.to_json(), "{path}");
+        if let Some(part) = back.part() {
+            let tokens = IndexTokens::of(&PartSignature::of(part));
+            let again = IndexTokens::from_json(&tokens.to_json());
+            assert_eq!(again.as_ref(), Ok(&tokens), "{path}");
+        }
+        let source = Source::new(
+            &sha256_hex(&bytes),
+            u64::try_from(bytes.len()).unwrap(),
+            back.header().cloned(),
+        )
+        .unwrap();
+        let stored = matcher.judge_document(&back, source).unwrap();
+        assert_eq!(stored, matcher.judge_step(&bytes), "{path}");
+    }
+}

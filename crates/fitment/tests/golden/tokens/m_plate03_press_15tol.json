@@ -1,0 +1,98 @@
+{
+  "extractor_version": 6,
+  "signature_version": 2,
+  "tokens": {
+    "floor_mm": 1e-6,
+    "lever_mm": 90.8979647736956,
+    "pairs": [
+      {
+        "a": 0,
+        "b": 1,
+        "distance_mm": 20.0
+      },
+      {
+        "a": 0,
+        "b": 2,
+        "distance_mm": 40.0
+      },
+      {
+        "a": 0,
+        "b": 3,
+        "distance_mm": 60.0
+      },
+      {
+        "a": 1,
+        "b": 0,
+        "distance_mm": 20.0
+      },
+      {
+        "a": 1,
+        "b": 2,
+        "distance_mm": 20.0
+      },
+      {
+        "a": 1,
+        "b": 3,
+        "distance_mm": 40.0
+      },
+      {
+        "a": 2,
+        "b": 0,
+        "distance_mm": 40.0
+      },
+      {
+        "a": 2,
+        "b": 1,
+        "distance_mm": 20.0
+      },
+      {
+        "a": 2,
+        "b": 3,
+        "distance_mm": 20.0
+      },
+      {
+        "a": 3,
+        "b": 0,
+        "distance_mm": 60.0
+      },
+      {
+        "a": 3,
+        "b": 1,
+        "distance_mm": 40.0
+      },
+      {
+        "a": 3,
+        "b": 2,
+        "distance_mm": 20.0
+      }
+    ],
+    "pairs_incomplete": false,
+    "planes": 6,
+    "stacks": [
+      [
+        "hole",
+        [
+          5.985
+        ]
+      ],
+      [
+        "hole",
+        [
+          6.2
+        ]
+      ],
+      [
+        "hole",
+        [
+          6.0
+        ]
+      ],
+      [
+        "hole",
+        [
+          6.015
+        ]
+      ]
+    ]
+  }
+}

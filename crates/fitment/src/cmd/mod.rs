@@ -13,8 +13,12 @@ use std::path::{Path, PathBuf};
 /// Writes `bytes` to a temporary file beside `path`, synced, then renames
 /// it over `path` and syncs the directory, so a crash leaves the old file
 /// or the new one, never an empty one (M5's CL7). The temporary file is
-/// removed if any step fails.
+/// removed if any step fails; once the rename has landed, nothing fails.
 pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    // Opened first, so the rename is never followed by an error: where it
+    // cannot be opened (a write-only directory, Windows) the rename stands
+    // as the file system keeps it.
+    let directory = open_directory(path);
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(format!(".{}.tmp", std::process::id()));
     let temporary = PathBuf::from(temporary);
@@ -28,21 +32,30 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = std::fs::remove_file(&temporary);
         return written;
     }
-    sync_directory(path)
+    sync_directory(directory.as_ref());
+    Ok(())
 }
 
-/// Syncs the directory holding `path`, so a rename into it is durable.
-/// Windows cannot open a directory to sync it; there the rename stands as
-/// the file system keeps it.
-fn sync_directory(path: &Path) -> io::Result<()> {
+/// The directory holding `path`, opened to be synced; `None` on Windows,
+/// which cannot open one, or where it cannot be read.
+fn open_directory(path: &Path) -> Option<std::fs::File> {
     if cfg!(windows) {
-        return Ok(());
+        return None;
     }
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     };
-    std::fs::File::open(parent)?.sync_all()
+    std::fs::File::open(parent).ok()
+}
+
+/// Syncs the directory a rename landed in, so the rename is durable. Best
+/// effort: the new file is already in place, and some network and FUSE
+/// file systems refuse to sync a directory.
+fn sync_directory(directory: Option<&std::fs::File>) {
+    if let Some(directory) = directory {
+        let _ = directory.sync_all();
+    }
 }
 
 #[cfg(test)]
@@ -66,6 +79,21 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(left, ["out.json"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    /// The M5 PR 1 review: a directory that cannot be opened to sync takes
+    /// the write, and the write reports success.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_only_directory_takes_the_write() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("fitment-wonly-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o300)).unwrap();
+        let written = write_atomically(&dir.join("out.json"), b"whole");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(written.is_ok(), "{written:?}");
+        assert_eq!(std::fs::read(dir.join("out.json")).unwrap(), b"whole");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

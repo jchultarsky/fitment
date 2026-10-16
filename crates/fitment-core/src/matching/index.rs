@@ -1,9 +1,19 @@
 //! The shortlist, level 1 (`docs/research/m4-match.md`, SG10, SG11, SL7
 //! to SL9; `docs/research/m5-catalog.md`, IX): policy-free tokens per
 //! candidate, posting lists by sense and diameter bin, and a query whose
-//! windows contain level 2's, so whatever level 2 keeps, level 1 returns.
-//! One algorithm, [`level_one`], runs over any [`IndexSource`]: the
-//! in-memory [`ShortlistIndex`], or a catalog's stored postings.
+//! windows contain level 2's. One algorithm, [`level_one`], runs over any
+//! [`IndexSource`]: the in-memory [`ShortlistIndex`], or a catalog's stored
+//! postings.
+//!
+//! What level 1 promises is that it never hides a part verification
+//! passes: each filter asks only what a passing part's own witnesses show
+//! (a stack with its own diameter in each line's window, distinct planes
+//! for the seat groups, a token between the selective line's witness and
+//! each other's). It does not promise to return everything level 2 keeps:
+//! level 2 keeps untested what its budget cannot test (SL4), and its
+//! clusters lend a stack its neighbours' diameters (SL2), where tokens hold
+//! each stack's own. Both differences touch only parts verification
+//! rejects (the M5 PR 1 soundness review).
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -144,8 +154,9 @@ impl IndexTokens {
         serde_json::to_string(self).unwrap_or_default()
     }
 
-    /// Reads tokens back (M5's IX9): every number finite and not negative
-    /// where a length, every pair naming two stacks there are.
+    /// Reads tokens back (M5's IX9): every length finite and not negative,
+    /// `-0.0` included, every diameter above zero, and every pair naming two
+    /// stacks there are, in the order [`IndexTokens::of`] writes them.
     ///
     /// # Errors
     ///
@@ -157,22 +168,29 @@ impl IndexTokens {
             column: error.column(),
         })?;
         let invalid = |message: &str| Err(FormatError::Invalid(message.to_owned()));
-        let length = |v: f64| v.is_finite() && v >= 0.0;
+        // Not `-0.0` either: a store may keep it as `0.0` (IX3).
+        let length = |v: f64| v.is_finite() && v.is_sign_positive();
         if !length(tokens.lever_mm) || !length(tokens.floor_mm) {
             return invalid("a lever or floor that is not a finite length");
         }
         if !tokens
             .stacks
             .iter()
-            .all(|(_, diameters)| diameters.iter().all(|d| length(*d)))
+            .all(|(_, diameters)| diameters.iter().all(|d| length(*d) && *d > 0.0))
         {
-            return invalid("a diameter that is not a finite length");
+            return invalid("a diameter that is not a finite length above zero");
         }
         let n = tokens.stacks.len();
         if !tokens.pairs.iter().all(|p| {
             (p.a as usize) < n && (p.b as usize) < n && p.a != p.b && length(p.distance_mm)
         }) {
             return invalid("a pair that names no two stacks, or no finite distance");
+        }
+        if !tokens.pairs.windows(2).all(|w| match w {
+            [x, y] => (x.a, x.b) < (y.a, y.b),
+            _ => true,
+        }) {
+            return invalid("pairs out of their order");
         }
         Ok(tokens)
     }
@@ -228,31 +246,34 @@ pub trait IndexSource {
         each: &mut dyn FnMut(u64, u32, f64),
     ) -> Result<(), Self::Error>;
 
-    /// Every indexed candidate, ascending.
-    ///
-    /// # Errors
-    ///
-    /// The store's, if it cannot be read.
-    fn all(&self) -> Result<Vec<u64>, Self::Error>;
-
-    /// The tokens of each of `ids`; a candidate with none is the store's
-    /// error, never skipped.
+    /// The tokens of each of `ids`, or of every indexed candidate for
+    /// `None`, in any order. Every id asked for is answered or is the
+    /// store's error: an id skipped is a candidate level 1 drops though
+    /// level 2 might keep it.
     ///
     /// # Errors
     ///
     /// The store's, if it cannot be read or holds no tokens for an id.
     fn tokens(
         &self,
-        ids: &[u64],
+        ids: Option<&[u64]>,
         each: &mut dyn FnMut(u64, &IndexTokens),
     ) -> Result<(), Self::Error>;
+}
+
+/// The bins a window's postings lie in (SG10), one more at each end; an
+/// unbounded end reaches every bin.
+fn bins(window: &Window) -> RangeInclusive<i64> {
+    let lo = window.lo.map_or(i64::MIN, |v| bin(v).saturating_sub(1));
+    let hi = window.hi.map_or(i64::MAX, |v| bin(v).saturating_add(1));
+    lo..=hi
 }
 
 /// IX5's seat bucket: the lever rounded up to a power of two, never below
 /// it (rounding `2^ceil(log2(x))` can come out one ulp below `x` just past
 /// a power of two). Groups only coarsen as the lever grows, so a bucket
 /// asks no more than level 2 does at the part's own lever.
-fn seat_bucket(lever_mm: f64) -> f64 {
+pub(super) fn seat_bucket(lever_mm: f64) -> f64 {
     if lever_mm > 0.0 {
         libm::exp2(libm::ceil(libm::log2(lever_mm))).max(lever_mm)
     } else {
@@ -261,8 +282,9 @@ fn seat_bucket(lever_mm: f64) -> f64 {
 }
 
 /// SL8 over any [`IndexSource`] (M5's IX4 to IX8): the candidates level 2
-/// may keep for `socket`, ascending. Each candidate is judged at its own
-/// lever, bucketed (IX5), so its answer depends on no other candidate.
+/// may keep for `socket`, ascending, among `within` if given (another
+/// socket's answer, say). Each candidate is judged at its own lever,
+/// bucketed (IX5), so its answer depends on no other candidate.
 ///
 /// # Errors
 ///
@@ -271,6 +293,7 @@ fn seat_bucket(lever_mm: f64) -> f64 {
 pub fn level_one<S: IndexSource>(
     socket: &SocketSignature,
     source: &S,
+    within: Option<&[u64]>,
 ) -> Result<Result<Vec<u64>, Blocked>, S::Error> {
     if !socket.blocked_by().is_empty() {
         return Ok(Err(Blocked::FailsEvery {
@@ -295,12 +318,18 @@ pub fn level_one<S: IndexSource>(
     }
     let mut needs: Vec<(Sense, Window)> = needs.into_values().collect();
     needs.sort_by(|a, b| a.1.width().total_cmp(&b.1.width()));
-    let mut found: Option<Vec<u64>> = None;
+    let mut found: Option<Vec<u64>> = within.map(|ids| {
+        let mut ids = ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    });
+    if found.as_ref().is_some_and(Vec::is_empty) {
+        return Ok(Ok(Vec::new()));
+    }
     for (sense, window) in needs {
-        let lo = window.lo.map_or(i64::MIN, |v| bin(v).saturating_sub(1));
-        let hi = window.hi.map_or(i64::MAX, |v| bin(v).saturating_add(1));
         let mut ids: Vec<u64> = Vec::new();
-        source.postings(sense, lo..=hi, &mut |id, _, d| {
+        source.postings(sense, bins(&window), &mut |id, _, d| {
             if window.holds(d) {
                 ids.push(id);
             }
@@ -318,13 +347,9 @@ pub fn level_one<S: IndexSource>(
             return Ok(Ok(Vec::new()));
         }
     }
-    let all = match found {
-        Some(f) => f,
-        None => source.all()?,
-    };
     let mut groups: BTreeMap<u64, Groups> = BTreeMap::new();
     let mut kept = Vec::new();
-    source.tokens(&all, &mut |id, t| {
+    source.tokens(found.as_deref(), &mut |id, t| {
         let lever = seat_bucket(socket.lever_mm.max(t.lever_mm));
         let g = groups
             .entry(lever.to_bits())
@@ -340,13 +365,13 @@ pub fn level_one<S: IndexSource>(
 
 /// SG5's groups of a socket at one lever: the required lines', and how
 /// many groups of seats.
-struct Groups {
+pub(super) struct Groups {
     lines: Vec<usize>,
-    seats: usize,
+    pub(super) seats: usize,
 }
 
 impl Groups {
-    fn at(socket: &SocketSignature, lever: f64) -> Self {
+    pub(super) fn at(socket: &SocketSignature, lever: f64) -> Self {
         let (lines, mut seats) =
             socket.groups(socket.linear_window(lever), socket.angular_window() + 1e-9);
         seats.sort_unstable();
@@ -365,7 +390,9 @@ impl Groups {
 /// least level 2's for this candidate, so the reach and the groups contain
 /// level 2's.
 fn pairs_hold(socket: &SocketSignature, tokens: &IndexTokens, lever: f64, g: &Groups) -> bool {
-    if socket.angular_window() > PAIR_ANGLE_RAD {
+    // Level 2's angular window is W_A + 1e-9: past the tokens' 0.1°, a
+    // passing part's witnesses may be paired by no token.
+    if socket.angular_window() + 1e-9 > PAIR_ANGLE_RAD {
         return true;
     }
     let selective = socket
@@ -444,7 +471,7 @@ impl ShortlistIndex {
     /// [`Blocked`] if the socket demands nothing, or has an active
     /// requirement that fails every candidate.
     pub fn query(&self, socket: &SocketSignature) -> Result<Vec<u64>, Blocked> {
-        match level_one(socket, self) {
+        match level_one(socket, self, None) {
             Ok(answer) => answer,
             Err(never) => match never {},
         }
@@ -460,6 +487,9 @@ impl IndexSource for ShortlistIndex {
         bins: RangeInclusive<i64>,
         each: &mut dyn FnMut(u64, u32, f64),
     ) -> Result<(), Self::Error> {
+        if bins.is_empty() {
+            return Ok(());
+        }
         let key = u8::from(sense == Sense::Shaft);
         for (_, posted) in self
             .postings
@@ -472,18 +502,20 @@ impl IndexSource for ShortlistIndex {
         Ok(())
     }
 
-    fn all(&self) -> Result<Vec<u64>, Self::Error> {
-        Ok(self.tokens.keys().copied().collect())
-    }
-
     fn tokens(
         &self,
-        ids: &[u64],
+        ids: Option<&[u64]>,
         each: &mut dyn FnMut(u64, &IndexTokens),
     ) -> Result<(), Self::Error> {
-        for id in ids {
-            if let Some(t) = self.tokens.get(id) {
-                each(*id, t);
+        // Every posted id has its tokens: `insert` writes both.
+        match ids {
+            None => self.tokens.iter().for_each(|(id, t)| each(*id, t)),
+            Some(ids) => {
+                for id in ids {
+                    if let Some(t) = self.tokens.get(id) {
+                        each(*id, t);
+                    }
+                }
             }
         }
         Ok(())
@@ -500,7 +532,8 @@ fn narrowest(windows: &[Window]) -> Option<Window> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BIN_MM, bin, seat_bucket};
+    use super::{BIN_MM, IndexSource, IndexTokens, ShortlistIndex, Window, bin, bins, seat_bucket};
+    use crate::features::Sense;
 
     /// SG10: a value inside a window is in a bin between the window's ends'.
     #[test]
@@ -531,5 +564,66 @@ mod tests {
             }
         }
         assert!(seat_bucket(0.0).abs() < f64::MIN_POSITIVE);
+    }
+
+    /// The lengths CT4 names: every tenth of a millimetre and one ulp either
+    /// side, and the extremes the gate admits; a diameter is above zero.
+    fn edges() -> Vec<f64> {
+        let mut out = vec![1e-6, 2e6, f64::from_bits(1)];
+        for k in 1_i32..400 {
+            let v = f64::from(k) * BIN_MM;
+            out.extend([
+                v,
+                f64::from_bits(v.to_bits() + 1),
+                f64::from_bits(v.to_bits() - 1),
+            ]);
+        }
+        out
+    }
+
+    /// M5's CT4, in memory: a diameter round-trips bit for bit through the
+    /// stored tokens, and a window's postings are found exactly when the
+    /// window holds the diameter, its ends pinned to the diameter, an ulp
+    /// off it, or unbounded.
+    #[test]
+    fn a_window_finds_its_diameters_on_the_bin_edges() {
+        for d in edges() {
+            let tokens = IndexTokens {
+                stacks: vec![(Sense::Hole, vec![d])],
+                pairs: Vec::new(),
+                planes: 0,
+                lever_mm: 1.0,
+                floor_mm: 1e-6,
+                pairs_incomplete: false,
+            };
+            let Ok(back) = IndexTokens::from_json(&tokens.to_json()) else {
+                unreachable!("{d}: tokens refused");
+            };
+            assert_eq!(back.stacks[0].1[0].to_bits(), d.to_bits(), "{d}");
+            let mut index = ShortlistIndex::new();
+            index.insert(1, &back);
+            let (below, above) = (
+                f64::from_bits(d.to_bits().saturating_sub(1)),
+                f64::from_bits(d.to_bits() + 1),
+            );
+            for (lo, hi) in [
+                (Some(d), Some(d)),
+                (Some(below), Some(below)),
+                (Some(above), Some(above)),
+                (Some(below), Some(above)),
+                (None, Some(d)),
+                (Some(d), None),
+                (None, Some(below)),
+                (Some(above), None),
+                (None, None),
+            ] {
+                let window = Window { lo, hi };
+                let mut found = false;
+                let Ok(()) = index.postings(Sense::Hole, bins(&window), &mut |_, _, v| {
+                    found |= window.holds(v);
+                });
+                assert_eq!(found, window.holds(d), "{d} in {lo:?}..{hi:?}");
+            }
+        }
     }
 }
