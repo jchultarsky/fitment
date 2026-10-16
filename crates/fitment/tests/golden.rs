@@ -16,6 +16,9 @@
 //! changed golden only if one of its versions went up, and never runs in
 //! CI.
 
+#[path = "common/checker.rs"]
+mod checker;
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -300,6 +303,10 @@ fn match_output_matches_the_goldens() {
             .unwrap();
         let actual = String::from_utf8(output.stdout).unwrap();
         let name = format!("{case}--{part}");
+        let problems = checker::problems(&serde_json::from_str(&actual).unwrap());
+        if !problems.is_empty() {
+            failures.push(format!("match/{name}: {}", problems.join("; ")));
+        }
         let path = golden.join(format!("{name}.json"));
         let keys = [
             "extractor_version",

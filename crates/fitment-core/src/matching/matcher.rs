@@ -216,6 +216,8 @@ impl CandidateResult {
 
 /// What a socket's judgment found, before its verdict.
 struct Judged {
+    /// The shortlist dropped the candidate: no fit is asked (M4-26).
+    dropped: bool,
     stage: Stage,
     placement: Option<Placement>,
     chosen: Chosen,
@@ -340,6 +342,30 @@ impl<'a> Matcher<'a> {
         self.options
     }
 
+    /// The fit verifier's kernel and version, if it names one (MF6).
+    pub fn fit_kernel(&self) -> Option<(String, String)> {
+        self.fit.kernel()
+    }
+
+    /// Each socket's id with the active requirements that fail every
+    /// candidate (MF10): not M4-verifiable (VD5), or blocked by the
+    /// target's own uncertainty under the policy (VD6), in order.
+    pub fn failing_all(&self) -> Vec<(&str, Vec<&str>)> {
+        self.sockets
+            .iter()
+            .map(|r| {
+                let failing = r
+                    .view
+                    .active()
+                    .iter()
+                    .filter(|q| !q.verifiable() || r.view.blocked(q, &self.policy))
+                    .map(|q| q.id.as_str())
+                    .collect();
+                (r.view.socket().id.as_str(), failing)
+            })
+            .collect()
+    }
+
     /// Each socket's id with its unreviewed count, in order.
     pub fn unreviewed(&self) -> Vec<(&str, usize)> {
         self.sockets
@@ -362,7 +388,7 @@ impl<'a> Matcher<'a> {
                 refusals: read.refusals().to_vec(),
                 read: None,
                 verdict: Verdict::refused(read.refusals().iter().map(|r| r.code).collect()),
-                flags: vec![CandidateFlag::MaterialNotCompared],
+                flags: self.review_flags(vec![CandidateFlag::MaterialNotCompared]),
                 warnings: Vec::new(),
                 sockets: Vec::new(),
             },
@@ -408,6 +434,19 @@ impl<'a> Matcher<'a> {
         }
     }
 
+    /// VD12's flags the socket document gives every candidate, refused
+    /// ones too, added to `flags`, sorted.
+    fn review_flags(&self, mut flags: Vec<CandidateFlag>) -> Vec<CandidateFlag> {
+        if self.sockets.iter().any(|r| !r.view.removed().is_empty()) {
+            flags.push(CandidateFlag::RequirementsRemoved);
+        }
+        if self.sockets.iter().any(|r| r.unreviewed > 0) {
+            flags.push(CandidateFlag::RequirementsUnreviewed);
+        }
+        flags.sort_unstable();
+        flags
+    }
+
     /// VD12's flags of a candidate from its sockets.
     fn flags(&self, part: &Part, sockets: &[SocketResult]) -> Vec<CandidateFlag> {
         let mut flags = vec![CandidateFlag::MaterialNotCompared];
@@ -426,12 +465,7 @@ impl<'a> Matcher<'a> {
         if !part.complete {
             flags.push(CandidateFlag::CandidateIncomplete);
         }
-        if self.sockets.iter().any(|r| !r.view.removed().is_empty()) {
-            flags.push(CandidateFlag::RequirementsRemoved);
-        }
-        if self.sockets.iter().any(|r| r.unreviewed > 0) {
-            flags.push(CandidateFlag::RequirementsUnreviewed);
-        }
+        let mut flags = self.review_flags(flags);
         let departs = sockets
             .iter()
             .flat_map(|s| s.checks.iter())
@@ -460,6 +494,7 @@ impl<'a> Matcher<'a> {
             })
             .collect();
         let judged = Judged {
+            dropped: false,
             stage: Stage::Verification,
             placement: Some(placement),
             chosen: Chosen::Given,
@@ -485,7 +520,9 @@ impl<'a> Matcher<'a> {
             Placements::none()
         };
         let built = (placements.tried, placements.exhausted);
+        let dropped = kept.is_err();
         let unplaced = |stage| Judged {
+            dropped,
             stage,
             placement: None,
             chosen: Chosen::None,
@@ -505,6 +542,7 @@ impl<'a> Matcher<'a> {
         } else {
             let (placement, chosen, checks) = self.search(view, cand, &placements);
             let judged = Judged {
+                dropped,
                 stage: Stage::Verification,
                 placement: Some(placement),
                 chosen,
@@ -540,6 +578,7 @@ impl<'a> Matcher<'a> {
             .map(|r| RequirementId::new(r.id.clone()))
             .collect();
         let Judged {
+            dropped,
             stage,
             placement,
             chosen,
@@ -550,19 +589,28 @@ impl<'a> Matcher<'a> {
             reason: INTERFACE_REJECTED.to_owned(),
         };
         let mut verdict = decide(&ids, checks.clone(), rejected);
-        if verdict.kind() != VerdictKind::Reject {
+        if verdict.kind() != VerdictKind::Reject && !dropped {
             let at = placement.as_ref().map_or(Rigid::IDENTITY, |p| p.transform);
-            let request = FitRequest {
-                socket: &view.socket().id,
-                candidate_step: step,
-                assembly_sha256: &self.document.source().sha256,
-                placements: ready
-                    .occurrences
-                    .iter()
-                    .filter_map(|occurrence| at.then(occurrence))
-                    .collect(),
+            let placements: Vec<Rigid> = ready
+                .occurrences
+                .iter()
+                .filter_map(|occurrence| at.then(occurrence))
+                .collect();
+            // Every occurrence placed, or no verifier is asked: a fit seen
+            // at fewer occurrences than the socket has proves nothing.
+            let fit = if placements.len() == view.socket().occurrences.len() {
+                self.fit.check(&FitRequest {
+                    socket: &view.socket().id,
+                    candidate_step: step,
+                    assembly_sha256: &self.document.source().sha256,
+                    placements,
+                })
+            } else {
+                FitStatus::NotVerified {
+                    reason: "an occurrence of the socket could not be placed".to_owned(),
+                }
             };
-            verdict = decide(&ids, checks.clone(), self.fit.check(&request));
+            verdict = decide(&ids, checks.clone(), fit);
         }
         let u = view.target_u().max(cand.uncertainty_mm());
         let mut not_checked: Vec<NotChecked> = view

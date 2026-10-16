@@ -321,6 +321,13 @@ pub fn combine(sockets: &[(String, Verdict)]) -> Verdict {
         .flatten()
         .collect();
     let fit = combined_fit(sockets.iter().map(|(_, v)| &v.fit), interferences);
+    // Only a verified body makes a Match (D1): sockets verified by
+    // verifiers that disagree are an interface match.
+    let kind = if kind == VerdictKind::Match && !matches!(fit, FitStatus::Verified { .. }) {
+        VerdictKind::InterfaceMatch
+    } else {
+        kind
+    };
     let named =
         |socket: &str, r: &RequirementId| RequirementId::new(format!("{socket}/{}", r.as_str()));
     let reasons = sockets

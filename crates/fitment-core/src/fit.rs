@@ -101,9 +101,15 @@ pub struct FitRequest<'a> {
 
 /// Checks a placed candidate's body against the assembly's other solids
 /// (D1, M7). M4 has none: [`NoFitVerifier`] answers `not_checked`.
-pub trait FitVerifier {
+pub trait FitVerifier: Sync {
     /// The fit of the candidate as `request` places it.
     fn check(&self, request: &FitRequest<'_>) -> FitStatus;
+
+    /// The kernel and version that check, for the document (MF6); `None`
+    /// for no verifier.
+    fn kernel(&self) -> Option<(String, String)> {
+        None
+    }
 }
 
 /// No verifier: every fit `not_checked`, [`NO_FIT_VERIFIER`].

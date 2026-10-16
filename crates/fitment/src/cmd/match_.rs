@@ -103,8 +103,14 @@ pub fn run(args: &Args) -> ExitCode {
             return ExitCode::from(exit::REFUSED);
         }
     };
+    let mut failed = false;
+    let listed = candidates(&args.candidates, &mut failed);
+    if listed.is_empty() && !failed {
+        note("error: no candidate: the directories hold no STEP file");
+        return ExitCode::from(USAGE);
+    }
     if let Some(output) = &args.output {
-        if let Some(problem) = clobbers(output, args) {
+        if let Some(problem) = clobbers(output, args, &listed) {
             note(&format!(
                 "error: {}: left unchanged: {problem}",
                 printable(&output.display().to_string())
@@ -112,30 +118,17 @@ pub fn run(args: &Args) -> ExitCode {
             return ExitCode::from(USAGE);
         }
     }
-    let mut failed = false;
-    let mut results: Vec<(CandidateResult, Vec<String>)> = Vec::new();
-    if let Some(original) = &args.original {
-        match judge_original(&matcher, original) {
-            Ok(Some(result)) => results.push((result, vec!["original".to_owned()])),
+    // VD15: judged beside the candidates, never one of them.
+    let mut original = None;
+    if let Some(path) = &args.original {
+        match judge_original(&matcher, path) {
+            Ok(Some(result)) => original = Some(result),
             Ok(None) => failed = true,
             Err(code) => return code,
         }
     }
-    for (path, label) in candidates(&args.candidates, &mut failed) {
-        let shown = printable(&label);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                note(&format!("error: cannot read {shown}: {error}"));
-                failed = true;
-                continue;
-            }
-        };
-        let result = matcher.judge_step(&bytes);
-        failed |= reported(&shown, &result);
-        results.push((result, vec![label]));
-    }
-    let document_out = MatchDocument::new(&matcher, results);
+    let results = judge_all(&matcher, listed, &mut failed);
+    let document_out = MatchDocument::with_original(&matcher, results, original.as_ref());
     summarize(&socket_path, &matcher, &document_out, args.require_fit);
     let json = document_out.to_json();
     if let Some(output) = &args.output {
@@ -172,12 +165,54 @@ pub fn run(args: &Args) -> ExitCode {
     }
 }
 
+/// Every listed candidate judged, each file read once: the same bytes are
+/// one entry with every label (MF3); `failed` set by an unreadable file.
+fn judge_all(
+    matcher: &Matcher<'_>,
+    listed: Vec<(PathBuf, String)>,
+    failed: &mut bool,
+) -> Vec<(CandidateResult, Vec<String>)> {
+    let mut results: Vec<(CandidateResult, Vec<String>)> = Vec::new();
+    // MF3: the same bytes judged once, with every label.
+    let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (path, label) in listed {
+        let shown = printable(&label);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                note(&format!("error: cannot read {shown}: {error}"));
+                *failed = true;
+                continue;
+            }
+        };
+        let sha = sha256_hex(&bytes);
+        if let Some(at) = seen.get(&sha).copied() {
+            if let Some((_, labels)) = results.get_mut(at) {
+                labels.push(label);
+            }
+            continue;
+        }
+        let result = matcher.judge_step(&bytes);
+        *failed |= reported(&shown, &result);
+        seen.insert(sha, results.len());
+        results.push((result, vec![label]));
+    }
+    results
+}
+
 /// D9 from the flags: the default unless a value differs; a zero,
 /// negative or non-finite value is a usage error (MF8).
 fn policy(args: &Args) -> Option<MatchPolicy> {
     let default = TolerancePolicy::default();
     let linear = args.tolerance_mm.unwrap_or(default.linear_mm());
     let angular = args.tolerance_deg.unwrap_or(default.angular_deg());
+    // At 90 degrees or more every axis is parallel to every other.
+    if angular >= 90.0 {
+        note(&format!(
+            "error: an angular tolerance of {angular} degrees compares no axis: give less than 90"
+        ));
+        return None;
+    }
     let tolerance = if (linear, angular) == (default.linear_mm(), default.angular_deg()) {
         default
     } else {
@@ -261,8 +296,9 @@ fn refusal(path: &str, refused: &SocketRefused) {
     note(&format!("fitment: {path}: refused: {line}"));
 }
 
-/// Why OUT must not be written: it is the socket file or a candidate.
-fn clobbers(output: &Path, args: &Args) -> Option<&'static str> {
+/// Why OUT must not be written: it is the socket file, the original or a
+/// candidate, as given or found in a directory.
+fn clobbers(output: &Path, args: &Args, listed: &[(PathBuf, String)]) -> Option<&'static str> {
     let same = |p: &Path| match (output.canonicalize(), p.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
@@ -270,7 +306,10 @@ fn clobbers(output: &Path, args: &Args) -> Option<&'static str> {
     if same(&args.socket) {
         return Some("it is the socket document");
     }
-    if args.candidates.iter().any(|c| same(c)) || args.original.as_deref().is_some_and(same) {
+    if args.candidates.iter().any(|c| same(c))
+        || listed.iter().any(|(p, _)| same(p))
+        || args.original.as_deref().is_some_and(same)
+    {
         return Some("it is an input");
     }
     None
@@ -296,10 +335,24 @@ fn candidates(arguments: &[PathBuf], failed: &mut bool) -> Vec<(PathBuf, String)
                 continue;
             }
         };
-        let mut files: Vec<PathBuf> = entries
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.is_file())
+        let mut files: Vec<PathBuf> = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => files.push(entry.path()),
+                Err(error) => {
+                    note(&format!(
+                        "error: cannot list {}: {error}",
+                        printable(&argument.display().to_string())
+                    ));
+                    *failed = true;
+                }
+            }
+        }
+        // Anything named as STEP but a directory is a candidate: a link
+        // that leads nowhere fails its read rather than vanishing.
+        let mut files: Vec<PathBuf> = files
+            .into_iter()
+            .filter(|p| !p.is_dir())
             .filter(|p| {
                 p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
                     ["stp", "step", "p21"].contains(&e.to_ascii_lowercase().as_str())
@@ -307,9 +360,11 @@ fn candidates(arguments: &[PathBuf], failed: &mut bool) -> Vec<(PathBuf, String)
             })
             .collect();
         files.sort();
+        let shown = argument.display().to_string();
+        let dir = shown.trim_end_matches(['/', std::path::MAIN_SEPARATOR]);
         out.extend(files.into_iter().map(|p| {
             let name = p.file_name().map(|n| n.to_string_lossy().into_owned());
-            let label = format!("{}/{}", argument.display(), name.unwrap_or_default());
+            let label = format!("{dir}/{}", name.unwrap_or_default());
             (p, label)
         }));
     }
@@ -382,19 +437,41 @@ fn judge_original(matcher: &Matcher<'_>, path: &Path) -> Result<Option<Candidate
             definition: instance,
         },
     );
+    if reported("original", &result) {
+        return Ok(None);
+    }
     for socket in &result.sockets {
         for (id, check) in &socket.checks {
-            let beyond = check.evidence().failures().iter().any(|f| {
-                !matches!(
-                    f.code,
+            if check.passed() {
+                continue;
+            }
+            let codes: Vec<FailureCode> =
+                check.evidence().failures().iter().map(|f| f.code).collect();
+            let at = format!("{}/{}", socket.socket, printable(id.as_str()));
+            // AL11's bounds are no bug: the run names them (VR21's s55).
+            if !codes.is_empty()
+                && codes.iter().all(|c| {
+                    matches!(
+                        c,
+                        FailureCode::AlignmentExhausted | FailureCode::CoverageExhausted
+                    )
+                })
+            {
+                note(&format!(
+                    "fitment: the original exhausts the search at {at}: not checked"
+                ));
+                continue;
+            }
+            let expected = |c: &FailureCode| {
+                matches!(
+                    c,
                     FailureCode::Unverifiable | FailureCode::FloorAboveTolerance
                 )
-            });
-            if !check.passed() && beyond {
+            };
+            // A failure with no code is not one VD5 or VD6 explains.
+            if codes.is_empty() || !codes.iter().all(expected) {
                 note(&format!(
-                    "fitment: the original fails its own socket at {}/{}: this is a fitment bug",
-                    socket.socket,
-                    printable(id.as_str())
+                    "fitment: the original fails its own socket at {at}: this is a fitment bug"
                 ));
                 return Ok(None);
             }
@@ -417,26 +494,16 @@ fn summarize(path: &str, matcher: &Matcher<'_>, document: &MatchDocument, requir
         fitment_core::NO_FIT_VERIFIER
     ));
     let doc = matcher.document();
-    for socket in doc
-        .extracted()
-        .map(|e| e.sockets.as_slice())
-        .unwrap_or_default()
-    {
-        let active: Vec<_> = doc.active(&socket.id).collect();
-        let failing: Vec<&str> = active
-            .iter()
-            .filter(|r| !r.verifiable())
-            .map(|r| r.id.as_str())
-            .collect();
-        if active.is_empty() {
+    for (socket, failing) in matcher.failing_all() {
+        if doc.active(socket).next().is_none() {
             note(&format!(
                 "fitment: warning: {}: no requirement is active, so every candidate is rejected",
-                socket.id
+                printable(socket)
             ));
         } else if !failing.is_empty() {
             note(&format!(
                 "fitment: warning: {}: {} fail every candidate until removed in review (`fitment review --remove ID --note …`)",
-                socket.id,
+                printable(socket),
                 printable(&failing.join(", "))
             ));
         }
@@ -543,7 +610,22 @@ fn candidate_line(candidate: &Value) -> String {
             .flatten()
             .map(s)
             .collect();
-        format!("all requirements verified; {}", flags.join(", "))
+        if s(&candidate["verdict"]) == "reject" {
+            // Rejected with every check passed: the first reason says why.
+            let first = &candidate["reasons"][0];
+            let socket = s(&first["socket"]);
+            format!(
+                "rejected: {}{}",
+                printable(&s(&first["reason"])),
+                if socket.is_empty() {
+                    String::new()
+                } else {
+                    format!(" at {}", printable(&socket))
+                }
+            )
+        } else {
+            format!("all requirements verified; {}", flags.join(", "))
+        }
     } else {
         format!(
             "{} failed: {}",
