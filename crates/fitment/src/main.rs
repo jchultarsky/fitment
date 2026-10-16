@@ -42,6 +42,13 @@ enum Command {
     /// Exit codes: 0 valid (and updated), 1 error, 2 usage (an unknown id,
     /// a removal without a note), 3 the document does not read back.
     Review(cmd::review::Args),
+    /// Judge each candidate part against a socket document: match,
+    /// interface match or reject, with the evidence.
+    ///
+    /// Exit codes: 0 some candidate matches, 4 some passes the interface
+    /// (its body fit not checked), 5 every candidate rejected, 1 error,
+    /// 2 usage, 3 the socket document refused.
+    Match(cmd::match_::Args),
 }
 
 /// Exit codes shared by every command.
@@ -57,5 +64,6 @@ fn main() -> ExitCode {
         Command::Parts(args) => cmd::parts::run(&args),
         Command::Socket(args) => cmd::socket::run(&args),
         Command::Review(args) => cmd::review::run(&args),
+        Command::Match(args) => cmd::match_::run(&args),
     }
 }

@@ -54,9 +54,15 @@ fn each_original_fails_exactly_what_no_candidate_can_pass() {
     for (case, bytes, parts) in ASSEMBLIES {
         for part in parts {
             let document = SocketDocument::extract(bytes, Some(part), None).unwrap();
-            let matcher = Matcher::new(&document, policy.clone(), MatchOptions::default()).unwrap();
+            let matcher = Matcher::new(
+                &document,
+                policy.clone(),
+                MatchOptions::default(),
+                &fitment_core::NoFitVerifier,
+            )
+            .unwrap();
             let original = component(bytes, part);
-            let result = matcher.judge_part(&original);
+            let result = matcher.judge_part(&original, fitment_core::CandidateSource::Given);
             assert_ne!(result.sockets.len(), 0);
             for socket in &result.sockets {
                 assert_eq!(socket.stage, Stage::Verification, "{case} {part}");
@@ -103,7 +109,13 @@ fn each_original_fails_exactly_what_no_candidate_can_pass() {
 fn a_refused_file_is_a_reject_with_the_gate_s_codes() {
     let (_, bytes, _) = ASSEMBLIES[0];
     let document = SocketDocument::extract(bytes, Some("BRACKET"), None).unwrap();
-    let matcher = Matcher::new(&document, MatchPolicy::default(), MatchOptions::default()).unwrap();
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &fitment_core::NoFitVerifier,
+    )
+    .unwrap();
     let result = matcher.judge_step(include_bytes!("data/r03_two_solids.stp"));
     assert_eq!(result.verdict.kind(), VerdictKind::Reject);
     assert!(result.sockets.is_empty() && !result.refusals.is_empty());
@@ -120,7 +132,13 @@ fn a_refused_file_is_a_reject_with_the_gate_s_codes() {
 fn a_part_lacking_the_socket_s_elements_is_rejected_at_the_shortlist() {
     let (_, bytes, _) = ASSEMBLIES[0];
     let document = SocketDocument::extract(bytes, Some("BRACKET"), None).unwrap();
-    let matcher = Matcher::new(&document, MatchPolicy::default(), MatchOptions::default()).unwrap();
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &fitment_core::NoFitVerifier,
+    )
+    .unwrap();
     let result = matcher.judge_step(include_bytes!("data/p21_planes.stp"));
     assert_eq!(result.verdict.kind(), VerdictKind::Reject);
     let socket = &result.sockets[0];
@@ -142,11 +160,46 @@ fn an_unreviewed_document_is_refused_when_a_review_is_required() {
     let (_, bytes, _) = ASSEMBLIES[0];
     let document = SocketDocument::extract(bytes, Some("BRACKET"), None).unwrap();
     let required = MatchOptions::new(false, true);
-    match Matcher::new(&document, MatchPolicy::default(), required) {
+    match Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        required,
+        &fitment_core::NoFitVerifier,
+    ) {
         Err(SocketRefused::Unreviewed { count, first }) => {
             assert!(count > 0 && !first.is_empty() && first.len() <= 5);
             assert!(first.iter().all(|r| r.starts_with("socket-1/")));
         }
         other => panic!("{other:?}"),
     }
+}
+
+/// VD11, VD12: a candidate whose features are not complete says so; every
+/// verdict says no material was compared.
+#[test]
+fn an_incomplete_candidate_is_flagged() {
+    let (_, bytes, _) = ASSEMBLIES[0];
+    let document = SocketDocument::extract(bytes, Some("BRACKET"), None).unwrap();
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &fitment_core::NoFitVerifier,
+    )
+    .unwrap();
+    let step: &[u8] = include_bytes!("data/u01_undercut_floor.stp");
+    let part = fitment_core::FeaturesDocument::read(step);
+    assert!(!part.part().unwrap().complete);
+    let result = matcher.judge_step(step);
+    assert!(
+        result
+            .flags
+            .contains(&fitment_core::CandidateFlag::CandidateIncomplete)
+    );
+    assert!(
+        result
+            .flags
+            .contains(&fitment_core::CandidateFlag::MaterialNotCompared)
+    );
+    assert!(result.flags.windows(2).all(|w| w[0] < w[1]));
 }

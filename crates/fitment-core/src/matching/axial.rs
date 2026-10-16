@@ -292,6 +292,8 @@ fn axis_measures(ctx: &Ctx<'_>, sine: f64, offset: f64) -> [Measure; 2] {
 struct Found {
     measures: Vec<Measure>,
     failures: Vec<Failure>,
+    /// A clearance passed only because D6 is functional.
+    departs: bool,
 }
 
 impl Found {
@@ -322,6 +324,7 @@ fn one(
     let mut found = Found {
         measures: axis_measures(ctx, map.sine(), offset).to_vec(),
         failures: Vec::new(),
+        departs: false,
     };
     for span in spans {
         span_check(ctx, requirement, stack, map, span, budget, &mut found);
@@ -342,7 +345,7 @@ fn one(
             }
         }
     }
-    Evidence::new(vec![stack.id], found.measures, found.failures)
+    Evidence::new(vec![stack.id], found.measures, found.failures).departing(found.departs)
 }
 
 /// The run of `pieces` holding the middle of stations `lo` to `hi`: where
@@ -559,6 +562,13 @@ fn clearance(
         || format!("a radial margin of {margin} mm beyond the clear Ø{c}, not above {guard} mm"),
     );
     if !ctx.strict {
+        // What strict would have asked: past the original's by ε.
+        let past = if hole {
+            2.0 * most >= span.d + eps
+        } else {
+            2.0 * least <= span.d - eps
+        };
+        found.departs |= past;
         return;
     }
     let (measure, code) = if hole {

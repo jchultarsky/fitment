@@ -29,7 +29,8 @@ const MAX_PAIR_CHECKS: u64 = 4_000_000;
 const SAME_LINE: f64 = 1e-6;
 
 /// What a placement was built from.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Seed {
     /// Two socket lines and the candidate stacks on them (AL5, AL6).

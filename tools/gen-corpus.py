@@ -734,6 +734,41 @@ M4_TESTS.update({
     "VR8": M4_TESTS["VR8"] + M4_GATE,
     "VR22": M4_TESTS["VR22"] + M4_GATE,
 })
+# PR 4 builds the verdicts, the fitment.match document and the CLI.
+M4_CLI = "crates/fitment/tests/match_cli.rs"
+M4_VERDICT = "crates/fitment-core/tests/verdict.rs"
+M4_GOLDEN = ["crates/fitment/tests/golden.rs::match_output_matches_the_goldens"]
+M4_CHECKER = [f"{M4_CLI}::the_checker_finds_a_tampered_document", f"{M4_CLI}::the_original_and_directories_are_judged"]
+M4_CODES = [f"{M4_CLI}::the_exit_code_is_the_best_verdict", f"{M4_CLI}::bad_input_is_refused_before_any_candidate"]
+M4_TESTS.update({
+    "VD1": [f"{M4_VERDICT}::a_candidate_is_judged_by_its_worst_socket",
+            f"{M4_MATCHER}::a_refused_file_is_a_reject_with_the_gate_s_codes"],
+    "VD2": [f"{M4_VERDICT}::a_candidate_is_judged_by_its_worst_socket"],
+    "VD3": [f"{M4_VERDICT}::passing_interface_is_judged_by_fit_alone",
+            f"{M4_VERDICT}::failing_interface_rejects_under_every_fit"],
+    "VD4": [f"{M4_VERDICT}::a_candidate_is_judged_by_its_worst_socket"] + M4_GOLDEN,
+    "VD5": M4_KH10, "VD6": M4_KH10,
+    "VD7": [f"{M4_CLI}::a_removed_requirement_is_not_checked"],
+    "VD8": [f"{M4_CLI}::bad_input_is_refused_before_any_candidate"] + M4_GOLDEN,
+    "VD9": [f"{M4_CLI}::bad_input_is_refused_before_any_candidate"],
+    "VD10": [f"{M4_MATCHER}::a_refused_file_is_a_reject_with_the_gate_s_codes"],
+    "VD11": [f"{M4_MATCHER}::an_incomplete_candidate_is_flagged"],
+    "VD12": [f"{M4_MATCHER}::an_incomplete_candidate_is_flagged", f"{M4_CLI}::a_removed_requirement_is_not_checked"],
+    "VD13": M4_GOLDEN,
+    "VD14": M4_CODES,
+    "VD15": [f"{M4_CLI}::the_original_and_directories_are_judged"],
+    **{f"EV{n}": M4_GOLDEN + M4_CHECKER for n in range(1, 10)},
+    "EV8": M4_GOLDEN + [f"{M4_CLI}::the_document_does_not_depend_on_argument_order"],
+    "MF1": [f"{M4_CLI}::the_original_and_directories_are_judged"],
+    "MF2": [f"{M4_CLI}::bad_input_is_refused_before_any_candidate"],
+    "MF3": [f"{M4_CLI}::the_original_and_directories_are_judged", f"{M4_CLI}::the_exit_code_is_the_best_verdict"],
+    "MF4": [f"{M4_CLI}::labels_are_escaped", f"{M4_CLI}::the_original_and_directories_are_judged"],
+    "MF5": [f"{M4_CLI}::the_document_does_not_depend_on_argument_order"],
+    "MF6": M4_GOLDEN, "MF7": M4_CHECKER,
+    "MF8": M4_CODES, "MF9": [f"{M4_CLI}::labels_are_escaped"], "MF10": M4_CODES,
+    "KH11": [f"{M4_CLI}::the_document_does_not_depend_on_argument_order"] + M4_GOLDEN,
+    "KH12": M4_CHECKER,
+})
 for rule, tests in M4_TESTS.items():
     RULES[rule] = {"tests": tests}
 # Shown by the match cases that cite them.

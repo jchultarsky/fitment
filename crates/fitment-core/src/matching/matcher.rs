@@ -5,16 +5,19 @@
 //! passing most (AL10); the candidate's verdict is the worst of its
 //! sockets' (VD2, VR17).
 
+use serde::Serialize;
+
 use super::align::{Placement, Placements, align};
-use super::evidence::{At, Evidence, Failure, FailureCode};
+use super::evidence::{At, Evidence, Failure, FailureCode, Warning};
 use super::shortlist::{Kept, Missing, shortlist};
 use super::verify::{Budget, check};
 use super::{CandidateView, MatchOptions, MatchPolicy, SocketSignature, SocketView};
-use crate::features::{Part, Status, read_part};
-use crate::fit::{FitStatus, INTERFACE_REJECTED};
+use crate::assembly::Source;
+use crate::features::{FeaturesDocument, Part, ProductRef, Status};
+use crate::fit::{FitRequest, FitStatus, FitVerifier, INTERFACE_REJECTED};
 use crate::gate::Refusal;
 use crate::geom::Rigid;
-use crate::socket::{Requirement, Requires, ReviewStatus, SocketDocument};
+use crate::socket::{Flag, Requirement, Requires, ReviewStatus, SocketDocument};
 use crate::verdict::{Check, RejectReason, RequirementId, Verdict, VerdictKind, combine, decide};
 
 /// Why a socket document cannot be matched against (MF2).
@@ -56,6 +59,42 @@ pub enum Stage {
     Verification,
 }
 
+/// How the verified placement was chosen (EV4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Chosen {
+    /// The first placement passing every requirement M4 can verify.
+    FirstPassing,
+    /// None passed: the one passing most, the first of those.
+    FewestFailures,
+    /// The caller gave it (AL14).
+    Given,
+    /// Nothing was placed.
+    None,
+}
+
+/// What M4 does not check in a socket (EV1, M4-11, VR16).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "what", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum NotChecked {
+    /// Removed in review, with the reviewer's note.
+    Removed {
+        /// The requirement.
+        requirement: RequirementId,
+        /// Why.
+        note: String,
+    },
+    /// A shaft's room before a blind hole's floor (I4): information.
+    MaxExtraMm {
+        /// The requirement.
+        requirement: RequirementId,
+        /// The room, in mm.
+        mm: f64,
+    },
+}
+
 /// One socket's judgment of a candidate.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -68,34 +107,148 @@ pub struct SocketResult {
     pub verdict: Verdict,
     /// The placement verified, if one was.
     pub placement: Option<Placement>,
+    /// How that placement was chosen.
+    pub chosen: Chosen,
+    /// VR2's u and ε for this candidate in this socket, in mm.
+    pub u_mm: f64,
+    /// ε = t − u.
+    pub epsilon_mm: f64,
     /// What the shortlist found missing, if it dropped the candidate.
     pub missing: Vec<Missing>,
     /// One check per active requirement, in the socket's order.
     pub checks: Vec<(RequirementId, Check)>,
-    /// The requirements removed in review: not checked (VR16).
-    pub not_checked: Vec<RequirementId>,
+    /// What is not checked here: removed requirements, `max_extra_mm`.
+    pub not_checked: Vec<NotChecked>,
     /// How many placements alignment built, and whether a bound stopped it.
     pub placements: (usize, bool),
+}
+
+impl SocketResult {
+    /// How many checks failed.
+    pub fn failed(&self) -> usize {
+        self.checks.iter().filter(|(_, c)| !c.passed()).count()
+    }
+}
+
+/// Where a candidate came from (MF6's `source`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CandidateSource {
+    /// A STEP file: its SHA-256, size and header.
+    File(Source),
+    /// A leaf of an assembly (CF1): the assembly's SHA-256 and the
+    /// definition's `#id`.
+    Component {
+        /// The assembly's SHA-256, hex.
+        assembly_sha256: String,
+        /// The definition's `#id`.
+        definition: u64,
+    },
+    /// A part the caller built or read itself.
+    Given,
+}
+
+/// A flag a candidate's verdict carries (VD12): a closed list whose names
+/// never change meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CandidateFlag {
+    /// A passed requirement is a thread or press fit no rule confirms.
+    ThreadNotConfirmed,
+    /// No material is compared (section 14): on every verdict.
+    MaterialNotCompared,
+    /// The candidate's features are not complete (VD11).
+    CandidateIncomplete,
+    /// A socket has requirements removed in review.
+    RequirementsRemoved,
+    /// A socket has requirements no one reviewed.
+    RequirementsUnreviewed,
+    /// Under D6 functional, a clearance passed that strict would not.
+    LargerThanOriginal,
+}
+
+/// The facts of the read that judged a candidate (EV6).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[non_exhaustive]
+pub struct ReadFacts {
+    /// The extractor that read it.
+    pub extractor_version: u32,
+    /// Its features' `complete`.
+    pub complete: bool,
+    /// Its largest stated uncertainty, in mm.
+    pub max_uncertainty_mm: f64,
+    /// Its solids' largest vertex offset, in mm.
+    pub max_vertex_offset_mm: f64,
 }
 
 /// One candidate's judgment.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct CandidateResult {
-    /// The worst of its sockets' verdicts, or its refusal's.
-    pub verdict: Verdict,
-    /// Each socket's, in the document's order; none for a refused file.
-    pub sockets: Vec<SocketResult>,
+    /// Where it came from.
+    pub source: CandidateSource,
+    /// Its product, as the file states it.
+    pub product: Option<ProductRef>,
+    /// M2's gate: accepted or refused.
+    pub status: Status,
     /// Why M2's gate refused the file; empty when read (CF2).
     pub refusals: Vec<Refusal>,
+    /// The read's facts; `None` when refused.
+    pub read: Option<ReadFacts>,
+    /// The worst of its sockets' verdicts, or its refusal's.
+    pub verdict: Verdict,
+    /// Its flags, sorted (VD12).
+    pub flags: Vec<CandidateFlag>,
+    /// Its warnings: empty in M4 (VD13).
+    pub warnings: Vec<Warning>,
+    /// Each socket's, in the document's order; none for a refused file.
+    pub sockets: Vec<SocketResult>,
+}
+
+impl CandidateResult {
+    /// Its stage (EV5): its least advanced socket's; `None` if refused.
+    pub fn stage(&self) -> Option<Stage> {
+        self.sockets.iter().map(|s| s.stage).min()
+    }
+}
+
+/// What a socket's judgment found, before its verdict.
+struct Judged {
+    stage: Stage,
+    placement: Option<Placement>,
+    chosen: Chosen,
+    checks: Vec<(RequirementId, Check)>,
+    placements: (usize, bool),
+}
+
+/// One socket of the document, ready: its view, signature, unreviewed
+/// count and the target's occurrences' transforms (for `T_k · A`).
+struct Ready<'a> {
+    view: SocketView<'a>,
+    signature: SocketSignature,
+    unreviewed: usize,
+    occurrences: Vec<Rigid>,
 }
 
 /// One socket document, ready to judge candidates.
-#[derive(Debug)]
 #[non_exhaustive]
 pub struct Matcher<'a> {
-    sockets: Vec<(SocketView<'a>, SocketSignature)>,
+    document: &'a SocketDocument,
+    sockets: Vec<Ready<'a>>,
     policy: MatchPolicy,
+    options: MatchOptions,
+    fit: &'a dyn FitVerifier,
+}
+
+impl std::fmt::Debug for Matcher<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Matcher")
+            .field("policy", &self.policy)
+            .field("options", &self.options)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> Matcher<'a> {
@@ -110,6 +263,7 @@ impl<'a> Matcher<'a> {
         document: &'a SocketDocument,
         policy: MatchPolicy,
         options: MatchOptions,
+        fit: &'a dyn FitVerifier,
     ) -> Result<Self, SocketRefused> {
         let Some(extracted) = document
             .extracted()
@@ -129,13 +283,30 @@ impl<'a> Matcher<'a> {
             let Some(view) = SocketView::new(document, &socket.id) else {
                 continue;
             };
+            let before = unreviewed.len();
             for r in view.active() {
-                if document.status_of(&socket.id, &r.id).0 == ReviewStatus::Unreviewed {
+                if document.decision(&socket.id, &r.id) == ReviewStatus::Unreviewed {
                     unreviewed.push(format!("{}/{}", socket.id, r.id));
                 }
             }
             let signature = SocketSignature::of(&view, &policy);
-            sockets.push((view, signature));
+            let occurrences = socket
+                .occurrences
+                .iter()
+                .filter_map(|path| {
+                    extracted
+                        .occurrences
+                        .iter()
+                        .find(|o| &o.path == path)
+                        .map(|o| o.transform)
+                })
+                .collect();
+            sockets.push(Ready {
+                view,
+                signature,
+                unreviewed: unreviewed.len() - before,
+                occurrences,
+            });
         }
         if options.require_reviewed() && !unreviewed.is_empty() {
             let count = unreviewed.len();
@@ -145,45 +316,138 @@ impl<'a> Matcher<'a> {
                 first: unreviewed,
             });
         }
-        Ok(Self { sockets, policy })
+        Ok(Self {
+            document,
+            sockets,
+            policy,
+            options,
+            fit,
+        })
+    }
+
+    /// The socket document.
+    pub fn document(&self) -> &'a SocketDocument {
+        self.document
+    }
+
+    /// The policy.
+    pub fn policy(&self) -> &MatchPolicy {
+        &self.policy
+    }
+
+    /// The options.
+    pub fn options(&self) -> MatchOptions {
+        self.options
+    }
+
+    /// Each socket's id with its unreviewed count, in order.
+    pub fn unreviewed(&self) -> Vec<(&str, usize)> {
+        self.sockets
+            .iter()
+            .map(|r| (r.view.socket().id.as_str(), r.unreviewed))
+            .collect()
     }
 
     /// CF1, CF2: one candidate file, through M2's gate, then judged; a
     /// refused file is a `Reject` with the gate's codes.
     pub fn judge_step(&self, step: &[u8]) -> CandidateResult {
-        match read_part(step) {
-            Ok(part) => self.judge_part(&part),
-            Err(refused) => CandidateResult {
-                verdict: Verdict::refused(refused.refusals().iter().map(|r| r.code).collect()),
+        let read = FeaturesDocument::read(step);
+        let source = CandidateSource::File(Source::of(step, read.header().cloned()));
+        match read.part() {
+            Some(part) => self.judge(part, source, Some(step)),
+            None => CandidateResult {
+                source,
+                product: None,
+                status: Status::Refused,
+                refusals: read.refusals().to_vec(),
+                read: None,
+                verdict: Verdict::refused(read.refusals().iter().map(|r| r.code).collect()),
+                flags: vec![CandidateFlag::MaterialNotCompared],
+                warnings: Vec::new(),
                 sockets: Vec::new(),
-                refusals: refused.refusals().to_vec(),
             },
         }
     }
 
-    /// One candidate part, read once (CF1), against every socket.
-    pub fn judge_part(&self, part: &Part) -> CandidateResult {
+    /// One candidate part, read once (CF1), against every socket; `source`
+    /// says where it came from.
+    pub fn judge_part(&self, part: &Part, source: CandidateSource) -> CandidateResult {
+        self.judge(part, source, None)
+    }
+
+    fn judge(&self, part: &Part, source: CandidateSource, step: Option<&[u8]>) -> CandidateResult {
         let view = CandidateView::of(part);
         let sockets: Vec<SocketResult> = self
             .sockets
             .iter()
-            .map(|(socket, signature)| self.judge(socket, signature, &view))
+            .map(|ready| self.judge_socket(ready, &view, step))
             .collect();
         let named: Vec<(String, Verdict)> = sockets
             .iter()
             .map(|s| (s.socket.clone(), s.verdict.clone()))
             .collect();
         CandidateResult {
-            verdict: combine(&named),
-            sockets,
+            source,
+            product: part.definition.product.clone(),
+            status: Status::Accepted,
             refusals: Vec::new(),
+            read: Some(ReadFacts {
+                extractor_version: crate::EXTRACTOR_VERSION,
+                complete: part.complete,
+                max_uncertainty_mm: part.max_uncertainty_mm,
+                max_vertex_offset_mm: part
+                    .solids
+                    .iter()
+                    .map(|s| s.max_vertex_offset_mm)
+                    .fold(0.0, f64::max),
+            }),
+            verdict: combine(&named),
+            flags: self.flags(part, &sockets),
+            warnings: Vec::new(),
+            sockets,
         }
+    }
+
+    /// VD12's flags of a candidate from its sockets.
+    fn flags(&self, part: &Part, sockets: &[SocketResult]) -> Vec<CandidateFlag> {
+        let mut flags = vec![CandidateFlag::MaterialNotCompared];
+        let threaded =
+            sockets.iter().zip(&self.sockets).any(|(result, ready)| {
+                result.checks.iter().any(|(id, c)| {
+                    c.passed()
+                        && ready.view.active().iter().any(|r| {
+                            r.id == id.as_str() && r.flags.contains(&Flag::ThreadNotConfirmed)
+                        })
+                })
+            });
+        if threaded {
+            flags.push(CandidateFlag::ThreadNotConfirmed);
+        }
+        if !part.complete {
+            flags.push(CandidateFlag::CandidateIncomplete);
+        }
+        if self.sockets.iter().any(|r| !r.view.removed().is_empty()) {
+            flags.push(CandidateFlag::RequirementsRemoved);
+        }
+        if self.sockets.iter().any(|r| r.unreviewed > 0) {
+            flags.push(CandidateFlag::RequirementsUnreviewed);
+        }
+        let departs = sockets
+            .iter()
+            .flat_map(|s| s.checks.iter())
+            .any(|(_, c)| c.passed() && c.evidence().departs());
+        if departs {
+            flags.push(CandidateFlag::LargerThanOriginal);
+        }
+        flags.sort_unstable();
+        flags
     }
 
     /// AL14: socket `socket` checked at a placement the caller gives;
     /// `None` if the document has no such socket.
     pub fn verify_at(&self, part: &Part, socket: &str, at: &Rigid) -> Option<SocketResult> {
-        let (view, _) = self.sockets.iter().find(|(v, _)| v.socket().id == socket)?;
+        let ready = self.sockets.iter().find(|r| r.view.socket().id == socket)?;
+        let view = &ready.view;
         let cand = CandidateView::of(part);
         let placement = Placement::given(*at);
         let mut budget = Budget::new();
@@ -195,44 +459,59 @@ impl<'a> Matcher<'a> {
                 (RequirementId::new(r.id.clone()), c)
             })
             .collect();
-        Some(Self::result(
-            view,
-            Stage::Verification,
-            Some(placement),
+        let judged = Judged {
+            stage: Stage::Verification,
+            placement: Some(placement),
+            chosen: Chosen::Given,
             checks,
-            (1, false),
-        ))
+            placements: (1, false),
+        };
+        Some(self.result(ready, &cand, judged, None))
     }
 
     /// One socket: the shortlist, alignment, the search and the checks.
-    fn judge(
+    fn judge_socket(
         &self,
-        view: &SocketView<'_>,
-        signature: &SocketSignature,
+        ready: &Ready<'_>,
         cand: &CandidateView<'_>,
+        step: Option<&[u8]>,
     ) -> SocketResult {
-        let kept: Result<Kept, Vec<Missing>> = shortlist(signature, cand.signature());
-        let placements = if view.active().iter().any(|r| self.searched(view, r)) {
+        let view = &ready.view;
+        let kept: Result<Kept, Vec<Missing>> = shortlist(&ready.signature, cand.signature());
+        let searching = view.active().iter().any(|r| self.searched(view, r));
+        let placements = if searching {
             align(view, cand, kept.as_ref().ok(), &self.policy)
         } else {
             Placements::none()
         };
         let built = (placements.tried, placements.exhausted);
-        let mut result = if !view.active().iter().any(|r| self.searched(view, r)) {
+        let unplaced = |stage| Judged {
+            stage,
+            placement: None,
+            chosen: Chosen::None,
+            checks: self.unplaced(view, cand, &placements),
+            placements: built,
+        };
+        let mut result = if !searching {
             // Nothing to place: what is active fails every candidate.
-            let checks = self.unplaced(view, cand, &placements);
-            Self::result(view, Stage::Verification, None, checks, built)
+            self.result(ready, cand, unplaced(Stage::Verification), step)
         } else if placements.ordered.is_empty() {
-            let checks = self.unplaced(view, cand, &placements);
-            let mut r = Self::result(view, Stage::Alignment, None, checks, built);
+            let mut r = self.result(ready, cand, unplaced(Stage::Alignment), step);
             r.verdict = r.verdict.rejecting(RejectReason::NoPlacement {
                 socket: view.socket().id.clone(),
                 unanchored: placements.unanchored.clone(),
             });
             r
         } else {
-            let (placement, checks) = self.search(view, cand, &placements);
-            Self::result(view, Stage::Verification, Some(placement), checks, built)
+            let (placement, chosen, checks) = self.search(view, cand, &placements);
+            let judged = Judged {
+                stage: Stage::Verification,
+                placement: Some(placement),
+                chosen,
+                checks,
+                placements: built,
+            };
+            self.result(ready, cand, judged, step)
         };
         if let Err(missing) = kept {
             result.stage = Stage::Shortlist;
@@ -245,42 +524,77 @@ impl<'a> Matcher<'a> {
     }
 
     /// The socket's result from its checks: `decide` over every active
-    /// requirement, the fit not checked (M4 has no verifier), or not
-    /// attempted where the interface failed (VD4).
+    /// requirement, with the fit the verifier gives where the interface
+    /// passed, and none attempted where it failed (VD4, M4-26).
     fn result(
-        view: &SocketView<'_>,
-        stage: Stage,
-        placement: Option<Placement>,
-        checks: Vec<(RequirementId, Check)>,
-        placements: (usize, bool),
+        &self,
+        ready: &Ready<'_>,
+        cand: &CandidateView<'_>,
+        judged: Judged,
+        step: Option<&[u8]>,
     ) -> SocketResult {
+        let view = &ready.view;
         let ids: Vec<RequirementId> = view
             .active()
             .iter()
             .map(|r| RequirementId::new(r.id.clone()))
             .collect();
-        let mut verdict = decide(&ids, checks.clone(), FitStatus::no_verifier());
-        if verdict.kind() == VerdictKind::Reject {
-            verdict = decide(
-                &ids,
-                checks.clone(),
-                FitStatus::NotChecked {
-                    reason: INTERFACE_REJECTED.to_owned(),
-                },
-            );
+        let Judged {
+            stage,
+            placement,
+            chosen,
+            checks,
+            placements,
+        } = judged;
+        let rejected = FitStatus::NotChecked {
+            reason: INTERFACE_REJECTED.to_owned(),
+        };
+        let mut verdict = decide(&ids, checks.clone(), rejected);
+        if verdict.kind() != VerdictKind::Reject {
+            let at = placement.as_ref().map_or(Rigid::IDENTITY, |p| p.transform);
+            let request = FitRequest {
+                socket: &view.socket().id,
+                candidate_step: step,
+                assembly_sha256: &self.document.source().sha256,
+                placements: ready
+                    .occurrences
+                    .iter()
+                    .filter_map(|occurrence| at.then(occurrence))
+                    .collect(),
+            };
+            verdict = decide(&ids, checks.clone(), self.fit.check(&request));
         }
+        let u = view.target_u().max(cand.uncertainty_mm());
+        let mut not_checked: Vec<NotChecked> = view
+            .removed()
+            .iter()
+            .zip(view.removal_notes())
+            .map(|(r, note)| NotChecked::Removed {
+                requirement: RequirementId::new(r.id.clone()),
+                note: (*note).to_owned(),
+            })
+            .collect();
+        not_checked.extend(view.active().iter().filter_map(|r| match &r.requires {
+            Requires::Shaft {
+                max_extra_mm: Some(mm),
+                ..
+            } => Some(NotChecked::MaxExtraMm {
+                requirement: RequirementId::new(r.id.clone()),
+                mm: *mm,
+            }),
+            _ => None,
+        }));
         SocketResult {
             socket: view.socket().id.clone(),
             stage,
             verdict,
             placement,
+            chosen,
+            u_mm: u,
+            epsilon_mm: self.policy.linear_mm() - u,
             missing: Vec::new(),
             checks,
-            not_checked: view
-                .removed()
-                .iter()
-                .map(|r| RequirementId::new(r.id.clone()))
-                .collect(),
+            not_checked,
             placements,
         }
     }
@@ -301,7 +615,7 @@ impl<'a> Matcher<'a> {
         view: &SocketView<'_>,
         cand: &CandidateView<'_>,
         placements: &Placements,
-    ) -> (Placement, Vec<(RequirementId, Check)>) {
+    ) -> (Placement, Chosen, Vec<(RequirementId, Check)>) {
         let mut budget = Budget::new();
         let axial = |r: &&&Requirement| {
             matches!(r.requires, Requires::Bore { .. } | Requires::Shaft { .. })
@@ -345,8 +659,13 @@ impl<'a> Matcher<'a> {
             }
         }
         let exhausted = chosen.is_none() && placements.exhausted;
+        let how = if chosen.is_some() {
+            Chosen::FirstPassing
+        } else {
+            Chosen::FewestFailures
+        };
         let Some(at) = chosen.or(best.map(|b| b.1)).or(placements.ordered.first()) else {
-            return (Placement::given(Rigid::IDENTITY), Vec::new());
+            return (Placement::given(Rigid::IDENTITY), Chosen::None, Vec::new());
         };
         let checks = view
             .active()
@@ -368,7 +687,7 @@ impl<'a> Matcher<'a> {
                 (RequirementId::new(r.id.clone()), c)
             })
             .collect();
-        (at.clone(), checks)
+        (at.clone(), how, checks)
     }
 
     /// KH3: no placement. A requirement no candidate feature could anchor,

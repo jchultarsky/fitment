@@ -11,13 +11,14 @@ same axes, diameters within limits, the same seating planes and grip
 length. It is deterministic (rules and arithmetic, no machine learning),
 written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 
-> **Status: M3 done, M4 next.** `fitment features` reads one part from a
+> **Status: M4 in progress.** `fitment features` reads one part from a
 > STEP file, refusing a file that is not a canonical part, with reasons.
 > `fitment socket` reads what the neighbours of a part in an assembly
 > require of any part that replaces it, as a reviewable socket file, and
-> `fitment review` records the user's decisions in it. Matching is not
-> built yet. The design is in [docs/PLAN.md](docs/PLAN.md), and the code
-> is mapped in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+> `fitment review` records the user's decisions in it. `fitment match`
+> judges candidate parts against it, with the evidence; its known-answer
+> corpus is being completed. The design is in [docs/PLAN.md](docs/PLAN.md),
+> and the code is mapped in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## How it works
 
@@ -122,11 +123,27 @@ or `--remove ID --note "..."` records a decision outside the digest, and
 over to requirements that did not change. Occurrences of a part that ask
 the same of it share one socket.
 
-## Planned interface
+`fitment match socket.json candidates/` judges each candidate against
+the socket: it is placed where the original was, from features that
+match, and every requirement is checked, with the measures and failures
+behind each result.
 
 ```console
-$ fitment match socket.json candidates/*.stp      # verdicts with evidence
+$ fitment match bracket.socket.json m_bracket.stp m_bracket_missing_hole.stp m_bracket_blind.stp
+socket sha256:34a9bf48c882  target 'BRACKET'  1 socket(s)  policy 0.01 mm / 0.01 deg, clearance strict, grip hard  fit: not checked (no fit verifier in this build)
+INTERFACE  m_bracket.stp  1b77ea97  all requirements verified; material_not_compared, requirements_unreviewed
+    socket-1/seat:plane-467  passed  plane-88  margin 0.01 mm
+  …
+reject     m_bracket_missing_hole.stp  1e4e1790  1 failed: socket-1/bore:hole-688 no_feature
+reject     m_bracket_blind.stp  a8ed725f  1 failed: socket-1/bore:hole-722 core_intruded,end_not_open,wall_missing
 ```
+
+`--format json` prints the `fitment.match` document. The exit code is the
+best verdict: 0 a match, 4 an interface match (the body's fit is not
+checked until M7, so every passing run exits 4), 5 every candidate
+rejected; 1 an error, 2 usage, 3 a socket document refused.
+
+## Planned interface
 
 A catalog with create, read, update and delete, and a REST API over the
 catalog and matcher, follow once the matcher passes its zero-false-positive

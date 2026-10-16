@@ -399,6 +399,10 @@ pub struct Evidence {
     measures: Vec<Measure>,
     failures: Vec<Failure>,
     warnings: Vec<Warning>,
+    /// Under D6 functional, a clearance that strict would have rejected
+    /// (VD12's `larger_than_original`): not written, the flag says it.
+    #[serde(skip)]
+    departs: bool,
 }
 
 impl Evidence {
@@ -409,7 +413,19 @@ impl Evidence {
             measures,
             failures,
             warnings: Vec::new(),
+            departs: false,
         }
+    }
+
+    /// This evidence, departing from the original as D6 functional allows.
+    pub(crate) fn departing(mut self, departs: bool) -> Self {
+        self.departs = departs;
+        self
+    }
+
+    /// True if a clearance passed that D6 strict would have rejected.
+    pub fn departs(&self) -> bool {
+        self.departs
     }
 
     /// A check that failed for `code` alone, on no feature: an
