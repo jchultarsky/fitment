@@ -66,6 +66,10 @@ then `fitment`. The four document formats below are frozen at version 1.
 - Alignment named its placement bound when reached: before, the
   placement past it was never pushed, so `alignment_exhausted` never
   fired.
+- `ShortlistIndex` (level 1) asked a pair token between two coaxial
+  required lines one candidate stack may serve together (SG5), so it
+  dropped a part the shortlist (level 2) keeps; found by M5's design
+  review before any run relied on level 1.
 
 ### Earlier (M0)
 
