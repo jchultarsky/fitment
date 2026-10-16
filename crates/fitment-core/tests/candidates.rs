@@ -15,18 +15,48 @@ const MANIFEST: &str = include_str!("candidates/manifest.json");
 
 const CANDIDATES: [(&str, &[u8]); 13] = [
     ("m_block02.stp", include_bytes!("candidates/m_block02.stp")),
-    ("m_block02_cb_deep.stp", include_bytes!("candidates/m_block02_cb_deep.stp")),
+    (
+        "m_block02_cb_deep.stp",
+        include_bytes!("candidates/m_block02_cb_deep.stp"),
+    ),
     ("m_bracket.stp", include_bytes!("candidates/m_bracket.stp")),
-    ("m_bracket_blind.stp", include_bytes!("candidates/m_bracket_blind.stp")),
-    ("m_bracket_dia_small.stp", include_bytes!("candidates/m_bracket_dia_small.stp")),
-    ("m_bracket_lug.stp", include_bytes!("candidates/m_bracket_lug.stp")),
-    ("m_bracket_missing_hole.stp", include_bytes!("candidates/m_bracket_missing_hole.stp")),
-    ("m_bracket_thick.stp", include_bytes!("candidates/m_bracket_thick.stp")),
-    ("m_bracket_top_pocket.stp", include_bytes!("candidates/m_bracket_top_pocket.stp")),
-    ("m_nut_pinned_15tol.stp", include_bytes!("candidates/m_nut_pinned_15tol.stp")),
+    (
+        "m_bracket_blind.stp",
+        include_bytes!("candidates/m_bracket_blind.stp"),
+    ),
+    (
+        "m_bracket_dia_small.stp",
+        include_bytes!("candidates/m_bracket_dia_small.stp"),
+    ),
+    (
+        "m_bracket_lug.stp",
+        include_bytes!("candidates/m_bracket_lug.stp"),
+    ),
+    (
+        "m_bracket_missing_hole.stp",
+        include_bytes!("candidates/m_bracket_missing_hole.stp"),
+    ),
+    (
+        "m_bracket_thick.stp",
+        include_bytes!("candidates/m_bracket_thick.stp"),
+    ),
+    (
+        "m_bracket_top_pocket.stp",
+        include_bytes!("candidates/m_bracket_top_pocket.stp"),
+    ),
+    (
+        "m_nut_pinned_15tol.stp",
+        include_bytes!("candidates/m_nut_pinned_15tol.stp"),
+    ),
     ("m_plate03.stp", include_bytes!("candidates/m_plate03.stp")),
-    ("m_plate03_pin_shift_tol.stp", include_bytes!("candidates/m_plate03_pin_shift_tol.stp")),
-    ("m_plate03_press_15tol.stp", include_bytes!("candidates/m_plate03_press_15tol.stp")),
+    (
+        "m_plate03_pin_shift_tol.stp",
+        include_bytes!("candidates/m_plate03_pin_shift_tol.stp"),
+    ),
+    (
+        "m_plate03_press_15tol.stp",
+        include_bytes!("candidates/m_plate03_press_15tol.stp"),
+    ),
 ];
 
 fn assembly(case: &str) -> &'static [u8] {
@@ -43,7 +73,11 @@ fn policies() -> [(&'static str, MatchPolicy); 2] {
         ("default", MatchPolicy::default()),
         (
             "functional",
-            MatchPolicy::new(TolerancePolicy::default(), Clearance::Functional, Grip::Hard),
+            MatchPolicy::new(
+                TolerancePolicy::default(),
+                Clearance::Functional,
+                Grip::Hard,
+            ),
         ),
     ]
 }

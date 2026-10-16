@@ -11,6 +11,12 @@ use crate::socket::geo::{V, add, cross, dot, norm, scale, sub};
 use crate::socket::own::{Core, Frame};
 use crate::socket::{BoreSpan, Open, Requirement, ShaftSpan, SpanBasis};
 
+/// How far a piece may meet a span and still only touch it, in mm: a
+/// fixed numeric slack (a counterbore's step read 1e-14 mm into the bore
+/// below it), never the candidate's own stated uncertainty, which would let
+/// a part buy its own room.
+const TOUCH_MM: f64 = 1e-9;
+
 /// How far off its axis a stack is still named as the one meant, in mm.
 const NEAR_MM: f64 = 1.0;
 
@@ -398,7 +404,7 @@ fn span_check(
     let (a, b) = (map.cand(span.from), map.cand(span.to));
     let (lo, hi) = (a.min(b), a.max(b));
     let delta = map.offset(span.from).max(map.offset(span.to));
-    let ran = run(&stack.pieces, (lo, hi), ctx.u);
+    let ran = run(&stack.pieces, (lo, hi), TOUCH_MM);
     let (wall_lo, wall_hi) = ran.as_ref().map_or((f64::NAN, f64::NAN), |(clo, chi, _)| {
         let (x, y) = (map.req(*clo), map.req(*chi));
         (x.min(y), x.max(y))
@@ -617,7 +623,13 @@ fn zone_profile(
     for p in over {
         for x in [p.lo.max(lo), p.hi.min(hi)] {
             let d = (radius(p, x) - original(map.req(x))).abs();
-            worst = if d.is_nan() { f64::NAN } else { worst.max(d) };
+            // A radius not known anywhere leaves the profile unknown: NaN
+            // stays, whatever follows (`f64::max` would drop it).
+            worst = if d.is_nan() || worst.is_nan() {
+                f64::NAN
+            } else {
+                worst.max(d)
+            };
         }
     }
     found.measure(
@@ -634,11 +646,17 @@ fn zone_profile(
     );
 }
 
+/// How many pieces a zone's core is cut into along its profile.
+const PROFILE_PIECES: u32 = 16;
+
 /// VR22: the span's core clear of every face of the candidate but the
 /// stack's own walls and the zones VR8 took. A bore's core is the solid
-/// cylinder of radius c/2 + τ + u (clearance) or d/2 − τ; a shaft's, all
-/// outside c/2 − τ − u or d/2 + τ; over the span widened by ε, stopping
-/// short of the stack's own root or bottom within ε of an end, by u.
+/// cylinder of radius c/2 + τ + u (clearance) or d/2 − τ (pinned); a
+/// shaft's, all outside c/2 − τ − u or d/2 + τ; a zone piece's follows the
+/// original's profile, less τ (a bore) or plus it (a shaft), cut into pieces
+/// each with the radius that makes it largest, so the core only grows. Over
+/// the span widened by ε, stopping short of the stack's own root or bottom
+/// within ε of an end, by u.
 fn core(
     ctx: &Ctx<'_>,
     requirement: &Requirement,
@@ -649,44 +667,113 @@ fn core(
     found: &mut Found,
 ) {
     let tau = ctx.tau(requirement, span.from, span.to);
-    let rho = match (stack.hole, span.clear.filter(|_| !span.pinned)) {
-        (true, Some(c)) => c / 2.0 + tau + ctx.u,
-        (true, None) => span.d / 2.0 - tau,
-        (false, Some(c)) => c / 2.0 - tau - ctx.u,
-        (false, None) => span.d / 2.0 + tau,
-    };
-    let mut cored = Core {
-        rho,
-        hole: stack.hole,
-        from: (span.from.min(span.to) - ctx.eps, false),
-        to: (span.from.max(span.to) + ctx.eps, false),
-    };
+    let (lo, hi) = (span.from.min(span.to), span.from.max(span.to));
+    let (mut from, mut to) = ((lo - ctx.eps, false), (hi + ctx.eps, false));
     for end in &stack.ends {
         let EndAt::Closed { at } = end else {
             continue;
         };
         let s = map.req(*at);
-        if (s - (cored.from.0 + ctx.eps)).abs() <= ctx.eps {
-            cored.from = (s + ctx.u, true);
+        if (s - lo).abs() <= ctx.eps {
+            from = (s + ctx.u, true);
         }
-        if (s - (cored.to.0 - ctx.eps)).abs() <= ctx.eps {
-            cored.to = (s - ctx.u, true);
+        if (s - hi).abs() <= ctx.eps {
+            to = (s - ctx.u, true);
         }
     }
+    let profile = span
+        .profile
+        .filter(|_| !span.pinned && span.clear.is_none());
+    let pieces: Vec<Core> = if let Some([d1, d2]) = profile {
+        {
+            // The original's radius at station x, constant past the span.
+            let radius = |x: f64| {
+                let t = if hi > lo {
+                    ((x - span.from) / (span.to - span.from)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                d1 / 2.0 + (d2 - d1) * t / 2.0
+            };
+            let step = (to.0 - from.0) / f64::from(PROFILE_PIECES);
+            (0..PROFILE_PIECES)
+                .map(|k| {
+                    let a = from.0 + step * f64::from(k);
+                    let b = if k + 1 == PROFILE_PIECES {
+                        to.0
+                    } else {
+                        a + step
+                    };
+                    let (ra, rb) = (radius(a), radius(b));
+                    Core {
+                        rho: if stack.hole {
+                            ra.max(rb) - tau
+                        } else {
+                            ra.min(rb) + tau
+                        },
+                        hole: stack.hole,
+                        from: if k == 0 { from } else { (a, false) },
+                        to: if k + 1 == PROFILE_PIECES {
+                            to
+                        } else {
+                            (b, false)
+                        },
+                    }
+                })
+                .collect()
+        }
+    } else {
+        {
+            let rho = match (stack.hole, span.clear.filter(|_| !span.pinned)) {
+                (true, Some(c)) => c / 2.0 + tau + ctx.u,
+                (true, None) => span.d / 2.0 - tau,
+                (false, Some(c)) => c / 2.0 - tau - ctx.u,
+                (false, None) => span.d / 2.0 + tau,
+            };
+            vec![Core {
+                rho,
+                hole: stack.hole,
+                from,
+                to,
+            }]
+        }
+    };
     let frame = Frame::new(ctx.back.point(map.p), ctx.back.dir(map.d));
     let at = At::span(span.from, span.to);
+    for piece in &pieces {
+        if intruded(ctx, stack, (&frame, piece), tau, &at, budget, found) {
+            return;
+        }
+    }
+}
+
+/// One piece of a core against the candidate's faces: true if a failure
+/// was recorded.
+fn intruded(
+    ctx: &Ctx<'_>,
+    stack: &Stack,
+    (frame, piece): (&Frame, &Core),
+    tau: f64,
+    at: &At,
+    budget: &mut Budget,
+    found: &mut Found,
+) -> bool {
+    let rho = piece.rho;
     match ctx.cand.own().intrusion(
-        &frame,
-        &cored,
+        frame,
+        piece,
         &stack.exempt,
         (&mut budget.used, budget.limit),
     ) {
-        Err(_) => found.fail(
-            FailureCode::CoverageExhausted,
-            &at,
-            "the core test reached its bound",
-        ),
-        Ok(None) => {}
+        Err(_) => {
+            found.fail(
+                FailureCode::CoverageExhausted,
+                at,
+                "the core test reached its bound",
+            );
+            true
+        }
+        Ok(None) => false,
         Ok(Some((face, distance))) => {
             let limits = if stack.hole {
                 (Some(rho), None)
@@ -702,11 +789,12 @@ fn core(
             ));
             found.fail(
                 FailureCode::CoreIntruded,
-                &at,
+                at,
                 format!(
                     "face #{face} may lie {distance} mm from the axis, inside the core's {rho} mm"
                 ),
             );
+            true
         }
     }
 }
@@ -823,7 +911,7 @@ fn extend(
     let (a, b) = (map.cand(extension.from), map.cand(extension.to));
     let (lo, hi) = (a.min(b), a.max(b));
     let at = At::span(extension.from, extension.to);
-    let covered = run(&stack.pieces, (lo, hi), ctx.u).filter(|(clo, chi, _)| {
+    let covered = run(&stack.pieces, (lo, hi), TOUCH_MM).filter(|(clo, chi, _)| {
         clo - lo < 1e-9 * (1.0 + lo.abs()) && hi - chi < 1e-9 * (1.0 + hi.abs())
     });
     match covered {
@@ -857,4 +945,93 @@ fn extend(
     found.measures.extend(own.measures);
     found.failures.extend(own.failures);
     ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Found, Map, Span, zone_profile};
+    use crate::geom::Rigid;
+    use crate::matching::candidate::{CandidateView, Piece};
+    use crate::matching::evidence::At;
+    use crate::matching::verify::Ctx;
+    use crate::matching::{MatchPolicy, Placement, SocketView};
+    use crate::socket::{SocketDocument, SpanBasis};
+
+    /// A zone of the profile whose radius is unknown (no single cone)
+    /// fails the profile, whichever piece comes before it.
+    #[test]
+    fn a_zone_of_unknown_radius_fails_the_profile_in_any_order() {
+        let bytes = include_bytes!("../../tests/assemblies/s03_dowels.stp");
+        let Ok(document) = SocketDocument::extract(bytes, Some("PLATE"), None) else {
+            unreachable!()
+        };
+        let Some(view) = SocketView::new(&document, "socket-1") else {
+            unreachable!()
+        };
+        let read = crate::features::FeaturesDocument::read(include_bytes!(
+            "../../tests/data/p01_through.stp"
+        ));
+        let Some(part) = read.part() else {
+            unreachable!()
+        };
+        let cand = CandidateView::of(part);
+        let at = Placement::given(Rigid::IDENTITY);
+        let ctx = Ctx::new(&view, &cand, &at, &MatchPolicy::default());
+        let span = Span {
+            from: 0.0,
+            to: 10.0,
+            d: 6.0,
+            clear: None,
+            pinned: false,
+            basis: SpanBasis::Zone,
+            profile: Some([6.0, 6.0]),
+        };
+        let map = Map::new(([0.0; 3], [0.0, 0.0, 1.0]), ([0.0; 3], [0.0, 0.0, 1.0]));
+        let unknown = Piece {
+            lo: 0.0,
+            hi: 5.0,
+            r: 3.0,
+            cylinder: None,
+            taper: None,
+            run: 0,
+        };
+        let wall = Piece {
+            lo: 5.0,
+            hi: 10.0,
+            r: 3.0,
+            cylinder: Some(
+                part.cylinders
+                    .first()
+                    .map_or_else(|| unreachable!(), |c| c.id),
+            ),
+            taper: None,
+            run: 0,
+        };
+        for pieces in [vec![unknown], vec![unknown, wall], vec![wall, unknown]] {
+            let mut found = Found::default();
+            zone_profile(
+                &ctx,
+                &span,
+                [6.0, 6.0],
+                &map,
+                &pieces,
+                (0.0, 10.0),
+                &At::whole(),
+                &mut found,
+            );
+            assert_eq!(found.failures.len(), 1, "{pieces:?}");
+        }
+        let mut found = Found::default();
+        zone_profile(
+            &ctx,
+            &span,
+            [6.0, 6.0],
+            &map,
+            &[wall],
+            (5.0, 10.0),
+            &At::whole(),
+            &mut found,
+        );
+        assert_eq!(found.failures.len(), 0);
+    }
 }

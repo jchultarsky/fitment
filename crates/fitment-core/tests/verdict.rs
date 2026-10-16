@@ -276,9 +276,14 @@ fn a_candidate_is_judged_by_its_worst_socket() {
         FitStatus::no_verifier(),
     );
     let named = |v: &[(&str, &fitment_core::Verdict)]| -> Vec<(String, fitment_core::Verdict)> {
-        v.iter().map(|(s, v)| ((*s).to_owned(), (*v).clone())).collect()
+        v.iter()
+            .map(|(s, v)| ((*s).to_owned(), (*v).clone()))
+            .collect()
     };
-    assert_eq!(combine(&named(&[("socket-1", &good)])).kind(), VerdictKind::Match);
+    assert_eq!(
+        combine(&named(&[("socket-1", &good)])).kind(),
+        VerdictKind::Match
+    );
     let both = combine(&named(&[("socket-1", &good), ("socket-2", &unchecked)]));
     assert_eq!(both.kind(), VerdictKind::InterfaceMatch);
     assert!(matches!(both.fit(), FitStatus::NotChecked { .. }));
@@ -293,6 +298,8 @@ fn a_candidate_is_judged_by_its_worst_socket() {
     assert_eq!(none.reasons(), &[RejectReason::NoSockets]);
     let clash = decide(&reqs, passed(&["h1", "seat"]), interferes());
     let any = combine(&named(&[("socket-1", &good), ("socket-2", &clash)]));
-    assert!(matches!(any.fit(), FitStatus::Interferes { interferences } if interferences.len() == 1));
+    assert!(
+        matches!(any.fit(), FitStatus::Interferes { interferences } if interferences.len() == 1)
+    );
     assert_eq!(any.kind(), VerdictKind::Reject);
 }

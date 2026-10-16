@@ -39,8 +39,11 @@ pub const SIGNATURE_VERSION: u32 = 1;
 /// the shortlist, alignment, verification or the verdicts they give.
 pub const MATCH_RULES_VERSION: u32 = 1;
 
-/// The most steps of coverage marching (VR11) and core face tests (VR22)
-/// for one candidate and socket (AL11); past them the socket rejects.
+/// The most work of coverage marching (VR11) and core face tests (VR22)
+/// for one candidate and socket (AL11), counted in edges read: a coverage
+/// step costs the edges of the region (and of the cover, where it asks
+/// containment), a core test one per face and one per edge of a plane
+/// face's polygon. Past it the requirement fails, never passes.
 pub const MAX_COVERAGE_STEPS: u64 = 20_000_000;
 
 /// The least uncertainty a part is taken to have (VR2): M3's B1 guard.

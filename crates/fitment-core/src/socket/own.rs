@@ -977,7 +977,15 @@ impl Own<'_> {
             if exempt.contains(&face) {
                 continue;
             }
-            let hit = match self.shape(k, frame) {
+            let shape = self.shape(k, frame);
+            if let Shape::Polygon(points) = &shape {
+                // A polygon costs its edges.
+                *pairs = pairs.saturating_add(points.len() as u64);
+                if *pairs > limit {
+                    return Err(super::rules::TooMany);
+                }
+            }
+            let hit = match shape {
                 Shape::Square { at, tilt } => {
                     self.square_hit(k, frame, core, (at, tilt), (&mut *pairs, limit))?
                 }

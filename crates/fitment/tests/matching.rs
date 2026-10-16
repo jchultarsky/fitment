@@ -50,17 +50,23 @@ fn every_match_case_meets_its_construction() {
     for case in cases {
         let source = case["socket"]["case"].as_str().unwrap().to_owned();
         let part = case["socket"]["part"].as_str().unwrap().to_owned();
-        let document = documents.entry((source.clone(), part.clone())).or_insert_with(|| {
-            let bytes = fs::read(dir.join(format!("{source}.stp"))).unwrap();
-            SocketDocument::extract(&bytes, Some(&part), None).unwrap()
-        });
+        let document = documents
+            .entry((source.clone(), part.clone()))
+            .or_insert_with(|| {
+                let bytes = fs::read(dir.join(format!("{source}.stp"))).unwrap();
+                SocketDocument::extract(&bytes, Some(&part), None).unwrap()
+            });
         let socket = &document.extracted().unwrap().sockets[0];
         let bytes = fs::read(dir.join(case["candidate"]["file"].as_str().unwrap())).unwrap();
         for (name, policy) in [
             ("default", MatchPolicy::default()),
             (
                 "functional",
-                MatchPolicy::new(TolerancePolicy::default(), Clearance::Functional, Grip::Hard),
+                MatchPolicy::new(
+                    TolerancePolicy::default(),
+                    Clearance::Functional,
+                    Grip::Hard,
+                ),
             ),
         ] {
             let matcher = Matcher::new(document, policy, MatchOptions::default()).unwrap();

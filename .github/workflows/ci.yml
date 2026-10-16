@@ -75,7 +75,7 @@ jobs:
       # Every mutation of fitment's sockets meets a disagreement.
       - run: tools/verify-occt.py mutations corpus/out
       - run: tools/verify-occt.py socket --expect fixtures/manifest.json fixtures
-      - run: cargo test -p fitment --test corpus --test fixtures --test shortlist --test original --locked
+      - run: cargo test -p fitment --test corpus --test fixtures --test shortlist --test original --test matching --locked
         env:
           FITMENT_REQUIRE_CORPUS: "1"
           FITMENT_REQUIRE_FIXTURES: "1"
@@ -98,6 +98,7 @@ jobs:
       # trigonometry rounds by the platform's maths library.
       - run: tools/gen-corpus.py --unit-set "$RUNNER_TEMP/unit" --check crates/fitment-core/tests/data
       - run: tools/gen-corpus.py --assembly-set "$RUNNER_TEMP/assemblies" --check crates/fitment-core/tests/assemblies
+      - run: tools/gen-corpus.py --candidate-set "$RUNNER_TEMP/candidates" --check crates/fitment-core/tests/candidates
 
   test:
     name: test (${{ matrix.os }})

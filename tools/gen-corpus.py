@@ -724,9 +724,21 @@ M4_TESTS.update({
     "KH10": M4_KH10,
     "Y4.original_run": M4_KH10,
 })
+# PR 3c builds the committed candidates, the generator's match cases and the strict gate (KH2, KH3) through the
+# library (KH1); the cases cite the rules they show.
+M4_GATE = ["crates/fitment-core/tests/candidates.rs::every_committed_candidate_meets_its_construction",
+           "crates/fitment/tests/matching.rs::every_match_case_meets_its_construction"]
+M4_TESTS.update({
+    "KC2": M4_GATE, "KC5": M4_GATE, "KH1": M4_GATE, "KH2": M4_GATE, "KH3": M4_GATE,
+    "KH13": ["crates/fitment/tests/corpus.rs::the_candidate_set_fits_its_budget_and_its_manifest"],
+    "VR8": M4_TESTS["VR8"] + M4_GATE,
+    "VR22": M4_TESTS["VR22"] + M4_GATE,
+})
 for rule, tests in M4_TESTS.items():
     RULES[rule] = {"tests": tests}
-RULES["CF8"] = {"deferred": "M4 PR 3c: a wall opening needs a candidate that has one, from the generator"}
+# Shown by the match cases that cite them.
+for rule in ("CF8", "KC3", "KC7", "KC8", "KC9", "KC10", "KC15"):
+    RULES[rule] = {}
 for rule in ("VR16", "VR19"):
     RULES[rule] = {"deferred": "M4 PR 4: the verdict lists removed requirements and carries flags"}
 
@@ -3055,6 +3067,16 @@ def c_nut(d=5.0, kind="orig"):
         return through(hex_prism(10, -5, 5), [(0, 0)], d, -5, 0)
     if kind == "ext":
         return cut(hex_prism(10, -10, 10), cyl((0, 0, -5.0), UP, d / 2, 6.0), cyl((0, 0, -11.0), UP, 1.5, 7.0))
+    if kind == "lip":
+        # PR 3's review: the wall ends at the original's rim, then an annulus out to r 4.5 and a cone back in to
+        # r 1.5 a millimetre below: an opening VR8 does not take.
+        body = cut(fuse(hex_prism(10, -5, 5), cyl((0, 0, -6), UP, 4.5, 1.0)), cyl((0, 0, -5), UP, d / 2, 6.0))
+        return cut(body, cone((0, 0, -6.001), UP, 1.5 - 0.0025, 4.0, 1.001))
+    if kind == "ext_lip":
+        # The same lip past an extension: dia 6.6 down to z -6, then the lip to z -7.
+        body = cut(fuse(hex_prism(10, -5, 5), cyl((0, 0, -7), UP, 4.5, 2.0)), cyl((0, 0, -5), UP, d / 2, 6.0),
+                   cyl((0, 0, -6), UP, 3.3, 1.0))
+        return cut(body, cone((0, 0, -7.001), UP, 1.5 - 0.0025, 4.0, 1.001))
     body = cut(hex_prism(10, -10, 10), cyl((0, 0, -11.0), UP, d / 2, 12.0))
     if kind == "long":
         return body
@@ -3067,6 +3089,15 @@ def c_block02(cb_d=11.0, cb_depth=6.5, d=6.6, h=15.0):
     if cb_d:
         tools.append(cyl((0, 0, h - cb_depth), UP, cb_d / 2, cb_depth + 1))
     return cut(box(-20, -20, 0, 40, 40, h), *tools)
+
+
+def c_plate18(angle=90.0, d0=12.4, counterbore=False):
+    """s18's PLATE: 40 x 40 x 10, dia 6.6 through, countersunk `angle` to dia d0 at the top; or a dia d0
+    counterbore 3.2 deep in its place."""
+    if counterbore:
+        return cut(box(-20, -20, 0, 40, 40, 10), cyl((0, 0, -1), UP, 3.3, 12), cyl((0, 0, 6.8), UP, d0 / 2, 4))
+    return cut(box(-20, -20, 0, 40, 40, 10), tool(Hole((0, 0, 10), DOWN, [(6.6, 10)], through=10,
+                                                           countersink=(d0, angle))))
 
 
 def c_base02(post=False):
@@ -3213,7 +3244,8 @@ def match_cases():
         ("m_bracket_lug", B, c_bracket(lug=True), MAPPED, "collides", "b_collide", m_ok(),
          "a tab 5 mm into the plate, in no requirement's region: InterfaceMatch until M7", ["KC3"]),
         ("m_bracket_top_pocket", B, c_bracket(pocket=(20, 12, 2)), MAPPED, "fn_rule", "fn_r14",
-         m_rej([must(top, "contact_not_covered")]), "a 20 x 12 x 2 pocket round the centre hole, clear of the "
+         m_rej([must(top, "contact_not_covered")], [must(g8, "seat_missing")]),
+         "a 20 x 12 x 2 pocket round the centre hole, clear of the "
          "heads: R14's target-face basis rejects it", ["KC10", "VR11"]),
         ("m_plate03", D3, c_plate03(), MAPPED, "fits", "g_frame", m_ok(), "the original", ["KC8"]),
         ("m_plate03_pin_shift_tol", D3, c_plate03(shift={10: M_TOL}), MAPPED, "edge", "b_hole_shift",
@@ -3272,6 +3304,63 @@ def match_cases():
          m_rej([core(l_bore((0, 0, -9)))]), "a dia 2 post in the pinned span", ["KC9", "VR8", "VR22"]),
         ("m_tube50", T, c_tube50(), VARIANT, "fits", "g_frame", m_ok(), "the original", ["KC8"]),
     ]
+    # The countersunk plate (s18): a 90 deg conical seat, apex at z 3.8, radii 3.3 to 6.2; the countersink a
+    # zone of the bore whose profile the socket states (X8).
+    C = ("s18_csink", "PLATE")
+    cs, cg, cb, cbot = l_cone((0, 0, 3.8)), l_grip(3.8), l_bore((0, 0, 0)), l_seat((0, 0, -1), 0)
+    cone_codes = ("no_feature", "cone_mismatch:angle", "cone_mismatch:apex", "cone_mismatch:range",
+                  "cone_mismatch:sense", "axis_angle")
+    may18 = [must(cs, *cone_codes), must(cg, "grip_length", "seat_missing"),
+             must(cb, "diameter_out_of_limits:profile", "diameter_out_of_limits:max", "core_intruded",
+                  "wall_missing", "end_not_open", "no_feature"), must(cbot, "contact_not_covered", "no_feature")]
+    out += [
+        ("m_plate18", C, c_plate18(), VARIANT, "fits", "g_frame", m_ok(), "the original", ["KC8", "VR13"]),
+        ("m_plate18_82", C, c_plate18(angle=82.0), VARIANT, "does_not_fit", "b_cone_angle",
+         m_rej([any_of(must(cs, *cone_codes), must(cb, "diameter_out_of_limits:profile"))], may18),
+         "82 deg, the same rim dia", ["KC9", "VR13", "VR7"]),
+        ("m_plate18_angle_15atol", C, c_plate18(angle=90.0 + 1.5 * M_ATOL), VARIANT, "does_not_fit",
+         "b_cone_angle", m_rej([must(cs, "cone_mismatch:angle")], may18), "90 deg + 1.5 angular tol",
+         ["KC9", "VR13"]),
+        ("m_plate18_small_rim", C, c_plate18(d0=11.0), VARIANT, "does_not_fit", "b_cone_range",
+         m_rej([any_of(must(cs, *cone_codes), must(cb, "diameter_out_of_limits:profile"))], may18),
+         "rim dia 11: the cone stops short of the head's 12.4", ["KC9", "VR13", "VR7"]),
+        ("m_plate18_cbore", C, c_plate18(counterbore=True), VARIANT, "does_not_fit", "b_cone_missing",
+         m_rej([any_of(must(cs, *cone_codes), must(cb, "diameter_out_of_limits:profile"))], may18),
+         "a dia 12.4 counterbore in place of the countersink", ["KC9", "VR13", "VR7"]),
+    ]
+    # PR 3's review: candidates the rules as first built passed, each against the neighbour it collides with.
+    nb = l_bore((0, 0, -5))
+    out += [
+        ("m_nut_lip", N, c_nut(kind="lip"), VARIANT, "does_not_fit", "b_end_zone",
+         m_rej([must(nb, "end_not_open", "core_intruded", "wall_missing")],
+               [must(l_seat((0, 0, 1), 0), "contact_not_covered", "no_feature")]),
+         "an annulus out and a cone back in to r 1.5 below the rim: the bolt's thread runs there", ["KC9", "VR7", "VR8"]),
+        ("m_nut_ext_lip", N, c_nut(kind="ext_lip"), VARIANT, "does_not_fit", "b_open_past_rim",
+         m_rej([must(nb, "end_not_open", "core_intruded", "wall_missing", "diameter_out_of_limits:min")],
+               [must(l_seat((0, 0, 1), 0), "contact_not_covered", "no_feature")]),
+         "the lip past a dia 6.6 extension", ["KC9", "VR7", "VR8"]),
+        ("m_plate18_finger", C, fuse(c_plate18(), box(7, -1, 9.999, 2, 2, 1.001), box(4.5, -1, 10.2, 4.5, 2, 0.8),
+                                     box(4.5, -0.5, 9.3, 0.5, 1, 1.2)), VARIANT, "does_not_fit", "b_post",
+         m_rej([must(cb, "core_intruded", "diameter_out_of_limits:profile", "wall_missing", "end_not_open")],
+               may18),
+         "an arch above the top face with a finger into the countersink, inside the head's cone", ["KC9", "VR22"]),
+        ("m_bracket_spot", B, cut(c_bracket(), *[cyl((x, y, 6), UP, 6.0, 3) for x, y in PTS]), VARIANT,
+         "does_not_fit", "b_thickness",
+         m_rej([any_of(must(top, "contact_not_covered", "no_feature"), must(g8, "seat_missing", "grip_length"))],
+               [must(top, "contact_not_covered", "no_feature"), must(g8, "seat_missing", "grip_length"),
+                must(bot, "contact_not_covered", "no_feature")]
+               + may_holes("no_feature", "axis_offset", "diameter_out_of_limits:max", "diameter_out_of_limits:min",
+                           "wall_missing", "end_not_open", "core_intruded")),
+         "a dia 12 spot face 2 deep under each head: 6 clamped, not 8", ["KC9", "VR12"]),
+        ("m_block02_membrane", K, cut(box(-20, -20, 0, 40, 40, 15), cyl((0, 0, -1), UP, 1.0, 17),
+                                      cyl((0, 0, -1), UP, 3.3, 9.491), cyl((0, 0, 8.5), UP, 5.5, 7.5)),
+         VARIANT, "does_not_fit", "b_dia_small",
+         m_rej([must(l_bore((0, 0, 0)), "diameter_out_of_limits:min", "core_intruded")],
+               [must(l_seat((0, 0, 1), 8.5), "contact_not_covered", "no_feature"),
+                must(l_seat((0, 0, -1), 0), "contact_not_covered", "no_feature"),
+                must(l_grip(8.5), "seat_missing", "grip_length")]),
+         "a 9 um ring of dia 2 between the bore and the counterbore", ["KC9", "VR4"]),
+    ]
     # VR4's edge in four frames (KC7): the tube's outside at exactly c - 2 tau.
     for name, motion in [("id", IDENTITY), ("var", VARIANT), ("tilt", TILT), ("skew", Motion((3, -2, 5), 71.0, (12.5, 7.0, -40.0)))]:
         out.append((f"m_tube50_tau_edge_{name}", T, c_tube50(20.99), motion, "edge", "e_tau",
@@ -3286,6 +3375,9 @@ def build_candidates(w: Writer, which):
                                 ("c_block02", c_block02(), cut(box(-20, -20, 0, 40, 40, 15),
                                                                 cyl((0, 0, -1), UP, 3.3, 17),
                                                                 cyl((0, 0, 8.5), UP, 5.5, 7.5))),
+                                ("c_plate18", c_plate18(), cut(box(-20, -20, 0, 40, 40, 10),
+                                                                tool(Hole((0, 0, 10), DOWN, [(6.6, 10)], through=10,
+                                                                          countersink=(12.4, 90))))),
                                 ("c_base02", c_base02(), cut(box(-30, -30, -10, 60, 60, 10),
                                                               cyl((0, 0, -9), UP, 2.5, 10))),
                                 ("c_housing", c_housing(), cut(box(-20, -20, -20, 40, 40, 20),

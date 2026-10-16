@@ -14,24 +14,36 @@ const NEAR: f64 = 1e-6;
 
 fn array(v: &Value) -> Option<[f64; 3]> {
     let a = v.as_array()?;
-    Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+    Some([
+        a.first()?.as_f64()?,
+        a.get(1)?.as_f64()?,
+        a.get(2)?.as_f64()?,
+    ])
 }
 
 fn near3(a: [f64; 3], b: [f64; 3]) -> bool {
     (0..3).all(|k| (a[k] - b[k]).abs() <= NEAR)
 }
 
-/// True if the line through `p` along `d` is the line through `q` along
-/// `e`, whatever their signs.
-fn same_line(p: [f64; 3], d: [f64; 3], q: [f64; 3], e: [f64; 3]) -> bool {
+/// True if the line through `point` along `d` is the line through
+/// `other` along `e`, whatever their signs.
+fn same_line(point: [f64; 3], d: [f64; 3], other: [f64; 3], e: [f64; 3]) -> bool {
     let cross = [
         d[1] * e[2] - d[2] * e[1],
         d[2] * e[0] - d[0] * e[2],
         d[0] * e[1] - d[1] * e[0],
     ];
-    let w = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+    let w = [
+        other[0] - point[0],
+        other[1] - point[1],
+        other[2] - point[2],
+    ];
     let along = w[0] * d[0] + w[1] * d[1] + w[2] * d[2];
-    let off = [w[0] - along * d[0], w[1] - along * d[1], w[2] - along * d[2]];
+    let off = [
+        w[0] - along * d[0],
+        w[1] - along * d[1],
+        w[2] - along * d[2],
+    ];
     cross.iter().all(|c| c.abs() <= NEAR) && off.iter().all(|c| c.abs() <= NEAR)
 }
 
@@ -68,7 +80,8 @@ fn names(locator: &Value, requirement: &Requirement) -> bool {
                     .is_some_and(|l| (l - length_mm).abs() <= NEAR)
         }
         Requires::ConicalSeat { apex_mm, .. } => {
-            kind == "conical_seat" && array(&locator["apex"]).is_some_and(|a| near3(a, apex_mm.to_array()))
+            kind == "conical_seat"
+                && array(&locator["apex"]).is_some_and(|a| near3(a, apex_mm.to_array()))
         }
         _ => false,
     }
@@ -85,7 +98,10 @@ pub fn locate<'s>(socket: &'s Socket, locator: &Value) -> Result<&'s Requirement
     match found.as_slice() {
         [one] => Ok(one),
         [] => Err(format!("{locator} names no requirement of {}", socket.id)),
-        _ => Err(format!("{locator} names several requirements of {}", socket.id)),
+        _ => Err(format!(
+            "{locator} names several requirements of {}",
+            socket.id
+        )),
     }
 }
 
@@ -193,13 +209,11 @@ pub fn gate(case: &Value, policy: &str, socket: &Socket, result: &CandidateResul
     }
     // F ⊆ must ∪ may: every failure is one the case allows.
     for (r, codes) in &failed {
-        let allowed = must
-            .iter()
-            .chain(&may)
-            .flatten()
-            .any(|e| e.meets(r, codes));
+        let allowed = must.iter().chain(&may).flatten().any(|e| e.meets(r, codes));
         if !allowed {
-            problems.push(format!("{id} {policy}: {r} failed with {codes:?}, not expected"));
+            problems.push(format!(
+                "{id} {policy}: {r} failed with {codes:?}, not expected"
+            ));
         }
     }
     // A bad case names its defect: `must` is never empty.
@@ -208,7 +222,9 @@ pub fn gate(case: &Value, policy: &str, socket: &Socket, result: &CandidateResul
         problems.push(format!("{id} {policy}: a bad case names no requirement"));
     }
     if truth == "fn_rule" && failed.is_empty() && want == VerdictKind::Reject {
-        problems.push(format!("{id} {policy}: a false negative by rule failed nothing"));
+        problems.push(format!(
+            "{id} {policy}: a false negative by rule failed nothing"
+        ));
     }
     problems
 }

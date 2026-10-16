@@ -4,7 +4,7 @@
 //! outer shell, the cones a walk crossed, and a tree over its faces for
 //! VR22's core test, each face boxed from what the part states.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::GUARD_MM;
@@ -89,6 +89,7 @@ impl<'p> CandidateView<'p> {
     /// The view of `part`.
     pub fn of(part: &'p Part) -> Self {
         let own = Own::of(part, &face_boxes(part));
+        let look = Lookup::of(part);
         let holes = part.holes.iter().map(|h| {
             let read = Read {
                 id: h.id,
@@ -98,7 +99,7 @@ impl<'p> CandidateView<'p> {
                 ends: &h.ends,
                 hole: true,
             };
-            stack(part, &own, &read)
+            stack(&look, &own, &read)
         });
         let shafts = part.shafts.iter().map(|s| {
             let read = Read {
@@ -109,7 +110,7 @@ impl<'p> CandidateView<'p> {
                 ends: &s.ends,
                 hole: false,
             };
-            stack(part, &own, &read)
+            stack(&look, &own, &read)
         });
         let stacks = holes.chain(shafts).collect();
         Self {
@@ -179,6 +180,30 @@ impl<'p> CandidateView<'p> {
     }
 }
 
+/// The part's cylinders by id, and its shafts by the face they rise from,
+/// built once, so a stack's reading costs a lookup, not a scan.
+struct Lookup<'p> {
+    cylinders: BTreeMap<FeatureId, &'p crate::features::Cylinder>,
+    posts: BTreeMap<FeatureId, Vec<&'p crate::features::Shaft>>,
+}
+
+impl<'p> Lookup<'p> {
+    fn of(part: &'p Part) -> Self {
+        let mut posts: BTreeMap<FeatureId, Vec<&crate::features::Shaft>> = BTreeMap::new();
+        for shaft in &part.shafts {
+            for end in &shaft.ends {
+                if let StackEnd::Root { rises_from, .. } = end {
+                    posts.entry(*rises_from).or_default().push(shaft);
+                }
+            }
+        }
+        Self {
+            cylinders: part.cylinders.iter().map(|c| (c.id, c)).collect(),
+            posts,
+        }
+    }
+}
+
 /// What a stack is read from: a hole's or a shaft's fields.
 struct Read<'a> {
     id: FeatureId,
@@ -192,6 +217,8 @@ struct Read<'a> {
 /// A wall of the profile: its stations, radius and cylinder.
 #[derive(Clone, Copy)]
 struct Wall {
+    /// The segment's index in its stack.
+    index: usize,
     lo: f64,
     hi: f64,
     r: f64,
@@ -218,12 +245,14 @@ fn walls(segments: &[StackSegment]) -> Vec<Wall> {
         .position(|s| s.to_mm.is_none())
         .unwrap_or(segments.len());
     let walls: Vec<Wall> = segments
-        .get(low..high.max(low))
-        .unwrap_or_default()
         .iter()
-        .filter_map(|s| {
+        .enumerate()
+        .take(high)
+        .skip(low)
+        .filter_map(|(index, s)| {
             let (a, b) = (s.from_mm?, s.to_mm?);
             Some(Wall {
+                index,
                 lo: a.min(b),
                 hi: a.max(b),
                 r: s.diameter_mm / 2.0,
@@ -286,7 +315,7 @@ fn taper(held: &[&Crossed]) -> Option<((f64, f64), (f64, f64))> {
 
 /// CF3, VR8: one stack, with its usable profile, ends, exempt faces and
 /// wall openings.
-fn stack(part: &Part, own: &Own<'_>, read: &Read<'_>) -> Stack {
+fn stack(look: &Lookup<'_>, own: &Own<'_>, read: &Read<'_>) -> Stack {
     let (point, dir) = (
         read.axis.point_mm.to_array(),
         read.axis.direction.to_array(),
@@ -357,7 +386,7 @@ fn stack(part: &Part, own: &Own<'_>, read: &Read<'_>) -> Stack {
         }
     }
     let ends = end_zones(read, &walls, &crossed, (run, &mut pieces), &mut exempt);
-    bound_by_posts(part, read, &frame, &mut pieces);
+    bound_by_posts(look, read, &frame, &mut pieces);
     Stack {
         id: read.id,
         hole: read.hole,
@@ -366,7 +395,7 @@ fn stack(part: &Part, own: &Own<'_>, read: &Read<'_>) -> Stack {
         pieces,
         ends,
         exempt,
-        openings: openings(part, read.segments),
+        openings: openings(look, read.segments, &frame),
     }
 }
 
@@ -381,21 +410,30 @@ fn end_zones(
     (run, pieces): (usize, &mut Vec<Piece>),
     exempt: &mut BTreeSet<u64>,
 ) -> [EndAt; 2] {
-    let whole = |side: usize| match side {
-        0 => read.segments.first().is_some_and(|s| s.from_mm.is_some()),
-        _ => read.segments.last().is_some_and(|s| s.to_mm.is_some()),
+    // The wall an end zone joins must be the stack's own end segment.
+    let last = read.segments.len().saturating_sub(1);
+    let whole = |side: usize, wall: &Wall| match side {
+        0 => wall.index == 0,
+        _ => wall.index == last,
     };
     let mut ends = [EndAt::Unknown; 2];
     for (side, end) in ends.iter_mut().enumerate() {
-        *end = end_at(read.ends.get(side), None);
+        // An opening counts only through a zone VR8 takes: one it does not
+        // take may hold material back inside the hole (a lip), so the end
+        // is not open (CF5, VR7). Bottoms and roots are what they are.
+        *end = match end_at(read.ends.get(side), None) {
+            EndAt::Open { .. } => EndAt::Unknown,
+            other => other,
+        };
         let edge = if side == 0 {
             walls.first()
         } else {
             walls.last()
         };
-        let (Some(edge), Some((at, rim))) =
-            (edge.filter(|_| whole(side)), open_end(read.ends.get(side)))
-        else {
+        let (Some(edge), Some((at, rim))) = (
+            edge.filter(|w| whole(side, w)),
+            open_end(read.ends.get(side)),
+        ) else {
             continue;
         };
         let (lo, hi) = (at.min(rim), at.max(rim));
@@ -453,7 +491,7 @@ fn end_at(end: Option<&StackEnd>, rim: Option<f64>) -> EndAt {
 /// VR8: an annular bottom bounds a hole's profile at its post's free end;
 /// a post whose free end is unknown, or that is not found on the axis,
 /// leaves nothing of the hole usable.
-fn bound_by_posts(part: &Part, read: &Read<'_>, frame: &Frame, pieces: &mut Vec<Piece>) {
+fn bound_by_posts(look: &Lookup<'_>, read: &Read<'_>, frame: &Frame, pieces: &mut Vec<Piece>) {
     if !read.hole {
         return;
     }
@@ -466,7 +504,7 @@ fn bound_by_posts(part: &Part, read: &Read<'_>, frame: &Frame, pieces: &mut Vec<
         else {
             continue;
         };
-        let Some(free) = post_end(part, *closed_by, frame) else {
+        let Some(free) = post_end(look, *closed_by, frame) else {
             pieces.clear();
             return;
         };
@@ -487,19 +525,15 @@ fn bound_by_posts(part: &Part, read: &Read<'_>, frame: &Frame, pieces: &mut Vec<
 /// The station, in `frame`, of the free end's rim of the shaft on the
 /// frame's axis rising from `floor`; `None` if there is none, or its end
 /// is not known.
-fn post_end(part: &Part, floor: FeatureId, frame: &Frame) -> Option<f64> {
-    let post = part.shafts.iter().find(|s| {
-        s.ends
-            .iter()
-            .any(|e| matches!(e, StackEnd::Root { rises_from, .. } if *rises_from == floor))
+fn post_end(look: &Lookup<'_>, floor: FeatureId, frame: &Frame) -> Option<f64> {
+    let post = look.posts.get(&floor)?.iter().find(|s| {
+        let (p, d) = (s.axis.point_mm.to_array(), s.axis.direction.to_array());
+        norm(cross(d, frame.dir())) <= 1e-9 && frame.distance(p) <= 1e-6
     })?;
     let (p, d) = (
         post.axis.point_mm.to_array(),
         post.axis.direction.to_array(),
     );
-    if norm(cross(d, frame.dir())) > 1e-9 || frame.distance(p) > 1e-6 {
-        return None;
-    }
     post.ends.iter().find_map(|e| match e {
         StackEnd::FreeEnd { rim_mm, .. } => Some(frame.station(add(p, scale(d, *rim_mm)))),
         _ => None,
@@ -507,18 +541,26 @@ fn post_end(part: &Part, floor: FeatureId, frame: &Frame) -> Option<f64> {
 }
 
 /// CF8: the stations of the segments whose walls have openings; with an
-/// end unknown, the cylinder's stations, or the whole axis with none.
-fn openings(part: &Part, segments: &[StackSegment]) -> Vec<(f64, f64)> {
+/// end unknown, the cylinder's own stations carried into the stack's
+/// frame, or the whole axis with none.
+fn openings(look: &Lookup<'_>, segments: &[StackSegment], frame: &Frame) -> Vec<(f64, f64)> {
     segments
         .iter()
         .filter_map(|s| {
-            let cylinder = part.cylinders.iter().find(|c| c.id == s.cylinder)?;
+            let cylinder = look.cylinders.get(&s.cylinder)?;
             if cylinder.wall_openings == 0 {
                 return None;
             }
-            let stations = cylinder.stations_mm.iter();
+            let (p, d) = (
+                cylinder.axis.point_mm.to_array(),
+                cylinder.axis.direction.to_array(),
+            );
+            let stations = cylinder
+                .stations_mm
+                .iter()
+                .map(|x| frame.station(add(p, scale(d, *x))));
             let (lo, hi) = stations.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
-                (a.min(*x), b.max(*x))
+                (a.min(x), b.max(x))
             });
             Some(match (s.from_mm, s.to_mm) {
                 (Some(a), Some(b)) => (a.min(b), a.max(b)),
