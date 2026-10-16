@@ -231,6 +231,7 @@ pub fn defect(case: &Value, sockets: &[Socket], at_construction: &[SocketResult]
 /// count stated.
 fn blocked(
     at: &str,
+    sockets: &[Socket],
     expect: &Value,
     result: &CandidateResult,
     failed: &mut Vec<(String, Vec<String>)>,
@@ -246,7 +247,8 @@ fn blocked(
             problems.push(format!("{at}: refused with {got:?}, expected {want:?}"));
         }
     }
-    let all: u64 = result.sockets.iter().map(|s| s.checks.len() as u64).sum();
+    // "all": every requirement the sockets state, not every check made.
+    let all: u64 = sockets.iter().map(|s| s.requirements.len() as u64).sum();
     let n = match &expect["unverifiable"] {
         Value::String(s) if s == "all" => Some(all),
         v => v.as_u64(),
@@ -265,6 +267,35 @@ fn blocked(
     }
     failed.retain(|(_, codes)| !is_blocked(codes));
     Some(n)
+}
+
+/// VD12, VR19: the flags a case names are on the verdict, and
+/// `thread_not_confirmed` only where named.
+fn flags(at: &str, expect: &Value, result: &CandidateResult) -> Vec<String> {
+    let got: Vec<String> = result
+        .flags
+        .iter()
+        .filter_map(|f| serde_json::to_value(f).ok())
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    let want: Vec<&str> = expect["flags"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let mut out: Vec<String> = want
+        .iter()
+        .filter(|f| !got.iter().any(|g| g == *f))
+        .map(|f| format!("{at}: no flag {f}"))
+        .collect();
+    let thread = "thread_not_confirmed";
+    // A reject names no flags: its passed checks may carry one.
+    let passing = expect["verdict"] != "reject";
+    if passing && got.iter().any(|g| g == thread) && !want.contains(&thread) {
+        out.push(format!("{at}: flagged {thread}, not named"));
+    }
+    out
 }
 
 /// KH2 and KH3 on one candidate's result against one socket: every way
@@ -300,7 +331,8 @@ pub fn gate(
     }
     let mut failed: Vec<(String, Vec<String>)> = result.sockets.iter().flat_map(failures).collect();
     let at = format!("{id} {policy}");
-    let blocked_count = blocked(&at, expect, result, &mut failed, &mut problems);
+    let blocked_count = blocked(&at, sockets, expect, result, &mut failed, &mut problems);
+    problems.extend(flags(&at, expect, result));
     let list = |key: &str| -> Result<Vec<Vec<Entry>>, String> {
         expect[key]
             .as_array()

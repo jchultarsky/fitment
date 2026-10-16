@@ -1523,7 +1523,14 @@ class Node:
 
     def add(self, child, matrix=None):
         self.children.append((child, matrix if matrix is not None else I4))
+        if isinstance(child, Leaf):
+            LEAVES.setdefault((self.name, child.name), child.shape)
         return self
+
+
+# Every leaf the assembly section builds, by (assembly, part): the shapes the candidates' builders must rebuild
+# with their defaults (15.4).
+LEAVES = {}
 
 
 def occurrences(node, at=None, out=None):
@@ -3267,6 +3274,7 @@ def m_defects():
         "m_plate18_small_rim": [must(cs, *cone_codes)],
         "m_plate18_cbore": [must(cs, *cone_codes)],
         "m_bracket_spot": [must(l_seat((0, 0, 1), 8), "contact_not_covered")],
+        "m_bracket_centre_10": [must(l_seat((0, 0, -1), 0), "contact_not_covered")],
         "m_bracket_shift_05": [must(hole, "no_feature", "axis_offset")],
         "m_plate16_635": [must(l_bore((0, 0, 0)), "diameter_out_of_limits:min", "core_intruded")],
         "m_bracket_decoy": [must(hole, "no_feature", "axis_offset")],
@@ -3330,7 +3338,7 @@ def match_cases():
          m_rej([must(top, "contact_not_covered")], [must(g8, "seat_missing")]),
          "a 20 x 12 x 2 pocket round the centre hole, clear of the "
          "heads: R14's target-face basis rejects it", ["KC10", "VR11"]),
-        ("m_plate03", D3, c_plate03(), MAPPED, "fits", "g_frame", m_ok(), "the original", ["KC8"]),
+        ("m_plate03", D3, c_plate03(), MAPPED, "fits", "g_frame", m_ok(["thread_not_confirmed"]), "the original", ["KC8"]),
         ("m_plate03_pin_shift_tol", D3, c_plate03(shift={10: M_TOL}), MAPPED, "edge", "b_hole_shift",
          m_rej([any_of(must(l_bore((10, 0, 0)), "axis_offset", "no_feature"),
                        must(l_seat((0, 0, -1), 0), "contact_not_covered"))],
@@ -3382,10 +3390,10 @@ def match_cases():
          m_rej([must(l_bore((0, 0, -5)), "end_not_open", "wall_opening", "core_intruded",
                      "diameter_out_of_limits:min")]), "nut_long with a dia 1 bar across the extension",
          ["KC9", "CF8", "VR7"]),
-        ("m_base02", BA, c_base02(), VARIANT, "fits", "g_frame", m_ok(), "the original", ["KC8"]),
+        ("m_base02", BA, c_base02(), VARIANT, "fits", "g_frame", m_ok(["thread_not_confirmed"]), "the original", ["KC8"]),
         ("m_base02_post", BA, c_base02(post=True), VARIANT, "does_not_fit", "b_post",
          m_rej([core(l_bore((0, 0, -9)))]), "a dia 2 post in the pinned span", ["KC9", "VR8", "VR22"]),
-        ("m_tube50", T, c_tube50(), VARIANT, "fits", "g_frame", m_ok(), "the original", ["KC8"]),
+        ("m_tube50", T, c_tube50(), VARIANT, "fits", "g_frame", m_ok(["thread_not_confirmed"]), "the original", ["KC8"]),
     ]
     # The countersunk plate (s18): a 90 deg conical seat, apex at z 3.8, radii 3.3 to 6.2; the countersink a
     # zone of the bore whose profile the socket states (X8).
@@ -3439,7 +3447,7 @@ def match_cases():
         # real opening is no requirement's (section 8.6, Openings): the body's, M7's.
         ("m_nut_bridge", N, fuse(c_nut(), box(-4.0, -0.5, -6.02, 8.0, 1.0, 1.0),
                                  box(-4.0, -0.5, -6.02, 1.0, 1.0, 3.02), box(3.0, -0.5, -6.02, 1.0, 1.0, 3.02)),
-         VARIANT, "collides", "b_collide", m_ok(),
+         VARIANT, "collides", "b_collide", m_ok(["thread_not_confirmed"]),
          "a bar across the axis 20 um below the bottom face, on legs from the flanks: InterfaceMatch until M7",
          ["KC3"]),
         ("m_block02_membrane", K, cut(box(-20, -20, 0, 40, 40, 15), cyl((0, 0, -1), UP, 1.0, 17),
@@ -3494,6 +3502,31 @@ def c_plate16(d0=6.6):
     return through(through(box(-10, -20, 0, 40, 40, 8), [(0, 0)], d0, 0, 8), [(15, 0)], 7.0, 0, 8)
 
 
+def c_housing04(seat=22.0):
+    """s04's HOUSING: 40 x 40 x 20, a dia 18 bore through, the bearing's seat dia `seat` from z 13."""
+    return cut(box(-20, -20, 0, 40, 40, 20), cyl((0, 0, -1), UP, 9, 22), cyl((0, 0, 13), UP, seat / 2, 8))
+
+
+def c_block15():
+    """s15's BLOCK, which its mirror image's half turn maps onto."""
+    return cut(box(0, -10, 0, 20, 20, 8), cyl((12, 5, -1), UP, 3.3, 10))
+
+
+# 15.4: each builder with its defaults against the leaf the assembly section built (full corpus only: the
+# candidate set is written without the assemblies).
+BUILT_FROM = [("c_bracket", c_bracket, ("s01_bolted", "BRACKET")), ("c_nut", c_nut, ("s01_bolted", "NUT")),
+              ("c_bolt", c_bolt, ("s01_bolted", "BOLT")), ("c_block02", c_block02, ("s02_cbore", "BLOCK")),
+              ("c_base02", c_base02, ("s02_cbore", "BASE")), ("c_screw", c_screw, ("s02_cbore", "SCREW")),
+              ("c_plate03", c_plate03, ("s03_dowels", "PLATE")),
+              ("c_bearing", c_bearing, ("s04_bearing", "BEARING")),
+              ("c_housing04", c_housing04, ("s04_bearing", "HOUSING")),
+              ("c_washer", c_washer, ("s05_stack", "WASHER")),
+              ("c_block15", c_block15, ("s15_mirror_part", "BLOCK")),
+              ("c_plate16", c_plate16, ("s16_offaxis", "PLATE")),
+              ("c_plate18", c_plate18, ("s18_csink", "PLATE")), ("c_cover", c_cover, ("s19_boss", "COVER")),
+              ("c_housing", c_housing, ("s19_boss", "HOUSING")), ("c_tube50", c_tube50, ("s50_cap", "TUBE"))]
+
+
 def m_families(B, N, K, D3, BA, H, T, seats, one, near_hole, at_a_hole, may_holes):
     """The families of section 15.3 beyond the committed set and the review's shapes: each source part's good
     frames and its defects, one thing broken, just past the tolerance or grossly."""
@@ -3513,10 +3546,10 @@ def m_families(B, N, K, D3, BA, H, T, seats, one, near_hole, at_a_hole, may_hole
          "a dia 3 hole along y through the sides", ["KC8"]),
         ("m_bracket_larger", B, c_bracket(lx=90, ly=56), VARIANT, "fits", "g_body", ok(), "90 x 56, the same holes",
          ["KC8"]),
-        ("m_bracket_centre_10", B, c_bracket(centre=10.0), VARIANT, "fn_rule", "fn_r14",
+        ("m_bracket_centre_10", B, c_bracket(centre=10.0), VARIANT, "does_not_fit", "b_seat_region",
          rej([any_of(must(top, "contact_not_covered"), must(bot, "contact_not_covered"))], bracket_may),
-         "the left-out dia 8 hole made dia 10: it takes from the target faces the seats require (R14)",
-         ["KC10", "VR10"]),
+         "the left-out dia 8 hole made dia 10: it takes about 28 mm2 of the plate's true contact (KC3)",
+         ["KC9", "VR10", "VR11"]),
         ("m_bracket_centre_none", B, c_bracket(centre=0), VARIANT, "fits", "g_left_out", ok(),
          "the left-out dia 8 hole absent", ["KC8", "VR15"]),
         ("m_bracket_inside_tol", B, c_bracket(holes=one(x=30 + tol / 4)), VARIANT, "fits", "g_inside_tol", ok(),
@@ -3528,8 +3561,9 @@ def m_families(B, N, K, D3, BA, H, T, seats, one, near_hole, at_a_hole, may_hole
           "functional": rej([any_of(must(top, "contact_not_covered"), must(bot, "contact_not_covered"))],
                             bracket_may)},
          "dia 6.8: strict rejects; functional too, for the ring its seats lose (M4-7)", ["KC9", "VR7"]),
-        ("m_bracket_thin_15tol", B, c_bracket(t=8 - 1.5 * tol), VARIANT, "does_not_fit", "b_thickness",
-         rej([must(g8, "grip_length", "seat_missing")], bracket_may), "8 - 1.5 tol thick", ["KC9", "VR12"]),
+        ("m_bracket_thin_15tol", B, c_bracket(t=8 - 1.5 * tol), VARIANT, "fn_rule", "b_thickness",
+         rej([must(g8, "grip_length", "seat_missing")], bracket_may),
+         "8 - 1.5 tol thick: the bolts still clamp it, a grip-only change (M4-8)", ["KC10", "VR12"]),
         ("m_bracket_shift_05", B, c_bracket(holes=one(x=30.5)), VARIANT, "does_not_fit", "b_hole_shift",
          rej([at_a_hole("no_feature", "axis_offset")], bracket_may), "hole (30, 15) moved 0.5 mm", ["KC9", "VR3"]),
         ("m_bracket_shift_15tol", B, c_bracket(holes=one(x=30 + 1.5 * tol)), VARIANT, "fn_rule", "fn_position",
@@ -3561,8 +3595,9 @@ def m_families(B, N, K, D3, BA, H, T, seats, one, near_hole, at_a_hole, may_hole
         ("m_plate01_blind", P, blind, VARIANT, "does_not_fit", "b_blind",
          rej([any_of(*[must(b, "end_not_open", "wall_missing", "core_intruded") for b in p_bores])], plate_may),
          "hole (30, 15) blind 5 deep from the top", ["KC9", "VR7"]),
-        ("m_plate01_thin", P, a_plate(t=9.5), VARIANT, "does_not_fit", "b_thickness",
-         rej([must(p_g, "grip_length", "seat_missing")], plate_may), "9.5 thick", ["KC9", "VR12"]),
+        ("m_plate01_thin", P, a_plate(t=9.5), VARIANT, "fn_rule", "b_thickness",
+         rej([must(p_g, "grip_length", "seat_missing")], plate_may),
+         "9.5 thick: the bolts still clamp it, a grip-only change (M4-8)", ["KC10", "VR12"]),
     ]
     # s01's nut: a pinned interference, a thread not confirmed.
     nb, ns = l_bore((0, 0, -5)), l_seat((0, 0, 1), 0)
@@ -3611,8 +3646,7 @@ def m_families(B, N, K, D3, BA, H, T, seats, one, near_hole, at_a_hole, may_hole
     BE, HO = ("s04_bearing", "BEARING"), ("s04_bearing", "HOUSING")
     be_out, be_in, be_seat = l_shaft((0, 0, 0)), l_bore((0, 0, 0)), l_seat((0, 0, -1), 0)
     ho_bore, ho_seat = l_bore((0, 0, 0)), l_seat((0, 0, 1), 13)
-    housing = lambda seat=22.0: cut(box(-20, -20, 0, 40, 40, 20), cyl((0, 0, -1), UP, 9, 22),  # noqa: E731
-                                    cyl((0, 0, 13), UP, seat / 2, 8))
+    housing = c_housing04
     out += [
         ("m_bearing04", BE, c_bearing(), VARIANT, "fits", "g_frame", ok(["thread_not_confirmed"]), "the original",
          ["KC8"]),
@@ -3632,13 +3666,13 @@ def m_families(B, N, K, D3, BA, H, T, seats, one, near_hole, at_a_hole, may_hole
              must(l_shaft((0, 0, 0)), *any_bore)]
     out += [
         ("m_washer05", W, c_washer(), VARIANT, "fits", "g_frame", ok(), "the original", ["KC8", "VR17"]),
-        ("m_washer05_thick", W, c_washer(h=1.7), VARIANT, "does_not_fit", "b_self",
-         rej([must(wg, "grip_length", "seat_missing")], w_may), "1.7 thick: both copies' grips and the seat between",
-         ["KC9", "VR12", "VR17"]),
+        ("m_washer05_thick", W, c_washer(h=1.7), VARIANT, "fn_rule", "b_thickness",
+         rej([must(wg, "grip_length", "seat_missing")], w_may),
+         "1.7 thick: both copies' grips and the seat between; a grip-only change (M4-8)", ["KC10", "VR12", "VR17"]),
     ]
     # s15: the mirror image, which a rotation maps onto the block.
     M = ("s15_mirror_part", "BLOCK")
-    block15 = cut(box(0, -10, 0, 20, 20, 8), cyl((12, 5, -1), UP, 3.3, 10))
+    block15 = c_block15()
     mirror = gp_Trsf()
     mirror.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)))
     out.append(("m_mirror15", M, BRepBuilderAPI_Transform(block15, mirror, True).Shape(), VARIANT, "fits",
@@ -3686,6 +3720,12 @@ def build_candidates(w: Writer, which):
                                 ("c_tube50", c_tube50(), cut(cyl((0, 0, 0), UP, 20, 30), cyl((0, 0, -1), UP, 8, 32)))]:
         if not same_solid(builder, leaf):
             raise RuntimeError(f"{name}'s defaults do not rebuild its source's leaf")
+    if LEAVES:
+        for name, builder, source in BUILT_FROM:
+            if source not in LEAVES:
+                raise RuntimeError(f"{name}: the assembly section built no leaf {source}")
+            if not same_solid(builder(), LEAVES[source]):
+                raise RuntimeError(f"{name}'s defaults do not rebuild {source}'s leaf")
     for cid, (case, part), shape, motion, truth, klass, expect, construction, rules in match_cases():
         unit_set = cid in CANDIDATE_SET
         if not which(unit_set):
@@ -3732,7 +3772,7 @@ def build_component_cases(w: Writer):
             "id": cid, "kind": "match", "file": f"{case}.stp", "set": "corpus",
             "socket": {"case": case, "part": part, "occurrence": None, "review": []},
             "candidate": {"component": {"case": case, "part": part, "occurrence": None}},
-            "class": "fn_unverifiable", "truth": "fn_rule",
+            "class": "b_unverifiable", "truth": "fn_rule",
             "construction": {"from": part, "defect": "none: the original, read in place"},
             "frame": {"axis": [0, 0, 1], "angle_deg": 0.0, "shift": [0, 0, 0]}, "placement": identity,
             "expect": {"default": {**m_rej(), "unverifiable": n}, "functional": "default"}, "defect": [],

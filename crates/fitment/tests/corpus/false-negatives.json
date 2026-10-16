@@ -115,58 +115,6 @@
   "extractor_version": 6,
   "false_negatives": [
     {
-      "case": "m_bracket_centre_10",
-      "cause": "rule",
-      "class": "fn_r14",
-      "failed": [
-        {
-          "codes": [
-            "contact_not_covered"
-          ],
-          "requirement": "socket-1/seat:plane-467"
-        },
-        {
-          "codes": [
-            "seat_missing"
-          ],
-          "requirement": "socket-1/grip:plane-467+plane-570"
-        },
-        {
-          "codes": [
-            "contact_not_covered"
-          ],
-          "requirement": "socket-1/seat:plane-570"
-        }
-      ],
-      "policy": "default"
-    },
-    {
-      "case": "m_bracket_centre_10",
-      "cause": "rule",
-      "class": "fn_r14",
-      "failed": [
-        {
-          "codes": [
-            "contact_not_covered"
-          ],
-          "requirement": "socket-1/seat:plane-467"
-        },
-        {
-          "codes": [
-            "seat_missing"
-          ],
-          "requirement": "socket-1/grip:plane-467+plane-570"
-        },
-        {
-          "codes": [
-            "contact_not_covered"
-          ],
-          "requirement": "socket-1/seat:plane-570"
-        }
-      ],
-      "policy": "functional"
-    },
-    {
       "case": "m_bracket_dia_large",
       "cause": "rule",
       "class": "b_dia_large",
@@ -285,6 +233,110 @@
       "policy": "functional"
     },
     {
+      "case": "m_bracket_thin_15tol",
+      "cause": "rule",
+      "class": "b_thickness",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-467"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/seat:plane-570"
+        },
+        {
+          "codes": [
+            "end_not_open",
+            "wall_missing"
+          ],
+          "requirement": "socket-1/bore:hole-654"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/bore:hole-671"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/bore:hole-688"
+        },
+        {
+          "codes": [
+            "end_not_open",
+            "wall_missing"
+          ],
+          "requirement": "socket-1/bore:hole-722"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_bracket_thin_15tol",
+      "cause": "rule",
+      "class": "b_thickness",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-467"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/seat:plane-570"
+        },
+        {
+          "codes": [
+            "end_not_open",
+            "wall_missing"
+          ],
+          "requirement": "socket-1/bore:hole-654"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/bore:hole-671"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/bore:hole-688"
+        },
+        {
+          "codes": [
+            "end_not_open",
+            "wall_missing"
+          ],
+          "requirement": "socket-1/bore:hole-722"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
       "case": "m_bracket_top_pocket",
       "cause": "rule",
       "class": "fn_r14",
@@ -350,6 +402,110 @@
             "wall_opening"
           ],
           "requirement": "socket-1/bore:hole-412"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_plate01_thin",
+      "cause": "rule",
+      "class": "b_thickness",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-142"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-142+plane-234"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/seat:plane-234"
+        },
+        {
+          "codes": [
+            "end_not_open",
+            "wall_missing"
+          ],
+          "requirement": "socket-1/bore:hole-307"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/bore:hole-324"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/bore:hole-341"
+        },
+        {
+          "codes": [
+            "end_not_open",
+            "wall_missing"
+          ],
+          "requirement": "socket-1/bore:hole-358"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_plate01_thin",
+      "cause": "rule",
+      "class": "b_thickness",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-142"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-142+plane-234"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/seat:plane-234"
+        },
+        {
+          "codes": [
+            "end_not_open",
+            "wall_missing"
+          ],
+          "requirement": "socket-1/bore:hole-307"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/bore:hole-324"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/bore:hole-341"
+        },
+        {
+          "codes": [
+            "end_not_open",
+            "wall_missing"
+          ],
+          "requirement": "socket-1/bore:hole-358"
         }
       ],
       "policy": "functional"
@@ -357,7 +513,7 @@
     {
       "case": "m_s11_bracket_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -371,7 +527,7 @@
     {
       "case": "m_s11_bracket_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -385,7 +541,7 @@
     {
       "case": "m_s12_angled_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -411,7 +567,7 @@
     {
       "case": "m_s12_angled_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -437,7 +593,7 @@
     {
       "case": "m_s13_block_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -469,7 +625,7 @@
     {
       "case": "m_s13_block_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -501,7 +657,7 @@
     {
       "case": "m_s13_plate_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -515,7 +671,7 @@
     {
       "case": "m_s13_plate_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -529,7 +685,7 @@
     {
       "case": "m_s17_plate_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -543,7 +699,7 @@
     {
       "case": "m_s17_plate_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -557,7 +713,7 @@
     {
       "case": "m_s47_plate_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -571,7 +727,7 @@
     {
       "case": "m_s47_plate_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -585,7 +741,7 @@
     {
       "case": "m_s48_dshaft_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -599,7 +755,7 @@
     {
       "case": "m_s48_dshaft_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -613,7 +769,7 @@
     {
       "case": "m_s52_pin_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -627,7 +783,7 @@
     {
       "case": "m_s52_pin_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -641,7 +797,7 @@
     {
       "case": "m_s52_plate_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -655,7 +811,7 @@
     {
       "case": "m_s52_plate_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -669,7 +825,7 @@
     {
       "case": "m_s58_plate_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -695,7 +851,7 @@
     {
       "case": "m_s58_plate_own",
       "cause": "rule",
-      "class": "fn_unverifiable",
+      "class": "b_unverifiable",
       "failed": [
         {
           "codes": [
@@ -814,6 +970,70 @@
             "floor_above_tolerance"
           ],
           "requirement": "socket-1/bore:hole-722"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_washer05_thick",
+      "cause": "rule",
+      "class": "b_thickness",
+      "failed": [
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-716+plane-736"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/seat:plane-736"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-2/grip:plane-716+plane-736"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-2/seat:plane-736"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_washer05_thick",
+      "cause": "rule",
+      "class": "b_thickness",
+      "failed": [
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-716+plane-736"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/seat:plane-736"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-2/grip:plane-716+plane-736"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-2/seat:plane-736"
         }
       ],
       "policy": "functional"
