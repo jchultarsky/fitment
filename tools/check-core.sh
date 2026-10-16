@@ -38,7 +38,7 @@ check "names stepq outside gate/, features/step.rs and assembly/step.rs" \
 # The tests hold STEP files that must never ship, in either package. Each
 # listing runs on its own first, so that a failing `cargo package` fails the
 # script (set -e) rather than look like a clean list.
-for package in fitment-core fitment; do
+for package in fitment-core fitment fitment-catalog; do
   packaged=$(cargo package --list -p "$package" --locked --allow-dirty)
   check "would publish a STEP file in $package" \
     grep -iE '\.(stp|step|p21)$' <<<"$packaged"

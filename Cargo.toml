@@ -22,6 +22,7 @@ publish = true
 [workspace.dependencies]
 # Internal crates: exact versions, released in lockstep.
 fitment-core = { path = "crates/fitment-core", version = "=0.1.0" }
+fitment-catalog = { path = "crates/fitment-catalog", version = "=0.1.0" }
 
 # `default-features = false` must be set here: Cargo refuses it on a member
 # that inherits the dependency, and stepq's default feature is its CLI.
@@ -36,6 +37,10 @@ serde = { version = "1", features = ["derive"] }
 # written, or a value at the tolerance edge can move by one ULP.
 serde_json = { version = "1", features = ["float_roundtrip"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
+# The catalog's database (docs/research/m5-catalog.md, DB1): SQLite built
+# from source, so every platform runs the same engine. Only fitment-catalog
+# may depend on it (deny.toml).
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 
 # Dev-only.
 assert_cmd = "2"
