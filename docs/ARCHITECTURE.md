@@ -105,6 +105,27 @@ the socket is refused rather than read slowly. A document that breaks a
 structural rule, even with its digest recomputed, is refused on reading
 (`check.rs`).
 
+## Matching a candidate (M4, being built)
+
+```text
+socket document ─ one socket: its active requirements,  matching/mod.rs (SocketView)
+  │   contact tolerance, the target's own uncertainty
+  ▼
+Socket signature under the policy: windows at least     matching/signature.rs
+  │   as wide as verification accepts; what fails every
+  │   candidate set aside
+candidate Part ─ its signature: stacks, planes, cones,  matching/signature.rs
+  │   in values a rigid motion keeps
+  ▼
+Shortlist: keep or drop, never pass (level 2); an       matching/shortlist.rs, index.rs
+    index of tokens for a catalog (level 1)
+```
+
+Alignment, verification, verdicts and the `fitment.match` document follow
+(`docs/research/m4-match.md`, section 22). Every comparison the shortlist
+makes counts toward a budget; past it the candidate is kept, never
+dropped.
+
 ## Soundness: refuse, or say unknown, but never guess
 
 fitment may miss a match. It must never claim one. Reading features keeps

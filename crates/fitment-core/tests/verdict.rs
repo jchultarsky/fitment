@@ -1,8 +1,8 @@
 //! The full truth table of `decide`, and the JSON shapes D1 fixed.
 
 use fitment_core::{
-    Check, FitStatus, Interference, NO_FIT_VERIFIER, RejectReason, RequirementId, VerdictKind,
-    decide,
+    Check, Evidence, FailureCode, FitStatus, Interference, NO_FIT_VERIFIER, RejectReason,
+    RequirementId, VerdictKind, decide,
 };
 use serde_json::json;
 
@@ -13,14 +13,16 @@ fn ids(names: &[&str]) -> Vec<RequirementId> {
 fn passed(names: &[&str]) -> Vec<(RequirementId, Check)> {
     names
         .iter()
-        .map(|&n| (RequirementId::from(n), Check::Passed))
+        .map(|&n| (RequirementId::from(n), pass()))
         .collect()
 }
 
+fn pass() -> Check {
+    Check::of(Evidence::default())
+}
+
 fn failed(reason: &str) -> Check {
-    Check::Failed {
-        reason: reason.to_owned(),
-    }
+    Check::of(Evidence::failed(FailureCode::NoFeature, reason))
 }
 
 fn verified() -> FitStatus {
@@ -92,12 +94,13 @@ fn failing_interface_rejects_under_every_fit() {
             "a check failed",
             reqs.clone(),
             vec![
-                ("h1".into(), Check::Passed),
+                ("h1".into(), pass()),
                 ("h2".into(), failed("Ø5.5, need Ø6.6 ± 0.01")),
             ],
             RejectReason::RequirementFailed {
                 requirement: "h2".into(),
                 detail: "Ø5.5, need Ø6.6 ± 0.01".to_owned(),
+                codes: vec![FailureCode::NoFeature],
             },
         ),
         (
@@ -112,9 +115,9 @@ fn failing_interface_rejects_under_every_fit() {
             "a requirement was checked twice",
             reqs.clone(),
             vec![
-                ("h1".into(), Check::Passed),
-                ("h2".into(), Check::Passed),
-                ("h2".into(), Check::Passed),
+                ("h1".into(), pass()),
+                ("h2".into(), pass()),
+                ("h2".into(), pass()),
             ],
             RejectReason::DuplicateCheck {
                 requirement: "h2".into(),
@@ -180,10 +183,10 @@ fn checks_are_matched_by_requirement_not_by_count() {
 fn reasons_are_in_a_fixed_order() {
     let reqs = ids(&["b", "a", "b", "c"]);
     let checks = vec![
-        ("z".into(), Check::Passed),
+        ("z".into(), pass()),
         ("c".into(), failed("off axis")),
-        ("y".into(), Check::Passed),
-        ("b".into(), Check::Passed),
+        ("y".into(), pass()),
+        ("b".into(), pass()),
     ];
     let verdict = decide(&reqs, checks, interferes());
     assert_eq!(
@@ -197,7 +200,8 @@ fn reasons_are_in_a_fixed_order() {
             },
             RejectReason::RequirementFailed {
                 requirement: "c".into(),
-                detail: "off axis".to_owned()
+                detail: "off axis".to_owned(),
+                codes: vec![FailureCode::NoFeature],
             },
             RejectReason::UnknownRequirement {
                 requirement: "y".into()
@@ -253,7 +257,7 @@ fn verdict_json_shape() {
         json!({
             "verdict": "reject",
             "fit": {"status": "verified", "kernel": "Open CASCADE", "version": "8.0.1"},
-            "reasons": [{"reason": "requirement_failed", "requirement": "h1", "detail": "missing"}],
+            "reasons": [{"reason": "requirement_failed", "requirement": "h1", "detail": "missing", "codes": ["no_feature"]}],
         })
     );
 }

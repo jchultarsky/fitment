@@ -6,6 +6,8 @@ use std::fmt;
 use serde::Serialize;
 
 use crate::fit::FitStatus;
+use crate::gate::RefusalCode;
+use crate::matching::{Evidence, FailureCode};
 
 /// Identifies one requirement of a socket.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -43,18 +45,42 @@ impl From<String> for RequirementId {
     }
 }
 
-/// The outcome of checking one requirement against a placed candidate.
-#[derive(Debug, Clone, PartialEq)]
+/// The outcome of checking one requirement against a placed candidate,
+/// with its evidence (`docs/research/m4-match.md`, EV1).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "result", content = "evidence", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Check {
     /// The requirement was positively verified.
-    Passed,
+    Passed(Evidence),
     /// The requirement was not verified. That includes a check that could
     /// not be evaluated: unknown means reject.
-    Failed {
-        /// What was expected and what was found.
-        reason: String,
-    },
+    Failed(Evidence),
+}
+
+impl Check {
+    /// The check its evidence shows: passed exactly when it records no
+    /// failure and every measure passed (EV7).
+    pub fn of(evidence: Evidence) -> Self {
+        if evidence.passes() {
+            Self::Passed(evidence)
+        } else {
+            Self::Failed(evidence)
+        }
+    }
+
+    /// Its evidence.
+    pub fn evidence(&self) -> &Evidence {
+        match self {
+            Self::Passed(e) | Self::Failed(e) => e,
+        }
+    }
+
+    /// True if it passed, as its evidence shows: a `Passed` whose evidence
+    /// records a failure, or a measure that failed, did not.
+    pub fn passed(&self) -> bool {
+        matches!(self, Self::Passed(e) if e.passes())
+    }
 }
 
 /// What a verdict says about a candidate.
@@ -105,6 +131,14 @@ pub enum RejectReason {
         requirement: RequirementId,
         /// What was expected and what was found.
         detail: String,
+        /// Its failures' codes, sorted.
+        codes: Vec<FailureCode>,
+    },
+    /// M2's gate refused the candidate's file: no socket was checked
+    /// (VD10).
+    CandidateRefused {
+        /// The gate's refusals.
+        codes: Vec<RefusalCode>,
     },
     /// The candidate's body interferes with a neighbor.
     BodyInterferes,
@@ -125,6 +159,21 @@ pub struct Verdict {
 }
 
 impl Verdict {
+    /// A candidate M2's gate refused: a `Reject` with its codes, no fit
+    /// checked (VD1, VD10). Only the matcher builds it.
+    #[allow(dead_code)] // The matcher (PR 3) calls it.
+    pub(crate) fn refused(mut codes: Vec<RefusalCode>) -> Self {
+        codes.sort_unstable();
+        codes.dedup();
+        Self {
+            kind: VerdictKind::Reject,
+            fit: FitStatus::NotChecked {
+                reason: "candidate refused".to_owned(),
+            },
+            reasons: vec![RejectReason::CandidateRefused { codes }],
+        }
+    }
+
     /// What the verdict says.
     pub fn kind(&self) -> VerdictKind {
         self.kind
@@ -184,11 +233,8 @@ pub fn decide(
             None | Some([]) => reasons.push(RejectReason::MissingCheck {
                 requirement: requirement.clone(),
             }),
-            Some([Check::Passed]) => {}
-            Some([Check::Failed { reason }]) => reasons.push(RejectReason::RequirementFailed {
-                requirement: requirement.clone(),
-                detail: reason.clone(),
-            }),
+            Some([check]) if check.passed() => {}
+            Some([check]) => reasons.push(failed(requirement, check.evidence())),
             Some(_) => reasons.push(RejectReason::DuplicateCheck {
                 requirement: requirement.clone(),
             }),
@@ -217,4 +263,26 @@ pub fn decide(
     };
 
     Verdict { kind, fit, reasons }
+}
+
+/// The reason a failed check gives: its failures' details and codes.
+fn failed(requirement: &RequirementId, evidence: &Evidence) -> RejectReason {
+    let mut codes: Vec<FailureCode> = evidence.failures().iter().map(|f| f.code).collect();
+    codes.sort_unstable();
+    codes.dedup();
+    let detail = if evidence.failures().is_empty() {
+        "a measure failed".to_owned()
+    } else {
+        evidence
+            .failures()
+            .iter()
+            .map(|f| f.detail.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    RejectReason::RequirementFailed {
+        requirement: requirement.clone(),
+        detail,
+        codes,
+    }
 }

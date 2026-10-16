@@ -624,6 +624,51 @@ for prefix, count in M4_COUNTS.items():
         RULES[rule] = {"deferred": f"M4 PR {3 if rule in M4_IN_PR3 else M4_PR[prefix]}"}
 # The socket PR (M4 PR 1) builds MF11: a document of older socket rules read for its review alone.
 RULES["MF11"] = {"tests": ["crates/fitment/tests/cli.rs::an_older_document_s_decisions_carry_over"]}
+# PR 2 builds the candidate's signature, the socket's, the shortlist and its index; CF1, CF2 and CF8 are read by
+# the matcher and verification (PR 3).
+M4_CORE_SIG = "crates/fitment-core/src/matching/signature.rs"
+M4_CORE_SL = "crates/fitment-core/src/matching/shortlist.rs"
+M4_CORE_TESTS = "crates/fitment-core/tests/shortlist.rs"
+M4_CLI_TESTS = "crates/fitment/tests/shortlist.rs"
+M4_TESTS = {
+    "CF3": [f"{M4_CLI_TESTS}::a_part_s_signature_does_not_depend_on_its_frame"],
+    "CF4": [f"{M4_CORE_SIG}::unread_features_are_counted_and_unknown_ends_unbounded"],
+    "CF5": [f"{M4_CORE_SIG}::unread_features_are_counted_and_unknown_ends_unbounded"],
+    "CF6": [f"{M4_CLI_TESTS}::a_part_s_signature_does_not_depend_on_its_frame"],
+    "CF7": [f"{M4_CLI_TESTS}::a_part_s_signature_does_not_depend_on_its_frame"],
+    "CF9": [f"{M4_CLI_TESTS}::a_part_s_signature_does_not_depend_on_its_frame"],
+    "CF10": [f"{M4_CORE_SIG}::unread_features_are_counted_and_unknown_ends_unbounded"],
+    "SG1": [f"{M4_CLI_TESTS}::a_part_s_signature_does_not_depend_on_its_frame",
+            f"{M4_CORE_SIG}::mutations_within_the_tolerance_are_kept_and_beyond_dropped"],
+    "SG2": [f"{M4_CLI_TESTS}::a_part_s_signature_does_not_depend_on_its_frame"],
+    "SG3": [f"{M4_CORE_SIG}::windows_follow_the_pin_and_the_clear_diameter"],
+    "SG4": [f"{M4_CORE_SIG}::mutations_within_the_tolerance_are_kept_and_beyond_dropped"],
+    "SG5": [f"{M4_CORE_SIG}::near_lines_and_coplanar_seats_merge"],
+    "SG6": [f"{M4_CORE_SIG}::a_window_holds_its_ends",
+            f"{M4_CORE_SIG}::mutations_within_the_tolerance_are_kept_and_beyond_dropped"],
+    "SG7": [f"{M4_CORE_TESTS}::blocked_and_removed_requirements_demand_nothing"],
+    "SG8": [f"{M4_CLI_TESTS}::every_original_is_kept_by_its_own_sockets"],
+    "SG9": [f"{M4_CLI_TESTS}::a_part_s_signature_does_not_depend_on_its_frame"],
+    "SG10": ["crates/fitment-core/src/matching/index.rs::bins_are_monotone_on_their_edges"],
+    "SG11": [f"{M4_CORE_TESTS}::level_one_returns_whatever_level_two_keeps"],
+    "SL1": [f"{M4_CORE_TESTS}::a_part_lacking_the_socket_s_elements_is_dropped"],
+    "SL2": [f"{M4_CORE_TESTS}::a_part_lacking_the_socket_s_elements_is_dropped",
+            f"{M4_CLI_TESTS}::every_original_is_kept_by_its_own_sockets"],
+    "SL3": [f"{M4_CORE_SIG}::mutations_within_the_tolerance_are_kept_and_beyond_dropped"],
+    "SL4": [f"{M4_CORE_SIG}::a_hostile_candidate_is_judged_within_the_budget"],
+    "SL5": [f"{M4_CORE_SL}::distinct_requirements_need_distinct_witnesses"],
+    "SL6": [f"{M4_CORE_TESTS}::the_original_is_kept_by_its_own_sockets"],
+    "SL7": [f"{M4_CLI_TESTS}::level_one_returns_whatever_level_two_keeps"],
+    "SL8": [f"{M4_CORE_TESTS}::level_one_returns_whatever_level_two_keeps",
+            f"{M4_CORE_TESTS}::blocked_and_removed_requirements_demand_nothing"],
+    "SL9": [f"{M4_CLI_TESTS}::level_one_returns_whatever_level_two_keeps",
+            f"{M4_CORE_TESTS}::level_one_returns_whatever_level_two_keeps"],
+    "SL10": [f"{M4_CORE_SIG}::a_hostile_candidate_is_judged_within_the_budget"],
+}
+for rule, tests in M4_TESTS.items():
+    RULES[rule] = {"tests": tests}
+for rule in ("CF1", "CF2", "CF8"):
+    RULES[rule] = {"deferred": "M4 PR 3: read by the matcher and verification"}
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with
