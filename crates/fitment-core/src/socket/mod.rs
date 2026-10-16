@@ -5,7 +5,7 @@ mod axial;
 mod block;
 mod check;
 mod combine;
-mod geo;
+pub(crate) mod geo;
 mod index;
 mod merge;
 mod model;
