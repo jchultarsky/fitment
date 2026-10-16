@@ -346,7 +346,9 @@ fn get_step_refuses_a_damaged_blob() {
 }
 
 /// CT15 and PH6: names holding escapes, newlines and bidirectional
-/// controls never reach the terminal raw; JSON holds them exactly.
+/// controls never reach the terminal raw; JSON holds them exactly. Unix
+/// only: Windows forbids control characters in a file name.
+#[cfg(unix)]
 #[test]
 fn hostile_names_are_escaped() {
     let dir = scratch("hostile");
@@ -376,7 +378,9 @@ fn hostile_names_are_escaped() {
     assert_eq!(doc["entries"][0]["file_name"], name);
 }
 
-/// A catalog named `file:…` is a directory, never an SQLite URI.
+/// A catalog named `file:…` is a directory, never an SQLite URI. Unix
+/// only: Windows forbids `:` in a file name.
+#[cfg(unix)]
 #[test]
 fn a_catalog_named_like_a_uri_is_a_directory() {
     let dir = scratch("uri");
