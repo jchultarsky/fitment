@@ -35,10 +35,11 @@ mod tolerance;
 mod verdict;
 
 pub use assembly::{
-    AssemblyNote, AssemblyNoteCode, AssemblyRead, Candidate, ComponentRead, ComponentSummary,
-    DefinitionKind, GateResult, ListedDefinition, Listing, MAX_OCCURRENCES, MatchedBy, Occurrence,
-    OccurrencePath, PARTS_FORMAT, PARTS_FORMAT_VERSION, PartEntry, PartOccurrence, PartsDocument,
-    PartsFormatError, PathForm, SelectError, Selection, Source, UsageRef, read_assembly,
+    AssemblyNote, AssemblyNoteCode, AssemblyRead, BadHex, Candidate, ComponentRead,
+    ComponentSummary, DefinitionKind, GateResult, ListedDefinition, Listing, MAX_OCCURRENCES,
+    MatchedBy, Occurrence, OccurrencePath, PARTS_FORMAT, PARTS_FORMAT_VERSION, PartEntry,
+    PartOccurrence, PartsDocument, PartsFormatError, PathForm, SelectError, Selection, Source,
+    UsageRef, read_assembly,
 };
 pub use features::{
     Axis, Bottom, Cone, Countersink, Cylinder, CylinderClass, DefinitionRef, End, Extent,
@@ -56,14 +57,15 @@ pub use fit::{
 pub use gate::{Refusal, RefusalCode};
 pub use geom::{Dir3, Point3, Rigid, Vec3};
 pub use matching::{
-    At, Band, BandWidth, Blocked, CandidateFlag, CandidateResult, CandidateSource, CandidateView,
-    Chosen, Clearance, EndSide, Evidence, Failure, FailureCode, GUARD_MM, Grip, IndexTokens, Kept,
-    MATCH_FORMAT, MATCH_FORMAT_VERSION, MATCH_RULES_VERSION, MAX_ANCHOR_PAIRS, MAX_COVERAGE_STEPS,
-    MAX_PLACEMENTS, MAX_SHORTLIST_CHECKS, MatchDocument, MatchOptions, MatchPolicy, Matcher,
-    Measure, MeasureValue, Missing, MissingElement, NotChecked, Outcome, PairToken, PartSignature,
-    Placement, Placements, Quantity, ReadFacts, SIGNATURE_VERSION, Seed, ShortlistIndex, SigCone,
-    SigPlane, SigStack, SocketRefused, SocketResult, SocketSignature, SocketView, Stage, Summary,
-    Unread, Warning, WarningCode, Window, align, match_candidates, shortlist, verify,
+    Admitted, At, Band, BandWidth, Blocked, CandidateFlag, CandidateResult, CandidateSource,
+    CandidateView, Chosen, Clearance, EndSide, Evidence, Failure, FailureCode, GUARD_MM, Grip,
+    IndexSource, IndexTokens, Kept, MATCH_FORMAT, MATCH_FORMAT_VERSION, MATCH_RULES_VERSION,
+    MAX_ANCHOR_PAIRS, MAX_COVERAGE_STEPS, MAX_PLACEMENTS, MAX_SHORTLIST_CHECKS, MatchDocument,
+    MatchOptions, MatchPolicy, Matcher, Measure, MeasureValue, Missing, MissingElement, NotChecked,
+    NotCurrent, Outcome, PairToken, PartSignature, Placement, Placements, Posting, Quantity,
+    ReadFacts, SIGNATURE_VERSION, Seed, ShortlistIndex, SigCone, SigPlane, SigStack, SocketRefused,
+    SocketResult, SocketSignature, SocketView, Stage, Summary, Unread, Warning, WarningCode,
+    Window, align, level_one, match_candidates, shortlist, verify,
 };
 pub use sha256::{sha256, sha256_hex};
 pub use socket::{

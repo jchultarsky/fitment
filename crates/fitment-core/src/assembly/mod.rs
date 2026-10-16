@@ -19,8 +19,8 @@ use crate::gate::Refusal;
 use crate::geom::Rigid;
 
 pub use parts::{
-    ComponentSummary, GateResult, PARTS_FORMAT, PARTS_FORMAT_VERSION, PartEntry, PartOccurrence,
-    PartsDocument, PartsFormatError, Source,
+    BadHex, ComponentSummary, GateResult, PARTS_FORMAT, PARTS_FORMAT_VERSION, PartEntry,
+    PartOccurrence, PartsDocument, PartsFormatError, Source,
 };
 
 /// At most this many occurrences are read under one root (check 34).

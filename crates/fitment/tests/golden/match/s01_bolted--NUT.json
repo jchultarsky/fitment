@@ -3,7 +3,7 @@
   "format_version": 1,
   "extractor_version": 6,
   "socket_rules_version": 7,
-  "signature_version": 1,
+  "signature_version": 2,
   "match_rules_version": 1,
   "policy": {
     "name": "default",
@@ -356,5 +356,5 @@
       ]
     }
   ],
-  "digest": "sha256:4c636a3d0456d6f2bb0313a9b932d9c5ffba955166194f05026eb4b149f728b6"
+  "digest": "sha256:3b138ae62ce32f14cbc4f9818fbe92c1ed8bb24b5ebe5e8ea2306846a9bc651a"
 }

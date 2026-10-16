@@ -312,6 +312,7 @@ fn match_output_matches_the_goldens() {
             "extractor_version",
             "socket_rules_version",
             "match_rules_version",
+            "signature_version",
         ];
         compare(&name, &path, &actual, &keys, bless, &mut failures);
         wanted.push(name);

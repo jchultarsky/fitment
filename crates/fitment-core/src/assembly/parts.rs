@@ -35,6 +35,29 @@ pub struct Source {
 }
 
 impl Source {
+    /// A source stated by its SHA-256 (64 lowercase hex digits), its size
+    /// and its header, as a store records them.
+    ///
+    /// # Errors
+    ///
+    /// [`BadHex`] if `sha256` is not 64 lowercase hex digits.
+    pub fn new(sha256: &str, bytes: u64, header: Option<FileHeader>) -> Result<Self, BadHex> {
+        if sha256.len() != 64
+            || !sha256
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Err(BadHex {
+                found: sha256.to_owned(),
+            });
+        }
+        Ok(Self {
+            sha256: sha256.to_owned(),
+            bytes,
+            header,
+        })
+    }
+
     /// The source of `step`, with `header` as read from it.
     pub(crate) fn of(step: &[u8], header: Option<FileHeader>) -> Self {
         Self {
@@ -43,6 +66,15 @@ impl Source {
             header,
         }
     }
+}
+
+/// A SHA-256 that is not 64 lowercase hex digits.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a SHA-256 of 64 lowercase hex digits: {found:?}")]
+#[non_exhaustive]
+pub struct BadHex {
+    /// What was given.
+    pub found: String,
 }
 
 /// Whether the assembly gate passes, and why not.

@@ -1172,6 +1172,6 @@
     }
   ],
   "match_rules_version": 1,
-  "signature_version": 1,
+  "signature_version": 2,
   "socket_rules_version": 7
 }

@@ -9,8 +9,9 @@ use std::process::ExitCode;
 use clap::ValueEnum;
 use fitment_core::{ReviewError, ReviewStatus, SocketDocument};
 
-use super::socket::{table, write_atomically};
+use super::socket::table;
 use super::text::{note, printable};
+use super::write_atomically;
 use crate::exit;
 
 #[derive(clap::Args)]
