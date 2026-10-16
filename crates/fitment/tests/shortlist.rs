@@ -140,7 +140,7 @@ fn level_one_returns_whatever_level_two_keeps() {
         let Some(id) = case["id"].as_str() else {
             continue;
         };
-        if case["kind"] == "assembly" || variant(id) {
+        if case["kind"] != "part" || variant(id) {
             continue;
         }
         let Some(file) = case["file"].as_str() else {
@@ -219,7 +219,7 @@ fn a_part_s_signature_does_not_depend_on_its_frame() {
         let (Some(id), Some(file)) = (case["id"].as_str(), case["file"].as_str()) else {
             continue;
         };
-        if case["kind"] == "assembly" || ["_rot", "_pc"].iter().any(|v| id.ends_with(v)) {
+        if case["kind"] != "part" || ["_rot", "_pc"].iter().any(|v| id.ends_with(v)) {
             continue;
         }
         let Some(base) = signature(file) else {
@@ -358,7 +358,7 @@ fn a_signature_states_exactly_what_its_part_reads() {
     };
     let mut seen = [0_usize; 4];
     for case in cases(&dir) {
-        if case["kind"] == "assembly" {
+        if case["kind"] != "part" {
             continue;
         }
         let Some(file) = case["file"].as_str() else {

@@ -401,7 +401,7 @@ impl SocketDocument {
     }
 
     /// The decision on `requirement` in `socket`, unreviewed if none.
-    fn status_of(&self, socket: &str, requirement: &str) -> (ReviewStatus, &str) {
+    pub(crate) fn status_of(&self, socket: &str, requirement: &str) -> (ReviewStatus, &str) {
         self.review
             .iter()
             .find(|e| e.socket == socket && e.requirement == requirement)
@@ -413,6 +413,16 @@ impl SocketDocument {
     /// The assembly's notes.
     pub fn notes(&self) -> &Notes {
         &self.notes
+    }
+
+    /// The extractor version it was written with.
+    pub fn extractor_version(&self) -> u32 {
+        self.extractor_version
+    }
+
+    /// The socket rules version it was written with.
+    pub fn socket_rules_version(&self) -> u32 {
+        self.socket_rules_version
     }
 
     /// True if written by this crate's extractor and socket rules.

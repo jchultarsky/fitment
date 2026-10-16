@@ -2,7 +2,7 @@
 
 use fitment_core::{
     Check, Evidence, FailureCode, FitStatus, Interference, NO_FIT_VERIFIER, RejectReason,
-    RequirementId, VerdictKind, decide,
+    RequirementId, VerdictKind, combine, decide,
 };
 use serde_json::json;
 
@@ -260,4 +260,39 @@ fn verdict_json_shape() {
             "reasons": [{"reason": "requirement_failed", "requirement": "h1", "detail": "missing", "codes": ["no_feature"]}],
         })
     );
+}
+
+/// VD2: a candidate's verdict is the worst of its sockets'; a reject names
+/// each failed requirement with its socket; no socket rejects; the body
+/// interferes if it does in any socket, and is verified only in all.
+#[test]
+fn a_candidate_is_judged_by_its_worst_socket() {
+    let reqs = ids(&["h1", "seat"]);
+    let good = decide(&reqs, passed(&["h1", "seat"]), verified());
+    let unchecked = decide(&reqs, passed(&["h1", "seat"]), FitStatus::no_verifier());
+    let bad = decide(
+        &reqs,
+        vec![("h1".into(), pass()), ("seat".into(), failed("no plane"))],
+        FitStatus::no_verifier(),
+    );
+    let named = |v: &[(&str, &fitment_core::Verdict)]| -> Vec<(String, fitment_core::Verdict)> {
+        v.iter().map(|(s, v)| ((*s).to_owned(), (*v).clone())).collect()
+    };
+    assert_eq!(combine(&named(&[("socket-1", &good)])).kind(), VerdictKind::Match);
+    let both = combine(&named(&[("socket-1", &good), ("socket-2", &unchecked)]));
+    assert_eq!(both.kind(), VerdictKind::InterfaceMatch);
+    assert!(matches!(both.fit(), FitStatus::NotChecked { .. }));
+    let one_bad = combine(&named(&[("socket-1", &good), ("socket-2", &bad)]));
+    assert_eq!(one_bad.kind(), VerdictKind::Reject);
+    assert!(matches!(
+        one_bad.reasons(),
+        [RejectReason::RequirementFailed { requirement, .. }] if requirement.as_str() == "socket-2/seat"
+    ));
+    let none = combine(&[]);
+    assert_eq!(none.kind(), VerdictKind::Reject);
+    assert_eq!(none.reasons(), &[RejectReason::NoSockets]);
+    let clash = decide(&reqs, passed(&["h1", "seat"]), interferes());
+    let any = combine(&named(&[("socket-1", &good), ("socket-2", &clash)]));
+    assert!(matches!(any.fit(), FitStatus::Interferes { interferences } if interferences.len() == 1));
+    assert_eq!(any.kind(), VerdictKind::Reject);
 }

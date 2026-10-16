@@ -27,6 +27,9 @@ const UNIT_SET_BYTES: u64 = 300_000;
 /// the set as built in M3 PR 1, 187,691 bytes, with 10% headroom.
 const ASSEMBLY_SET_BYTES: u64 = 210_000;
 
+/// The committed candidates' cap (`docs/research/m4-match.md`, KC15).
+const CANDIDATE_SET_BYTES: u64 = 210_000;
+
 /// The gate stages built so far (`docs/research/m2-features.md`, 4.2).
 const BUILT_STAGES: u64 = 6;
 
@@ -36,6 +39,10 @@ fn unit_set() -> PathBuf {
 
 fn assembly_set() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests/assemblies")
+}
+
+fn candidate_set() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests/candidates")
 }
 
 fn manifest(dir: &Path) -> Value {
@@ -53,6 +60,13 @@ fn the_unit_set_fits_its_budget_and_its_manifest() {
 #[test]
 fn the_assembly_set_fits_its_budget_and_its_manifest() {
     fits(&assembly_set(), ASSEMBLY_SET_BYTES);
+}
+
+/// KH13: the committed candidates fit their cap and list exactly their
+/// files.
+#[test]
+fn the_candidate_set_fits_its_budget_and_its_manifest() {
+    fits(&candidate_set(), CANDIDATE_SET_BYTES);
 }
 
 /// `dir` holds exactly the files its manifest lists, within `budget` bytes.
@@ -116,7 +130,7 @@ fn every_corpus_part_is_accepted_or_refused_as_its_construction_says() {
     let cases = manifest(&dir)["cases"].as_array().unwrap().clone();
     assert!(!cases.is_empty(), "the corpus manifest lists no case");
     let mut failures = Vec::new();
-    for case in cases.iter().filter(|case| case["kind"] != "assembly") {
+    for case in cases.iter().filter(|case| case["kind"] == "part") {
         let name = case["id"].as_str().unwrap();
         let output = Command::cargo_bin("fitment")
             .unwrap()
@@ -313,9 +327,9 @@ fn every_variant_has_its_base_s_sockets() {
 }
 
 /// The rules left deferred when M3 closed: `4.2#30` (internal, a bug),
-/// `F3` (withdrawn), `Z7` (holds by construction), `Y4.original_run` (M4)
-/// and `V1` (M7).
-const DEFERRED: [&str; 5] = ["4.2#30", "F3", "Z7", "Y4.original_run", "V1"];
+/// `F3` (withdrawn), `Z7` (holds by construction) and `V1` (M7).
+/// `Y4.original_run` left it with M4's matcher (KH10).
+const DEFERRED: [&str; 4] = ["4.2#30", "F3", "Z7", "V1"];
 
 /// The rules that yield a requirement every candidate fails (design 8.4,
 /// Y4): each needs a case that shows it, not a test alone (13.1).
