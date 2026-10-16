@@ -62,7 +62,7 @@ pub(super) fn verify(args: &VerifyArgs, dir: &Path, catalog: &mut Catalog) -> Ex
     for p in &problems {
         // A SHA-256 shortened; anything else, as stored. Both escaped, ids
         // too: verify reads a catalog it does not trust.
-        let what = if p.what.len() == 64 {
+        let what = if fitment_catalog::Sha256Hex::parse(&p.what).is_ok() {
             p.what.get(..12).unwrap_or(&p.what)
         } else {
             p.what.as_str()

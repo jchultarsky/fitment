@@ -788,7 +788,7 @@ pub fn has_internal(refusals: &[StoredRefusal]) -> bool {
 
 /// An id as stored, checked against ID1 like every other column read
 /// back: a hand-edited one is a damaged row, never printed raw.
-fn stored_id(id: String) -> Result<String, Error> {
+pub(crate) fn stored_id(id: String) -> Result<String, Error> {
     Id::parse(&id).map_err(|_| corrupt("an id"))?;
     Ok(id)
 }

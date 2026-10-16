@@ -571,3 +571,95 @@ fn verify_reports_and_gc_removes() {
     assert!(!path.exists());
     assert_eq!(catalog(&dir, &["verify", "-C", "parts"]).0, 0);
 }
+
+/// The PR 3b review: replace checks its reference before the file (ID9),
+/// takes a quarantined entry's own bytes as unchanged (CR4), and writes a
+/// `fitment.catalog` document with `--format json` (CL3).
+#[test]
+fn replace_checks_its_reference_first() {
+    let dir = scratch("replace-ref");
+    brkt(&dir);
+    catalog(
+        &dir,
+        &["replace", "-C", "parts", "BRKT", "in/m_bracket_thick.stp"],
+    );
+    let (code, _, err) = catalog(&dir, &["replace", "-C", "parts", "BRKT@r1", "in/junk.stp"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("BRKT is at r2, not r1"), "{err}");
+    assert_eq!(
+        catalog(&dir, &["replace", "-C", "parts", "nosuch", "in/junk.stp"]).0,
+        2
+    );
+    catalog(&dir, &["ingest", "-C", "parts", "in/junk.stp"]);
+    let (code, out, _) = catalog(&dir, &["replace", "-C", "parts", "junk", "in/junk.stp"]);
+    assert_eq!(code, 0);
+    assert!(out.starts_with("unchanged"), "{out}");
+    let (code, json, err) = catalog(
+        &dir,
+        &[
+            "replace",
+            "-C",
+            "parts",
+            "BRKT",
+            "in/m_bracket.stp",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let doc: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(doc["changes"][0]["result"], "replaced");
+    assert_eq!(doc["changes"][0]["revision"], 3);
+    assert_eq!(doc["entries"][0]["revision"], 3);
+    assert!(err.contains("BRKT replaced: r2 is now r3"), "{err}");
+}
+
+/// The PR 3b review: a content two pruned revisions name is counted once,
+/// and the lines add up to the total.
+#[test]
+fn prune_counts_each_content_once() {
+    let dir = scratch("prune-count");
+    brkt(&dir);
+    for next in ["in/m_bracket_thick.stp", "in/m_bracket.stp", "in/a.stp"] {
+        let _ = catalog(&dir, &["replace", "-C", "parts", "BRKT", next]);
+    }
+    catalog(&dir, &["delete", "-C", "parts", "a"]);
+    catalog(&dir, &["replace", "-C", "parts", "BRKT", "in/a.stp"]);
+    let (code, out, err) = catalog(&dir, &["prune", "-C", "parts", "--revisions"]);
+    assert_eq!(code, 0);
+    let lines: u64 = out
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(4)?.parse::<u64>().ok())
+        .sum();
+    assert!(
+        err.contains(&format!(", {lines} bytes released")),
+        "{out}{err}"
+    );
+}
+
+/// PH6 and VF1 (the PR 3b review): a hand-edited id is a damaged row to
+/// replace and prune, never printed raw, and verify reports it.
+#[test]
+fn a_hand_edited_id_is_damage_everywhere() {
+    let dir = scratch("edited-id");
+    brkt(&dir);
+    let catalog_dir = dir.join("parts");
+    let raw =
+        fitment_catalog::Catalog::open(&catalog_dir, fitment_catalog::Options::default()).unwrap();
+    raw.connection()
+        .execute(
+            "UPDATE entry SET id = 'a' || char(27) || '[31m' WHERE id = 'a'",
+            [],
+        )
+        .unwrap();
+    drop(raw);
+    let (code, out, err) = catalog(&dir, &["replace", "-C", "parts", "BRKT", "in/a.stp"]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(!err.contains('\u{1b}') && !out.contains('\u{1b}'));
+    let (code, out, _) = catalog(&dir, &["verify", "-C", "parts"]);
+    assert_eq!(code, 3);
+    assert!(
+        out.starts_with("integrity") && !out.contains('\u{1b}'),
+        "{out}"
+    );
+}

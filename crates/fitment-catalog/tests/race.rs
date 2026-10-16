@@ -136,4 +136,9 @@ fn verify_raises_no_false_alarm_during_a_delete() {
     let mut catalog =
         Catalog::open_with(&root, Options::default(), Box::new(common::Shared(seam))).unwrap();
     assert_eq!(catalog.verify(false, false).unwrap(), Vec::new());
+    let gone = root
+        .join("blobs/sha256")
+        .join(sha.fan_out())
+        .join(sha.as_str());
+    assert!(!gone.exists(), "the delete ran inside the verify");
 }

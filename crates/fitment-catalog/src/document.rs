@@ -201,6 +201,25 @@ pub fn detail(line: &Ingested) -> Option<String> {
 }
 
 impl Change {
+    /// A change to one entry: `replaced` or `unchanged` by a replace.
+    pub fn entry(
+        input: &str,
+        result: &'static str,
+        id: &str,
+        revision: u32,
+        sha256: &str,
+        detail: Option<String>,
+    ) -> Self {
+        Self {
+            input: input.to_owned(),
+            result,
+            id: Some(id.to_owned()),
+            revision: Some(revision),
+            sha256: Some(sha256.to_owned()),
+            detail,
+        }
+    }
+
     /// An ingest line as a change.
     pub fn of(line: &Ingested) -> Self {
         Self {
