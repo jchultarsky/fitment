@@ -49,15 +49,15 @@ pub use features::{
     StackEnd, StackSegment, StatedUncertainty, StatedUnit, Status, Torus, UndecidedReason,
     UnknownReason, read_part,
 };
-pub use fit::{FitStatus, Interference, NO_FIT_VERIFIER};
+pub use fit::{CANDIDATE_REFUSED, FitStatus, INTERFACE_REJECTED, Interference, NO_FIT_VERIFIER};
 pub use gate::{Refusal, RefusalCode};
 pub use geom::{Dir3, Point3, Rigid, Vec3};
 pub use matching::{
-    At, Band, Blocked, CandidateView, Clearance, EndSide, Evidence, Failure, FailureCode, GUARD_MM,
-    Grip, IndexTokens, Kept, MAX_SHORTLIST_CHECKS, MatchOptions, MatchPolicy, Measure, Missing,
-    MissingElement, PairToken, PartSignature, Quantity, SIGNATURE_VERSION, ShortlistIndex, SigCone,
-    SigPlane, SigStack, SocketSignature, SocketView, Unread, Value, Warning, WarningCode, Window,
-    shortlist,
+    At, Band, BandWidth, Blocked, CandidateView, Clearance, EndSide, Evidence, Failure,
+    FailureCode, GUARD_MM, Grip, IndexTokens, Kept, MAX_SHORTLIST_CHECKS, MatchOptions,
+    MatchPolicy, Measure, MeasureValue, Missing, MissingElement, PairToken, PartSignature,
+    Quantity, SIGNATURE_VERSION, ShortlistIndex, SigCone, SigPlane, SigStack, SocketSignature,
+    SocketView, Unread, Warning, WarningCode, Window, shortlist,
 };
 pub use sha256::{sha256, sha256_hex};
 pub use socket::{

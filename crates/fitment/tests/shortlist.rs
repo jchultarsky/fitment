@@ -99,16 +99,13 @@ fn every_original_is_kept_by_its_own_sockets() {
     let mut runs = 0;
     for (id, bytes, parts) in targets(&dir) {
         for part in parts {
-            let Some(original) = component(&bytes, &part) else {
-                continue;
-            };
+            let original =
+                component(&bytes, &part).unwrap_or_else(|| panic!("{id} {part} is read"));
             let original = PartSignature::of(&original);
-            let Ok(document) = SocketDocument::extract(&bytes, Some(&part), None) else {
-                continue;
-            };
-            let Some(extracted) = document.extracted() else {
-                continue;
-            };
+            let document = SocketDocument::extract(&bytes, Some(&part), None).unwrap();
+            let extracted = document
+                .extracted()
+                .unwrap_or_else(|| panic!("{id} {part} is accepted"));
             for socket in &extracted.sockets {
                 let view = SocketView::new(&document, &socket.id).unwrap();
                 for policy in policies() {
@@ -322,9 +319,8 @@ fn every_pinned_fixture_original_is_kept_by_its_own_sockets() {
         let path = fixture["path"].as_str().unwrap();
         let bytes = fs::read(root.join(path)).unwrap();
         for target in fixture["sockets"].as_object().unwrap().keys() {
-            let Some(original) = component(&bytes, target) else {
-                continue;
-            };
+            let original =
+                component(&bytes, target).unwrap_or_else(|| panic!("{path} {target} is read"));
             let original = PartSignature::of(&original);
             let document = SocketDocument::extract(&bytes, Some(target), None).unwrap();
             for socket in &document.extracted().unwrap().sockets {
@@ -341,4 +337,109 @@ fn every_pinned_fixture_original_is_kept_by_its_own_sockets() {
     }
     assert!(runs > 100, "{runs} runs");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// CF4 to CF7 against the `Part` itself, on every corpus part: a plane's
+/// known area is its faces' of known outline alone, the others counted;
+/// a cone keeps an unknown range unknown; a stack is unbounded exactly on
+/// its unknown or irregular sides; undecided and partial cylinders and
+/// `other` faces are counted, never stacks. The corpus has each.
+#[test]
+fn a_signature_states_exactly_what_its_part_reads() {
+    use fitment_core::{CylinderClass, Outline, StackEnd};
+    let Some(dir) = corpus() else {
+        return;
+    };
+    let unknown = |e: Option<&StackEnd>| {
+        matches!(
+            e,
+            None | Some(StackEnd::Irregular { .. } | StackEnd::Unknown { .. })
+        )
+    };
+    let mut seen = [0_usize; 4];
+    for case in cases(&dir) {
+        if case["kind"] == "assembly" {
+            continue;
+        }
+        let Some(file) = case["file"].as_str() else {
+            continue;
+        };
+        let read = FeaturesDocument::read(&fs::read(dir.join(file)).unwrap());
+        let Some(part) = read.part() else {
+            continue;
+        };
+        let sig = PartSignature::of(part);
+        for (plane, p) in part.planes.iter().zip(sig.planes()) {
+            let known: f64 = plane
+                .faces
+                .iter()
+                .filter_map(|f| match &f.outline {
+                    Outline::Known { loops, .. } => {
+                        Some(loops.iter().map(|l| l.area_mm2).sum::<f64>())
+                    }
+                    _ => None,
+                })
+                .sum();
+            let unknown_faces = plane
+                .faces
+                .iter()
+                .filter(|f| !matches!(f.outline, Outline::Known { .. }))
+                .count();
+            // An empty sum is −0.0; the signature stores +0.0.
+            assert_eq!(
+                p.known_area_mm2.to_bits(),
+                (known + 0.0).to_bits(),
+                "{file}"
+            );
+            assert_eq!(p.faces_unknown as usize, unknown_faces, "{file}");
+            seen[0] += unknown_faces;
+        }
+        for (cone, c) in part.cones.iter().zip(sig.cones()) {
+            assert_eq!(c.radii_mm, cone.radii_mm, "{file}");
+            seen[1] += usize::from(cone.radii_mm.is_none());
+        }
+        let stacks = part
+            .holes
+            .iter()
+            .map(|h| (h.id, &h.ends))
+            .chain(part.shafts.iter().map(|s| (s.id, &s.ends)));
+        for (id, ends) in stacks {
+            let s = sig.stacks().iter().find(|s| s.feature == id).unwrap();
+            assert_eq!(
+                s.extent_mm[0].is_none(),
+                unknown(ends.first()),
+                "{file} {id:?}"
+            );
+            assert_eq!(
+                s.extent_mm[1].is_none(),
+                unknown(ends.get(1)),
+                "{file} {id:?}"
+            );
+            seen[2] += usize::from(s.unknown_end);
+        }
+        let partial = part
+            .cylinders
+            .iter()
+            .filter(|c| matches!(c.class, CylinderClass::Partial { .. }))
+            .count();
+        let undecided = part
+            .cylinders
+            .iter()
+            .filter(|c| matches!(c.class, CylinderClass::Undecided { .. }))
+            .count();
+        assert_eq!(sig.unread().partial as usize, partial, "{file}");
+        assert_eq!(sig.unread().undecided as usize, undecided, "{file}");
+        assert_eq!(
+            sig.unread().other_faces as usize,
+            part.other_faces.len(),
+            "{file}"
+        );
+        assert_eq!(
+            sig.stacks().len(),
+            part.holes.len() + part.shafts.len(),
+            "{file}"
+        );
+        seen[3] += partial + undecided + part.other_faces.len();
+    }
+    assert!(seen.iter().all(|n| *n > 0), "{seen:?}");
 }

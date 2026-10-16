@@ -12,8 +12,8 @@ mod signature;
 
 pub use candidate::CandidateView;
 pub use evidence::{
-    At, Band, EndSide, Evidence, Failure, FailureCode, Measure, Quantity, Value, Warning,
-    WarningCode,
+    At, Band, BandWidth, EndSide, Evidence, Failure, FailureCode, Measure, MeasureValue, Quantity,
+    Warning, WarningCode,
 };
 pub use index::{Blocked, IndexTokens, PairToken, ShortlistIndex};
 pub use policy::{Clearance, Grip, MatchOptions, MatchPolicy};
@@ -27,8 +27,8 @@ use crate::socket::{Requirement, Requires, Socket, SocketDocument};
 /// another.
 pub const SIGNATURE_VERSION: u32 = 1;
 
-/// The least uncertainty a part is taken to have (VR2), as M3's B1 guard.
-pub const GUARD_MM: f64 = 1e-6;
+/// The least uncertainty a part is taken to have (VR2): M3's B1 guard.
+pub const GUARD_MM: f64 = crate::socket::GUARD_MM;
 
 /// The most comparisons the shortlist makes for one socket and candidate
 /// (SL4); past them it keeps the candidate.

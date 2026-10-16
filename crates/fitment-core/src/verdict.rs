@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::Serialize;
 
-use crate::fit::FitStatus;
+use crate::fit::{CANDIDATE_REFUSED, FitStatus};
 use crate::gate::RefusalCode;
 use crate::matching::{Evidence, FailureCode};
 
@@ -48,7 +48,7 @@ impl From<String> for RequirementId {
 /// The outcome of checking one requirement against a placed candidate,
 /// with its evidence (`docs/research/m4-match.md`, EV1).
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "result", content = "evidence", rename_all = "snake_case")]
+#[serde(tag = "result", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Check {
     /// The requirement was positively verified.
@@ -146,10 +146,13 @@ pub enum RejectReason {
 
 /// The judgment on one candidate, with the reasons for a rejection.
 ///
-/// Only [`decide`] builds a verdict. It serializes for reports but cannot be
-/// deserialized, so a stored or edited file can never become a `Match`.
+/// Only [`decide`] builds a verdict, but for a refused candidate's
+/// (`docs/research/m4-match.md`, VD1). It serializes for reports but
+/// cannot be deserialized, so a stored or edited file can never become a
+/// `Match`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-// Fields are private so that every verdict has gone through `decide`.
+// Fields are private so that every verdict has gone through `decide`, or
+// is a refused candidate's `Reject`.
 #[allow(clippy::exhaustive_structs)]
 pub struct Verdict {
     #[serde(rename = "verdict")]
@@ -168,7 +171,7 @@ impl Verdict {
         Self {
             kind: VerdictKind::Reject,
             fit: FitStatus::NotChecked {
-                reason: "candidate refused".to_owned(),
+                reason: CANDIDATE_REFUSED.to_owned(),
             },
             reasons: vec![RejectReason::CandidateRefused { codes }],
         }
@@ -271,7 +274,13 @@ fn failed(requirement: &RequirementId, evidence: &Evidence) -> RejectReason {
     codes.sort_unstable();
     codes.dedup();
     let detail = if evidence.failures().is_empty() {
-        "a measure failed".to_owned()
+        let failed = evidence.measures().iter().any(|m| !m.passed());
+        if failed {
+            "a measure failed"
+        } else {
+            "failed with no failure recorded"
+        }
+        .to_owned()
     } else {
         evidence
             .failures()

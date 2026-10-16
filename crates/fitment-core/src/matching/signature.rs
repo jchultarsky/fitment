@@ -446,6 +446,8 @@ pub struct SocketSignature {
     pub(crate) cones: Vec<ReqCone>,
     blocked_by: Vec<RequirementId>,
     removed: Vec<RequirementId>,
+    /// The active requirements a candidate can pass.
+    demands: usize,
     pub(crate) lever_mm: f64,
     /// σ, the policy's linear tolerance.
     pub(crate) sigma: f64,
@@ -462,6 +464,7 @@ impl SocketSignature {
             seats: Vec::new(),
             cones: Vec::new(),
             blocked_by: Vec::new(),
+            demands: 0,
             removed: socket
                 .removed()
                 .iter()
@@ -478,6 +481,7 @@ impl SocketSignature {
                 sig.blocked_by.push(id);
                 continue;
             }
+            sig.demands += 1;
             match &requirement.requires {
                 Requires::Bore {
                     axis, spans, open, ..
@@ -553,7 +557,6 @@ impl SocketSignature {
             points.push(add(l.point, scale(l.dir, l.to)));
         }
         sig.lever_mm = diagonal(&points);
-        sig.merge();
         sig
     }
 
@@ -568,9 +571,10 @@ impl SocketSignature {
         &self.removed
     }
 
-    /// True if it demands nothing (SL8).
+    /// True if it demands nothing: no active requirement a candidate can
+    /// pass (SL8). A grip alone demands its seats' planes.
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty() && self.seats.is_empty() && self.cones.is_empty()
+        self.demands == 0
     }
 
     /// `W_L` for a lever of `lever`: two offsets of σ and two tilts of `σ_ang`
@@ -584,54 +588,65 @@ impl SocketSignature {
         2.0 * self.sigma_ang
     }
 
-    /// SG5: required lines of one sense within `W_L` and `W_A` of each other
-    /// over their spans are one; seats likewise, their areas added.
-    fn merge(&mut self) {
-        let (wl, wa) = (self.linear_window(self.lever_mm), self.angular_window());
-        let mut lines: Vec<ReqLine> = Vec::new();
-        for l in std::mem::take(&mut self.lines) {
-            let ends = [
-                add(l.point, scale(l.dir, l.from)),
-                add(l.point, scale(l.dir, l.to)),
-            ];
-            let near = lines.iter_mut().find(|o| {
-                o.sense == l.sense
-                    && line_angle(o.dir, l.dir) <= wa
-                    && ends.iter().all(|e| point_line(*e, o.point, o.dir) <= wl)
-            });
-            match near {
-                Some(o) => {
-                    let (a, b) = (
-                        dot(sub(ends[0], o.point), o.dir),
-                        dot(sub(ends[1], o.point), o.dir),
-                    );
-                    o.from = o.from.min(a.min(b));
-                    o.to = o.to.max(a.max(b));
-                    o.windows.extend(l.windows);
-                    o.openings = o.openings.max(l.openings);
-                    o.ids.extend(l.ids);
-                }
-                None => lines.push(l),
-            }
-        }
-        self.lines = lines;
-        let mut seats: Vec<ReqSeat> = Vec::new();
-        for s in std::mem::take(&mut self.seats) {
-            let near = seats.iter_mut().find(|o| {
-                line_angle(o.normal, s.normal) <= wa
-                    && dot(o.normal, s.normal) > 0.0
-                    && (o.offset - s.offset).abs() <= wl
-            });
-            match near {
-                Some(o) => {
-                    o.needed += s.needed;
-                    o.ids.extend(s.ids);
-                }
-                None => seats.push(s),
-            }
-        }
-        self.seats = seats;
+    /// SG5: which required lines, and which seats, one candidate element
+    /// may serve together: lines of one sense, seats facing one way, within
+    /// `wl` and `wa` of each other, joined transitively. Each requirement
+    /// keeps its own domain (a group's members may lie `W_L` apart, and
+    /// verification passes each on its own witness); distinct witnesses
+    /// are asked only of distinct groups (SL5). Offsets of seats are
+    /// compared only where their normals are exactly parallel: otherwise
+    /// the offset depends on the frame, and the seats are grouped.
+    pub(crate) fn groups(&self, wl: f64, wa: f64) -> (Vec<usize>, Vec<usize>) {
+        let lines = transitive(self.lines.len(), |a, b| {
+            let (Some(x), Some(y)) = (self.lines.get(a), self.lines.get(b)) else {
+                return false;
+            };
+            let near = |p: &ReqLine, q: &ReqLine| {
+                [q.from, q.to]
+                    .iter()
+                    .all(|t| point_line(add(q.point, scale(q.dir, *t)), p.point, p.dir) <= wl)
+            };
+            x.sense == y.sense && line_angle(x.dir, y.dir) <= wa && (near(x, y) || near(y, x))
+        });
+        let seats = transitive(self.seats.len(), |a, b| {
+            let (Some(x), Some(y)) = (self.seats.get(a), self.seats.get(b)) else {
+                return false;
+            };
+            let parallel = angle(x.normal, y.normal);
+            parallel <= wa && (parallel > EXACT || (x.offset - y.offset).abs() <= wl)
+        });
+        (lines, seats)
     }
+}
+
+/// Normals within this are the same direction: a plane's offset compared
+/// across them does not depend on the frame (M2's direction classes).
+pub(crate) const EXACT: f64 = 1e-12;
+
+/// Each of `n` items' group under `near`, joined transitively (union by
+/// the smaller index): the group is its least member.
+fn transitive(n: usize, near: impl Fn(usize, usize) -> bool) -> Vec<usize> {
+    let mut root: Vec<usize> = (0..n).collect();
+    let find = |root: &[usize], mut k: usize| {
+        while let Some(&up) = root.get(k) {
+            if up == k {
+                break;
+            }
+            k = up;
+        }
+        k
+    };
+    for a in 0..n {
+        for b in (a + 1)..n {
+            if near(a, b) {
+                let (ra, rb) = (find(&root, a), find(&root, b));
+                if let Some(r) = root.get_mut(ra.max(rb)) {
+                    *r = ra.min(rb);
+                }
+            }
+        }
+    }
+    (0..n).map(|k| find(&root, k)).collect()
 }
 
 /// SG6: the known area a seat's contacts need, less the band of width σ
@@ -975,11 +990,12 @@ mod tests {
         );
     }
 
-    /// SG5: lines of one sense within `W_L` and `W_A` are one (a clevis's two
-    /// holes); lines farther apart, or of the other sense, stay apart;
-    /// coplanar seats merge, their areas added.
+    /// SG5: lines of one sense within `W_L` and `W_A` group (a clevis's
+    /// two holes, a chain of them transitively); lines farther apart, or
+    /// of the other sense, stay apart; coplanar seats group, and seats
+    /// whose normals differ within `W_A` group whatever their offsets.
     #[test]
-    fn near_lines_and_coplanar_seats_merge() {
+    fn near_requirements_group() {
         use super::{ReqLine, ReqSeat};
         use crate::features::Sense;
         use crate::verdict::RequirementId;
@@ -993,41 +1009,42 @@ mod tests {
             to,
             openings: 1,
         };
-        let seat = |id: &str, offset: f64| ReqSeat {
+        let seat = |id: &str, normal: [f64; 3], offset: f64| ReqSeat {
             ids: vec![RequirementId::new(id)],
-            normal: [0.0, 0.0, 1.0],
+            normal,
             offset,
             needed: 10.0,
         };
-        let mut sig = SocketSignature {
+        let tilted = [0.0, libm::sin(1e-5), libm::cos(1e-5)];
+        let sig = SocketSignature {
             lines: vec![
                 line("a", 0.0, Sense::Hole, 0.0, 5.0),
-                line("b", 0.005, Sense::Hole, 20.0, 25.0),
-                line("c", 0.015 + 0.01, Sense::Hole, 0.0, 5.0),
-                line("d", 0.0, Sense::Shaft, 0.0, 5.0),
+                line("b", 0.015, Sense::Hole, 20.0, 25.0),
+                line("c", 0.03, Sense::Hole, 0.0, 5.0),
+                line("d", 1.0, Sense::Hole, 0.0, 5.0),
+                line("e", 0.0, Sense::Shaft, 0.0, 5.0),
             ],
-            seats: vec![seat("s", 0.0), seat("t", 0.004), seat("u", 1.0)],
+            seats: vec![
+                seat("s", [0.0, 0.0, 1.0], 0.0),
+                seat("t", [0.0, 0.0, 1.0], 0.015),
+                seat("u", [0.0, 0.0, 1.0], 1.0),
+                seat("v", tilted, 50.0),
+                seat("w", [0.0, 0.0, -1.0], 0.0),
+            ],
             cones: Vec::new(),
             blocked_by: Vec::new(),
             removed: Vec::new(),
+            demands: 9,
             lever_mm: 0.0,
             sigma: 0.01,
             sigma_ang: 0.01_f64.to_radians(),
         };
-        sig.merge();
-        let ids: Vec<Vec<&str>> = sig
-            .lines
-            .iter()
-            .map(|l| l.ids.iter().map(RequirementId::as_str).collect())
-            .collect();
-        assert_eq!(ids, [vec!["a", "b"], vec!["c"], vec!["d"]]);
-        assert!(
-            sig.lines
-                .first()
-                .is_some_and(|l| l.from.abs() < 1e-12 && (l.to - 25.0).abs() < 1e-12)
-        );
-        let seats: Vec<f64> = sig.seats.iter().map(|s| s.needed).collect();
-        assert_eq!(seats, [20.0, 10.0]);
+        let (wl, wa) = (sig.linear_window(0.0), sig.angular_window());
+        let (lines, seats) = sig.groups(wl, wa);
+        assert_eq!(lines, [0, 0, 0, 3, 4]);
+        // u is a millimetre off s, but v, tilted, may share a plane with
+        // either: one group, transitively; w faces the other way.
+        assert_eq!(seats, [0, 0, 0, 0, 4]);
     }
 
     /// CF4, CF5, CF10: what M2 left unread is counted and serves nothing;
@@ -1064,6 +1081,48 @@ mod tests {
         );
     }
 
+    /// SG9: the same part gives the same signature, byte for byte, with no
+    /// −0.0 in it.
+    #[test]
+    fn a_signature_is_deterministic() {
+        let Some((part, _)) = bracket_and_socket() else {
+            return;
+        };
+        let once = serde_json::to_string(&PartSignature::of(&part)).unwrap_or_default();
+        let again = serde_json::to_string(&PartSignature::of(&part)).unwrap_or_default();
+        assert_eq!(once, again);
+        assert!(!once.contains("-0.0"));
+        assert!(once.len() > 100);
+    }
+
+    /// SL7: a part with more pair tokens than are kept is marked, and the
+    /// index lets it through the pair filter.
+    #[test]
+    fn a_part_with_too_many_pairs_is_marked_incomplete() {
+        let Some((part, _)) = bracket_and_socket() else {
+            return;
+        };
+        let mut many = PartSignature::of(&part);
+        let first = many.stacks.first().cloned();
+        assert!(first.is_some(), "a stack");
+        let Some(first) = first else {
+            return;
+        };
+        for k in 0..200_u32 {
+            let mut s = first.clone();
+            s.feature = crate::features::FeatureId::new(s.feature.kind(), 1_000_000 + u64::from(k));
+            let p = s.axis.point_mm.to_array();
+            if let Some(q) = Point3::new([p[0] + f64::from(k), p[1], p[2]]) {
+                s.axis.point_mm = q;
+            }
+            many.stacks.push(s);
+        }
+        let tokens = crate::matching::IndexTokens::of(&many);
+        assert!(tokens.pairs_incomplete);
+        let plain = crate::matching::IndexTokens::of(&PartSignature::of(&part));
+        assert!(!plain.pairs_incomplete);
+    }
+
     /// SG6: a window holds its ends and the rounding slack beyond them.
     #[test]
     fn a_window_holds_its_ends() {
@@ -1071,5 +1130,252 @@ mod tests {
         assert!(w.holds(6.0) && w.holds(6.02) && w.holds(6.01));
         assert!(!w.holds(5.99) && !w.holds(6.03));
         assert!(Window::new(Some(6.0), None).holds(1e9));
+    }
+
+    /// The review of PR 2 constructed these: each a candidate verification
+    /// passes (by VR's text) that SG5's merging, or an offset compared
+    /// across a tilt, had dropped. Each must be kept, at both levels.
+    mod review {
+        use super::super::{
+            PartSignature, ReqLine, ReqSeat, SigPlane, SigStack, SocketSignature, Unread, Window,
+            diagonal,
+        };
+        use crate::features::{Axis, FeatureId, FeatureKind, Sense};
+        use crate::geom::{Dir3, Point3};
+        use crate::matching::{IndexTokens, ShortlistIndex, shortlist};
+        use crate::socket::geo::{V, add, dot, scale};
+        use crate::verdict::RequirementId;
+
+        fn hole(id: u64, p: [f64; 3], dia: f64, lo: f64, hi: f64) -> Option<SigStack> {
+            Some(SigStack {
+                feature: FeatureId::new(FeatureKind::Hole, id),
+                sense: Sense::Hole,
+                axis: Axis {
+                    point_mm: Point3::new(p)?,
+                    direction: Dir3::from_unit([0.0, 0.0, 1.0])?,
+                },
+                diameters_mm: vec![dia],
+                extent_mm: [Some(lo), Some(hi)],
+                openings: 2,
+                unknown_end: false,
+            })
+        }
+
+        fn plane(id: u64, n: [f64; 3], offset: f64, area: f64) -> Option<SigPlane> {
+            Some(SigPlane {
+                feature: FeatureId::new(FeatureKind::Plane, id),
+                normal: Dir3::normalize(n)?,
+                offset_mm: offset,
+                known_area_mm2: area,
+                faces_known: 1,
+                faces_unknown: 0,
+            })
+        }
+
+        fn part(stacks: Vec<SigStack>, planes: Vec<SigPlane>, extra: &[V]) -> PartSignature {
+            let mut points: Vec<V> = extra.to_vec();
+            for s in &stacks {
+                let (p, d) = (s.axis.point_mm.to_array(), s.axis.direction.to_array());
+                points.extend(s.extent_mm.iter().flatten().map(|t| add(p, scale(d, *t))));
+                points.push(p);
+            }
+            PartSignature {
+                version: 1,
+                stacks,
+                planes,
+                cones: Vec::new(),
+                lever_mm: diagonal(&points),
+                uncertainty_mm: 1e-6,
+                unread: Unread::default(),
+            }
+        }
+
+        fn line(id: &str, x: f64, (from, to): (f64, f64), window: Window) -> ReqLine {
+            ReqLine {
+                ids: vec![RequirementId::new(id)],
+                sense: Sense::Hole,
+                point: [x, 0.0, 0.0],
+                dir: [0.0, 0.0, 1.0],
+                windows: vec![window],
+                from,
+                to,
+                openings: 0,
+            }
+        }
+
+        fn seat(id: &str, normal: [f64; 3], offset: f64, needed: f64) -> ReqSeat {
+            ReqSeat {
+                ids: vec![RequirementId::new(id)],
+                normal,
+                offset,
+                needed,
+            }
+        }
+
+        fn socket(
+            lines: Vec<ReqLine>,
+            seats: Vec<ReqSeat>,
+            (sigma, deg): (f64, f64),
+            extra: &[V],
+        ) -> SocketSignature {
+            let mut points: Vec<V> = extra.to_vec();
+            for l in &lines {
+                points.push(add(l.point, scale(l.dir, l.from)));
+                points.push(add(l.point, scale(l.dir, l.to)));
+            }
+            SocketSignature {
+                demands: lines.len() + seats.len(),
+                lines,
+                seats,
+                cones: Vec::new(),
+                blocked_by: Vec::new(),
+                removed: Vec::new(),
+                lever_mm: diagonal(&points),
+                sigma,
+                sigma_ang: deg.to_radians(),
+            }
+        }
+
+        /// Kept by level 2, and returned by level 1.
+        fn kept(s: &SocketSignature, p: &PartSignature) -> bool {
+            let mut index = ShortlistIndex::new();
+            index.insert(7, &IndexTokens::of(p));
+            shortlist(s, p).is_ok() && index.query(s).is_ok_and(|ids| ids == [7])
+        }
+
+        fn pinned(d: f64, sigma: f64) -> Window {
+            Window::new(Some(d - sigma), Some(d + sigma))
+        }
+
+        /// P1: two near-coaxial bores of different diameters, each served
+        /// by its own stack 0.009 off it.
+        #[test]
+        fn near_bores_served_by_two_stacks() {
+            let s = socket(
+                vec![
+                    line("A", 0.0, (0.0, 5.0), pinned(6.6, 0.01)),
+                    line("B", 0.03, (10.0, 15.0), pinned(8.0, 0.01)),
+                ],
+                Vec::new(),
+                (0.01, 0.01),
+                &[],
+            );
+            let stacks = [
+                hole(1, [-0.009, 0.0, 0.0], 6.6, 0.0, 5.0),
+                hole(2, [0.039, 0.0, 0.0], 8.0, 10.0, 15.0),
+            ];
+            assert!(stacks.iter().all(Option::is_some));
+            assert!(kept(
+                &s,
+                &part(stacks.into_iter().flatten().collect(), Vec::new(), &[])
+            ));
+        }
+
+        /// P2: two parallel seats; the candidate 10 m from its origin, its
+        /// second face tilted 1e-4 rad about its contact.
+        #[test]
+        fn a_tilted_seat_far_from_the_origin() {
+            let s = socket(
+                Vec::new(),
+                vec![
+                    seat("S1", [0.0, 0.0, 1.0], 0.0, 50.0),
+                    seat("S2", [0.0, 0.0, 1.0], 5.0, 50.0),
+                ],
+                (0.01, 0.01),
+                &[[-5.0, -5.0, 0.0], [25.0, 5.0, 5.0]],
+            );
+            let n2 = [libm::sin(1e-4), 0.0, libm::cos(1e-4)];
+            let planes = [
+                plane(1, [0.0, 0.0, 1.0], 0.0, 100.0),
+                plane(2, n2, dot(n2, [10_020.0, 0.0, 5.0]), 100.0),
+            ];
+            assert!(planes.iter().all(Option::is_some));
+            let p = part(
+                Vec::new(),
+                planes.into_iter().flatten().collect(),
+                &[[9_995.0, -5.0, 0.0], [10_025.0, 5.0, 5.0]],
+            );
+            assert!(kept(&s, &p));
+        }
+
+        /// P3b: a genuine 0.5 mm step between two seat pads under 0.1 mm
+        /// and 0.1°, each pad 0.09 off its seat.
+        #[test]
+        fn a_stepped_seat_under_a_coarse_policy() {
+            let s = socket(
+                Vec::new(),
+                vec![
+                    seat("S1", [0.0, 0.0, 1.0], 0.0, 90.0),
+                    seat("S2", [0.0, 0.0, 1.0], 0.5, 90.0),
+                ],
+                (0.1, 0.1),
+                &[[0.0, 0.0, 0.0], [50.0, 10.0, 0.5]],
+            );
+            let planes = [
+                plane(1, [0.0, 0.0, 1.0], -0.09, 100.0),
+                plane(2, [0.0, 0.0, 1.0], 0.59, 100.0),
+            ];
+            assert!(planes.iter().all(Option::is_some));
+            assert!(kept(
+                &s,
+                &part(
+                    Vec::new(),
+                    planes.into_iter().flatten().collect(),
+                    &[[0.0, 0.0, 0.0], [50.0, 10.0, 0.5]]
+                )
+            ));
+        }
+
+        /// P4: one plane serving two seats tilted 1e-4 rad from each other,
+        /// 10 m out, coincident near their contacts.
+        #[test]
+        fn one_plane_for_two_slightly_tilted_seats() {
+            let n2 = [libm::sin(1e-4), 0.0, libm::cos(1e-4)];
+            let s = socket(
+                Vec::new(),
+                vec![
+                    seat("S1", [0.0, 0.0, 1.0], 0.0, 90.0),
+                    seat("S2", n2, dot(n2, [10_020.0, 0.0, 0.0]), 90.0),
+                ],
+                (0.01, 0.01),
+                &[[9_995.0, -5.0, 0.0], [10_025.0, 5.0, 0.0]],
+            );
+            let one = plane(1, [0.0, 0.0, 1.0], 0.0, 300.0);
+            assert!(one.is_some());
+            assert!(kept(
+                &s,
+                &part(
+                    Vec::new(),
+                    one.into_iter().collect(),
+                    &[[9_995.0, -5.0, 0.0], [10_025.0, 5.0, 0.0]]
+                )
+            ));
+        }
+
+        /// P5: level 1 against a line whose near neighbour has the
+        /// narrowest window, under 0.1 mm.
+        #[test]
+        fn level_one_holds_near_lines() {
+            let s = socket(
+                vec![
+                    line("A", 0.0, (0.0, 5.0), Window::new(Some(5.0), Some(7.0))),
+                    line("B", 0.2, (10.0, 15.0), pinned(8.0, 0.1)),
+                    line("C", 30.0, (0.0, 15.0), pinned(10.0, 0.1)),
+                ],
+                Vec::new(),
+                (0.1, 0.01),
+                &[],
+            );
+            let stacks = [
+                hole(1, [0.09, 0.0, 0.0], 6.6, 0.0, 5.0),
+                hole(2, [0.29, 0.0, 0.0], 8.0, 10.0, 15.0),
+                hole(3, [30.0, 0.0, 0.0], 10.0, 0.0, 15.0),
+            ];
+            assert!(stacks.iter().all(Option::is_some));
+            assert!(kept(
+                &s,
+                &part(stacks.into_iter().flatten().collect(), Vec::new(), &[])
+            ));
+        }
     }
 }

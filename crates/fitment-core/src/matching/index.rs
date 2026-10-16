@@ -236,7 +236,14 @@ impl ShortlistIndex {
         for (sense, window) in needs.into_values() {
             keep(self.holding(sense, &window).into_keys().collect());
         }
-        let seats = socket.seats.len();
+        // Seats one plane may serve together count once (SG5).
+        let lever = socket.lever_mm.max(self.lever_mm);
+        let (_, groups) =
+            socket.groups(socket.linear_window(lever), socket.angular_window() + 1e-9);
+        let mut groups = groups;
+        groups.sort_unstable();
+        groups.dedup();
+        let seats = groups.len();
         let all: Vec<u64> = found.unwrap_or_else(|| self.tokens.keys().copied().collect());
         Ok(all
             .into_iter()
