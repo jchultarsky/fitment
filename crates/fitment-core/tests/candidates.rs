@@ -102,7 +102,13 @@ fn every_committed_candidate_meets_its_construction() {
             SocketDocument::extract(source, case["socket"]["part"].as_str(), None).unwrap();
         let socket = &document.extracted().unwrap().sockets[0];
         for (name, policy) in policies() {
-            let matcher = Matcher::new(&document, policy, MatchOptions::default()).unwrap();
+            let matcher = Matcher::new(
+                &document,
+                policy,
+                MatchOptions::default(),
+                &fitment_core::NoFitVerifier,
+            )
+            .unwrap();
             let result = matcher.judge_step(bytes);
             problems.extend(gate::gate(case, name, socket, &result));
             if !case["defect"].as_array().is_none_or(Vec::is_empty) {

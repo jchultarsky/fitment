@@ -138,7 +138,10 @@ The matcher: per socket the first placement passing    matching/matcher.rs, verd
     the candidate's verdict is its worst socket's
 ```
 
-The verdicts' document and the CLI follow
+The `fitment.match` document (`matching/document.rs`) states every
+candidate in a fixed order with its evidence, and a digest that is the
+same on every OS; `fitment match` writes it, or a table from it. The
+known-answer corpus's harness and oracle follow
 (`docs/research/m4-match.md`, section 22). Every comparison the shortlist
 makes counts toward a budget; past it the candidate is kept, never
 dropped. Verification's coverage and core tests count toward their own;

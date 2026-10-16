@@ -69,7 +69,13 @@ fn every_match_case_meets_its_construction() {
                 ),
             ),
         ] {
-            let matcher = Matcher::new(document, policy, MatchOptions::default()).unwrap();
+            let matcher = Matcher::new(
+                document,
+                policy,
+                MatchOptions::default(),
+                &fitment_core::NoFitVerifier,
+            )
+            .unwrap();
             let result = matcher.judge_step(&bytes);
             problems.extend(gate::gate(case, name, socket, &result));
             if !case["defect"].as_array().is_none_or(Vec::is_empty) {

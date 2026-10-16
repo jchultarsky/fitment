@@ -6,6 +6,7 @@
 mod align;
 mod axial;
 mod candidate;
+mod document;
 mod evidence;
 mod index;
 mod matcher;
@@ -17,12 +18,18 @@ mod verify;
 
 pub use align::{MAX_ANCHOR_PAIRS, MAX_PLACEMENTS, Placement, Placements, Seed, align};
 pub use candidate::CandidateView;
+pub use document::{
+    MATCH_FORMAT, MATCH_FORMAT_VERSION, MatchDocument, Outcome, Summary, match_candidates,
+};
 pub use evidence::{
     At, Band, BandWidth, EndSide, Evidence, Failure, FailureCode, Measure, MeasureValue, Quantity,
     Warning, WarningCode,
 };
 pub use index::{Blocked, IndexTokens, PairToken, ShortlistIndex};
-pub use matcher::{CandidateResult, Matcher, SocketRefused, SocketResult, Stage};
+pub use matcher::{
+    CandidateFlag, CandidateResult, CandidateSource, Chosen, Matcher, NotChecked, ReadFacts,
+    SocketRefused, SocketResult, Stage,
+};
 pub use policy::{Clearance, Grip, MatchOptions, MatchPolicy};
 pub use shortlist::{Kept, Missing, MissingElement, shortlist};
 pub use signature::{PartSignature, SigCone, SigPlane, SigStack, SocketSignature, Unread, Window};
@@ -60,6 +67,7 @@ pub struct SocketView<'a> {
     socket: &'a Socket,
     active: Vec<&'a Requirement>,
     removed: Vec<&'a Requirement>,
+    notes: Vec<&'a str>,
     contact_mm: f64,
     target_u: f64,
 }
@@ -74,6 +82,7 @@ impl<'a> SocketView<'a> {
             socket,
             active: document.active(&socket.id).collect(),
             removed: document.removed(&socket.id).map(|(r, _)| r).collect(),
+            notes: document.removed(&socket.id).map(|(_, n)| n).collect(),
             contact_mm: document.contact_mm(),
             target_u: target
                 .part_uncertainty_mm
@@ -95,6 +104,11 @@ impl<'a> SocketView<'a> {
     /// Those it has.
     pub fn removed(&self) -> &[&'a Requirement] {
         &self.removed
+    }
+
+    /// The notes review gave the removed requirements, in their order.
+    pub fn removal_notes(&self) -> &[&'a str] {
+        &self.notes
     }
 
     /// The contact tolerance the socket was read with (M3's Z3).

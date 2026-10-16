@@ -844,7 +844,7 @@ fitment features <FILE> [--format json|table]
 | 2 | Usage error |
 | 3 | Refused: the input is not a canonical part |
 
-- Code 3 means "refused" for every command; M4 picks the codes for `Match`, `InterfaceMatch` and `Reject` from 4 upward.
+- Code 3 means "refused" for every command. M4 picked `fitment match`'s codes (m4-match.md, VD14): 0 `Match`, so success means success to a shell, then 4 `InterfaceMatch` and 5 every candidate rejected.
 - A broken pipe exits 0 quietly, as stepq's CLI does.
 - The CLI never names stepq.
 

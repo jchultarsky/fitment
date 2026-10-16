@@ -415,6 +415,21 @@ impl SocketDocument {
         &self.notes
     }
 
+    /// The digest of what it states (`sha256:<hex>`); `None` when refused.
+    pub fn digest(&self) -> Option<&str> {
+        self.digest.as_deref()
+    }
+
+    /// How the part was chosen; `None` when nothing was.
+    pub fn selection(&self) -> Option<&SelectionRecord> {
+        self.selection.as_ref()
+    }
+
+    /// The decision on `requirement` of `socket`: unreviewed if none.
+    pub fn decision(&self, socket: &str, requirement: &str) -> ReviewStatus {
+        self.status_of(socket, requirement).0
+    }
+
     /// The extractor version it was written with.
     pub fn extractor_version(&self) -> u32 {
         self.extractor_version

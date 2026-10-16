@@ -206,8 +206,14 @@ fn run_unseeded(
 ) -> usize {
     let mut runs = 0;
     for policy in policies() {
-        let matcher = Matcher::new(document, policy.clone(), MatchOptions::default()).unwrap();
-        let result = matcher.judge_part(original);
+        let matcher = Matcher::new(
+            document,
+            policy.clone(),
+            MatchOptions::default(),
+            &fitment_core::NoFitVerifier,
+        )
+        .unwrap();
+        let result = matcher.judge_part(original, fitment_core::CandidateSource::Given);
         for socket in &result.sockets {
             runs += 1;
             let view = SocketView::new(document, &socket.socket).unwrap();

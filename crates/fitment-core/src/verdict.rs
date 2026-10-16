@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::Serialize;
 
-use crate::fit::{CANDIDATE_REFUSED, FitStatus, Interference};
+use crate::fit::{CANDIDATE_REFUSED, FitStatus, INTERFACE_REJECTED, Interference};
 use crate::gate::RefusalCode;
 use crate::matching::{Evidence, FailureCode};
 
@@ -320,19 +320,7 @@ pub fn combine(sockets: &[(String, Verdict)]) -> Verdict {
         })
         .flatten()
         .collect();
-    let fit = if sockets
-        .iter()
-        .any(|(_, v)| matches!(v.fit, FitStatus::Interferes { .. }))
-    {
-        FitStatus::Interferes { interferences }
-    } else {
-        sockets
-            .iter()
-            .map(|(_, v)| v.fit.clone())
-            .find(|f| !matches!(f, FitStatus::Verified { .. }))
-            .or_else(|| sockets.first().map(|(_, v)| v.fit.clone()))
-            .unwrap_or_else(FitStatus::no_verifier)
-    };
+    let fit = combined_fit(sockets.iter().map(|(_, v)| &v.fit), interferences);
     let named =
         |socket: &str, r: &RequirementId| RequirementId::new(format!("{socket}/{}", r.as_str()));
     let reasons = sockets
@@ -356,6 +344,69 @@ pub fn combine(sockets: &[(String, Verdict)]) -> Verdict {
         })
         .collect();
     Verdict { kind, fit, reasons }
+}
+
+/// VD4: the candidate's fit from its sockets': `interferes` if any socket
+/// interferes, with every interference; else `verified` only if every
+/// socket is, by one kernel and version; else `not_verified` if any is,
+/// with every reason; else `not_checked`, the verifier's reason before
+/// `interface rejected`.
+fn combined_fit<'f>(
+    fits: impl Iterator<Item = &'f FitStatus> + Clone,
+    interferences: Vec<Interference>,
+) -> FitStatus {
+    if fits
+        .clone()
+        .any(|f| matches!(f, FitStatus::Interferes { .. }))
+    {
+        return FitStatus::Interferes { interferences };
+    }
+    let verified: Vec<(&String, &String)> = fits
+        .clone()
+        .filter_map(|f| match f {
+            FitStatus::Verified { kernel, version } => Some((kernel, version)),
+            _ => None,
+        })
+        .collect();
+    let count = fits.clone().count();
+    if let Some(&(kernel, version)) = verified.first().filter(|_| verified.len() == count) {
+        if verified.iter().all(|v| *v == (kernel, version)) {
+            return FitStatus::Verified {
+                kernel: kernel.clone(),
+                version: version.clone(),
+            };
+        }
+        return FitStatus::NotVerified {
+            reason: "the sockets' verifiers disagree".to_owned(),
+        };
+    }
+    let unverified: Vec<&str> = fits
+        .clone()
+        .filter_map(|f| match f {
+            FitStatus::NotVerified { reason } => Some(reason.as_str()),
+            _ => None,
+        })
+        .collect();
+    if !unverified.is_empty() {
+        return FitStatus::NotVerified {
+            reason: unverified.join("; "),
+        };
+    }
+    let reasons: Vec<&str> = fits
+        .filter_map(|f| match f {
+            FitStatus::NotChecked { reason } => Some(reason.as_str()),
+            _ => None,
+        })
+        .collect();
+    let reason = reasons
+        .iter()
+        .find(|r| **r != INTERFACE_REJECTED)
+        .or(reasons.first())
+        .map_or_else(
+            || crate::fit::NO_FIT_VERIFIER.to_owned(),
+            |r| (*r).to_owned(),
+        );
+    FitStatus::NotChecked { reason }
 }
 
 /// The reason a failed check gives: its failures' details and codes.

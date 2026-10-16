@@ -247,3 +247,77 @@ fn parts_and_socket_output_match_the_goldens() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
+
+/// `fitment match` on the committed candidates against their committed
+/// sources' sockets: whole documents, byte for byte, on every OS (EV8).
+/// Run from the candidates' directory, so labels are file names alone.
+#[test]
+fn match_output_matches_the_goldens() {
+    let bless = std::env::var_os("FITMENT_BLESS").is_some_and(|v| v == "1");
+    assert!(
+        !(bless && std::env::var_os("CI").is_some()),
+        "goldens are blessed locally, never in CI"
+    );
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests");
+    let candidates = tests.join("candidates");
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/match");
+    if bless {
+        fs::create_dir_all(&golden).unwrap();
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(candidates.join("manifest.json")).unwrap())
+            .unwrap();
+    let mut by_socket: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    for case in manifest["cases"].as_array().unwrap() {
+        let key = (
+            case["socket"]["case"].as_str().unwrap().to_owned(),
+            case["socket"]["part"].as_str().unwrap().to_owned(),
+        );
+        let file = case["candidate"]["file"].as_str().unwrap().to_owned();
+        by_socket.entry(key).or_default().push(file);
+    }
+    let scratch = std::env::temp_dir().join(format!("fitment-golden-match-{}", std::process::id()));
+    fs::create_dir_all(&scratch).unwrap();
+    let mut failures = Vec::new();
+    let mut wanted = Vec::new();
+    for ((case, part), files) in &by_socket {
+        let socket = scratch.join(format!("{case}--{part}.json"));
+        let assembly = tests.join("assemblies").join(format!("{case}.stp"));
+        let status = Command::cargo_bin("fitment")
+            .unwrap()
+            .args(["socket", assembly.to_str().unwrap(), "--part", part])
+            .args(["-o", socket.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "{case} {part}");
+        let output = Command::cargo_bin("fitment")
+            .unwrap()
+            .current_dir(&candidates)
+            .args(["match", socket.to_str().unwrap()])
+            .args(files)
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        let actual = String::from_utf8(output.stdout).unwrap();
+        let name = format!("{case}--{part}");
+        let path = golden.join(format!("{name}.json"));
+        let keys = [
+            "extractor_version",
+            "socket_rules_version",
+            "match_rules_version",
+        ];
+        compare(&name, &path, &actual, &keys, bless, &mut failures);
+        wanted.push(name);
+    }
+    let _ = fs::remove_dir_all(&scratch);
+    for (stem, path) in by_stem(&golden, "json") {
+        if !wanted.contains(&stem) {
+            if bless {
+                fs::remove_file(path).unwrap();
+            } else {
+                failures.push(format!("match/{stem}: golden has no input"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}

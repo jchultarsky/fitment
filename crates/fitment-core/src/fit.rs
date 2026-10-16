@@ -83,3 +83,37 @@ impl Interference {
         }
     }
 }
+
+/// What a fit verifier is asked about one socket (M7): where the candidate
+/// stands at each occurrence, in the assembly's root frame.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct FitRequest<'a> {
+    /// The socket, as `socket-1`.
+    pub socket: &'a str,
+    /// The candidate's STEP bytes, when the run has them.
+    pub candidate_step: Option<&'a [u8]>,
+    /// The socket's source assembly, by its SHA-256 (hex).
+    pub assembly_sha256: &'a str,
+    /// `T_k · A`: the candidate's placement at each occurrence.
+    pub placements: Vec<crate::geom::Rigid>,
+}
+
+/// Checks a placed candidate's body against the assembly's other solids
+/// (D1, M7). M4 has none: [`NoFitVerifier`] answers `not_checked`.
+pub trait FitVerifier {
+    /// The fit of the candidate as `request` places it.
+    fn check(&self, request: &FitRequest<'_>) -> FitStatus;
+}
+
+/// No verifier: every fit `not_checked`, [`NO_FIT_VERIFIER`].
+#[derive(Debug, Clone, Copy, Default)]
+// A unit with nothing to grow: callers name it.
+#[allow(clippy::exhaustive_structs)]
+pub struct NoFitVerifier;
+
+impl FitVerifier for NoFitVerifier {
+    fn check(&self, _request: &FitRequest<'_>) -> FitStatus {
+        FitStatus::no_verifier()
+    }
+}
