@@ -257,7 +257,10 @@ impl ShortlistIndex {
     }
 
     /// SL8: for each parallel pair with the most selective line, a pair
-    /// token in range; bypassed above 0.05° (the tokens stop at 0.1°).
+    /// token in range; bypassed above 0.05° (the tokens stop at 0.1°). A
+    /// line of the selective line's SG5 group asks for no pair: one stack
+    /// may serve both, as level 2 allows, and tokens pair only distinct
+    /// stacks.
     fn pairs_hold(&self, socket: &SocketSignature, tokens: &IndexTokens) -> bool {
         if socket.angular_window() > PAIR_ANGLE_RAD {
             return true;
@@ -265,20 +268,27 @@ impl ShortlistIndex {
         let selective = socket
             .lines
             .iter()
-            .filter_map(|l| narrowest(&l.windows).map(|w| (l, w)))
-            .min_by(|a, b| a.1.width().total_cmp(&b.1.width()));
-        let Some((first, wa)) = selective else {
+            .enumerate()
+            .filter_map(|(k, l)| narrowest(&l.windows).map(|w| (k, l, w)))
+            .min_by(|a, b| a.2.width().total_cmp(&b.2.width()));
+        let Some((at, first, wa)) = selective else {
             return true;
         };
         let lever = socket.lever_mm.max(self.lever_mm);
+        // Level 2's groups at a lever no smaller than any part's: a wider
+        // window only joins more lines, so the skip stays a superset.
+        let (groups, _) =
+            socket.groups(socket.linear_window(lever), socket.angular_window() + 1e-9);
+        let group = groups.get(at).copied();
         // Level 2's window, and the drift of a midpoint along a line up to
         // 0.1° off over the lever.
         let reach = socket.linear_window(lever) + lever * libm::sin(PAIR_ANGLE_RAD);
         socket
             .lines
             .iter()
-            .filter(|l| !std::ptr::eq(*l, first))
-            .all(|other| {
+            .enumerate()
+            .filter(|(k, _)| *k != at && groups.get(*k).copied() != group)
+            .all(|(_, other)| {
                 if line_angle(first.dir, other.dir) > 1e-9 {
                     return true;
                 }

@@ -1379,3 +1379,79 @@ mod tests {
         }
     }
 }
+
+/// SL1 at level 1: two coaxial required lines one candidate stack may
+/// serve together (SG5's group) ask level 1 for no pair token between them,
+/// for tokens pair only distinct stacks; level 2 keeps such a part, and so
+/// must level 1 (the M5 design review's F3).
+#[cfg(test)]
+mod one_stack_for_a_group {
+    use super::{
+        PartSignature, ReqLine, SIGNATURE_VERSION, SigStack, SocketSignature, Unread, Window,
+        diagonal,
+    };
+    use crate::features::{Axis, FeatureId, FeatureKind, Sense};
+    use crate::geom::{Dir3, Point3};
+    use crate::matching::{IndexTokens, ShortlistIndex, shortlist};
+    use crate::verdict::RequirementId;
+
+    fn line(id: &str, from: f64, to: f64, w: Window) -> ReqLine {
+        ReqLine {
+            ids: vec![RequirementId::new(id)],
+            sense: Sense::Shaft,
+            point: [0.0, 0.0, 0.0],
+            dir: [0.0, 0.0, 1.0],
+            windows: vec![w],
+            from,
+            to,
+            openings: 0,
+        }
+    }
+
+    #[test]
+    fn level_one_keeps_a_part_one_stack_serves_a_group_with() {
+        let (sigma, sigma_ang) = (0.01, 0.01_f64.to_radians());
+        let w = Window::new(Some(10.0 - sigma), Some(10.0 + sigma));
+        let socket = SocketSignature {
+            lines: vec![line("shaft:a", 0.0, 5.0, w), line("shaft:b", 15.0, 20.0, w)],
+            seats: vec![],
+            cones: vec![],
+            blocked_by: vec![],
+            removed: vec![],
+            demands: 2,
+            lever_mm: diagonal(&[[0.0, 0.0, 0.0], [0.0, 0.0, 20.0]]),
+            sigma,
+            sigma_ang,
+        };
+        let (Some(point), Some(direction)) = (
+            Point3::new([0.0, 0.0, 0.0]),
+            Dir3::from_unit([0.0, 0.0, 1.0]),
+        ) else {
+            unreachable!()
+        };
+        let part = PartSignature {
+            version: SIGNATURE_VERSION,
+            stacks: vec![SigStack {
+                feature: FeatureId::new(FeatureKind::Shaft, 7),
+                sense: Sense::Shaft,
+                axis: Axis {
+                    point_mm: point,
+                    direction,
+                },
+                diameters_mm: vec![10.0],
+                extent_mm: [Some(-1.0), Some(21.0)],
+                openings: 0,
+                unknown_end: false,
+            }],
+            planes: vec![],
+            cones: vec![],
+            lever_mm: diagonal(&[[0.0, 0.0, -1.0], [0.0, 0.0, 21.0]]),
+            uncertainty_mm: 1e-6,
+            unread: Unread::default(),
+        };
+        assert!(shortlist(&socket, &part).is_ok(), "level 2 keeps it");
+        let mut index = ShortlistIndex::new();
+        index.insert(1, &IndexTokens::of(&part));
+        assert_eq!(index.query(&socket), Ok(vec![1]), "so level 1 must");
+    }
+}
