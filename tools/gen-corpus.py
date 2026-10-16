@@ -816,6 +816,40 @@ for rule in ("CF8", "KC3", "KC6", "KC7", "KC8", "KC9", "KC10", "KC15", "VR19"):
     RULES[rule] = {}
 RULES["VR16"] = {"tests": ["crates/fitment/tests/match_cli.rs::a_removed_requirement_is_not_checked"]}
 
+# M5's rules (docs/research/m5-catalog.md), each deferred to the PR of its section 10 that builds it until then
+# (CT19); the coverage test allows M5's deferrals until M5 closes (PR 7).
+M5_COUNTS = {"ST": 11, "DB": 9, "GT": 9, "ID": 9, "CR": 11, "RX": 11, "IX": 10, "QR": 13, "CC": 6, "PH": 8,
+             "SZ": 5, "VF": 5, "PR": 7, "CL": 10, "CM": 11, "IN": 9}
+M5_PR = {"ST": 2, "DB": 2, "GT": 2, "ID": 2, "PH": 2, "SZ": 2, "CL": 2, "CR": 3, "IN": 3, "VF": 3, "QR": 4,
+         "CM": 4, "PR": 5, "RX": 6, "IX": 4, "CC": 2}
+M5_OTHER_PR = {"ST5": 3, "CR8": 2, "CR9": 4, "CC3": 3, "CC4": 3, "RX1": 4, "RX2": 4, "RX3": 4}
+for prefix, count in M5_COUNTS.items():
+    for n in range(1, count + 1):
+        rule = f"{prefix}{n}"
+        RULES[rule] = {"deferred": f"M5 PR {M5_OTHER_PR.get(rule, M5_PR[prefix])}"}
+# PR 1 builds core's part: level 1 over any source (IX3 to IX8), a stored document judged as its file (QR7), and
+# the atomic write (CL7).
+M5_STORED = "crates/fitment-core/tests/stored.rs"
+M5_INDEX = "crates/fitment-core/src/matching/index.rs"
+M5_SIGNATURE = "crates/fitment-core/src/matching/signature.rs"
+M5_SHORTLIST = "crates/fitment-core/tests/shortlist.rs"
+RULES.update({
+    "IX3": {"tests": [f"{M5_INDEX}::a_window_finds_its_diameters_on_the_bin_edges"]},
+    "IX4": {"tests": [f"{M5_SHORTLIST}::level_one_returns_whatever_level_two_keeps"]},
+    "IX5": {"tests": [f"{M5_INDEX}::a_seat_bucket_is_never_below_the_lever",
+                      f"{M5_SIGNATURE}::a_seat_bucket_never_splits_a_seat_group"]},
+    "IX6": {"tests": [f"{M5_STORED}::admitted_holds_what_level_two_keeps"]},
+    "IX7": {"tests": [f"{M5_SIGNATURE}::level_one_keeps_a_part_one_stack_serves_a_group_with",
+                      "crates/fitment/tests/matching.rs::level_one_admits_every_pass"]},
+    "IX8": {"tests": [f"{M5_SHORTLIST}::blocked_and_removed_requirements_demand_nothing"]},
+    "QR7": {"tests": [f"{M5_STORED}::a_stored_document_is_judged_as_its_file",
+                      f"{M5_STORED}::a_document_of_another_extractor_is_not_judged",
+                      f"{M5_STORED}::judge_step_hands_its_bytes_to_the_fit_request",
+                      "crates/fitment/tests/matching.rs::stored_documents_are_judged_as_their_files"]},
+    "CL7": {"tests": ["crates/fitment/src/cmd/mod.rs::a_write_lands_whole_or_leaves_nothing",
+                      "crates/fitment/src/cmd/mod.rs::a_write_only_directory_takes_the_write"]},
+})
+
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with
     the cases that cite it, its tests and any reason it is deferred."""

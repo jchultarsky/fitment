@@ -405,8 +405,12 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         // M2, M3 and M4 are closed: only these may wait, each for a reason
         // outside them (a bug's code, a withdrawn rule, a property of the
         // construction, a later milestone). M4's exit removed the allowance
-        // its own rules had to wait for the PR that built them (KH14).
-        if deferred && !DEFERRED.contains(&id.as_str()) {
+        // its own rules had to wait for the PR that built them (KH14); M5's
+        // wait for theirs until M5's exit (CT19).
+        let m5 = entry["deferred"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("M5 PR "));
+        if deferred && !DEFERRED.contains(&id.as_str()) && !m5 {
             failures.push(format!(
                 "{id}: deferred, and not among the deferrals M4 closed with"
             ));
@@ -432,6 +436,7 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         "docs/research/m2-features.md",
         "docs/research/m3-socket.md",
         "docs/research/m4-match.md",
+        "docs/research/m5-catalog.md",
     ] {
         stated.extend(design_rules(
             &fs::read_to_string(root.join(design)).unwrap(),
@@ -580,7 +585,7 @@ fn design_rules(design: &str) -> Vec<String> {
             .chars()
             .take_while(char::is_ascii_alphanumeric)
             .collect();
-        // `[A-Z]{1,2}[0-9]+[a-z]?`: M2's and M3's one letter, M4's two.
+        // `[A-Z]{1,2}[0-9]+[a-z]?`: M2's and M3's one letter, M4's and M5's two.
         let letters = id.chars().take_while(char::is_ascii_uppercase).count();
         let digits = id
             .chars()
