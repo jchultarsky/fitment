@@ -34,6 +34,9 @@ pub(crate) struct Budget {
     /// The most allowed.
     pub(crate) limit: u64,
     covered: Covered,
+    /// The placement whose coverage `covered` holds: only the current
+    /// placement's is kept, so memory stays one placement's.
+    covered_at: usize,
 }
 
 impl Budget {
@@ -43,6 +46,7 @@ impl Budget {
             used: 0,
             limit: MAX_COVERAGE_STEPS,
             covered: BTreeMap::new(),
+            covered_at: 0,
         }
     }
 
@@ -53,6 +57,7 @@ impl Budget {
             used: 0,
             limit,
             covered: BTreeMap::new(),
+            covered_at: 0,
         }
     }
 }
@@ -399,6 +404,10 @@ fn coverage(
     contacts: &[SeatContact],
     budget: &mut Budget,
 ) -> Evidence {
+    if budget.covered_at != ctx.index {
+        budget.covered.clear();
+        budget.covered_at = ctx.index;
+    }
     let key = (
         ctx.index,
         at.index,

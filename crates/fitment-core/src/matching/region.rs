@@ -256,6 +256,7 @@ impl Grid {
                 }
             };
             let ((x0, x1), (y0, y1)) = (range(0), range(1));
+            let ((x0, x1), (y0, y1)) = ((x0.min(x1), x0.max(x1)), (y0.min(y1), y0.max(y1)));
             budget.step((x1 - x0 + 1) * (y1 - y0 + 1))?;
             for x in x0..=x1 {
                 for y in y0..=y1 {

@@ -729,7 +729,7 @@ M4_TESTS.update({
 M4_GATE = ["crates/fitment-core/tests/candidates.rs::every_committed_candidate_meets_its_construction",
            "crates/fitment/tests/matching.rs::every_match_case_meets_its_construction"]
 M4_TESTS.update({
-    "KC2": M4_GATE, "KC5": M4_GATE, "KH1": M4_GATE, "KH2": M4_GATE, "KH3": M4_GATE,
+    "KC2": M4_GATE, "KC5": M4_GATE, "KH1": M4_GATE, "KH2": M4_GATE, "KH3": M4_GATE, "KH8": M4_GATE,
     "KH13": ["crates/fitment/tests/corpus.rs::the_candidate_set_fits_its_budget_and_its_manifest"],
     "VR8": M4_TESTS["VR8"] + M4_GATE,
     "VR22": M4_TESTS["VR22"] + M4_GATE,
@@ -3194,6 +3194,25 @@ CANDIDATE_SET = {"m_bracket", "m_bracket_missing_hole", "m_bracket_dia_small", "
                  "m_plate03_press_15tol", "m_block02", "m_block02_cb_deep", "m_nut_pinned_15tol"}
 
 
+def m_defects():
+    """KH8 for bad cases: the requirement each defect breaks, which must fail at the construction's own
+    placement, where `must_fail` may only say that one of several does (alignment may place the part elsewhere).
+    Cases whose `must_fail` names one requirement need no entry: it is their defect."""
+    hole, cs, cb = l_bore((30, 15, 0)), l_cone((0, 0, 3.8)), l_bore((0, 0, 0))
+    cone_codes = ("no_feature", "cone_mismatch:angle", "cone_mismatch:apex", "cone_mismatch:range")
+    return {
+        "m_bracket_missing_hole": [must(hole, "no_feature", "axis_offset")],
+        "m_bracket_dia_small": [must(hole, "diameter_out_of_limits:min")],
+        "m_bracket_blind": [must(hole, "end_not_open", "wall_missing")],
+        "m_plate03_pin_shift_tol": [must(l_bore((10, 0, 0)), "axis_offset", "no_feature")],
+        "m_housing_lip": [must(l_bore((0, 0, -8)), "core_intruded", "wall_missing")],
+        "m_plate18_82": [must(cs, *cone_codes)],
+        "m_plate18_small_rim": [must(cs, *cone_codes)],
+        "m_plate18_cbore": [must(cs, *cone_codes)],
+        "m_bracket_spot": [must(l_seat((0, 0, 1), 8), "contact_not_covered")],
+    }
+
+
 def match_cases():
     """(id, (source case, target), shape, motion, truth, class, expect, construction, rules): the slice of the
     known-answer corpus D designed (section 15.5) and the review's candidate-side shapes (RS1 to RS6, RS13, RS14).
@@ -3352,6 +3371,13 @@ def match_cases():
                + may_holes("no_feature", "axis_offset", "diameter_out_of_limits:max", "diameter_out_of_limits:min",
                            "wall_missing", "end_not_open", "core_intruded")),
          "a dia 12 spot face 2 deep under each head: 6 clamped, not 8", ["KC9", "VR12"]),
+        # A separate bar hung 20 um below the open end, across the bolt's path: material of the candidate past a
+        # real opening is no requirement's (section 8.6, Openings): the body's, M7's.
+        ("m_nut_bridge", N, fuse(c_nut(), box(-4.0, -0.5, -6.02, 8.0, 1.0, 1.0),
+                                 box(-4.0, -0.5, -6.02, 1.0, 1.0, 3.02), box(3.0, -0.5, -6.02, 1.0, 1.0, 3.02)),
+         VARIANT, "collides", "b_collide", m_ok(),
+         "a bar across the axis 20 um below the bottom face, on legs from the flanks: InterfaceMatch until M7",
+         ["KC3"]),
         ("m_block02_membrane", K, cut(box(-20, -20, 0, 40, 40, 15), cyl((0, 0, -1), UP, 1.0, 17),
                                       cyl((0, 0, -1), UP, 3.3, 9.491), cyl((0, 0, 8.5), UP, 5.5, 7.5)),
          VARIANT, "does_not_fit", "b_dia_small",
@@ -3392,6 +3418,10 @@ def build_candidates(w: Writer, which):
         moved = BRepBuilderAPI_Transform(shape, motion.trsf(), True).Shape()
         w.shape(moved, cid)
         expects = expect if "default" in expect else {"default": expect, "functional": "default"}
+        default = expects["default"]
+        defect = m_defects().get(cid, [m for m in default["must_fail"] if "any_of" not in m])
+        if truth in ("does_not_fit", "edge") and not defect:
+            raise RuntimeError(f"{cid}: a bad case names no defect")
         w.cases.append({
             "id": cid, "kind": "match", "file": f"{cid}.stp", "set": "unit" if unit_set else "corpus",
             "socket": {"case": case, "part": part, "occurrence": None, "review": []},
@@ -3400,7 +3430,7 @@ def build_candidates(w: Writer, which):
             "frame": {"axis": list(motion.axis), "angle_deg": motion.angle, "shift": list(motion.shift)},
             # Unrounded (KC2): the inverse of the frame motion, candidate to target.
             "placement": [row[:4] for row in m_inv(m_motion(motion))[:3]],
-            "expect": expects, "rules": rules, "tests": construction,
+            "expect": expects, "defect": defect, "rules": rules, "tests": construction,
         })
 
 

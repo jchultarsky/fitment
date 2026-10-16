@@ -212,15 +212,17 @@ impl<'a> Matcher<'a> {
         cand: &CandidateView<'_>,
     ) -> SocketResult {
         let kept: Result<Kept, Vec<Missing>> = shortlist(signature, cand.signature());
-        if !view.active().iter().any(|r| self.searched(view, r)) {
-            // Nothing to place: what is active fails every candidate.
-            let none = Placements::none();
-            let checks = self.unplaced(view, cand, &none);
-            return Self::result(view, Stage::Verification, None, checks, (0, false));
-        }
-        let placements = align(view, cand, kept.as_ref().ok(), &self.policy);
+        let placements = if view.active().iter().any(|r| self.searched(view, r)) {
+            align(view, cand, kept.as_ref().ok(), &self.policy)
+        } else {
+            Placements::none()
+        };
         let built = (placements.tried, placements.exhausted);
-        let mut result = if placements.ordered.is_empty() {
+        let mut result = if !view.active().iter().any(|r| self.searched(view, r)) {
+            // Nothing to place: what is active fails every candidate.
+            let checks = self.unplaced(view, cand, &placements);
+            Self::result(view, Stage::Verification, None, checks, built)
+        } else if placements.ordered.is_empty() {
             let checks = self.unplaced(view, cand, &placements);
             let mut r = Self::result(view, Stage::Alignment, None, checks, built);
             r.verdict = r.verdict.rejecting(RejectReason::NoPlacement {
@@ -314,10 +316,17 @@ impl<'a> Matcher<'a> {
             searched.iter().partition(|r| axial(r));
         let mut best: Option<(usize, &Placement)> = None;
         let mut chosen = None;
+        // The chosen placement's checks, kept: checked again, they would be
+        // charged again, and could fail on the bound where they passed.
+        let mut kept: Vec<(String, Check)> = Vec::new();
         for placement in &placements.ordered {
             let mut passed = 0;
+            let mut these = Vec::new();
             for (k, r) in first.iter().chain(&rest).enumerate() {
-                if check(view, r, cand, placement, &self.policy, &mut budget).passed() {
+                let c = check(view, r, cand, placement, &self.policy, &mut budget);
+                let ok = c.passed();
+                these.push((r.id.clone(), c));
+                if ok {
                     passed += 1;
                 } else if k < first.len() {
                     break;
@@ -325,6 +334,7 @@ impl<'a> Matcher<'a> {
             }
             if passed == searched.len() {
                 chosen = Some(placement);
+                kept = these;
                 break;
             }
             if best.is_none_or(|(n, _)| passed > n) {
@@ -342,7 +352,10 @@ impl<'a> Matcher<'a> {
             .active()
             .iter()
             .map(|r| {
-                let c = check(view, r, cand, at, &self.policy, &mut budget);
+                let c = match kept.iter().position(|(id, _)| *id == r.id) {
+                    Some(k) => kept.swap_remove(k).1,
+                    None => check(view, r, cand, at, &self.policy, &mut budget),
+                };
                 let c = if exhausted && !c.passed() {
                     Check::of(c.evidence().clone().with_failure(Failure::new(
                         FailureCode::AlignmentExhausted,
