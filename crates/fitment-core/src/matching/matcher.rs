@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use super::align::{Placement, Placements, align};
 use super::evidence::{At, Evidence, Failure, FailureCode, Warning};
+use super::index::{Blocked, IndexSource, level_one};
 use super::shortlist::{Kept, Missing, shortlist};
 use super::verify::{Budget, check};
 use super::{CandidateView, MatchOptions, MatchPolicy, SocketSignature, SocketView};
@@ -174,6 +175,35 @@ impl CandidateSource {
             definition,
         }
     }
+}
+
+/// What level 1 admits for a whole socket document (M5's QR3).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "admitted", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Admitted {
+    /// The candidates every socket may keep, ascending.
+    Parts(Vec<u64>),
+    /// A socket that admits no candidate whatever the catalog holds.
+    #[non_exhaustive]
+    Blocked {
+        /// The socket.
+        socket: String,
+        /// Why.
+        why: Blocked,
+    },
+}
+
+/// A stored document another extractor version wrote: not judged, for
+/// this build's rules would report it as this build's read (M5's QR7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the features document was written by extractor version {extractor_version}, not this build's"
+)]
+#[non_exhaustive]
+pub struct NotCurrent {
+    /// The document's own extractor version.
+    pub extractor_version: u32,
 }
 
 /// A flag a candidate's verdict carries (VD12): a closed list whose names
@@ -386,6 +416,36 @@ impl<'a> Matcher<'a> {
         self.fit.kernel()
     }
 
+    /// Level 1 for every socket of the document under this matcher's own
+    /// signatures, intersected (M5's QR3): the candidates of `index` level 2
+    /// may keep in every socket, ascending.
+    ///
+    /// # Errors
+    ///
+    /// The index's own error, if it cannot be read.
+    pub fn admitted<S: IndexSource>(&self, index: &S) -> Result<Admitted, S::Error> {
+        let mut found: Option<Vec<u64>> = None;
+        for ready in &self.sockets {
+            let ids = match level_one(&ready.signature, index)? {
+                Ok(ids) => ids,
+                Err(why) => {
+                    return Ok(Admitted::Blocked {
+                        socket: ready.view.socket().id.clone(),
+                        why,
+                    });
+                }
+            };
+            found = Some(match found.take() {
+                None => ids,
+                Some(f) => f
+                    .into_iter()
+                    .filter(|id| ids.binary_search(id).is_ok())
+                    .collect(),
+            });
+        }
+        Ok(Admitted::Parts(found.unwrap_or_default()))
+    }
+
     /// Each socket's id with the active requirements that fail every
     /// candidate (MF10): not M4-verifiable (VD5), or blocked by the
     /// target's own uncertainty under the policy (VD6), in order.
@@ -417,16 +477,54 @@ impl<'a> Matcher<'a> {
     /// refused file is a `Reject` with the gate's codes.
     pub fn judge_step(&self, step: &[u8]) -> CandidateResult {
         let read = FeaturesDocument::read(step);
-        let source = CandidateSource::File(Source::of(step, read.header().cloned()));
-        match read.part() {
-            Some(part) => self.judge(part, source, Some(step)),
+        let source = Source::of(step, read.header().cloned());
+        // This build just read it, so it is current.
+        self.judge_read(&read, source, Some(step))
+    }
+
+    /// CF1 for a stored document: an accepted one judged as
+    /// [`Matcher::judge_step`] judges the file it was read from, a refused
+    /// one the same `Reject`. `source` names the content the document was
+    /// checked against: a store builds it from its own checked SHA-256.
+    /// The fit verifier gets no STEP bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`NotCurrent`] for a document another [`crate::EXTRACTOR_VERSION`]
+    /// wrote: judging it with this build's rules would report it as read
+    /// by this build.
+    pub fn judge_document(
+        &self,
+        document: &FeaturesDocument,
+        source: Source,
+    ) -> Result<CandidateResult, NotCurrent> {
+        if !document.is_current() {
+            return Err(NotCurrent {
+                extractor_version: document.extractor_version(),
+            });
+        }
+        Ok(self.judge_read(document, source, None))
+    }
+
+    /// The one path both share, for a current document: the fit request
+    /// gets `step` where there is one (a file's bytes), so a file run keeps
+    /// its fit check.
+    fn judge_read(
+        &self,
+        document: &FeaturesDocument,
+        source: Source,
+        step: Option<&[u8]>,
+    ) -> CandidateResult {
+        let source = CandidateSource::File(source);
+        match document.part() {
+            Some(part) => self.judge(part, source, step),
             None => CandidateResult {
                 source,
                 product: None,
                 status: Status::Refused,
-                refusals: read.refusals().to_vec(),
+                refusals: document.refusals().to_vec(),
                 read: None,
-                verdict: Verdict::refused(read.refusals().iter().map(|r| r.code).collect()),
+                verdict: Verdict::refused(document.refusals().iter().map(|r| r.code).collect()),
                 flags: self.review_flags(vec![CandidateFlag::MaterialNotCompared]),
                 warnings: Vec::new(),
                 sockets: Vec::new(),

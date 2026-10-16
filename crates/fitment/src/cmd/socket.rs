@@ -12,6 +12,7 @@ use fitment_core::{
 };
 
 use super::text::{mm, note, printable};
+use super::write_atomically;
 use crate::exit;
 
 #[derive(clap::Args)]
@@ -227,20 +228,6 @@ fn foreign(output: &Path, input: &Path, document: &SocketDocument) -> Option<&'s
         (Some(a), Some(b)) if a != b => Some("it is the socket of another part"),
         _ => None,
     }
-}
-
-/// Writes `bytes` to a temporary file beside `path`, then renames it; the
-/// temporary file is removed if either step fails.
-pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(format!(".{}.tmp", std::process::id()));
-    let temporary = PathBuf::from(temporary);
-    let written =
-        std::fs::write(&temporary, bytes).and_then(|()| std::fs::rename(&temporary, path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    written
 }
 
 /// One line on stderr: occurrences, sockets, requirements, left out, and a

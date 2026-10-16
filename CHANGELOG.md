@@ -8,6 +8,25 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **M5, PR 1 (the catalog's core):** `Matcher::judge_document` judges a
+  stored features document exactly as `judge_step` judges its file, and
+  refuses one another extractor version wrote (`NotCurrent`);
+  `Matcher::admitted` runs level 1 over any `IndexSource`, the trait a
+  catalog's store implements; `IndexTokens` read back from JSON, checked;
+  `FeaturesDocument::to_compact_json` and `part_digest`; `Source::new`.
+
+### Changed
+
+- `signature_version` is 2: pair tokens name their two stacks by index
+  instead of copying their senses and diameters, and level 1 takes each
+  candidate's lever, rounded up to a power of two, in place of the
+  largest indexed. What level 1 returns still holds whatever level 2 keeps.
+- `fitment socket`, `match` and `review` sync an output file's temporary
+  copy and its directory around the rename, so a crash leaves the old file
+  or the new one.
+
 ## [0.1.0] - 2026-10-16
 
 The first release: milestones M0 to M4. `fitment-core` is published first,

@@ -25,10 +25,10 @@ pub use evidence::{
     At, Band, BandWidth, EndSide, Evidence, Failure, FailureCode, Measure, MeasureValue, Quantity,
     Warning, WarningCode,
 };
-pub use index::{Blocked, IndexTokens, PairToken, ShortlistIndex};
+pub use index::{Blocked, IndexSource, IndexTokens, PairToken, Posting, ShortlistIndex, level_one};
 pub use matcher::{
-    CandidateFlag, CandidateResult, CandidateSource, Chosen, Matcher, NotChecked, ReadFacts,
-    SocketRefused, SocketResult, Stage,
+    Admitted, CandidateFlag, CandidateResult, CandidateSource, Chosen, Matcher, NotChecked,
+    NotCurrent, ReadFacts, SocketRefused, SocketResult, Stage,
 };
 pub use policy::{Clearance, Grip, MatchOptions, MatchPolicy};
 pub use shortlist::{Kept, Missing, MissingElement, shortlist};
@@ -38,9 +38,10 @@ pub use verify::verify;
 use crate::socket::{Requirement, Requires, Socket, SocketDocument};
 
 /// The version of the signature's content (CF10): it rises with any change
-/// to what `PartSignature::of` computes; M5 recomputes stored signatures of
-/// another.
-pub const SIGNATURE_VERSION: u32 = 1;
+/// to what `PartSignature::of` computes, or to the level-1 tokens a catalog
+/// stores; a catalog rebuilds stored tokens of another. 2: pair tokens name
+/// their stacks by index (M5's B4).
+pub const SIGNATURE_VERSION: u32 = 2;
 
 /// The version of the matching rules (M4-27): it rises with any change to
 /// the shortlist, alignment, verification or the verdicts they give.

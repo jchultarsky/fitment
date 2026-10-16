@@ -223,6 +223,23 @@ impl FeaturesDocument {
         text
     }
 
+    /// The document as compact JSON: the catalog's stored form (M5's GT2).
+    /// It reads back with [`FeaturesDocument::from_json`] to an equal
+    /// document, every float exactly (`float_roundtrip`).
+    pub fn to_compact_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// The SHA-256 (hex) of the compact JSON of the part alone, without the
+    /// header, the source or the versions; `None` for a refused document.
+    /// Two files whose parts read the same have one digest, so a catalog
+    /// judges a part once and reuses the result for each (M5's QR6).
+    pub fn part_digest(&self) -> Option<String> {
+        let part = self.part.as_ref()?;
+        let text = serde_json::to_string(part).ok()?;
+        Some(crate::sha256_hex(text.as_bytes()))
+    }
+
     /// Reads a document back, checking its format, version and rules.
     ///
     /// # Errors

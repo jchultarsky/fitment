@@ -15,8 +15,8 @@ use fitment_core::{
 };
 use serde_json::Value;
 
-use super::socket::write_atomically;
 use super::text::{mm, note, printable};
+use super::write_atomically;
 use crate::exit;
 
 #[derive(clap::Args)]
