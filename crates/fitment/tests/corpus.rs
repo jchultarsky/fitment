@@ -400,17 +400,7 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         if deferred && (cases > 0 || !tests.is_empty() || !oracle.is_empty()) {
             failures.push(format!("{id}: deferred, yet a case or test covers it"));
         }
-        // The match oracle's rules (KO): checked by tools/verify-occt.py in CI.
-        for check in &oracle {
-            let Some((file, name)) = check.split_once("::") else {
-                failures.push(format!("{id}: '{check}' is not file::function"));
-                continue;
-            };
-            let text = fs::read_to_string(root.join(file)).unwrap_or_default();
-            if !text.lines().any(|l| l.starts_with(&format!("def {name}("))) {
-                failures.push(format!("{id}: no function {name} in {file}"));
-            }
-        }
+        failures.extend(oracle_problems(id, &oracle, &root));
         failures.extend(case_lists(id, entry, &by_id));
         // M2, M3 and M4 are closed: only these may wait, each for a reason
         // outside them (a bug's code, a withdrawn rule, a property of the
@@ -527,6 +517,45 @@ fn shows_blocked(case: &Value) -> bool {
                 || e.get("refused").is_some()
                 || e["verdict"] == "socket_refused"
         })
+}
+
+/// The match oracle's rules (KO): checked by tools/verify-occt.py in CI,
+/// each by a function that exists and names the rule.
+fn oracle_problems(id: &str, oracle: &[&str], root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for check in oracle {
+        let Some((file, name)) = check.split_once("::") else {
+            out.push(format!("{id}: '{check}' is not file::function"));
+            continue;
+        };
+        let text = fs::read_to_string(root.join(file)).unwrap_or_default();
+        match python_function(&text, name) {
+            None => out.push(format!("{id}: no function {name} in {file}")),
+            Some(body) if !body.contains(id) => {
+                out.push(format!("{id}: {name} in {file} does not name it"));
+            }
+            Some(_) => {}
+        }
+    }
+    out
+}
+
+/// The text of a top-level Python function `name`, from its `def` to the
+/// next top-level statement.
+fn python_function<'t>(text: &'t str, name: &str) -> Option<&'t str> {
+    let start = text.find(&format!("\ndef {name}("))? + 1;
+    let rest = &text[start..];
+    let end = rest
+        .match_indices('\n')
+        .map(|(i, _)| i + 1)
+        .find(|&i| {
+            rest[i..]
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_whitespace() && c != ')')
+        })
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
 }
 
 /// True if `file` has a `#[test]` function `name`.

@@ -29,6 +29,7 @@ pub enum SocketRefused {
     Refused(Vec<Refusal>),
     /// Written by another extractor or other socket rules (M4-22).
     #[error("the socket document is stale: extractor {extractor}, socket rules {socket_rules}")]
+    #[non_exhaustive]
     Stale {
         /// Its extractor version.
         extractor: u32,
@@ -37,12 +38,24 @@ pub enum SocketRefused {
     },
     /// A review was required and requirements are unreviewed.
     #[error("{count} requirements are unreviewed")]
+    #[non_exhaustive]
     Unreviewed {
         /// How many.
         count: usize,
         /// The first few, as `socket-1/bore:hole-88`.
         first: Vec<String>,
     },
+}
+
+impl SocketRefused {
+    /// A document of other versions than this build's: its extractor's
+    /// and its socket rules'.
+    pub fn stale(extractor: u32, socket_rules: u32) -> Self {
+        Self::Stale {
+            extractor,
+            socket_rules,
+        }
+    }
 }
 
 /// How far one socket's judgment went (MF5).
@@ -80,6 +93,7 @@ pub enum Chosen {
 #[non_exhaustive]
 pub enum NotChecked {
     /// Removed in review, with the reviewer's note.
+    #[non_exhaustive]
     Removed {
         /// The requirement.
         requirement: RequirementId,
@@ -87,6 +101,7 @@ pub enum NotChecked {
         note: String,
     },
     /// A shaft's room before a blind hole's floor (I4): information.
+    #[non_exhaustive]
     MaxExtraMm {
         /// The requirement.
         requirement: RequirementId,
@@ -139,6 +154,7 @@ pub enum CandidateSource {
     File(Source),
     /// A leaf of an assembly (CF1): the assembly's SHA-256 and the
     /// definition's `#id`.
+    #[non_exhaustive]
     Component {
         /// The assembly's SHA-256, hex.
         assembly_sha256: String,
@@ -147,6 +163,17 @@ pub enum CandidateSource {
     },
     /// A part the caller built or read itself.
     Given,
+}
+
+impl CandidateSource {
+    /// A leaf of an assembly: the assembly's SHA-256 (hex) and the
+    /// definition's `#id`.
+    pub fn component(assembly_sha256: impl Into<String>, definition: u64) -> Self {
+        Self::Component {
+            assembly_sha256: assembly_sha256.into(),
+            definition,
+        }
+    }
 }
 
 /// A flag a candidate's verdict carries (VD12): a closed list whose names

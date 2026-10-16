@@ -149,6 +149,7 @@ pub enum BandWidth {
 #[non_exhaustive]
 pub enum MeasureValue {
     /// A number between limits.
+    #[non_exhaustive]
     Number {
         /// The candidate's value.
         found: f64,
@@ -167,6 +168,7 @@ pub enum MeasureValue {
         margin: f64,
     },
     /// A fact required or not.
+    #[non_exhaustive]
     Flag {
         /// What was found.
         found: bool,

@@ -1442,7 +1442,8 @@ def first_axis(socket, result):
 
 def with_placements(doc, socket, change, rejected=False):
     """A copy of `doc` whose passes' (or, with `rejected`, placed rejects') placements are changed by `change`,
-    those rejects turned into interface matches with every check passed; None if nothing changed."""
+    those rejects turned into interface matches with every check passed; None if nothing changed (KO6's placement
+    mutations)."""
     import copy
     out = copy.deepcopy(doc)
     changed = False
@@ -1642,7 +1643,13 @@ def match_main(argv):
     physically at the placement fitment states, at every occurrence (KO3); every failure is re-measured (KO4); its
     placement is rigid with each passed check's feature on the requirement (KO5); and each mutation of a document
     meets a disagreement somewhere (KO6). With --expect, the fixtures: AS1's parts across its exports (KC12), each
-    export's component written alone, with the tallies pinned under `match_oracle` (KO8)."""
+    export's component written alone, with the tallies pinned under `match_oracle` (KO8).
+
+    What it cannot check (KO7): threads and press fits beyond their geometry; materials and other properties; what
+    a review means; the shortlist (the Rust harness cross-checks it, KH9); whether any placement exists where
+    fitment found none (it knows the construction's placement, KO1, and checks the one fitment chose); policies
+    beyond D6's ring; what an unverifiable requirement means; and what both kernels would misread alike, both
+    being Open CASCADE. Body fit is judged as physics here, not reported as a verdict, until M7."""
     import argparse
     import tempfile
     parser = argparse.ArgumentParser(prog="verify-occt.py match")
@@ -1693,7 +1700,7 @@ def match_main(argv):
 
 def match_group(binary, directory, source, part, files, group, scratch, tally, problems, met):
     """One socket: written by fitment, its candidates judged under both policies, each document checked, and
-    each mutation of it tried."""
+    each mutation of it tried (KO6), each bad case's defect isolated (KO2)."""
     socket_path = scratch / f"{Path(source).stem}--{part}.json"
     socket, problem = run_fitment(binary, ["socket", str(directory / source), "--part", part, "--format", "json"],
                                   (0,))

@@ -17,10 +17,13 @@ written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 > require of any part that replaces it, as a reviewable socket file, and
 > `fitment review` records the user's decisions in it. `fitment match`
 > judges candidate parts against it, with the evidence. On its
-> known-answer corpus of 125 match cases, whose truths an independent
-> Open CASCADE oracle checks, it passes no candidate that does not
-> fit, under either policy; it rejects 20 of the 49 that do (21 of 51
-> under functional clearance), each by a rule it states. The design is in
+> known-answer corpus of 125 match cases it passes no candidate whose
+> interface does not fit, under either policy (a body that collides with
+> a neighbour no requirement concerns is M7's, and passes as an
+> `InterfaceMatch`); it rejects 20 of the 49 that fit (21 of 51 under
+> functional clearance), each by a rule it states. An independent Open
+> CASCADE oracle checks the truths it can judge physically, and every
+> pass and failure fitment reports. The design is in
 > [docs/PLAN.md](docs/PLAN.md), and the code is mapped in
 > [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -146,8 +149,9 @@ reject     m_bracket_blind.stp  a8ed725f  1 failed: socket-1/bore:hole-722 core_
 best verdict: 0 a match, 4 an interface match (the body's fit is not
 checked until M7, so every passing run exits 4), 5 every candidate
 rejected; 1 an error, 2 usage, 3 a socket document refused.
-`--clearance functional` lets a larger clearance hole take a ring from
-its seats (D6); `--tolerance-mm` and `--tolerance-deg` set the policy;
+`--clearance functional` drops a clearance hole's upper diameter bound
+only (D6): its seats must still be covered, and a pass strict would
+refuse carries `larger_than_original`; `--tolerance-mm` and `--tolerance-deg` set the policy;
 `--require-reviewed` refuses a socket with unreviewed requirements;
 `--original ASM` also judges the original part from the socket's own
 assembly, as a check of fitment itself.

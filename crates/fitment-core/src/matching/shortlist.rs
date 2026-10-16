@@ -54,6 +54,7 @@ pub enum MissingElement {
     /// No cone of the angle, sense and range.
     Cone,
     /// No pair of witnesses in the relation the requirements' are.
+    #[non_exhaustive]
     Pair {
         /// The other requirements of the pair.
         with: Vec<RequirementId>,

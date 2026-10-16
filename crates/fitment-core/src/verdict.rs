@@ -106,26 +106,31 @@ pub enum RejectReason {
     /// The socket has no requirements, so nothing could be verified.
     NoRequirements,
     /// The socket lists the same requirement twice.
+    #[non_exhaustive]
     DuplicateRequirement {
         /// The repeated requirement.
         requirement: RequirementId,
     },
     /// A requirement was never checked.
+    #[non_exhaustive]
     MissingCheck {
         /// The unchecked requirement.
         requirement: RequirementId,
     },
     /// A requirement was checked more than once, so its result is ambiguous.
+    #[non_exhaustive]
     DuplicateCheck {
         /// The requirement checked more than once.
         requirement: RequirementId,
     },
     /// A check names a requirement the socket does not have.
+    #[non_exhaustive]
     UnknownRequirement {
         /// The unknown requirement.
         requirement: RequirementId,
     },
     /// A requirement was checked and not verified.
+    #[non_exhaustive]
     RequirementFailed {
         /// The failed requirement.
         requirement: RequirementId,
@@ -136,6 +141,7 @@ pub enum RejectReason {
     },
     /// M2's gate refused the candidate's file: no socket was checked
     /// (VD10).
+    #[non_exhaustive]
     CandidateRefused {
         /// The gate's refusals.
         codes: Vec<RefusalCode>,
@@ -144,11 +150,13 @@ pub enum RejectReason {
     BodyInterferes,
     /// The shortlist found what a socket demands missing (M4-17): the
     /// checks were still made, for the evidence.
+    #[non_exhaustive]
     Shortlist {
         /// The socket.
         socket: String,
     },
     /// No placement of the candidate was found in a socket (KH3).
+    #[non_exhaustive]
     NoPlacement {
         /// The socket.
         socket: String,
