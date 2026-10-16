@@ -7,7 +7,7 @@ Given an assembly and one part in it that is no longer available, the system sug
 
 ## Resume here
 
-M0 was completed on 9 Oct 2026, M1 on 11 Oct 2026, M2 on 12 Oct 2026 and M3 on 12 Oct 2026: `fitment features` reads one part and `fitment socket` reads a part's socket from an assembly, as designed in [research/m2-features.md](research/m2-features.md) and [research/m3-socket.md](research/m3-socket.md) and mapped in [ARCHITECTURE.md](ARCHITECTURE.md). Work continues at M4, in this repository. Open it in Code mode, with ../stepq added, and paste:
+M0 was completed on 9 Oct 2026, M1 on 11 Oct 2026, M2 and M3 on 12 Oct 2026, and M4 on 16 Oct 2026: `fitment features` reads one part, `fitment socket` reads a part's socket from an assembly, and `fitment match` judges candidates against it, as designed in [research/m2-features.md](research/m2-features.md), [research/m3-socket.md](research/m3-socket.md) and [research/m4-match.md](research/m4-match.md) and mapped in [ARCHITECTURE.md](ARCHITECTURE.md). Version 0.1.0 is ready to publish (`fitment-core` first, then `fitment`). Work continues at M5, the catalog, whose design is not yet written. M4's resume prompt, kept for its reading list (open this repository in Code mode, with ../stepq added):
 
 ```text
 Read docs/PLAN.md, sections "Decisions made", "How it works", "Soundness rules",
@@ -190,16 +190,16 @@ A candidate is never compared with the original part. It is tested against the s
     - The space the target occupies is kept as the envelope for the fit verifier.
     - The socket is written as a JSON file the user reviews: each requirement can be kept or removed with a note; values cannot be edited.
     - Unread faces on the target or a neighbour, and contacts no rule reads, are `unresolved` requirements that fail until removed in review.
-3. **Signature.** Per part, values that survive any rigid motion: the hole list (diameter, through or blind, depth, stack type), distances between parallel hole axes, angles between the others, and plane-to-axis offsets. Values are quantized at the tolerance and looked up with neighboring bins, so a value on a bin edge is not missed.
-4. **Shortlist.** Candidates whose signature contains the socket's. Extra holes on a candidate are allowed.
-5. **Alignment.** The candidate sits in its own frame. Each pair of candidate holes that matches two socket axes in diameter and spacing gives a placement, tried in both axis directions. A seating plane fixes the slide along the axes. A symmetric part gives several valid placements; one is enough.
-6. **Verification.** Under each placement every requirement must find a candidate feature within tolerance: axis position and angle, diameter within its limits, depth at least as required, seating plane present and covering the contact outline, grip length equal.
+3. **Signature.** Per part, rigid invariants: its stacks (diameters, extents, ends), the distances and angles between its axes, plane-to-axis offsets and seats' areas, in policy-free bins of 0.1 mm looked up with the bins either side, so a value on an edge is never missed and the index does not depend on the tolerance (SG, M4's design).
+4. **Shortlist.** A necessary condition with a proof: a candidate is dropped only where no placement could pass, so the shortlist never changes a verdict (SL1, checked on the corpus). Extra holes on a candidate are allowed.
+5. **Alignment.** The candidate sits in its own frame. Anchor pairs (two axes, an axis and a seat, landmarks) give placements, ranked, not filtered, at most 4,096 per socket (AL11); proper rotations only, so a mirror image never aligns. One placement per socket is chosen: the first that passes every requirement, or the one with fewest failures.
+6. **Verification.** Under the placement every requirement must find a candidate feature within tolerance less a guard band: axis position and angle, diameters within their limits, walls over every span, openings where required, the clear core of each bore free of material (VR22), seating planes present and covering the contact outline (certified coverage), grip length equal, conical seats on their apex and angle.
 7. **Verdict.** `Match`: every requirement and the fit are verified. `InterfaceMatch`: every requirement is verified and the fit is not checked or could not be verified. `Reject`: with the failed requirements listed, or a body that interferes. Flags ride along, such as "thread not confirmed" and "material not compared".
     - Fit is its own field: `verified` (with the kernel and its version), `interferes` (with evidence), `not_verified` (with a reason) or `not_checked` (with a reason). Only `verified` can make a `Match`; `interferes` makes a `Reject`.
     - Without a verifier, the CLI says `InterfaceMatch: interface verified; body fit not checked (no fit verifier in this build)`.
-    - `Match`, `InterfaceMatch` and `Reject` have separate exit codes. `--require-fit` treats `InterfaceMatch` as a failure.
+    - `Match`, `InterfaceMatch` and `Reject` have separate exit codes: 0, 4 and 5 (an error 1, usage 2, a refused socket 3). `--require-fit` treats `InterfaceMatch` as a failure.
 
-Tolerances are one linear and one angular value, held in a named policy stored with each result. The floor is the largest stated uncertainty of the contexts involved, including the placement path's (R17 in M3's design); uncertainty is stated per representation context and varies by exporter (Pro/E's "closure" reaches 0.672 mm), so the policy for it is fitment's to set. Lengths are converted to millimetres before any comparison.
+Tolerances are one linear and one angular value, held in a named policy stored with each result. The floor is split (M4-2): comparisons with the original's own geometry use the parts' own stated uncertainty, and the floor of a relation, the largest stated uncertainty of the contexts it involves including the placement path's (R17 in M3's design), bounds only limits derived from neighbours. A requirement whose tolerance leaves nothing above the floor fails every candidate (`floor_above_tolerance`). Uncertainty is stated per representation context and varies by exporter (Pro/E's "closure" reaches 0.672 mm). Lengths are converted to millimetres before any comparison.
 
 ## Metadata from STEP only
 
@@ -246,7 +246,7 @@ M2 to M4 carry all the technical risk, so the catalog and API (M5, M6) do not st
 | M1 | stepq 0.6: units, geometry values, placements, topology, solids of a definition, PMI to faces (six PRs; [design](research/m1-stepq-read.md)). Done 11 Oct 2026 | stepq's placements and cylinder axes equal Open CASCADE's on the fixtures; the four documents are updated; stepq 0.6.0 is published |
 | M2 | Matcher crate: features of one part; `features part.stp` prints JSON ([design](research/m2-features.md)). Done 12 Oct 2026 | Holes, shafts, depths and planes are correct on generated parts with known features; non-canonical input is refused with a reason |
 | M3 | Socket extraction and the reviewable socket file; `socket asm.stp --part X` ([design](research/m3-socket.md)). Done 12 Oct 2026 | Generated assemblies and the AS1 fixture give the expected requirements; holes with nothing on their axis are left out |
-| M4 | Signature, alignment, verification, evidence; `match`; the corpus and its harness | Zero false positives on the known-bad set; the false-negative rate is reported. A false positive is `Match` on any bad case, or any pass on a bad interface. `InterfaceMatch` on the colliding-body case is correct until M7 |
+| M4 | Signature, alignment, verification, evidence; `match`; the corpus and its harness ([design](research/m4-match.md)). Done 16 Oct 2026: no false positive on the corpus's 125 match cases under either policy; against physics, 20 of the 49 that fit rejected under `default` (21 of 51 under `functional`), each by a stated rule, none against the specification | Zero false positives on the known-bad set; the false-negative rate is reported. A false positive is `Match` on any bad case, or any pass on a bad interface. `InterfaceMatch` on the colliding-body case is correct until M7 |
 | M5 | Catalog: store, index, canonical gate, CRUD, re-index | Ingest, list, get, replace and delete work from the CLI; a match reads only the index |
 | M6 | REST API with jobs | The M4 corpus passes end to end through the API |
 | M7 | Fit verifier: Open CASCADE in a separate helper process (D1); it also tests the candidate's placed copies against each other (V1 in M3's design) | On the corpus, colliding candidates end as `Reject`, or as `InterfaceMatch` with fit not verified, never as `Match`; the original part passes its own fit check |
@@ -268,7 +268,7 @@ For each item found, note its technology and decide: depend on it, copy it, or s
 
 ## Open decisions
 
-Five decisions are open; D1, D3, D4 and D5 were settled on 9 Oct 2026, D2 on 11 Oct 2026 and D11 on 12 Oct 2026. Each has a default that applies if nothing else is decided.
+One decision is open (D10); D1, D3, D4 and D5 were settled on 9 Oct 2026, D2 on 11 Oct 2026, D11 on 12 Oct 2026, and D6 to D9 at M4's exit on 16 Oct 2026. Each has a default that applies if nothing else is decided.
 
 | # | Decision | Recommended default | Needed by |
 | --- | --- | --- | --- |
@@ -277,10 +277,10 @@ Five decisions are open; D1, D3, D4 and D5 were settled on 9 Oct 2026, D2 on 11 
 | D3 | Whether the matcher is public like stepq or private | Decided: open source. | M0 |
 | D4 | Project and crate names | Decided: fitment | M0 |
 | D5 | Catalog storage and API stack | Decided: SQLite through rusqlite, content-addressed files on disk, axum. Keeps the catalog synchronous and the `fitment` binary free of an async runtime. | M5 |
-| D6 | Clearance holes: strict (no larger than the original) or functional (any hole the shaft passes) | Strict | M4 |
-| D7 | Grip length: hard requirement or warning | Hard requirement | M4 |
-| D8 | Real ground truth: obsolete parts with the replacement someone accepted | Collect any that exist; use the generated corpus until then | M4 |
-| D9 | Default tolerances | Start at 0.01 mm and 0.01°, tune on the corpus | M4 |
+| D6 | Clearance holes: strict (no larger than the original) or functional (any hole the shaft passes) | Decided 16 Oct 2026 (M4-7): strict by default; functional on request drops the upper diameter bound only, and a pass strict would refuse carries `larger_than_original` | M4 |
+| D7 | Grip length: hard requirement or warning | Decided 16 Oct 2026 (M4-8): hard only in M4; a warning waits for M7, which can check where neighbours reseat. Every grip-only change of thickness is a false negative until then | M4 |
+| D8 | Real ground truth: obsolete parts with the replacement someone accepted | Decided 16 Oct 2026 (M4-38): none collected in M4; the generated corpus and AS1's exports only; revisit at M5 with catalog parts | M4 |
+| D9 | Default tolerances | Decided 16 Oct 2026 (M4-37): 0.01 mm and 0.01°, not tuned on the generated corpus; tuning waits for real catalog parts (M5) | M4 |
 | D10 | Property names that carry thread and material | Read them off real sample files | M5 |
 | D11 | How the user names the part to replace | Decided 12 Oct 2026: by part number (or name, or `#<n>`), all occurrences, merged where they ask the same; see Choosing the part to replace | M3 |
 

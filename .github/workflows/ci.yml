@@ -160,6 +160,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps --all-features --locked
 
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Both crates packaged as crates.io would take them, and each built from
+      # its .crate: fitment against fitment-core's through Cargo's local
+      # registry overlay (docs/research/m4-match.md, section 22.1).
+      - run: cargo package --workspace --locked
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest

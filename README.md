@@ -11,14 +11,18 @@ same axes, diameters within limits, the same seating planes and grip
 length. It is deterministic (rules and arithmetic, no machine learning),
 written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 
-> **Status: M4 in progress.** `fitment features` reads one part from a
+> **Status: M4 done (0.1.0).** `fitment features` reads one part from a
 > STEP file, refusing a file that is not a canonical part, with reasons.
 > `fitment socket` reads what the neighbours of a part in an assembly
 > require of any part that replaces it, as a reviewable socket file, and
 > `fitment review` records the user's decisions in it. `fitment match`
-> judges candidate parts against it, with the evidence; its known-answer
-> corpus is being completed. The design is in [docs/PLAN.md](docs/PLAN.md),
-> and the code is mapped in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+> judges candidate parts against it, with the evidence. On its
+> known-answer corpus of 125 match cases, whose truths an independent
+> Open CASCADE oracle checks, it passes no candidate that does not
+> fit, under either policy; it rejects 20 of the 49 that do (21 of 51
+> under functional clearance), each by a rule it states. The design is in
+> [docs/PLAN.md](docs/PLAN.md), and the code is mapped in
+> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## How it works
 
@@ -142,6 +146,11 @@ reject     m_bracket_blind.stp  a8ed725f  1 failed: socket-1/bore:hole-722 core_
 best verdict: 0 a match, 4 an interface match (the body's fit is not
 checked until M7, so every passing run exits 4), 5 every candidate
 rejected; 1 an error, 2 usage, 3 a socket document refused.
+`--clearance functional` lets a larger clearance hole take a ring from
+its seats (D6); `--tolerance-mm` and `--tolerance-deg` set the policy;
+`--require-reviewed` refuses a socket with unreviewed requirements;
+`--original ASM` also judges the original part from the socket's own
+assembly, as a check of fitment itself.
 
 ## Planned interface
 
@@ -157,7 +166,7 @@ test.
 | M1 | stepq 0.6: units, geometry values, placements, topology, solids, PMI to faces |
 | M2 | Features of one part |
 | M3 | Socket extraction |
-| M4 | Matching, evidence, and the known-answer corpus |
+| M4 | Matching, evidence, and the known-answer corpus (done, 0.1.0) |
 | M5 | Catalog |
 | M6 | REST API |
 | M7 | Optional body-fit verifier |
