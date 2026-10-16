@@ -103,6 +103,14 @@ fn every_committed_part_is_stored_as_the_gate_reads_it() {
                 |r| r.get(0),
             )
             .unwrap();
+        // Stored as core's compact form, exactly (GT2), and reading back
+        // as the file reads.
+        assert_eq!(
+            doc,
+            read.to_compact_json().into_bytes(),
+            "{}",
+            line.input.display()
+        );
         let stored = FeaturesDocument::from_json(std::str::from_utf8(&doc).unwrap()).unwrap();
         assert_eq!(stored.to_json(), read.to_json(), "{}", line.input.display());
     }
@@ -330,14 +338,27 @@ fn the_source_is_read_once() {
     let source = copy("candidates/m_bracket.stp", &dir, "m_bracket.stp");
     let original = fs::read(&source).unwrap();
     let swapped = source.clone();
-    let seam = CountingFs::with_hook(move |call| {
+    let seam = std::sync::Arc::new(CountingFs::with_hook(move |call| {
         if *call == Call::Read(swapped.clone()) {
             fs::write(&swapped, b"other bytes").unwrap();
         }
-    });
-    let mut catalog = Catalog::open_with(&root, Options::default(), Box::new(seam)).unwrap();
+    }));
+    let mut catalog = Catalog::open_with(
+        &root,
+        Options::default(),
+        Box::new(common::Shared(seam.clone())),
+    )
+    .unwrap();
     let lines = catalog.ingest(std::slice::from_ref(&source), None).unwrap();
     assert_eq!(lines[0].outcome, Outcome::Added);
+    // The bracket's own document, read once: never the swapped bytes'.
+    assert_eq!(lines[0].summary.as_ref().unwrap().status, Status::Accepted);
+    let reads = seam
+        .calls()
+        .iter()
+        .filter(|c| **c == Call::Read(source.clone()))
+        .count();
+    assert_eq!(reads, 1);
     assert_eq!(lines[0].sha256, Some(Sha256Hex::of(&original)));
     assert_eq!(fs::read(&source).unwrap(), b"other bytes");
     drop(catalog);

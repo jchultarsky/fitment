@@ -11,6 +11,11 @@ use fitment_catalog::preimage::{self, Status};
 use fitment_catalog::{Catalog, Options, Sha256Hex};
 use fitment_core::{EXTRACTOR_VERSION, FeaturesDocument, IndexTokens, SIGNATURE_VERSION, Sense};
 use rusqlite::Connection;
+use std::io;
+use std::sync::Arc;
+
+use fitment_catalog::Point;
+use fitment_catalog::fs::CountingFs;
 
 /// A fresh, empty directory for one test.
 pub fn scratch(test: &str) -> PathBuf {
@@ -143,6 +148,17 @@ fn blobs_hold(root: &Path, conn: &Connection, problems: &mut Vec<String>) {
     if held != rowed {
         problems.push(format!("IN3: blob rows {rowed:?}, held {held:?}"));
     }
+    // ST4: every final blob read-only.
+    #[cfg(unix)]
+    for (sha, _) in &blobs {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = store.join(&sha[..2]).join(sha);
+        if let Ok(meta) = fs::metadata(&path) {
+            if meta.permissions().mode() & 0o222 != 0 {
+                problems.push(format!("ST4: {sha} is writable"));
+            }
+        }
+    }
     let partial = fs::read_dir(root.join("tmp")).unwrap().count();
     if partial > 0 {
         problems.push(format!("IN6: {partial} temporary files"));
@@ -257,5 +273,41 @@ fn tokens_hold(conn: &Connection, problems: &mut Vec<String>) {
     );
     if !refused.is_empty() {
         problems.push(format!("IN7: tokens for refused {refused:?}"));
+    }
+}
+
+/// A seam the test keeps a handle on.
+pub struct Shared(pub Arc<CountingFs>);
+
+impl fitment_catalog::Fs for Shared {
+    fn symlink_metadata(&self, path: &Path) -> io::Result<fs::Metadata> {
+        self.0.symlink_metadata(path)
+    }
+    fn read_capped(&self, path: &Path, cap: u64) -> io::Result<fitment_catalog::Content> {
+        self.0.read_capped(path, cap)
+    }
+    fn read_dir(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        self.0.read_dir(path)
+    }
+    fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        self.0.create_dir_all(path)
+    }
+    fn write_new(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+        self.0.write_new(path, bytes)
+    }
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.0.rename(from, to)
+    }
+    fn set_readonly(&self, path: &Path, readonly: bool) -> io::Result<()> {
+        self.0.set_readonly(path, readonly)
+    }
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.0.remove_file(path)
+    }
+    fn sync_dir(&self, path: &Path) -> io::Result<()> {
+        self.0.sync_dir(path)
+    }
+    fn point(&self, at: Point) -> io::Result<()> {
+        self.0.point(at)
     }
 }

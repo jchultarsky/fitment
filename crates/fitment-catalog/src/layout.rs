@@ -111,6 +111,12 @@ impl Layout {
         out
     }
 
+    /// The directories whose entries `init` creates: `blobs/sha256`,
+    /// `blobs` and the root, to be synced so the new names are durable.
+    pub fn containers(&self) -> Vec<PathBuf> {
+        vec![self.sha256(), self.blobs(), self.root.clone()]
+    }
+
     /// PH2: `blobs`, `blobs/sha256`, each fan-out directory and `tmp` are
     /// directories, none a symbolic link.
     ///

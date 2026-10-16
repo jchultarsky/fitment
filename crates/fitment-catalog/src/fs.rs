@@ -126,6 +126,40 @@ fn read_open(mut file: File, cap: u64) -> io::Result<Content> {
     Ok(Content::Bytes(bytes))
 }
 
+/// `O_NONBLOCK`, so a FIFO put in a file's place between the type check
+/// and the open cannot block the open; a regular file reads as before.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const NONBLOCK: i32 = 0o4000;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+))]
+const NONBLOCK: i32 = 0x4;
+
+/// Opens `path` for reading, without blocking on a FIFO where the platform
+/// allows it; the open handle's type is checked after (`read_open`).
+fn open_nonblocking(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(NONBLOCK);
+    }
+    options.open(path)
+}
+
 impl Fs for StdFs {
     fn symlink_metadata(&self, path: &Path) -> io::Result<Metadata> {
         std::fs::symlink_metadata(path)
@@ -139,7 +173,7 @@ impl Fs for StdFs {
         if meta.len() > cap {
             return Ok(Content::TooLarge);
         }
-        read_open(File::open(path)?, cap)
+        read_open(open_nonblocking(path)?, cap)
     }
 
     fn read_dir(&self, path: &Path) -> io::Result<Vec<PathBuf>> {

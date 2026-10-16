@@ -124,6 +124,35 @@ impl Ingested {
     }
 }
 
+/// What an ingest did: a line per file read, in ID4's order, and why the
+/// run stopped early, if it did (the catalog busy, or its database
+/// failing): the files after it were not read.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Ingest {
+    /// One line per file, in order.
+    pub lines: Vec<Ingested>,
+    /// Why the run stopped before its last file.
+    pub stopped: Option<Error>,
+}
+
+impl<'a> IntoIterator for &'a Ingest {
+    type Item = &'a Ingested;
+    type IntoIter = std::slice::Iter<'a, Ingested>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.lines.iter()
+    }
+}
+
+impl std::ops::Deref for Ingest {
+    type Target = [Ingested];
+
+    fn deref(&self) -> &[Ingested] {
+        &self.lines
+    }
+}
+
 /// A file read and gated, ready to be decided on.
 struct Prepared {
     input: PathBuf,
@@ -138,6 +167,8 @@ struct Prepared {
     tokens: Option<IndexTokens>,
     summary: Summary,
     replaced_blob: bool,
+    /// Whether `prepare` put the blob in place, hashed.
+    placed: bool,
 }
 
 /// PH3: the final component, lossily if not UTF-8, at most 4096 bytes.
@@ -244,10 +275,7 @@ impl Catalog {
     /// [`Error::InsideCatalog`] or [`Error::IdNeedsOneFile`] before any file
     /// is read. A file's own failure is its [`Outcome`], and the run goes
     /// on.
-    pub fn ingest(&mut self, inputs: &[PathBuf], id: Option<&Id>) -> Result<Vec<Ingested>, Error> {
-        if let Some(input) = inputs.iter().find(|i| inside(self.root(), i)) {
-            return Err(Error::InsideCatalog(input.clone()));
-        }
+    pub fn ingest(&mut self, inputs: &[PathBuf], id: Option<&Id>) -> Result<Ingest, Error> {
         let mut out = Vec::new();
         let mut files = Vec::new();
         for input in inputs {
@@ -256,27 +284,45 @@ impl Catalog {
                 Err(failed) => out.push(*failed),
             }
         }
+        // ST10, on every file read: a directory's link into the catalog too.
+        if let Some(file) = files.iter().find(|f| inside(self.root(), f)) {
+            return Err(Error::InsideCatalog(file.clone()));
+        }
         if id.is_some() && (files.len() != 1 || !out.is_empty()) {
             return Err(Error::IdNeedsOneFile(files.len() + out.len()));
         }
         order(&mut files);
+        let budget = self.options.max_bytes.saturating_mul(2);
         let mut rest = files.as_slice();
         while !rest.is_empty() {
             let started = Instant::now();
             let mut batch = Vec::new();
+            let mut held = 0_u64;
             while let Some((file, tail)) = rest.split_first() {
-                if batch.len() >= BATCH_FILES || started.elapsed() > BATCH_TIME {
+                let full = batch.len() >= BATCH_FILES || held >= budget;
+                if full || started.elapsed() > BATCH_TIME {
                     break;
                 }
                 rest = tail;
-                match self.prepare(file, id) {
-                    Ok(prepared) => batch.push(prepared),
-                    Err(failed) => out.push(*failed),
+                let prepared = self.prepare(file, id);
+                if let Ok(p) = &prepared {
+                    held = held.saturating_add(u64::try_from(p.bytes.len()).unwrap_or(u64::MAX));
                 }
+                batch.push(prepared);
             }
-            out.extend(self.commit(batch));
+            let (lines, stopped) = self.commit(batch);
+            out.extend(lines);
+            if stopped.is_some() {
+                return Ok(Ingest {
+                    lines: out,
+                    stopped,
+                });
+            }
         }
-        Ok(out)
+        Ok(Ingest {
+            lines: out,
+            stopped: None,
+        })
     }
 
     /// Reads, hashes and gates one file (ST2, GT1, GT6), and puts its blob
@@ -331,10 +377,14 @@ impl Catalog {
             summary,
             bytes,
             replaced_blob: false,
+            placed: false,
         };
         if self.likely_added(&prepared) {
             match self.blobs().put(&prepared.sha256, &prepared.bytes) {
-                Ok(placed) => prepared.replaced_blob = placed == Placed::Replaced,
+                Ok(placed) => {
+                    prepared.replaced_blob = placed == Placed::Replaced;
+                    prepared.placed = true;
+                }
                 Err(e) => {
                     let mut failed = fail(
                         Some(prepared.id),
@@ -360,10 +410,10 @@ impl Catalog {
     /// One write transaction for a batch: every decision taken again on
     /// what the database holds now (DB2), every named blob checked (ST6)
     /// and its directory synced (ST3), then the rows.
-    fn commit(&mut self, batch: Vec<Prepared>) -> Vec<Ingested> {
-        if batch.is_empty() {
-            return Vec::new();
-        }
+    fn commit(
+        &mut self,
+        batch: Vec<Result<Prepared, Box<Ingested>>>,
+    ) -> (Vec<Ingested>, Option<Error>) {
         let blobs = crate::blobs::Blobs {
             layout: &self.layout,
             fs: self.fs.as_ref(),
@@ -376,7 +426,14 @@ impl Catalog {
             let mut generation = None;
             let mut synced = BTreeSet::new();
             let mut n = 0_i64;
-            for p in &batch {
+            for item in &batch {
+                let p = match item {
+                    Ok(p) => p,
+                    Err(failed) => {
+                        lines.push((**failed).clone());
+                        continue;
+                    }
+                };
                 let decision = decide(&tx, p)?;
                 let mut line = line(p, &decision);
                 if let Decision::Add = decision {
@@ -387,7 +444,8 @@ impl Catalog {
                     let size = u64::try_from(p.bytes.len()).unwrap_or(u64::MAX);
                     // ST6: written again if it went; then its directory is
                     // synced, once per commit, and again after a rewrite.
-                    let rewritten = !blobs.present(&p.sha256, size);
+                    // A blob `prepare` did not place is put now, hashed.
+                    let rewritten = !p.placed || !blobs.present(&p.sha256, size);
                     if rewritten {
                         let placed = blobs.put(&p.sha256, &p.bytes).map_err(|e| Error::Io {
                             path: blobs.layout.blob(&p.sha256),
@@ -420,21 +478,31 @@ impl Catalog {
             Ok(lines)
         })();
         match result {
-            Ok(lines) => lines,
-            Err(error) => batch
-                .into_iter()
-                .map(|p| Ingested {
-                    input: p.input,
-                    id: Some(p.id),
-                    revision: None,
-                    sha256: Some(p.sha256),
-                    summary: Some(p.summary),
-                    outcome: Outcome::Error {
-                        message: error.to_string(),
-                    },
-                    replaced_blob: p.replaced_blob,
-                })
-                .collect(),
+            Ok(lines) => (lines, None),
+            Err(error) => {
+                let message = error.to_string();
+                let lines = batch
+                    .into_iter()
+                    .map(|item| match item {
+                        Err(failed) => *failed,
+                        Ok(p) => Ingested {
+                            input: p.input,
+                            id: Some(p.id),
+                            revision: None,
+                            sha256: Some(p.sha256),
+                            summary: Some(p.summary),
+                            outcome: Outcome::Error {
+                                message: message.clone(),
+                            },
+                            replaced_blob: p.replaced_blob,
+                        },
+                    })
+                    .collect();
+                // A file's own I/O fails its batch; the lock or the database
+                // failing stops the run (CC6).
+                let fatal = !matches!(error, Error::Io { .. });
+                (lines, fatal.then_some(error))
+            }
         }
     }
 }

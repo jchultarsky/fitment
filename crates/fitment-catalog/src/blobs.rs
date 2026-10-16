@@ -4,6 +4,7 @@
 //! (QR11).
 
 use std::io;
+use std::path::PathBuf;
 
 use crate::fs::{Content, Fs};
 use crate::hex::Sha256Hex;
@@ -44,27 +45,43 @@ pub(crate) struct Blobs<'a> {
 impl Blobs<'_> {
     /// ST3: puts `bytes`, whose SHA-256 is `sha256`, at its final name: a
     /// temporary file created new, written and synced, renamed into place
-    /// and made read-only; or the file already there, if it hashes to its
-    /// name. The fan-out directory is synced by the caller, once per
-    /// commit (ST3, review F6). Every error path removes the temporary
-    /// file (ST7).
+    /// and made read-only; or the file already there, if it is a regular
+    /// file that hashes to its name, made read-only (ST4). The fan-out
+    /// directory is synced by the caller, once per commit (ST3, review F6).
+    /// Every error path removes the temporary file this call created, and
+    /// no other (ST7).
     pub(crate) fn put(&self, sha256: &Sha256Hex, bytes: &[u8]) -> io::Result<Placed> {
         let path = self.layout.blob(sha256);
         let there = match self.read(sha256) {
-            Ok(_) => return Ok(Placed::Reused),
+            Ok(_) => {
+                self.fs.set_readonly(&path, true)?;
+                return Ok(Placed::Reused);
+            }
             Err(BadBlob::Missing) => false,
             Err(_) => true,
         };
-        let temporary = self.layout.temporary();
-        let placed = self.fs.write_new(&temporary, bytes).and_then(|()| {
-            if there {
-                // Windows refuses to rename over a read-only file.
-                let _ = self.fs.set_readonly(&path, false);
+        let temporary = self.temporary(bytes)?;
+        if there {
+            // Never follow what stands there: a link or a directory is
+            // unlinked; a regular file loses its read-only flag, which
+            // Windows needs before a rename over it.
+            let regular = self.fs.symlink_metadata(&path).is_ok_and(|m| m.is_file());
+            let cleared = if regular {
+                self.fs.set_readonly(&path, false)
+            } else {
+                self.fs.remove_file(&path)
+            };
+            if let Err(error) = cleared {
+                let _ = self.fs.remove_file(&temporary);
+                return Err(error);
             }
-            self.fs.rename(&temporary, &path)
-        });
-        if let Err(error) = placed {
+        }
+        if let Err(error) = self.fs.rename(&temporary, &path) {
             let _ = self.fs.remove_file(&temporary);
+            // CC2: another writer may have put the same bytes there first.
+            if self.read(sha256).is_ok() {
+                return Ok(Placed::Reused);
+            }
             return Err(error);
         }
         self.fs.set_readonly(&path, true)?;
@@ -73,6 +90,25 @@ impl Blobs<'_> {
         } else {
             Placed::Written
         })
+    }
+
+    /// A temporary file holding `bytes`, written and synced, under a name
+    /// no other file has: a name already taken (a crashed writer's, or
+    /// another process's with the same id) is passed over, never removed.
+    fn temporary(&self, bytes: &[u8]) -> io::Result<PathBuf> {
+        let mut taken = 0;
+        loop {
+            let temporary = self.layout.temporary();
+            match self.fs.write_new(&temporary, bytes) {
+                Ok(()) => return Ok(temporary),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && taken < 100 => taken += 1,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(e),
+                Err(e) => {
+                    let _ = self.fs.remove_file(&temporary);
+                    return Err(e);
+                }
+            }
+        }
     }
 
     /// ST6: whether the blob is there with `bytes` bytes.

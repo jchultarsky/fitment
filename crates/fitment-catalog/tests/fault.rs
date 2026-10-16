@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use common::{copy, invariants, scratch};
+use common::{Shared, copy, invariants, scratch};
 use fitment_catalog::fs::{Call, CountingFs};
 use fitment_catalog::{Catalog, Options, Outcome, Point, Sha256Hex};
 use rusqlite::Connection;
@@ -34,8 +34,9 @@ fn entries(root: &Path) -> i64 {
         .unwrap()
 }
 
-/// The number of calls opening makes, and opening and ingesting.
-fn count(dir: &Path) -> (usize, usize) {
+/// The number of calls opening makes, and every call of opening and
+/// ingesting.
+fn count(dir: &Path) -> (usize, Vec<Call>) {
     let root = dir.join("count");
     Catalog::init(&root, Options::default()).unwrap();
     let seam = Arc::new(CountingFs::new());
@@ -44,43 +45,7 @@ fn count(dir: &Path) -> (usize, usize) {
     let opened = seam.calls().len();
     let lines = catalog.ingest(&inputs(dir), None).unwrap();
     assert_eq!(lines.len(), 3);
-    (opened, seam.calls().len())
-}
-
-/// A seam the test keeps a handle on.
-struct Shared(Arc<CountingFs>);
-
-impl fitment_catalog::Fs for Shared {
-    fn symlink_metadata(&self, path: &Path) -> io::Result<fs::Metadata> {
-        self.0.symlink_metadata(path)
-    }
-    fn read_capped(&self, path: &Path, cap: u64) -> io::Result<fitment_catalog::Content> {
-        self.0.read_capped(path, cap)
-    }
-    fn read_dir(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
-        self.0.read_dir(path)
-    }
-    fn create_dir_all(&self, path: &Path) -> io::Result<()> {
-        self.0.create_dir_all(path)
-    }
-    fn write_new(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
-        self.0.write_new(path, bytes)
-    }
-    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        self.0.rename(from, to)
-    }
-    fn set_readonly(&self, path: &Path, readonly: bool) -> io::Result<()> {
-        self.0.set_readonly(path, readonly)
-    }
-    fn remove_file(&self, path: &Path) -> io::Result<()> {
-        self.0.remove_file(path)
-    }
-    fn sync_dir(&self, path: &Path) -> io::Result<()> {
-        self.0.sync_dir(path)
-    }
-    fn point(&self, at: Point) -> io::Result<()> {
-        self.0.point(at)
-    }
+    (opened, seam.calls())
 }
 
 /// CT13 for ingest: for every call k of a batch and each of ENOSPC, EIO
@@ -90,7 +55,8 @@ impl fitment_catalog::Fs for Shared {
 #[test]
 fn an_ingest_is_all_or_nothing_under_any_fault() {
     let dir = scratch("faults");
-    let (opened, total) = count(&dir);
+    let (opened, calls) = count(&dir);
+    let total = calls.len();
     assert!(total > opened + 5, "the ingest makes file calls");
     let kinds = [
         io::ErrorKind::StorageFull,
@@ -98,7 +64,7 @@ fn an_ingest_is_all_or_nothing_under_any_fault() {
         io::ErrorKind::NotFound,
     ];
     let mut faulted = 0;
-    for k in opened..total {
+    for (k, call) in calls.iter().enumerate().skip(opened) {
         for kind in kinds {
             let root = dir.join(format!("k{k}-{kind:?}"));
             Catalog::init(&root, Options::default()).unwrap();
@@ -121,9 +87,11 @@ fn an_ingest_is_all_or_nothing_under_any_fault() {
                 i64::try_from(added).unwrap(),
                 "k {k} {kind:?}: {lines:?}"
             );
+            // ST7: only a fault on the removal itself leaves a temporary.
+            let left = matches!(call, Call::Remove(_));
             let problems: Vec<String> = invariants(&root)
                 .into_iter()
-                .filter(|p| !p.starts_with("IN6"))
+                .filter(|p| !(left && p.starts_with("IN6")))
                 .collect();
             assert!(problems.is_empty(), "k {k} {kind:?}: {problems:?}");
             let mut again = Catalog::open(&root, Options::default()).unwrap();
@@ -132,7 +100,7 @@ fn an_ingest_is_all_or_nothing_under_any_fault() {
             assert_eq!(entries(&root), 2, "k {k} {kind:?}: the rerun");
             let problems: Vec<String> = invariants(&root)
                 .into_iter()
-                .filter(|p| !p.starts_with("IN6"))
+                .filter(|p| !(left && p.starts_with("IN6")))
                 .collect();
             assert!(problems.is_empty(), "k {k} {kind:?} rerun: {problems:?}");
         }

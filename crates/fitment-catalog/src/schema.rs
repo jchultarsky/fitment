@@ -88,7 +88,11 @@ pub fn migrate(
     steps: &[(i64, Migration)],
 ) -> rusqlite::Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)?;
-    let mut at = from;
+    // DB2: read again under the lock; another process may have migrated.
+    let mut at: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if at < from {
+        at = from;
+    }
     while at < to {
         let Some((_, step)) = steps.iter().find(|(v, _)| *v == at) else {
             return Err(rusqlite::Error::InvalidParameterName(format!(
