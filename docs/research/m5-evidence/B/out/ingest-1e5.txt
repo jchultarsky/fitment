@@ -1,0 +1,2 @@
+bases: 228 accepted parts
+ingest: 100083 stored (9 duplicate), 100083 in catalog, 220800 postings; wall 9.80 s with 16 threads; read 22.70 s cpu (0.227 ms/part); db 3119.0 MB (features JSON 2940.5 MB, tokens JSON 54.7 MB); total 11.15 s

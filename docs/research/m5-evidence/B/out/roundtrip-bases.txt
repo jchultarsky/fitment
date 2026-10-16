@@ -1,0 +1,3 @@
+round trip: 228 equal, 0 differ, 229 refused; features JSON median 27170 B, p90 39084 B, max 90498 B; read 0.53 ms/part, from_json 0.038 ms/part
+compact JSON: 0.373 of pretty's bytes; from_json 0.029 ms/part (pretty 0.038)
+judge_step == judge_part(stored): 105 equal, 0 differ; sockets missing 1

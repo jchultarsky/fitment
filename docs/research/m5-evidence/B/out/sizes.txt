@@ -1,0 +1,2 @@
+fx: 24 parts: compact features 135.7 KB/part (from_json 0.379 ms), signature 13.2 KB/part (parse as Value 0.039 ms), tokens 36.6 KB/part
+bases: 228 parts: compact features 10.6 KB/part (from_json 0.027 ms), signature 1.9 KB/part (parse as Value 0.005 ms), tokens 0.5 KB/part

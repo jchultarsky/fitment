@@ -1,0 +1,40 @@
+                             
+s01_bolted__BOLT               L1 31 hits in 2.32 ms, total 83.2 ms equal-to-bypass
+                             
+s01_bolted__BRACKET            L1 95 hits in 285.77 ms, total 442.5 ms equal-to-bypass
+                             
+s01_bolted__NUT                L1 345 hits in 11.34 ms, total 104.5 ms equal-to-bypass
+                             
+s01_bolted__PLATE              L1 99 hits in 30.88 ms, total 91.8 ms equal-to-bypass
+                             
+s02_cbore__BASE                L1 345 hits in 2.19 ms, total 30.1 ms equal-to-bypass
+                             
+s02_cbore__BLOCK               L1 8844 hits in 30.76 ms, total 217.1 ms equal-to-bypass
+                             
+s02_cbore__SCREW               L1 31 hits in 0.22 ms, total 8.2 ms equal-to-bypass
+                             
+s03_dowels__PLATE              L1 3 hits in 3.36 ms, total 30.6 ms equal-to-bypass
+                             
+s04_bearing__BEARING           L1 2 hits in 1.94 ms, total 10.6 ms equal-to-bypass
+                             
+s04_bearing__HOUSING           L1 16 hits in 0.95 ms, total 12.5 ms equal-to-bypass
+                             
+s05_stack__WASHER              L1 6061 hits in 44.67 ms, total 124.9 ms equal-to-bypass
+                             
+s07b_one_missing__BRACKET      L1 56 hits in 35.81 ms, total 353.6 ms equal-to-bypass
+                             
+s15_mirror_part__BLOCK         L1 8844 hits in 31.52 ms, total 142.5 ms equal-to-bypass
+                             
+s16_offaxis__PLATE             L1 54 hits in 16.67 ms, total 25.0 ms equal-to-bypass
+                             
+s18_csink__PLATE               L1 359 hits in 2.15 ms, total 46.2 ms equal-to-bypass
+                             
+s19_boss__COVER                L1 70 hits in 1.97 ms, total 28.8 ms equal-to-bypass
+                             
+s19_boss__HOUSING              L1 748 hits in 22.30 ms, total 328.0 ms equal-to-bypass
+                             
+s21_self_rod__BLOCK10          L1 198 hits in 7.16 ms, total 23.3 ms equal-to-bypass
+                             
+s50_cap__TUBE                  L1 7 hits in 0.37 ms, total 13.5 ms equal-to-bypass
+                             
+s59_mirror_block__BLOCK        L1 7 hits in 3.42 ms, total 20.0 ms equal-to-bypass

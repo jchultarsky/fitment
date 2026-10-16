@@ -1,0 +1,830 @@
+{
+  "format": "fitment.match",
+  "format_version": 1,
+  "extractor_version": 6,
+  "socket_rules_version": 7,
+  "signature_version": 1,
+  "match_rules_version": 1,
+  "policy": {
+    "name": "default",
+    "linear_mm": 0.01,
+    "angular_deg": 0.01,
+    "clearance": "strict",
+    "grip": "hard"
+  },
+  "options": {
+    "require_fit": false,
+    "require_reviewed": false
+  },
+  "fit_verifier": null,
+  "socket": {
+    "digest": "sha256:afde50c9132fe6121f5d46b13208485e8bc5bccee037baaaac854a1608dc845f",
+    "source": {
+      "sha256": "416ba42967fb80b0a5c905baba7fd3f7851233b86c330cf6ac3c07cd89d4cb28",
+      "bytes": 33382
+    },
+    "target": {
+      "instance": 396,
+      "product": {
+        "id": "PLATE",
+        "instance": 398,
+        "name": "PLATE"
+      }
+    },
+    "selection": {
+      "matched_by": "product_id",
+      "occurrence": null,
+      "part": "PLATE"
+    },
+    "sockets": [
+      {
+        "id": "socket-1",
+        "occurrences": 1,
+        "active": 5,
+        "unreviewed": 5,
+        "removed": [],
+        "unverifiable": [],
+        "left_out": []
+      }
+    ]
+  },
+  "summary": {
+    "candidates": 2,
+    "match": 0,
+    "interface_match": 1,
+    "reject": 1,
+    "refused": 0
+  },
+  "candidates": [
+    {
+      "labels": [
+        "catalog:76"
+      ],
+      "source": {
+        "bytes": 13223,
+        "header": {
+          "implementation_level": "2;1",
+          "originating_system": "Open CASCADE 7.9",
+          "preprocessor_version": "Open CASCADE STEP processor 7.9",
+          "schema": "ap214",
+          "schema_identifiers": [
+            "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+          ]
+        },
+        "kind": "file",
+        "sha256": "86760f94b795d3beee1b6c61cef4b1ae66991b9544717ae290c77b20a07faea7"
+      },
+      "product": {
+        "instance": 7,
+        "id": "m_plate03",
+        "name": "m_plate03"
+      },
+      "status": "accepted",
+      "refusals": [],
+      "read": {
+        "complete": true,
+        "extractor_version": 6,
+        "max_uncertainty_mm": 1e-7,
+        "max_vertex_offset_mm": 8.881784197e-15
+      },
+      "verdict": "interface_match",
+      "fit": {
+        "status": "not_checked",
+        "reason": "no fit verifier in this build"
+      },
+      "flags": [
+        "thread_not_confirmed",
+        "material_not_compared",
+        "requirements_unreviewed"
+      ],
+      "warnings": [],
+      "properties": {
+        "material": {
+          "reason": "no property fitment maps in either file",
+          "status": "not_compared"
+        }
+      },
+      "reasons": [],
+      "sockets": [
+        {
+          "socket": "socket-1",
+          "stage": "verification",
+          "verdict": "interface_match",
+          "fit": {
+            "status": "not_checked",
+            "reason": "no fit verifier in this build"
+          },
+          "placement": {
+            "rotation": [
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                -1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              50.0,
+              100.0,
+              -25.0
+            ],
+            "seeded_by": {
+              "axis_pair": {
+                "a": [
+                  "bore:hole-640",
+                  "hole-253"
+                ],
+                "b": [
+                  "bore:hole-691",
+                  "hole-304"
+                ]
+              }
+            },
+            "tried": 2,
+            "exhausted": false,
+            "chosen": "first_passing",
+            "u_mm": 1e-6,
+            "epsilon_mm": 0.009999000000000001
+          },
+          "missing": [],
+          "failed": 0,
+          "checks": [
+            {
+              "requirement": "seat:plane-567",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "plane-180",
+              "measures": [
+                {
+                  "quantity": "plane_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "plane_offset_mm",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "covers",
+                  "at": {
+                    "contact_face": 567
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            },
+            {
+              "requirement": "bore:hole-640",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "hole-253",
+              "measures": [
+                {
+                  "quantity": "axis_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "axis_offset_mm",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 10.0,
+                  "nominal": 8.01,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 8.000001,
+                  "max": null,
+                  "margin": 1.9999990000000007,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 5.97,
+                  "nominal": 5.97,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 5.960001,
+                  "max": 5.979998999999999,
+                  "margin": 0.009998999999999647,
+                  "passed": true
+                },
+                {
+                  "quantity": "open_start",
+                  "at": {
+                    "end": "start"
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            },
+            {
+              "requirement": "bore:hole-657",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "hole-270",
+              "measures": [
+                {
+                  "quantity": "axis_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "axis_offset_mm",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 10.0,
+                  "nominal": 8.01,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 8.000001,
+                  "max": null,
+                  "margin": 1.9999990000000007,
+                  "passed": true
+                },
+                {
+                  "quantity": "clear_margin_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 0.10000000000000009,
+                  "nominal": null,
+                  "band": "tau_guard",
+                  "band_mm": 0.010001,
+                  "min": 0.010001,
+                  "max": null,
+                  "margin": 0.08999900000000009,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 6.2,
+                  "nominal": 6.2,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 6.209999,
+                  "margin": 0.009998999999999647,
+                  "passed": true
+                },
+                {
+                  "quantity": "open_start",
+                  "at": {
+                    "end": "start"
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            },
+            {
+              "requirement": "bore:hole-674",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "hole-287",
+              "measures": [
+                {
+                  "quantity": "axis_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "axis_offset_mm",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 10.0,
+                  "nominal": 8.01,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 8.000001,
+                  "max": null,
+                  "margin": 1.9999990000000007,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 6.0,
+                  "nominal": 6.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 5.990001,
+                  "max": 6.009999,
+                  "margin": 0.009998999999999647,
+                  "passed": true
+                },
+                {
+                  "quantity": "open_start",
+                  "at": {
+                    "end": "start"
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            },
+            {
+              "requirement": "bore:hole-691",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "hole-304",
+              "measures": [
+                {
+                  "quantity": "axis_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "axis_offset_mm",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 10.0,
+                  "nominal": 8.01,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 8.000001,
+                  "max": null,
+                  "margin": 1.9999990000000007,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.01
+                    ]
+                  },
+                  "found": 6.015,
+                  "nominal": 6.015,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 6.005001,
+                  "max": 6.024998999999999,
+                  "margin": 0.009998999999999647,
+                  "passed": true
+                },
+                {
+                  "quantity": "open_start",
+                  "at": {
+                    "end": "start"
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            }
+          ],
+          "not_checked": []
+        }
+      ]
+    },
+    {
+      "labels": [
+        "catalog:90"
+      ],
+      "source": {
+        "bytes": 13263,
+        "header": {
+          "implementation_level": "2;1",
+          "originating_system": "Open CASCADE 7.9",
+          "preprocessor_version": "Open CASCADE STEP processor 7.9",
+          "schema": "ap214",
+          "schema_identifiers": [
+            "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+          ]
+        },
+        "kind": "file",
+        "sha256": "a870a0b009df3d1dc958cdba897276a1fc41032f286aed43946d1519bded261a"
+      },
+      "product": {
+        "instance": 7,
+        "id": "m_plate03_pin_shift_tol",
+        "name": "m_plate03_pin_shift_tol"
+      },
+      "status": "accepted",
+      "refusals": [],
+      "read": {
+        "complete": true,
+        "extractor_version": 6,
+        "max_uncertainty_mm": 1e-7,
+        "max_vertex_offset_mm": 8.881784197e-15
+      },
+      "verdict": "reject",
+      "fit": {
+        "status": "not_checked",
+        "reason": "interface rejected"
+      },
+      "flags": [
+        "thread_not_confirmed",
+        "material_not_compared",
+        "requirements_unreviewed"
+      ],
+      "warnings": [],
+      "properties": {
+        "material": {
+          "reason": "no property fitment maps in either file",
+          "status": "not_compared"
+        }
+      },
+      "reasons": [
+        {
+          "reason": "requirement_failed",
+          "requirement": "socket-1/seat:plane-567",
+          "detail": "a candidate edge lies 0.00999999999999801 mm inside contact face #567 at [13.009999999999998, 0.0, 0.0]",
+          "codes": [
+            "contact_not_covered"
+          ]
+        },
+        {
+          "reason": "requirement_failed",
+          "requirement": "socket-1/bore:hole-674",
+          "detail": "hole-287 lies 0.00999999999999801 mm off the axis at sine 0",
+          "codes": [
+            "axis_offset"
+          ]
+        }
+      ],
+      "sockets": [
+        {
+          "socket": "socket-1",
+          "stage": "verification",
+          "verdict": "reject",
+          "fit": {
+            "status": "not_checked",
+            "reason": "interface rejected"
+          },
+          "placement": {
+            "rotation": [
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                -1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              50.0,
+              100.0,
+              -25.0
+            ],
+            "seeded_by": {
+              "axis_pair": {
+                "a": [
+                  "bore:hole-640",
+                  "hole-253"
+                ],
+                "b": [
+                  "bore:hole-691",
+                  "hole-304"
+                ]
+              }
+            },
+            "tried": 2,
+            "exhausted": false,
+            "chosen": "fewest_failures",
+            "u_mm": 1e-6,
+            "epsilon_mm": 0.009999000000000001
+          },
+          "missing": [],
+          "failed": 2,
+          "checks": [
+            {
+              "requirement": "seat:plane-567",
+              "review": "unreviewed",
+              "result": "failed",
+              "feature": "plane-180",
+              "measures": [
+                {
+                  "quantity": "plane_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "plane_offset_mm",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "covers",
+                  "at": {
+                    "contact_face": 567
+                  },
+                  "found": false,
+                  "required": true,
+                  "passed": false
+                }
+              ],
+              "failures": [
+                {
+                  "code": "contact_not_covered",
+                  "at": {
+                    "contact_face": 567
+                  },
+                  "detail": "a candidate edge lies 0.00999999999999801 mm inside contact face #567 at [13.009999999999998, 0.0, 0.0]"
+                }
+              ]
+            },
+            {
+              "requirement": "bore:hole-640",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "hole-253"
+            },
+            {
+              "requirement": "bore:hole-657",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "hole-270"
+            },
+            {
+              "requirement": "bore:hole-674",
+              "review": "unreviewed",
+              "result": "failed",
+              "feature": "hole-287",
+              "measures": [
+                {
+                  "quantity": "axis_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "axis_offset_mm",
+                  "at": {},
+                  "found": 0.00999999999999801,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": -9.999999980095375e-7,
+                  "passed": false
+                }
+              ],
+              "failures": [
+                {
+                  "code": "axis_offset",
+                  "at": {},
+                  "detail": "hole-287 lies 0.00999999999999801 mm off the axis at sine 0"
+                }
+              ]
+            },
+            {
+              "requirement": "bore:hole-691",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "hole-304"
+            }
+          ],
+          "not_checked": []
+        }
+      ]
+    }
+  ],
+  "digest": "sha256:a41e17ca4089282f0f878e0d1b9b6f2baf2840af8e0226943c12591cf53a8cb6"
+}

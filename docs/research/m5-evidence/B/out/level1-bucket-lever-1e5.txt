@@ -1,0 +1,5 @@
+s01_bolted__BRACKET            L1 95 hits in 32.77 ms, total 196.3 ms equal-to-bypass
+s01_bolted__PLATE              L1 99 hits in 30.90 ms, total 92.2 ms equal-to-bypass
+s07b_one_missing__BRACKET      L1 56 hits in 35.17 ms, total 361.8 ms equal-to-bypass
+s05_stack__WASHER              L1 6061 hits in 43.17 ms, total 122.3 ms equal-to-bypass
+s02_cbore__BLOCK               L1 8844 hits in 31.02 ms, total 161.7 ms equal-to-bypass

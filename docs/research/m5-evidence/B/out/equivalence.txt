@@ -1,0 +1,32 @@
+s01_bolted__BOLT                 OK  file 457 (refused 229, level-2 drops 226), catalog 2; passes file 2 catalog 2
+s01_bolted__BRACKET              OK  file 457 (refused 229, level-2 drops 207), catalog 21; passes file 11 catalog 11
+s01_bolted__NUT                  OK  file 457 (refused 229, level-2 drops 212), catalog 16; passes file 2 catalog 2
+s01_bolted__PLATE                OK  file 457 (refused 229, level-2 drops 227), catalog 1; passes file 1 catalog 1
+s02_cbore__BASE                  OK  file 457 (refused 229, level-2 drops 226), catalog 2; passes file 1 catalog 1
+s02_cbore__BLOCK                 OK  file 457 (refused 229, level-2 drops 207), catalog 21; passes file 20 catalog 20
+s02_cbore__SCREW                 OK  file 457 (refused 229, level-2 drops 227), catalog 1; passes file 1 catalog 1
+s03_dowels__PLATE                OK  file 457 (refused 229, level-2 drops 226), catalog 2; passes file 1 catalog 1
+s04_bearing__BEARING             OK  file 457 (refused 229, level-2 drops 227), catalog 1; passes file 1 catalog 1
+s04_bearing__HOUSING             OK  file 457 (refused 229, level-2 drops 227), catalog 1; passes file 1 catalog 1
+s05_stack__WASHER                OK  file 457 (refused 229, level-2 drops 227), catalog 1; passes file 1 catalog 1
+s07b_one_missing__BRACKET        OK  file 457 (refused 229, level-2 drops 208), catalog 20; passes file 10 catalog 10
+s11_unread_neighbour__BRACKET    BLOCKED; file-run passes: 0 of 457
+s12_undecided_target__ANGLED     BLOCKED; file-run passes: 0 of 457
+s13_unknown_outline__BLOCK       BLOCKED; file-run passes: 0 of 457
+s13_unknown_outline__PLATE       BLOCKED; file-run passes: 0 of 457
+s15_mirror_part__BLOCK           OK  file 457 (refused 229, level-2 drops 227), catalog 1; passes file 1 catalog 1
+s16_offaxis__PLATE               OK  file 457 (refused 229, level-2 drops 221), catalog 7; passes file 7 catalog 7
+s17_slot__PLATE                  BLOCKED; file-run passes: 0 of 457
+s18_csink__PLATE                 OK  file 457 (refused 229, level-2 drops 222), catalog 6; passes file 4 catalog 4
+s19_boss__COVER                  OK  file 457 (refused 229, level-2 drops 223), catalog 5; passes file 5 catalog 5
+s19_boss__HOUSING                OK  file 457 (refused 229, level-2 drops 220), catalog 8; passes file 1 catalog 1
+s21_self_rod__BLOCK10            OK  file 457 (refused 229, level-2 drops 215), catalog 13; passes file 10 catalog 10
+s47_rod_on_flat__PLATE           BLOCKED; file-run passes: 0 of 457
+s48_dshaft__DSHAFT               BLOCKED; file-run passes: 0 of 457
+s50_cap__TUBE                    OK  file 457 (refused 229, level-2 drops 223), catalog 5; passes file 1 catalog 1
+s52_skew__PIN                    BLOCKED; file-run passes: 0 of 457
+s52_skew__PLATE                  BLOCKED; file-run passes: 0 of 457
+s58_csink_tilted__PLATE          BLOCKED; file-run passes: 0 of 457
+s59_mirror_block__BLOCK          OK  file 457 (refused 229, level-2 drops 225), catalog 3; passes file 1 catalog 1
+s61_floor_parts__BRACKET         BLOCKED; file-run passes: 0 of 457
+s62_floor_placement__BRACKET     OK  file 457 (refused 229, level-2 drops 207), catalog 21; passes file 11 catalog 11

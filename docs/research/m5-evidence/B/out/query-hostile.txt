@@ -1,0 +1,2 @@
+s01_bolted__BRACKET      catalog 232; level1 39 hits in 8.15 ms; level2 kept 24 dropped 15; wall judge 3246.4 ms (16 threads): cpu load 54.7 ms parse 163.2 ms level2 13.7 ms judge 5618.1 ms; slowest part 3170.9 ms (id 203); document 2.6 ms; (24, 12, 12); total 3257.8 ms
+s02_cbore__BLOCK         catalog 232; level1 129 hits in 8.14 ms; level2 kept 23 dropped 106; wall judge 208.1 ms (16 threads): cpu load 54.8 ms parse 144.1 ms level2 12.9 ms judge 480.6 ms; slowest part 203.2 ms (id 203); document 1.3 ms; (23, 20, 3); total 218.2 ms

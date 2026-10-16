@@ -1,0 +1,14 @@
+s01_bolted__BRACKET          catalog 100092; level1 15365 hits in 180.13 ms; level2 kept 9219 dropped 6146; wall judge 49723.0 ms (16 threads): cpu load 439.9 ms parse 1043.1 ms level2 144.8 ms judge 771315.6 ms; slowest part 136.1 ms (id 77708); document 1187.9 ms; (9219, 4829, 4390); total 51094.4 ms
+    document 0.0 MB
+s01_bolted__NUT              catalog 100092; level1 8341 hits in 35.93 ms; level2 kept 7024 dropped 1317; wall judge 884.0 ms (16 threads): cpu load 191.9 ms parse 478.8 ms level2 42.3 ms judge 11841.1 ms; slowest part 5.6 ms (id 80924); document 642.4 ms; (7024, 878, 6146); total 1567.7 ms
+    document 0.0 MB
+s02_cbore__BLOCK             catalog 100092; level1 54875 hits in 175.31 ms; level2 kept 9219 dropped 45656; wall judge 8039.2 ms (16 threads): cpu load 1129.7 ms parse 2680.8 ms level2 190.6 ms judge 116917.8 ms; slowest part 21.2 ms (id 65677); document 1023.2 ms; (9219, 8780, 439); total 9240.4 ms
+    document 0.0 MB
+s05_stack__WASHER            catalog 100092; level1 14487 hits in 139.08 ms; level2 kept 439 dropped 14048; wall judge 409.2 ms (16 threads): cpu load 441.7 ms parse 704.8 ms level2 52.9 ms judge 4257.4 ms; slowest part 11.2 ms (id 90010); document 39.3 ms; (439, 439, 0); total 590.3 ms
+    document 0.0 MB
+s19_boss__HOUSING            catalog 100092; level1 3512 hits in 27.18 ms; level2 kept 3512 dropped 0; wall judge 1676.1 ms (16 threads): cpu load 86.6 ms parse 176.2 ms level2 17.8 ms judge 25120.7 ms; slowest part 12.2 ms (id 829); document 208.1 ms; (3512, 439, 3073); total 1914.1 ms
+    document 0.0 MB
+s03_dowels__PLATE            catalog 100092; level1 878 hits in 28.97 ms; level2 kept 878 dropped 0; wall judge 1049.2 ms (16 threads): cpu load 20.8 ms parse 44.6 ms level2 7.6 ms judge 13234.5 ms; slowest part 34.9 ms (id 35666); document 49.1 ms; (878, 439, 439); total 1130.0 ms
+    document 0.0 MB
+s21_self_rod__BLOCK10        catalog 100092; level1 8341 hits in 38.63 ms; level2 kept 5707 dropped 2634; wall judge 95.1 ms (16 threads): cpu load 623.1 ms parse 458.2 ms level2 37.3 ms judge 288.7 ms; slowest part 0.7 ms (id 148); document 402.0 ms; (5707, 4390, 1317); total 538.5 ms
+    document 0.0 MB

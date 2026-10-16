@@ -1,0 +1,40 @@
+s01_bolted__BOLT               all: kept 3 dropped 100080 judge-wall 979.9 ms total 1044.4 ms
+   level-1 run equal to the level-1-bypassed run: True 3
+s01_bolted__BRACKET            all: kept 32 dropped 100051 judge-wall 1060.8 ms total 1135.9 ms
+   level-1 run equal to the level-1-bypassed run: True 32
+s01_bolted__NUT                all: kept 271 dropped 99812 judge-wall 1068.5 ms total 1126.1 ms
+   level-1 run equal to the level-1-bypassed run: True 271
+s01_bolted__PLATE              all: kept 3 dropped 100080 judge-wall 1010.9 ms total 1084.8 ms
+   level-1 run equal to the level-1-bypassed run: True 3
+s02_cbore__BASE                all: kept 8 dropped 100075 judge-wall 1001.2 ms total 1046.0 ms
+   level-1 run equal to the level-1-bypassed run: True 8
+s02_cbore__BLOCK               all: kept 36 dropped 100047 judge-wall 997.7 ms total 1072.9 ms
+   level-1 run equal to the level-1-bypassed run: True 36
+s02_cbore__SCREW               all: kept 2 dropped 100081 judge-wall 979.8 ms total 1022.9 ms
+   level-1 run equal to the level-1-bypassed run: True 2
+s03_dowels__PLATE              all: kept 2 dropped 100081 judge-wall 979.4 ms total 1026.5 ms
+   level-1 run equal to the level-1-bypassed run: True 2
+s04_bearing__BEARING           all: kept 2 dropped 100081 judge-wall 979.7 ms total 1056.2 ms
+   level-1 run equal to the level-1-bypassed run: True 2
+s04_bearing__HOUSING           all: kept 6 dropped 100077 judge-wall 991.4 ms total 1034.7 ms
+   level-1 run equal to the level-1-bypassed run: True 6
+s05_stack__WASHER              all: kept 2 dropped 100081 judge-wall 982.2 ms total 1089.6 ms
+   level-1 run equal to the level-1-bypassed run: True 2
+s07b_one_missing__BRACKET      all: kept 28 dropped 100055 judge-wall 1126.3 ms total 1226.1 ms
+   level-1 run equal to the level-1-bypassed run: True 28
+s15_mirror_part__BLOCK         all: kept 116 dropped 99967 judge-wall 980.3 ms total 1060.2 ms
+   level-1 run equal to the level-1-bypassed run: True 116
+s16_offaxis__PLATE             all: kept 26 dropped 100057 judge-wall 969.5 ms total 1027.9 ms
+   level-1 run equal to the level-1-bypassed run: True 26
+s18_csink__PLATE               all: kept 13 dropped 100070 judge-wall 1009.9 ms total 1055.8 ms
+   level-1 run equal to the level-1-bypassed run: True 13
+s19_boss__COVER                all: kept 22 dropped 100061 judge-wall 995.8 ms total 1040.0 ms
+   level-1 run equal to the level-1-bypassed run: True 22
+s19_boss__HOUSING              all: kept 650 dropped 99433 judge-wall 1234.6 ms total 1308.0 ms
+   level-1 run equal to the level-1-bypassed run: True 650
+s21_self_rod__BLOCK10          all: kept 177 dropped 99906 judge-wall 970.0 ms total 1020.2 ms
+   level-1 run equal to the level-1-bypassed run: True 177
+s50_cap__TUBE                  all: kept 7 dropped 100076 judge-wall 977.7 ms total 1021.2 ms
+   level-1 run equal to the level-1-bypassed run: True 7
+s59_mirror_block__BLOCK        all: kept 6 dropped 100077 judge-wall 979.4 ms total 1025.2 ms
+   level-1 run equal to the level-1-bypassed run: True 6
