@@ -3,6 +3,8 @@
 //! and every failure coded (VR1). Bores and shafts are `axial.rs`'s; seat
 //! coverage is `region.rs`'s; seats, grips and conical seats are here.
 
+use std::collections::BTreeMap;
+
 use super::align::Placement;
 use super::axial;
 use super::candidate::CandidateView;
@@ -18,13 +20,20 @@ use crate::verdict::Check;
 /// The guard on angular comparisons (VR2), in radians.
 pub(crate) const ANGLE_GUARD_RAD: f64 = 1e-9;
 
-/// The work a socket's coverage and core tests may do (AL11).
+/// The coverage evidence already computed for one socket: by placement,
+/// candidate plane and contact faces.
+type Covered = BTreeMap<(usize, usize, Vec<u64>), Evidence>;
+
+/// The work a socket's coverage and core tests may do (AL11), and the
+/// coverage already found, so a grip reuses its seats' and the chosen
+/// placement the search's.
 #[derive(Debug, Clone)]
 pub(crate) struct Budget {
-    /// Steps taken.
+    /// Work done.
     pub(crate) used: u64,
     /// The most allowed.
     pub(crate) limit: u64,
+    covered: Covered,
 }
 
 impl Budget {
@@ -33,6 +42,17 @@ impl Budget {
         Self {
             used: 0,
             limit: MAX_COVERAGE_STEPS,
+            covered: BTreeMap::new(),
+        }
+    }
+
+    /// A budget of `limit`.
+    #[cfg(test)]
+    pub(crate) fn of(limit: u64) -> Self {
+        Self {
+            used: 0,
+            limit,
+            covered: BTreeMap::new(),
         }
     }
 }
@@ -56,10 +76,12 @@ pub(crate) struct Ctx<'a> {
     pub(crate) sine: f64,
     /// D6 strict.
     pub(crate) strict: bool,
+    /// The placement's index, for the coverage already found.
+    pub(crate) index: usize,
 }
 
 impl<'a> Ctx<'a> {
-    fn new(
+    pub(crate) fn new(
         view: &'a SocketView<'a>,
         cand: &'a CandidateView<'a>,
         at: &Placement,
@@ -78,6 +100,7 @@ impl<'a> Ctx<'a> {
             angle,
             sine: libm::sin(angle.max(0.0)),
             strict: policy.clearance() == super::Clearance::Strict,
+            index: at.index,
         }
     }
 
@@ -158,7 +181,7 @@ fn evidence(
         } => seat(&ctx, (normal.to_array(), *offset_mm), contacts, budget),
         Requires::Grip {
             seats, length_mm, ..
-        } => grip(&ctx, seats, *length_mm),
+        } => grip(&ctx, seats, *length_mm, budget),
         Requires::ConicalSeat {
             axis,
             apex_mm,
@@ -209,7 +232,7 @@ fn reason(requirement: &Requirement) -> String {
 /// and its largest departure from the seat's plane over the region.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlaneAt {
-    index: usize,
+    pub(crate) index: usize,
     offset: f64,
     sine: f64,
     dev: f64,
@@ -301,15 +324,28 @@ fn plane_measures(ctx: &Ctx<'_>, at: &PlaneAt, nominal: f64) -> [Measure; 2] {
 }
 
 /// The planes within the tolerance of a seat.
-fn matching(ctx: &Ctx<'_>, seat: (V, f64), pts: &[(V, f64)]) -> (Vec<PlaneAt>, Option<PlaneAt>) {
+/// Past the bound, `None`: each plane costs a test of every region point
+/// (AL11).
+fn matching(
+    ctx: &Ctx<'_>,
+    seat: (V, f64),
+    pts: &[(V, f64)],
+    budget: &mut Budget,
+) -> Option<(Vec<PlaneAt>, Option<PlaneAt>)> {
+    let planes = ctx.cand.part().planes.len().max(1);
+    let work = u64::try_from(planes.saturating_mul(pts.len().max(1))).unwrap_or(u64::MAX);
+    budget.used = budget.used.saturating_add(work);
+    if budget.used > budget.limit {
+        return None;
+    }
     let all = planes_at(ctx, seat, pts);
     let nearest = all.first().copied();
-    (
+    Some((
         all.into_iter()
             .filter(|p| p.sine < ctx.sine && p.dev < ctx.eps)
             .collect(),
         nearest,
-    )
+    ))
 }
 
 /// VR10: a plane of the candidate's shell at the seat, whose faces of
@@ -321,7 +357,9 @@ fn seat(
     budget: &mut Budget,
 ) -> Evidence {
     let pts = region_points(contacts);
-    let (planes, nearest) = matching(ctx, (n, o), &pts);
+    let Some((planes, nearest)) = matching(ctx, (n, o), &pts, budget) else {
+        return exhausted();
+    };
     if planes.is_empty() {
         let measures = nearest.map_or_else(Vec::new, |p| plane_measures(ctx, &p, 0.0).to_vec());
         let detail = nearest.map_or_else(
@@ -347,14 +385,38 @@ fn seat(
         }
         first.get_or_insert(e);
     }
-    first.unwrap_or_default()
+    first.unwrap_or_else(|| {
+        Evidence::failed(FailureCode::NoFeature, "no candidate plane was judged")
+    })
+}
+
+/// VR11 on one candidate plane, as `covering` finds it, once per
+/// placement, plane and contacts.
+fn coverage(
+    ctx: &Ctx<'_>,
+    at: &PlaneAt,
+    seat: (V, f64),
+    contacts: &[SeatContact],
+    budget: &mut Budget,
+) -> Evidence {
+    let key = (
+        ctx.index,
+        at.index,
+        contacts.iter().map(|c| c.face).collect(),
+    );
+    if let Some(found) = budget.covered.get(&key) {
+        return found.clone();
+    }
+    let found = covering(ctx, at, seat, contacts, budget);
+    budget.covered.insert(key, found.clone());
+    found
 }
 
 /// VR11 on one candidate plane: each contact's region covered by the
 /// plane's faces of known outline. An edge is a boundary of their union
 /// unless both faces it joins are in it, so with a face of unknown outline
 /// on the plane every edge is one (RS4).
-fn coverage(
+fn covering(
     ctx: &Ctx<'_>,
     at: &PlaneAt,
     (n, o): (V, f64),
@@ -362,7 +424,7 @@ fn coverage(
     budget: &mut Budget,
 ) -> Evidence {
     let Some(plane) = ctx.cand.part().planes.get(at.index) else {
-        return Evidence::default();
+        return Evidence::failed(FailureCode::NoFeature, "the plane judged is not the part's");
     };
     let frame = SeatFrame::new(n, o);
     let unknown = plane
@@ -537,7 +599,7 @@ fn seat_on<'r>(ctx: &Ctx<'r>, feature: FeatureId) -> Option<&'r Requirement> {
 
 /// VR12: both seats' planes found as VR10 finds them (or a conical side's
 /// cone, L2), their separation within ε of the target's. D7 is hard.
-fn grip(ctx: &Ctx<'_>, seats: &[FeatureId], length: f64) -> Evidence {
+fn grip(ctx: &Ctx<'_>, seats: &[FeatureId], length: f64, budget: &mut Budget) -> Evidence {
     let (mut target, mut found) = (0.0, 0.0);
     let mut features = Vec::new();
     let mut failures = Vec::new();
@@ -557,8 +619,17 @@ fn grip(ctx: &Ctx<'_>, seats: &[FeatureId], length: f64) -> Evidence {
         {
             let n = n.to_array();
             normal.get_or_insert(n);
-            let (planes, _) = matching(ctx, (n, *offset_mm), &region_points(contacts));
-            match planes.first().and_then(|p| plane_id(ctx, p)) {
+            let Some((planes, _)) =
+                matching(ctx, (n, *offset_mm), &region_points(contacts), budget)
+            else {
+                return exhausted();
+            };
+            // The seat's own plane: the first that covers it (VR10, VR12),
+            // so the grip measures the plane the seat passes on.
+            let covering = planes
+                .iter()
+                .find(|p| coverage(ctx, p, (n, *offset_mm), contacts, budget).passes());
+            match covering.and_then(|p| plane_id(ctx, p)) {
                 Some((id, offset)) => {
                     target += offset_mm;
                     found += offset;
@@ -610,6 +681,14 @@ fn grip(ctx: &Ctx<'_>, seats: &[FeatureId], length: f64) -> Evidence {
         ));
     }
     Evidence::new(features, vec![measure], failures)
+}
+
+/// A check stopped by the bound on its work (AL11).
+fn exhausted() -> Evidence {
+    Evidence::failed(
+        FailureCode::CoverageExhausted,
+        "the bound on this socket's work was reached",
+    )
 }
 
 fn missing_seat(seat: &str) -> Failure {

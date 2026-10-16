@@ -178,6 +178,124 @@ impl Face2 {
     }
 }
 
+/// A face's box in the plane: lowest and highest corner.
+type Box2 = (P2, P2);
+
+impl S2 {
+    /// A box holding the edge: a line's ends, an arc's whole circle.
+    fn bounds(&self) -> Box2 {
+        match *self {
+            Self::Line { a, b } => (
+                [a[0].min(b[0]), a[1].min(b[1])],
+                [a[0].max(b[0]), a[1].max(b[1])],
+            ),
+            Self::Arc { c, r, .. } => ([c[0] - r, c[1] - r], [c[0] + r, c[1] + r]),
+        }
+    }
+}
+
+/// The cover's faces by a grid of their boxes, so containment asks only
+/// the faces whose boxes hold the point.
+struct Grid {
+    boxes: Vec<Box2>,
+    origin: P2,
+    cell: P2,
+    side: usize,
+    cells: Vec<Vec<usize>>,
+}
+
+impl Grid {
+    /// The grid of `cover`; each face's edges and each cell it is filed in
+    /// count toward `budget`.
+    fn new(cover: &[Face2], budget: &mut Budget) -> Result<Self, Uncovered> {
+        let boxes: Vec<Box2> = cover
+            .iter()
+            .map(|f| {
+                budget.used = budget.used.saturating_add(f.segs.len() as u64);
+                f.segs.iter().map(S2::bounds).fold(
+                    ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]),
+                    |(lo, hi), (a, b)| {
+                        (
+                            [lo[0].min(a[0]), lo[1].min(a[1])],
+                            [hi[0].max(b[0]), hi[1].max(b[1])],
+                        )
+                    },
+                )
+            })
+            .collect();
+        let (lo, hi) = boxes.iter().fold(
+            ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]),
+            |(lo, hi), (a, b)| {
+                (
+                    [lo[0].min(a[0]), lo[1].min(a[1])],
+                    [hi[0].max(b[0]), hi[1].max(b[1])],
+                )
+            },
+        );
+        // About one face per cell, at most 256 a side.
+        let side: u32 = (1..256)
+            .find(|s| (s * s) as usize >= boxes.len())
+            .unwrap_or(256);
+        let span = |k: usize| ((hi[k] - lo[k]) / f64::from(side)).max(f64::MIN_POSITIVE);
+        let side = side as usize;
+        let cell = [span(0), span(1)];
+        let finite = lo.iter().chain(&hi).all(|x| x.is_finite());
+        let mut grid = Self {
+            boxes,
+            origin: lo,
+            cell,
+            side,
+            cells: vec![Vec::new(); side * side],
+        };
+        for (i, (a, b)) in grid.boxes.clone().iter().enumerate() {
+            let range = |k: usize| {
+                if finite && a[k].is_finite() && b[k].is_finite() {
+                    (grid.index(a[k], k), grid.index(b[k], k))
+                } else {
+                    (0, side - 1)
+                }
+            };
+            let ((x0, x1), (y0, y1)) = (range(0), range(1));
+            budget.step((x1 - x0 + 1) * (y1 - y0 + 1))?;
+            for x in x0..=x1 {
+                for y in y0..=y1 {
+                    if let Some(c) = grid.cells.get_mut(x * side + y) {
+                        c.push(i);
+                    }
+                }
+            }
+        }
+        Ok(grid)
+    }
+
+    /// The cell index along `k` of coordinate `v`, clamped to the grid.
+    fn index(&self, v: f64, k: usize) -> usize {
+        let at = ((v - self.origin[k]) / self.cell[k]).floor();
+        // Steps of one cell up to the grid's side: no cast of a float.
+        (0..self.side)
+            .take_while(|i| {
+                at.is_finite() && f64::from(u32::try_from(*i).unwrap_or(u32::MAX)) <= at
+            })
+            .last()
+            .unwrap_or(0)
+    }
+
+    /// The faces whose boxes hold `q`.
+    fn holding(&self, q: P2) -> impl Iterator<Item = usize> + '_ {
+        let cell = self.index(q[0], 0) * self.side + self.index(q[1], 1);
+        self.cells
+            .get(cell)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(move |&i| {
+                self.boxes.get(i).is_some_and(|(a, b)| {
+                    q[0] >= a[0] && q[0] <= b[0] && q[1] >= a[1] && q[1] <= b[1]
+                })
+            })
+    }
+}
+
 /// Why a region is not covered.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Uncovered {
@@ -192,9 +310,13 @@ pub(crate) enum Uncovered {
 }
 
 impl Budget {
-    /// One step; `Err` past the bound.
-    fn step(&mut self) -> Result<(), Uncovered> {
-        self.used += 1;
+    /// One step that evaluates `work` edges; `Err` past the bound. A step
+    /// costs what it reads, so a region of many edges spends the bound as
+    /// fast as it spends time (AL11).
+    fn step(&mut self, work: usize) -> Result<(), Uncovered> {
+        self.used = self
+            .used
+            .saturating_add(u64::try_from(work).unwrap_or(u64::MAX).max(1));
         if self.used > self.limit {
             Err(Uncovered::Exhausted)
         } else {
@@ -229,9 +351,11 @@ pub(crate) fn covers(
                 .map(|(s, _)| s)
         })
     };
+    let depth = region.segs.len();
+    let grid = Grid::new(cover, budget)?;
     // Each edge's start first: most wrong placements end here.
     for s in boundary() {
-        budget.step()?;
+        budget.step(depth)?;
         let q = s.at(0.0);
         let f = region.depth(q);
         if f >= eps / 2.0 {
@@ -257,11 +381,25 @@ pub(crate) fn covers(
         let l = s.length();
         let mut x: f64 = 0.0;
         loop {
-            budget.step()?;
+            budget.step(depth)?;
             let q = s.at(x.min(l));
             let h = region.depth(q) - eps / 2.0;
-            if h > 0.0 && !cover.iter().any(|f| f.contains(q)) {
-                return Err(Uncovered::NotCovered { at: q });
+            if h > 0.0 {
+                // A face whose box does not hold q does not hold it.
+                let mut inside = false;
+                for f in grid.holding(q) {
+                    let Some(face) = cover.get(f) else {
+                        continue;
+                    };
+                    budget.step(face.segs.len())?;
+                    if face.contains(q) {
+                        inside = true;
+                        break;
+                    }
+                }
+                if !inside {
+                    return Err(Uncovered::NotCovered { at: q });
+                }
             }
             if x >= l {
                 break;
@@ -277,7 +415,7 @@ fn march_edge(region: &Face2, edge: &S2, eps: f64, budget: &mut Budget) -> Resul
     let length = edge.length();
     let mut along: f64 = 0.0;
     loop {
-        budget.step()?;
+        budget.step(region.segs.len())?;
         let point = edge.at(along.min(length));
         let depth = region.depth(point);
         let step = eps / 2.0 - depth;
@@ -326,10 +464,7 @@ mod tests {
     }
 
     fn budget() -> Budget {
-        Budget {
-            used: 0,
-            limit: 10_000_000,
-        }
+        Budget::of(10_000_000)
     }
 
     /// The region covers itself; a smaller cover fails; a hole 0.6ε inside
@@ -405,7 +540,7 @@ mod tests {
     #[test]
     fn coverage_stops_at_its_bound() {
         let region = square(0.0, 1000.0);
-        let mut tight = Budget { used: 0, limit: 10 };
+        let mut tight = Budget::of(10);
         assert_eq!(
             covers(&region, std::slice::from_ref(&region), 0.01, &mut tight),
             Err(Uncovered::Exhausted)
