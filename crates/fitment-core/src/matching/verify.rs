@@ -551,7 +551,8 @@ impl SeatFrame {
     /// A point of the plane, for people.
     fn point(&self, q: [f64; 2]) -> V {
         let [a, b] = q;
-        [0, 1, 2].map(|k| self.origin[k] + a * self.u[k] + b * self.w[k])
+        // `+ 0.0` so no detail ever reads `-0.0`.
+        [0, 1, 2].map(|k| self.origin[k] + a * self.u[k] + b * self.w[k] + 0.0)
     }
 
     /// A face's edges, each point moved by `place`, projected onto the

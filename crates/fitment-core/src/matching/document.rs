@@ -66,6 +66,17 @@ impl MatchDocument {
     /// the caller named it by: candidates of one SHA-256 are one entry
     /// with every label (MF3), in MF5's order.
     pub fn new(matcher: &Matcher<'_>, results: Vec<(CandidateResult, Vec<String>)>) -> Self {
+        Self::with_original(matcher, results, None)
+    }
+
+    /// As `new`, with the original's self-check (VD15) beside the
+    /// candidates: in the document as `original`, in neither the summary
+    /// nor the outcome, so the original never makes a run pass.
+    pub fn with_original(
+        matcher: &Matcher<'_>,
+        results: Vec<(CandidateResult, Vec<String>)>,
+        original: Option<&CandidateResult>,
+    ) -> Self {
         let entries = merged(results);
         let mut summary = Summary {
             candidates: entries.len(),
@@ -97,13 +108,16 @@ impl MatchDocument {
             match_rules_version: MATCH_RULES_VERSION,
             policy: policy(matcher),
             options: matcher.options(),
-            fit_verifier: None,
+            fit_verifier: matcher
+                .fit_kernel()
+                .map(|(kernel, version)| format!("{kernel} {version}")),
             socket: socket_part(matcher),
             summary,
             candidates: entries
                 .iter()
                 .map(|(r, l)| candidate(matcher, r, l))
                 .collect(),
+            original: original.map(|r| candidate(matcher, r, &["original".to_owned()])),
             digest: String::new(),
         };
         let digest = digest_of(&document);
@@ -192,7 +206,20 @@ fn order(result: &CandidateResult) -> (u8, u8, usize, String) {
         _ => 3,
     };
     let failed = result.sockets.iter().map(SocketResult::failed).sum();
-    (verdict, stage, failed, sha(result).unwrap_or_default())
+    (verdict, stage, failed, identity(result))
+}
+
+/// The last of MF5's keys: a file's SHA-256; a component's assembly
+/// SHA-256 and definition, so two components never tie.
+fn identity(result: &CandidateResult) -> String {
+    match &result.source {
+        super::CandidateSource::File(source) => source.sha256.clone(),
+        super::CandidateSource::Component {
+            assembly_sha256,
+            definition,
+        } => format!("{assembly_sha256}#{definition}"),
+        _ => String::new(),
+    }
 }
 
 #[derive(Serialize)]
@@ -209,6 +236,8 @@ struct Document {
     socket: SocketPart,
     summary: Summary,
     candidates: Vec<CandidateOut>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original: Option<CandidateOut>,
     digest: String,
 }
 

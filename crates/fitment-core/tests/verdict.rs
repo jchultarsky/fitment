@@ -302,4 +302,16 @@ fn a_candidate_is_judged_by_its_worst_socket() {
         matches!(any.fit(), FitStatus::Interferes { interferences } if interferences.len() == 1)
     );
     assert_eq!(any.kind(), VerdictKind::Reject);
+    // Two sockets verified by kernels that disagree: no Match (VD4).
+    let other = decide(
+        &reqs,
+        passed(&["h1", "seat"]),
+        FitStatus::Verified {
+            kernel: "Open CASCADE".to_owned(),
+            version: "7.9.0".to_owned(),
+        },
+    );
+    let disagree = combine(&named(&[("socket-1", &good), ("socket-2", &other)]));
+    assert!(matches!(disagree.fit(), FitStatus::NotVerified { .. }));
+    assert_eq!(disagree.kind(), VerdictKind::InterfaceMatch);
 }

@@ -2,12 +2,16 @@
 //! sections 9.4, 11 and 13): its exit codes, its outputs, and every
 //! document it writes recomputed from the JSON alone (EV7, KH12).
 
-use std::collections::BTreeSet;
+#[path = "common/checker.rs"]
+mod checker;
+
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use predicates::str::contains;
 use serde_json::Value;
+
+use checker::{digest, problems};
 
 fn fitment() -> Command {
     Command::cargo_bin("fitment").unwrap()
@@ -85,7 +89,8 @@ fn the_exit_code_is_the_best_verdict() {
     assert!(out.is_file());
 }
 
-/// VD14's usage and refusal codes: a bad tolerance, OUT the socket file,
+/// VD14's usage and refusal codes: a bad tolerance (an angle of 90
+/// degrees or more among them), OUT the socket file,
 /// `--original` naming another file (2); a socket that does not read back,
 /// a stale one, an unreviewed one under --require-reviewed (3).
 #[test]
@@ -99,6 +104,11 @@ fn bad_input_is_refused_before_any_candidate() {
         .args(["match", s, good, "--tolerance-mm", "0"])
         .assert()
         .code(2);
+    fitment()
+        .args(["match", s, good, "--tolerance-deg", "90"])
+        .assert()
+        .code(2)
+        .stderr(contains("less than 90"));
     fitment().args(["match", s, good, "-o", s]).assert().code(2);
     let other = core("assemblies", "s02_cbore.stp");
     fitment()
@@ -135,9 +145,10 @@ fn bad_input_is_refused_before_any_candidate() {
         .code(3);
 }
 
-/// VD15, MF1, MF3: the original passes its own socket; a directory's STEP
-/// files are each a candidate, labelled `dir/name`; the same file named
-/// twice is one entry with both labels.
+/// VD15, MF1, MF3: the original passes its own socket, beside the
+/// candidates and never one of them; a directory's STEP files are each a
+/// candidate, labelled `dir/name`; the same file named twice is one entry
+/// with both labels.
 #[test]
 fn the_original_and_directories_are_judged() {
     let dir = scratch("inputs");
@@ -158,13 +169,11 @@ fn the_original_and_directories_are_judged() {
         source.to_str().unwrap(),
     ]);
     assert_eq!(code, 4);
-    assert_eq!(doc["summary"]["candidates"], 3);
+    assert_eq!(doc["summary"]["candidates"], 2);
+    assert_eq!(doc["original"]["verdict"], "interface_match");
+    assert_eq!(doc["original"]["source"]["kind"], "component");
     let entries = doc["candidates"].as_array().unwrap();
-    let original = entries
-        .iter()
-        .find(|c| c["labels"][0] == "original")
-        .unwrap();
-    assert_eq!(original["verdict"], "interface_match");
+    assert!(entries.iter().all(|c| c["labels"][0] != "original"));
     let bracket = entries
         .iter()
         .find(|c| c["labels"].as_array().unwrap().len() == 2)
@@ -176,6 +185,47 @@ fn the_original_and_directories_are_judged() {
             .ends_with("cands/m_bracket.stp")
     );
     assert_problems(&doc);
+}
+
+/// VD14, VD15: the original passing never makes a run pass: with every
+/// candidate rejected the run exits 5. A directory with no STEP file and
+/// nothing else is a usage error; a STEP name that leads nowhere, an
+/// error.
+#[test]
+fn only_candidates_make_a_run_pass() {
+    let dir = scratch("only");
+    let socket = bracket_socket(&dir);
+    let source = core("assemblies", "s01_bolted.stp");
+    let missing = core("candidates", "m_bracket_missing_hole.stp");
+    let (code, doc) = run_json(&[
+        socket.to_str().unwrap(),
+        missing.to_str().unwrap(),
+        "--original",
+        source.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 5);
+    assert_eq!(doc["summary"]["candidates"], 1);
+    assert_eq!(doc["original"]["verdict"], "interface_match");
+    assert_problems(&doc);
+    let empty = dir.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    fitment()
+        .args(["match", socket.to_str().unwrap(), empty.to_str().unwrap()])
+        .assert()
+        .code(2)
+        .stderr(contains("no candidate"));
+    #[cfg(unix)]
+    {
+        let links = dir.join("links");
+        std::fs::create_dir_all(&links).unwrap();
+        let _ = std::fs::remove_file(links.join("gone.stp"));
+        std::os::unix::fs::symlink(dir.join("nowhere.stp"), links.join("gone.stp")).unwrap();
+        fitment()
+            .args(["match", socket.to_str().unwrap(), links.to_str().unwrap()])
+            .assert()
+            .code(1)
+            .stderr(contains("gone.stp"));
+    }
 }
 
 /// MF5, EV8: argument order changes the labels' order, never the digest.
@@ -213,15 +263,16 @@ fn the_document_does_not_depend_on_argument_order() {
 fn labels_are_escaped() {
     let dir = scratch("labels");
     let socket = bracket_socket(&dir);
-    let odd = dir.join("odd\u{1b}[31mname.stp");
+    // U+202E reorders text in a terminal, and every OS allows it in a name.
+    let odd = dir.join("odd\u{202e}name.stp");
     std::fs::copy(core("candidates", "m_bracket.stp"), &odd).unwrap();
     let output = fitment()
         .args(["match", socket.to_str().unwrap(), odd.to_str().unwrap()])
         .output()
         .unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(!stdout.contains('\u{1b}'), "{stdout}");
-    assert!(stdout.contains("\\u{1b}"));
+    assert!(!stdout.contains('\u{202e}'), "{stdout}");
+    assert!(stdout.contains("\\u{202e}"));
 }
 
 /// The review-then-match path: a requirement removed in review is listed
@@ -274,135 +325,18 @@ fn a_removed_requirement_is_not_checked() {
     assert_problems(&after);
 }
 
-/// KH12 and EV7: everything a document states that follows from the rest
-/// of it, recomputed: each measure's result from its margin and limits,
-/// each check's from its measures and failures, each socket's verdict
-/// from its checks, each candidate's from its sockets, the summary, the
-/// order and the digest.
+/// The checker (KH12, EV7) finds nothing in `doc`.
 fn assert_problems(doc: &Value) {
     let problems = problems(doc);
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// One measure's result recomputed from its found value and limits.
-fn measure(id: &str, m: &Value, out: &mut Vec<String>) -> bool {
-    let passed = match (m["found"].as_f64(), m["margin"].as_f64()) {
-        (Some(f), Some(margin)) => {
-            let below = m["min"].as_f64().map(|lo| f - lo);
-            let above = m["max"].as_f64().map(|hi| hi - f);
-            let recomputed = match (below, above) {
-                (Some(a), Some(b)) => a.min(b),
-                (Some(a), None) | (None, Some(a)) => a,
-                (None, None) => f64::MIN,
-            };
-            if (recomputed - margin).abs() > 1e-12 * (1.0 + margin.abs()) {
-                out.push(format!("{id}: a margin {margin} is not {recomputed}"));
-            }
-            margin > 0.0
-        }
-        _ => m["found"].as_bool().unwrap_or(false) || m["required"] == false,
-    };
-    if m["passed"].as_bool() != Some(passed) {
-        out.push(format!(
-            "{id}: a measure says {} but recomputes {passed}",
-            m["passed"]
-        ));
-    }
-    passed
-}
-
-fn problems(doc: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    if doc["format"] != "fitment.match" || doc["format_version"] != 1 {
-        out.push("not a fitment.match v1 document".to_owned());
-    }
-    let mut counts = (0, 0, 0, 0);
-    let mut keys = Vec::new();
-    for c in doc["candidates"].as_array().into_iter().flatten() {
-        let id = c["labels"].to_string();
-        let mut verdicts = BTreeSet::new();
-        for socket in c["sockets"].as_array().into_iter().flatten() {
-            let mut passed_all = !socket["checks"].as_array().is_none_or(Vec::is_empty);
-            for check in socket["checks"].as_array().into_iter().flatten() {
-                let result = check["result"].as_str().unwrap_or("");
-                let mut ok = check["failures"].as_array().is_none_or(Vec::is_empty);
-                for m in check["measures"].as_array().into_iter().flatten() {
-                    ok &= measure(&id, m, &mut out);
-                }
-                match result {
-                    "passed" if !ok && check.get("measures").is_some() => {
-                        out.push(format!(
-                            "{id}: {} passed with a failure",
-                            check["requirement"]
-                        ));
-                    }
-                    "failed" if ok && check.get("measures").is_some() => {
-                        out.push(format!(
-                            "{id}: {} failed with nothing failing",
-                            check["requirement"]
-                        ));
-                    }
-                    _ => {}
-                }
-                if result == "failed" {
-                    passed_all = false;
-                }
-            }
-            let verdict = socket["verdict"].as_str().unwrap_or("");
-            if passed_all != (verdict != "reject") {
-                out.push(format!("{id}: socket {} says {verdict}", socket["socket"]));
-            }
-            verdicts.insert(verdict.to_owned());
-        }
-        let verdict = c["verdict"].as_str().unwrap_or("");
-        let worst =
-            if c["status"] == "refused" || verdicts.is_empty() || verdicts.contains("reject") {
-                "reject"
-            } else if verdicts.contains("interface_match") {
-                "interface_match"
-            } else {
-                "match"
-            };
-        if verdict != worst {
-            out.push(format!("{id}: {verdict}, its sockets say {worst}"));
-        }
-        match verdict {
-            "match" => counts.0 += 1,
-            "interface_match" => counts.1 += 1,
-            _ => counts.2 += 1,
-        }
-        if c["status"] == "refused" {
-            counts.3 += 1;
-        }
-        let rank = ["match", "interface_match", "reject"]
-            .iter()
-            .position(|v| *v == verdict)
-            .unwrap_or(3);
-        keys.push(rank);
-    }
-    let summary = &doc["summary"];
-    if (
-        summary["match"].as_u64(),
-        summary["interface_match"].as_u64(),
-        summary["reject"].as_u64(),
-        summary["refused"].as_u64(),
-    ) != (
-        Some(counts.0),
-        Some(counts.1),
-        Some(counts.2),
-        Some(counts.3),
-    ) {
-        out.push(format!("the summary {summary} is not the candidates'"));
-    }
-    if keys.windows(2).any(|w| w[0] > w[1]) {
-        out.push("candidates are not in verdict order".to_owned());
-    }
-    out.extend(digest_problem(doc));
-    out
-}
-
-/// The checker is no formality: a verdict turned, a measure's result
-/// flipped, a margin changed or a label taken into the digest each fail it.
+/// The checker is no formality: each tampered copy carries a fresh digest,
+/// so only the check named can object: a candidate's verdict turned, a
+/// measure's result flipped, a margin moved, the summary changed, a match
+/// with no verified fit, a flag dropped, a check dropped, a failure
+/// count changed, an entry twice, the order reversed. A label
+/// changed is no problem: labels are outside the digest.
 #[test]
 fn the_checker_finds_a_tampered_document() {
     let dir = scratch("tamper");
@@ -414,43 +348,62 @@ fn the_checker_finds_a_tampered_document() {
         .collect();
     let (_, doc) = run_json(&[socket.to_str().unwrap(), &paths[0], &paths[1]]);
     assert_eq!(problems(&doc).len(), 0);
-    let mut turned = doc.clone();
-    turned["candidates"][1]["verdict"] = Value::from("interface_match");
-    assert_ne!(problems(&turned).len(), 0);
-    let mut flipped = doc.clone();
-    flipped["candidates"][0]["sockets"][0]["checks"][3]["measures"][0]["passed"] =
-        Value::from(false);
-    assert_ne!(problems(&flipped).len(), 0);
-    let mut moved = doc.clone();
-    moved["candidates"][0]["sockets"][0]["checks"][3]["measures"][0]["margin"] = Value::from(1.0);
-    assert_ne!(problems(&moved).len(), 0);
-    let mut relabelled = doc;
-    relabelled["summary"]["reject"] = Value::from(0);
-    assert_ne!(problems(&relabelled).len(), 0);
-}
-
-/// MF7: the digest of the document without it and without labels.
-fn digest_problem(doc: &Value) -> Option<String> {
-    let mut bare = doc.clone();
-    if let Some(map) = bare.as_object_mut() {
-        map.remove("digest");
-        for c in map
-            .get_mut("candidates")
-            .and_then(Value::as_array_mut)
-            .into_iter()
-            .flatten()
-        {
-            if let Some(entry) = c.as_object_mut() {
-                entry.remove("labels");
-            }
-        }
-    }
-    let digest = format!(
-        "sha256:{}",
-        fitment_core::sha256_hex(bare.to_string().as_bytes())
+    let tampered = |edit: &dyn Fn(&mut Value)| -> Vec<String> {
+        let mut copy = doc.clone();
+        edit(&mut copy);
+        copy["digest"] = Value::from(digest(&copy));
+        problems(&copy)
+    };
+    let said = |found: &[String], what: &str| found.iter().any(|p| p.contains(what));
+    let turned = tampered(&|d| d["candidates"][1]["verdict"] = Value::from("interface_match"));
+    assert!(said(&turned, "its sockets say"), "{turned:?}");
+    let flipped = tampered(&|d| {
+        d["candidates"][0]["sockets"][0]["checks"][3]["measures"][0]["passed"] = Value::from(false);
+    });
+    assert!(said(&flipped, "recomputes"), "{flipped:?}");
+    let moved = tampered(&|d| {
+        d["candidates"][0]["sockets"][0]["checks"][3]["measures"][0]["margin"] = Value::from(1.0);
+    });
+    assert!(said(&moved, "is not"), "{moved:?}");
+    let counted = tampered(&|d| d["summary"]["reject"] = Value::from(0));
+    assert!(said(&counted, "the summary"), "{counted:?}");
+    let matched = tampered(&|d| {
+        d["candidates"][0]["verdict"] = Value::from("match");
+        d["candidates"][0]["sockets"][0]["verdict"] = Value::from("match");
+    });
+    assert!(
+        said(&matched, "says match, recomputes interface_match"),
+        "{matched:?}"
     );
-    if doc["digest"] != digest.as_str() {
-        return Some(format!("the digest {} is not {digest}", doc["digest"]));
-    }
-    None
+    assert!(
+        said(&matched, "its sockets say interface_match"),
+        "{matched:?}"
+    );
+    let unflagged = tampered(&|d| d["candidates"][0]["flags"] = Value::from(Vec::<String>::new()));
+    assert!(
+        said(&unflagged, "flag requirements_unreviewed"),
+        "{unflagged:?}"
+    );
+    let dropped = tampered(&|d| {
+        d["candidates"][0]["sockets"][0]["checks"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+    });
+    assert!(said(&dropped, "active"), "{dropped:?}");
+    let miscounted = tampered(&|d| d["candidates"][1]["sockets"][0]["failed"] = Value::from(0));
+    assert!(said(&miscounted, "counts"), "{miscounted:?}");
+    let twice = tampered(&|d| {
+        let first = d["candidates"][1].clone();
+        d["candidates"].as_array_mut().unwrap().push(first);
+    });
+    assert!(said(&twice, "a second entry"), "{twice:?}");
+    let reordered = tampered(&|d| d["candidates"].as_array_mut().unwrap().reverse());
+    assert!(said(&reordered, "order"), "{reordered:?}");
+    let relabelled =
+        tampered(&|d| d["candidates"][0]["labels"] = Value::from(vec!["elsewhere.stp"]));
+    assert_eq!(relabelled.len(), 0, "{relabelled:?}");
+    let mut stale = doc.clone();
+    stale["candidates"][0]["labels"] = Value::from(vec!["elsewhere.stp"]);
+    assert_eq!(problems(&stale).len(), 0, "a label is outside the digest");
 }
