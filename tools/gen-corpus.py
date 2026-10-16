@@ -796,8 +796,9 @@ M4_TESTS.update({
 })
 for rule, tests in M4_TESTS.items():
     RULES[rule] = {"tests": tests}
-# PR 6 builds the match oracle: KO1 to KO8 are tools/verify-occt.py's, run by CI on the corpus and the fixtures, each
-# named by the function that checks it (the coverage test checks it exists).
+# PR 6 builds the match oracle: KO1 to KO8 are tools/verify-occt.py's, which CI runs (`manifest` and `match` on the
+# corpus, `match --expect` on the fixtures), each named by a function that checks it, or for KO7 states it; the
+# coverage test checks that each exists and names its rule.
 M4_ORACLE = "tools/verify-occt.py"
 RULES.update({
     "KO1": {"oracle": [f"{M4_ORACLE}::match_physics", f"{M4_ORACLE}::physics"]},
@@ -806,7 +807,7 @@ RULES.update({
     "KO4": {"oracle": [f"{M4_ORACLE}::failure_problems"]},
     "KO5": {"oracle": [f"{M4_ORACLE}::feature_problems", f"{M4_ORACLE}::rigid_problem"]},
     "KO6": {"oracle": [f"{M4_ORACLE}::match_group", f"{M4_ORACLE}::with_placements"]},
-    # What the oracle cannot check: its module's documentation and match mode's state it.
+    # What the oracle cannot check: match mode's documentation states it.
     "KO7": {"oracle": [f"{M4_ORACLE}::match_main"]},
     "KO8": {"oracle": [f"{M4_ORACLE}::fixture_groups"]},
 })

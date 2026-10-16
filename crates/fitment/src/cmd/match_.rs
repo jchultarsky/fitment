@@ -254,13 +254,7 @@ fn gate(path: &str, text: &str) -> Result<SocketDocument, ExitCode> {
                 fitment_core::SOCKET_RULES_VERSION,
             )
         {
-            refusal(
-                path,
-                &SocketRefused::Stale {
-                    extractor,
-                    socket_rules: rules,
-                },
-            );
+            refusal(path, &SocketRefused::stale(extractor, rules));
             return Err(ExitCode::from(exit::REFUSED));
         }
     }
@@ -278,13 +272,14 @@ fn refusal(path: &str, refused: &SocketRefused) {
         SocketRefused::Stale {
             extractor,
             socket_rules,
+            ..
         } => format!(
             "extracted by extractor {extractor} and socket rules {socket_rules}; this build is {} and {}: \
              extract it again (`fitment socket … -o FILE` carries decisions over)",
             fitment_core::EXTRACTOR_VERSION,
             fitment_core::SOCKET_RULES_VERSION
         ),
-        SocketRefused::Unreviewed { count, first } => format!(
+        SocketRefused::Unreviewed { count, first, .. } => format!(
             "{count} requirements are unreviewed, under --require-reviewed: {}",
             printable(&first.join(", "))
         ),
@@ -438,13 +433,7 @@ fn judge_original(
         note(&format!("fitment: {shown}: the original cannot be read"));
         return Ok(None);
     };
-    let result = matcher.judge_part(
-        &part,
-        CandidateSource::Component {
-            assembly_sha256: sha,
-            definition: instance,
-        },
-    );
+    let result = matcher.judge_part(&part, CandidateSource::component(sha, instance));
     let bug = reported("original", &result) || original_bug(&result);
     Ok(Some((result, bug)))
 }

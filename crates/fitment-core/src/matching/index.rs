@@ -126,6 +126,7 @@ pub enum Blocked {
     /// The socket demands nothing a candidate can show.
     Empty,
     /// Some active requirement fails every candidate (SG7).
+    #[non_exhaustive]
     FailsEvery {
         /// Those requirements.
         requirements: Vec<crate::verdict::RequirementId>,

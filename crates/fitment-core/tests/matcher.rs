@@ -121,7 +121,7 @@ fn a_refused_file_is_a_reject_with_the_gate_s_codes() {
     assert!(result.sockets.is_empty() && !result.refusals.is_empty());
     assert!(matches!(
         result.verdict.reasons(),
-        [RejectReason::CandidateRefused { codes }] if !codes.is_empty()
+        [RejectReason::CandidateRefused { codes, .. }] if !codes.is_empty()
     ));
 }
 
@@ -166,7 +166,7 @@ fn an_unreviewed_document_is_refused_when_a_review_is_required() {
         required,
         &fitment_core::NoFitVerifier,
     ) {
-        Err(SocketRefused::Unreviewed { count, first }) => {
+        Err(SocketRefused::Unreviewed { count, first, .. }) => {
             assert!(count > 0 && !first.is_empty() && first.len() <= 5);
             assert!(first.iter().all(|r| r.starts_with("socket-1/")));
         }

@@ -34,6 +34,7 @@ const SAME_LINE: f64 = 1e-6;
 #[non_exhaustive]
 pub enum Seed {
     /// Two socket lines and the candidate stacks on them (AL5, AL6).
+    #[non_exhaustive]
     AxisPair {
         /// The first line's requirement and stack.
         a: (RequirementId, FeatureId),
@@ -41,16 +42,19 @@ pub enum Seed {
         b: (RequirementId, FeatureId),
     },
     /// One socket line and the stack on it (AL8).
+    #[non_exhaustive]
     OneAxis {
         /// The line's requirement and stack.
         axis: (RequirementId, FeatureId),
     },
     /// A conical seat and the cone on it (AL9).
+    #[non_exhaustive]
     Cone {
         /// The seat and the cone.
         cone: (RequirementId, FeatureId),
     },
     /// A seat and a candidate plane, by a landmark of each (AL9).
+    #[non_exhaustive]
     Landmark {
         /// The seat.
         seat: RequirementId,

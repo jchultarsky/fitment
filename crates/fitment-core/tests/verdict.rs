@@ -81,7 +81,7 @@ type Case = (
     &'static str,
     Vec<RequirementId>,
     Vec<(RequirementId, Check)>,
-    RejectReason,
+    serde_json::Value,
 );
 
 /// Every way the interface can fail, under every fit: always Reject, never
@@ -97,19 +97,14 @@ fn failing_interface_rejects_under_every_fit() {
                 ("h1".into(), pass()),
                 ("h2".into(), failed("Ø5.5, need Ø6.6 ± 0.01")),
             ],
-            RejectReason::RequirementFailed {
-                requirement: "h2".into(),
-                detail: "Ø5.5, need Ø6.6 ± 0.01".to_owned(),
-                codes: vec![FailureCode::NoFeature],
-            },
+            json!({"reason": "requirement_failed", "requirement": "h2",
+                   "detail": "Ø5.5, need Ø6.6 ± 0.01", "codes": ["no_feature"]}),
         ),
         (
             "a check is missing",
             reqs.clone(),
             passed(&["h1"]),
-            RejectReason::MissingCheck {
-                requirement: "h2".into(),
-            },
+            json!({"reason": "missing_check", "requirement": "h2"}),
         ),
         (
             "a requirement was checked twice",
@@ -119,31 +114,25 @@ fn failing_interface_rejects_under_every_fit() {
                 ("h2".into(), pass()),
                 ("h2".into(), pass()),
             ],
-            RejectReason::DuplicateCheck {
-                requirement: "h2".into(),
-            },
+            json!({"reason": "duplicate_check", "requirement": "h2"}),
         ),
         (
             "a check names an unknown requirement",
             reqs.clone(),
             passed(&["h1", "h2", "h9"]),
-            RejectReason::UnknownRequirement {
-                requirement: "h9".into(),
-            },
+            json!({"reason": "unknown_requirement", "requirement": "h9"}),
         ),
         (
             "the socket repeats a requirement",
             ids(&["h1", "h2", "h1"]),
             passed(&["h1", "h2"]),
-            RejectReason::DuplicateRequirement {
-                requirement: "h1".into(),
-            },
+            json!({"reason": "duplicate_requirement", "requirement": "h1"}),
         ),
         (
             "the socket is empty",
             Vec::new(),
             Vec::new(),
-            RejectReason::NoRequirements,
+            json!({"reason": "no_requirements"}),
         ),
     ];
 
@@ -154,9 +143,13 @@ fn failing_interface_rejects_under_every_fit() {
             assert_eq!(verdict.kind(), VerdictKind::Reject, "{name}");
             let mut expected = vec![reason.clone()];
             if interferes {
-                expected.push(RejectReason::BodyInterferes);
+                expected.push(json!({"reason": "body_interferes"}));
             }
-            assert_eq!(verdict.reasons(), expected, "{name}");
+            assert_eq!(
+                serde_json::to_value(verdict.reasons()).unwrap(),
+                json!(expected),
+                "{name}"
+            );
         }
     }
 }
@@ -167,15 +160,11 @@ fn checks_are_matched_by_requirement_not_by_count() {
     let verdict = decide(&ids(&["h1", "h2"]), passed(&["h1", "h1"]), verified());
     assert_eq!(verdict.kind(), VerdictKind::Reject);
     assert_eq!(
-        verdict.reasons(),
-        [
-            RejectReason::DuplicateCheck {
-                requirement: "h1".into()
-            },
-            RejectReason::MissingCheck {
-                requirement: "h2".into()
-            },
-        ]
+        serde_json::to_value(verdict.reasons()).unwrap(),
+        json!([
+            {"reason": "duplicate_check", "requirement": "h1"},
+            {"reason": "missing_check", "requirement": "h2"},
+        ])
     );
 }
 
@@ -190,27 +179,16 @@ fn reasons_are_in_a_fixed_order() {
     ];
     let verdict = decide(&reqs, checks, interferes());
     assert_eq!(
-        verdict.reasons(),
-        [
-            RejectReason::MissingCheck {
-                requirement: "a".into()
-            },
-            RejectReason::DuplicateRequirement {
-                requirement: "b".into()
-            },
-            RejectReason::RequirementFailed {
-                requirement: "c".into(),
-                detail: "off axis".to_owned(),
-                codes: vec![FailureCode::NoFeature],
-            },
-            RejectReason::UnknownRequirement {
-                requirement: "y".into()
-            },
-            RejectReason::UnknownRequirement {
-                requirement: "z".into()
-            },
-            RejectReason::BodyInterferes,
-        ]
+        serde_json::to_value(verdict.reasons()).unwrap(),
+        json!([
+            {"reason": "missing_check", "requirement": "a"},
+            {"reason": "duplicate_requirement", "requirement": "b"},
+            {"reason": "requirement_failed", "requirement": "c", "detail": "off axis",
+             "codes": ["no_feature"]},
+            {"reason": "unknown_requirement", "requirement": "y"},
+            {"reason": "unknown_requirement", "requirement": "z"},
+            {"reason": "body_interferes"},
+        ])
     );
 }
 

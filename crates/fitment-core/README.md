@@ -23,7 +23,8 @@ use fitment_core::{
 };
 
 /// The verdict on one candidate part (STEP bytes) for the part named
-/// `BRACKET` in an assembly (STEP bytes); `None` if either is refused.
+/// `BRACKET` in an assembly (STEP bytes); `None` if the socket cannot be
+/// read from the assembly. A candidate the gate refuses is a `Reject`.
 fn judge(assembly: &[u8], candidate: &[u8]) -> Option<VerdictKind> {
     let socket = SocketDocument::extract(assembly, Some("BRACKET"), None).ok()?;
     let matcher = Matcher::new(
@@ -47,8 +48,9 @@ fn judge(assembly: &[u8], candidate: &[u8]) -> Option<VerdictKind> {
 The default policy is D9's tolerances (0.01 mm, 0.01°), D6's strict
 clearance and D7's hard grip; `MatchPolicy::new` takes others. A socket
 document is JSON the user reviews (`SocketDocument::to_json`,
-`from_json`, `decide`); a stale or unreviewed one is refused before any
-candidate is read.
+`from_json`, `decide`); a stale one is refused before any candidate is
+read, and with `MatchOptions::new(_, true)` an unreviewed one too;
+otherwise each candidate is flagged `requirements_unreviewed`.
 
 ## Verdicts
 
@@ -70,3 +72,10 @@ values back.
 ## License
 
 MIT
+
+[`read_part`]: https://docs.rs/fitment-core/latest/fitment_core/fn.read_part.html
+[`read_assembly`]: https://docs.rs/fitment-core/latest/fitment_core/fn.read_assembly.html
+[`SocketDocument::extract`]: https://docs.rs/fitment-core/latest/fitment_core/struct.SocketDocument.html#method.extract
+[`Matcher`]: https://docs.rs/fitment-core/latest/fitment_core/struct.Matcher.html
+[`MatchDocument`]: https://docs.rs/fitment-core/latest/fitment_core/struct.MatchDocument.html
+[`decide`]: https://docs.rs/fitment-core/latest/fitment_core/fn.decide.html

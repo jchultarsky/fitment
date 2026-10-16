@@ -87,13 +87,9 @@ impl Input {
     fn judge(&self, matcher: &Matcher<'_>) -> CandidateResult {
         match self {
             Self::File(bytes) => matcher.judge_step(bytes),
-            Self::Component(part, sha, instance) => matcher.judge_part(
-                part,
-                CandidateSource::Component {
-                    assembly_sha256: sha.clone(),
-                    definition: *instance,
-                },
-            ),
+            Self::Component(part, sha, instance) => {
+                matcher.judge_part(part, CandidateSource::component(sha.clone(), *instance))
+            }
         }
     }
 

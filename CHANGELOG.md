@@ -42,18 +42,24 @@ then `fitment`. The four document formats below are frozen at version 1.
   functional clearance (D6), hard grips (D7). Exit codes 0, 4 and 5 by the
   best verdict; 1 an error, 2 usage, 3 a socket refused. The
   `fitment.match` v1 document, in a fixed order with a digest the same on
-  every OS. Bounded work on hostile files (`MAX_PLACEMENTS`,
-  `MAX_COVERAGE_STEPS`, `MAX_SHORTLIST_CHECKS`): past a bound, a reject.
+  every OS. Bounded work on hostile files: past `MAX_PLACEMENTS` or
+  `MAX_COVERAGE_STEPS` the requirement fails (`alignment_exhausted`,
+  `coverage_exhausted`); past `MAX_SHORTLIST_CHECKS` the candidate is
+  kept, never dropped.
 - **The known-answer corpus** (`tools/gen-corpus.py`): 125 match cases and
   four hostile inputs, with truths from the construction, judged under both
   policies through the library and the binary; the false-negative
-  baseline; the rates: no false positive; against physics, 20 of 49 fits
-  rejected under `default` and 21 of 51 under `functional`, each by a
-  stated rule.
+  baseline; the rates: no candidate passed whose interface does not fit
+  (a colliding body is M7's); against physics, 20 of 49 fits rejected
+  under `default` and 21 of 51 under `functional`, each by a stated rule
+  (four of the 49 are grip-only thickness changes, fits by M4-8's
+  convention that neighbours reseat).
 - **The Open CASCADE oracle** (`tools/verify-occt.py`, Open CASCADE 8.0.1,
-  not the generator's kernel): the corpus's truths checked physically;
-  every pass fitment makes fits at the placement it states; every failure
-  re-measured; mutations of fitment's documents each met.
+  not the generator's kernel): the truths it can judge checked physically
+  (`fits`, `does_not_fit`, `fits_functional`, `collides`; not `edge`,
+  `refused`, originals read in place, or grip-only thickness changes);
+  every pass fitment makes fits at the placement it states; every
+  failure re-measured; mutations of fitment's documents each met.
 
 ### Fixed during M4's reviews
 
