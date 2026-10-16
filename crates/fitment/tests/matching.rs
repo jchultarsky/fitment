@@ -682,3 +682,67 @@ fn write_socket(dir: &Path, scratch: &Path, source: &str, part: &str) -> PathBuf
     fs::write(&path, &output.stdout).unwrap();
     path
 }
+
+/// M4-13 and AL11 on hostile inputs (10,000 identical holes, a 1,600-bore
+/// socket against a 1,681-hole grid, a bracket fused from 1,000 tiles, 4,000
+/// stubs near one bore): each judged within its bound in time (in an
+/// optimised build), a candidate that does not fit rejected, and one that
+/// fits rejected, if at all, only by a bound: never a pass from a bound.
+#[test]
+fn hostile_inputs_stay_within_their_bounds() {
+    let Some(dir) = corpus() else {
+        return;
+    };
+    let text = fs::read_to_string(dir.join("manifest.json")).unwrap();
+    let manifest: Value = serde_json::from_str(&text).unwrap();
+    let mut seen = 0;
+    let mut problems = Vec::new();
+    for case in manifest["cases"].as_array().unwrap() {
+        if case["kind"] != "hostile" {
+            continue;
+        }
+        seen += 1;
+        let id = case["id"].as_str().unwrap();
+        let source = case["socket"]["case"].as_str().unwrap();
+        let part = case["socket"]["part"].as_str().unwrap();
+        let bytes = fs::read(dir.join(format!("{source}.stp"))).unwrap();
+        let document = SocketDocument::extract(&bytes, Some(part), None).unwrap();
+        let candidate = fs::read(dir.join(case["candidate"]["file"].as_str().unwrap())).unwrap();
+        let matcher = Matcher::new(
+            &document,
+            MatchPolicy::default(),
+            MatchOptions::default(),
+            &NoFitVerifier,
+        )
+        .unwrap();
+        let start = std::time::Instant::now();
+        let result = matcher.judge_step(&candidate);
+        let took = start.elapsed().as_secs_f64();
+        let bound = case["expect"]["within_s"].as_f64().unwrap();
+        if !cfg!(debug_assertions) && took > bound {
+            problems.push(format!("{id}: {took:.1} s, past its {bound} s"));
+        }
+        let codes: Vec<String> = result
+            .sockets
+            .iter()
+            .flat_map(|s| s.checks.iter())
+            .flat_map(|(_, c)| c.evidence().failures().iter())
+            .filter_map(|f| serde_json::to_value(f.code).ok())
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect();
+        let rejected = result.verdict.kind() == VerdictKind::Reject;
+        let bounds = ["alignment_exhausted", "coverage_exhausted"];
+        match case["truth"].as_str().unwrap() {
+            "fits" if rejected && !codes.iter().all(|c| bounds.contains(&c.as_str())) => {
+                problems.push(format!("{id}: fits, rejected by {codes:?}"));
+            }
+            "does_not_fit" | "fn_rule" if !rejected => {
+                problems.push(format!("{id}: passed"));
+            }
+            _ => {}
+        }
+        eprintln!("{id}: {:?} in {took:.2} s", result.verdict.kind());
+    }
+    assert!(seen >= 4, "{seen} hostile cases");
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}

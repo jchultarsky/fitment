@@ -28,6 +28,7 @@
     "m_bracket_larger",
     "m_bracket_lug",
     "m_bracket_missing_hole",
+    "m_bracket_pcurves",
     "m_bracket_shift_05",
     "m_bracket_shift_15tol",
     "m_bracket_shift_tol_id",
@@ -35,6 +36,7 @@
     "m_bracket_shift_tol_tilt",
     "m_bracket_shift_tol_var",
     "m_bracket_side_hole",
+    "m_bracket_split",
     "m_bracket_spot",
     "m_bracket_thick",
     "m_bracket_thin_15tol",
@@ -77,6 +79,7 @@
     "m_plate18",
     "m_plate18_82",
     "m_plate18_angle_15atol",
+    "m_plate18_boss",
     "m_plate18_cbore",
     "m_plate18_finger",
     "m_plate18_small_rim",
@@ -89,16 +92,23 @@
     "m_refused_r10_off_surface",
     "m_refused_r11_flipped_plane",
     "m_refused_r12_flipped_cylinder",
+    "m_s07b_bracket",
+    "m_s07b_dia_64",
     "m_s11_bracket_own",
     "m_s12_angled_own",
     "m_s13_block_own",
     "m_s13_plate_own",
     "m_s17_plate_own",
+    "m_s21_block",
+    "m_s21_dia_1002",
     "m_s47_plate_own",
     "m_s48_dshaft_own",
     "m_s52_pin_own",
     "m_s52_plate_own",
     "m_s58_plate_own",
+    "m_s59_block",
+    "m_s59_mirror",
+    "m_s59_mirror_tilt",
     "m_s61_bracket",
     "m_s62_bracket",
     "m_screw02",
@@ -511,6 +521,96 @@
       "policy": "functional"
     },
     {
+      "case": "m_s07b_dia_64",
+      "cause": "rule",
+      "class": "b_some_sockets",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-2/seat:plane-651"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-2/grip:plane-651+plane-754"
+        },
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-2/seat:plane-754"
+        },
+        {
+          "codes": [
+            "core_intruded",
+            "diameter_out_of_limits:min"
+          ],
+          "requirement": "socket-2/bore:hole-838"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-2/bore:hole-855"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-2/bore:hole-872"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s07b_dia_64",
+      "cause": "rule",
+      "class": "b_some_sockets",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-2/seat:plane-651"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-2/grip:plane-651+plane-754"
+        },
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-2/seat:plane-754"
+        },
+        {
+          "codes": [
+            "core_intruded",
+            "diameter_out_of_limits:min"
+          ],
+          "requirement": "socket-2/bore:hole-838"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-2/bore:hole-855"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-2/bore:hole-872"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
       "case": "m_s11_bracket_own",
       "cause": "rule",
       "class": "b_unverifiable",
@@ -706,6 +806,38 @@
             "unverifiable"
           ],
           "requirement": "socket-1/partial_bore:cylinder-299"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s21_dia_1002",
+      "cause": "rule",
+      "class": "b_self",
+      "failed": [
+        {
+          "codes": [
+            "diameter_out_of_limits:max",
+            "end_not_open",
+            "wall_missing"
+          ],
+          "requirement": "socket-1/bore:hole-209"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s21_dia_1002",
+      "cause": "rule",
+      "class": "b_self",
+      "failed": [
+        {
+          "codes": [
+            "diameter_out_of_limits:max",
+            "end_not_open",
+            "wall_missing"
+          ],
+          "requirement": "socket-1/bore:hole-209"
         }
       ],
       "policy": "functional"

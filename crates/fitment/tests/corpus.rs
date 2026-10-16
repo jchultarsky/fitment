@@ -340,7 +340,10 @@ const UNVERIFIABLE: [&str; 13] = [
 /// KH14: M4's rules that yield an unverifiable requirement, a
 /// `floor_above_tolerance` or a refusal: each needs a case whose
 /// expectation shows that outcome, as `UNVERIFIABLE` does. VR4's no-room
-/// branch joins with s63 (PR 6).
+/// branch is not among them: it needs a span floor from another source than
+/// the clear diameter's, which no generated assembly states (with one floor
+/// on every neighbour, M3's B1 makes the clearance line to line first), so
+/// axial.rs's own test shows it.
 const M4_UNVERIFIABLE: [&str; 9] = [
     "VR2", "VR6", "VR14", "VD5", "VD6", "VD9", "VD10", "CF2", "MF2",
 ];

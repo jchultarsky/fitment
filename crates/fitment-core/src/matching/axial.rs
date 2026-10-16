@@ -959,13 +959,69 @@ fn extend(
 
 #[cfg(test)]
 mod tests {
-    use super::{Found, Map, Span, zone_profile};
+    use super::{Found, Map, Span, no_room, zone_profile};
     use crate::geom::Rigid;
     use crate::matching::candidate::{CandidateView, Piece};
     use crate::matching::evidence::At;
     use crate::matching::verify::Ctx;
     use crate::matching::{MatchPolicy, Placement, SocketView};
     use crate::socket::{SocketDocument, SpanBasis};
+
+    /// VR4's no-room branch (VD6): a clearance span whose clear diameter and
+    /// the original's leave no margin above τ + u fails every candidate with
+    /// `floor_above_tolerance`; s01's bracket's bore, clear Ø6 in its Ø6.6,
+    /// has room, and the same with a clear Ø6.59 has none.
+    #[test]
+    fn a_clearance_with_no_room_fails_every_candidate() {
+        let bytes = include_bytes!("../../tests/assemblies/s01_bolted.stp");
+        let Ok(document) = SocketDocument::extract(bytes, Some("BRACKET"), None) else {
+            unreachable!()
+        };
+        let Some(view) = SocketView::new(&document, "socket-1") else {
+            unreachable!()
+        };
+        let read = crate::features::FeaturesDocument::read(include_bytes!(
+            "../../tests/data/p01_through.stp"
+        ));
+        let Some(part) = read.part() else {
+            unreachable!()
+        };
+        let cand = CandidateView::of(part);
+        let at = Placement::given(Rigid::IDENTITY);
+        let ctx = Ctx::new(&view, &cand, &at, &MatchPolicy::default());
+        let Some(bore) = view
+            .active()
+            .iter()
+            .find(|r| matches!(r.requires, crate::socket::Requires::Bore { .. }))
+        else {
+            unreachable!()
+        };
+        let span = |clear: f64| Span {
+            from: 0.0,
+            to: 8.0,
+            d: 6.6,
+            clear: Some(clear),
+            pinned: false,
+            basis: SpanBasis::Cylinder,
+            profile: None,
+        };
+        assert!(no_room(&ctx, bore, true, &[span(6.0)]).is_none());
+        let Some(evidence) = no_room(&ctx, bore, true, &[span(6.59)]) else {
+            unreachable!()
+        };
+        assert!(
+            evidence
+                .failures()
+                .iter()
+                .all(|f| f.code == crate::matching::FailureCode::FloorAboveTolerance)
+        );
+        // A pinned span states no clearance: VR4's no-room test is not its.
+        let pinned = Span {
+            pinned: true,
+            ..span(6.59)
+        };
+        assert!(no_room(&ctx, bore, true, &[pinned]).is_none());
+    }
 
     /// A zone of the profile whose radius is unknown (no single cone)
     /// fails the profile, whichever piece comes before it.
