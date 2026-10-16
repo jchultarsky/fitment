@@ -70,7 +70,7 @@ component candidates and grip-only thickness changes (M4-8, M7's) are not
 judged.
 
 `match` runs the built fitment on every match case's file candidate,
-under both policies, and checks each document (KO3, KO5, KO6): every pass
+under both policies, and checks each document (KO3 to KO6): every pass
 fits as KO1 says at the placement fitment states, at every occurrence of
 every socket (under functional, the ring a larger clearance bore takes
 from its seats excused); every placement is rigid; every passed check's
@@ -80,6 +80,17 @@ plane or axis line within the tolerance; and each mutation of a document
 axis, turned 0.02 degrees, or turned 180 degrees about a hole's axis)
 meets a disagreement somewhere in the corpus. A `collides` pass may
 depart by common volume alone, none of it inside a requirement's region.
+Every failed check of every placed candidate fails something, with a code
+its failed measures allow; each failed measure Open CASCADE can measure
+alone (an axis's offset, a pinned span's cylinder, a seat's plane over its
+contacts, a cone's angle, a contact face left uncovered) agrees with
+fitment's within 1e-6 mm (1e-9 rad) and breaks its bound; a core
+intrusion's distance is a sound bound, never past the face's true one.
+Measures of the stack M2's reading composes (walls, clearance margins and
+diameters, open ends, zone profiles) are tallied, not re-measured. The
+other mutations: a failed measure's found changed by 0.1, a passed check
+marked failed, failure codes swapped between two checks, a check dropped,
+the policy's name changed.
 
 `features` checks fitment against Open CASCADE instead. PATH is a STEP
 file, or a directory: a generated corpus (its manifest's cases), the
@@ -1427,7 +1438,70 @@ MATCH_MUTATIONS = [
     ("a placement moved 0.01 mm across an axis", lambda doc, socket: with_placements(doc, socket, across)),
     ("a placement turned 0.02 degrees", lambda doc, socket: with_placements(doc, socket, turned)),
     ("a placement turned 180 degrees about a hole's axis", lambda doc, socket: with_placements(doc, socket, half_turn)),
+    ("a failed check's found changed by 0.1", lambda doc, socket: found_changed(doc)),
+    ("a passed check marked failed", lambda doc, socket: passed_failed(doc)),
+    ("failure codes swapped between two checks", lambda doc, socket: codes_swapped(doc)),
+    ("a check dropped", lambda doc, socket: check_dropped(doc)),
+    ("a policy name changed", lambda doc, socket: dict(doc, policy=dict(doc["policy"], name="cli"))),
 ]
+
+
+def each_check(doc):
+    for entry in doc["candidates"]:
+        for result in entry["sockets"]:
+            if result.get("placement") is None:
+                continue
+            for check in result["checks"]:
+                yield entry, result, check
+
+
+def found_changed(doc):
+    import copy
+    out = copy.deepcopy(doc)
+    for _, _, check in each_check(out):
+        for measure in check.get("measures") or []:
+            if (measure.get("passed") is False and measure["quantity"] in ("axis_offset_mm", "diameter_mm",
+                                                                            "plane_offset_mm", "cone_angle_rad")
+                    and number(measure.get("found")) is not None):
+                measure["found"] += 0.1
+                return out
+    return None
+
+
+def passed_failed(doc):
+    import copy
+    out = copy.deepcopy(doc)
+    for _, _, check in each_check(out):
+        if check["result"] == "passed" and check.get("measures"):
+            check["result"] = "failed"
+            return out
+    return None
+
+
+def codes_swapped(doc):
+    import copy
+    out = copy.deepcopy(doc)
+    failed = [check for _, _, check in each_check(out) if check["result"] == "failed" and check.get("failures")
+              and check.get("measures")]
+    for a in failed:
+        for b in failed:
+            codes_a = {f["code"] for f in a["failures"]}
+            codes_b = {f["code"] for f in b["failures"]}
+            if not codes_a & codes_b:
+                a["failures"], b["failures"] = b["failures"], a["failures"]
+                return out
+    return None
+
+
+def check_dropped(doc):
+    import copy
+    out = copy.deepcopy(doc)
+    for entry in out["candidates"]:
+        for result in entry["sockets"]:
+            if result["checks"]:
+                result["checks"].pop()
+                return out
+    return None
 
 
 def run_fitment(binary, args, codes, cwd=None):
@@ -1457,7 +1531,8 @@ def match_main(argv):
         if case.get("kind") != "match" or "file" not in case["candidate"] or case["truth"] == "refused":
             continue
         groups.setdefault((case["socket"]["case"], case["socket"]["part"]), []).append(case)
-    tally = {"documents": 0, "passes": 0, "occurrences": 0, "features": 0, "collisions excused": 0}
+    tally = {"documents": 0, "passes": 0, "occurrences": 0, "features": 0, "collisions excused": 0,
+             "re-measured": 0}
     problems, met = [], set()
     with tempfile.TemporaryDirectory(prefix="fitment-match-oracle-") as scratch:
         for (source, part), group in sorted(groups.items()):
@@ -1469,7 +1544,9 @@ def match_main(argv):
                 problems.append(f"{source} {part}: {problem}")
                 continue
             socket_path.write_text(json.dumps(socket), encoding="utf-8")
-            leaves = xcaf_leaves(directory / f"{source}.stp")
+            leaves, face_id = xcaf_leaves(directory / f"{source}.stp", bind=True)
+            for _, _, shape in leaves:
+                LEAF_FACE_IDS[id(shape)] = face_id
             files = sorted({c["candidate"]["file"] for c in group})
             for clearance in ("strict", "functional"):
                 doc, problem = run_fitment(binary, ["match", str(socket_path), *files, "--format", "json",
@@ -1488,12 +1565,72 @@ def match_main(argv):
     unmet = [name for name, _ in MATCH_MUTATIONS if name not in met]
     if unmet:
         problems.append(f"mutations no check disagreed with anywhere (KO6): {unmet}")
-    if any(v == 0 for k, v in tally.items() if k != "collisions excused"):
+    if any(v == 0 for k, v in tally.items() if k != "collisions excused" and not k.startswith("not ")):
         problems.append("a match check examined nothing: " + ", ".join(f"{v} {k}" for k, v in tally.items()))
     for problem in problems:
         print(problem, file=sys.stderr)
     print(", ".join(f"{v} {k}" for k, v in tally.items()) + f"; {len(problems)} disagreements with Open CASCADE")
     sys.exit(1 if problems else 0)
+
+
+def target_faces(original, o, face_id):
+    """The original's faces by #id, in the target's frame (`o` placed it)."""
+    if face_id is None:
+        return {}
+    r_ = [row[:3] for row in o]
+    inverse = [[r_[j][i] for j in range(3)] + [-sum(r_[j][i] * o[j][3] for j in range(3))] for i in range(3)]
+    out = {}
+    for face in (as_face(e) for e in explore(original, TopAbs_FACE)):
+        id_ = face_id(face)
+        if id_ is not None:
+            out[id_] = as_face(moved(face, inverse))
+    return out
+
+
+def ko4_problems(directory, doc, socket, by_socket, occurrences, originals, clearance, tally):
+    """KO4 on every placed socket result of every candidate, and the envelope's checks against the socket."""
+    problems = []
+    if not occurrences:
+        return problems
+    occurrence, o, k = occurrences[0]
+    original_faces = target_faces(originals[k], o, LEAF_FACE_IDS.get(id(originals[k])))
+    for entry in doc["candidates"]:
+        label = entry["labels"][0]
+        where = f"{label} ({clearance})"
+        if entry["status"] == "refused":
+            continue
+        faces = None
+        for result in entry["sockets"]:
+            socket_doc = by_socket.get(result["socket"])
+            if socket_doc is None:
+                continue
+            judged = [c for c in result["checks"] if c["result"] in ("passed", "failed", "not_checked")]
+            if len(judged) != len(socket_doc["requirements"]):
+                problems.append(f"{where} {result['socket']}: {len(judged)} checks for "
+                                f"{len(socket_doc['requirements'])} requirements")
+            if result.get("placement") is None:
+                continue
+            if faces is None:
+                _, faces, _ = bound_faces(directory / label)
+                candidate = one_solid(directory / label)
+            m = placement_rows(result["placement"])
+            candidate_placed = moved(candidate, m)
+            requirements = {r_["id"]: r_ for r_ in socket_doc["requirements"]}
+            for check in result["checks"]:
+                if check["result"] != "failed" or check["requirement"] not in requirements:
+                    continue
+                q = requirements[check["requirement"]]["requires"]
+                try:
+                    problems += failure_problems(f"{where} {result['socket']}/{check['requirement']}", check, q,
+                                                 faces, m, candidate_placed, original_faces,
+                                                 clearance == "strict", tally)
+                except BooleanFailed as failed:
+                    problems.append(f"{where}: {failed} failed in Open CASCADE")
+    return problems
+
+
+# The #id function of each leaf shape xcaf_leaves bound, by the shape's identity.
+LEAF_FACE_IDS = {}
 
 
 def occurrence_leaves(where, socket, leaves):
@@ -1517,12 +1654,16 @@ def occurrence_leaves(where, socket, leaves):
 
 
 def document_problems(directory, doc, socket, leaves, group, clearance, tally):
-    """KO3 and KO5 on one fitment.match document."""
+    """KO3, KO4 and KO5 on one fitment.match document, and what its envelope must state: the run's policy
+    (KH2.6) and a check or a removal for every requirement of every socket."""
     linear = doc["policy"]["linear_mm"]
     angular = math.radians(doc["policy"]["angular_deg"])
     by_socket = {s_["id"]: s_ for s_ in socket["extracted"]["sockets"]}
     occurrences, originals, problems = occurrence_leaves(socket["selection"]["part"], socket, leaves)
     part = socket["selection"]["part"]
+    if doc["policy"]["name"] != "default" or doc["policy"]["clearance"] != clearance:
+        problems.append(f"{part} ({clearance}): the document states the policy {doc['policy']}")
+    problems += ko4_problems(directory, doc, socket, by_socket, occurrences, originals, clearance, tally)
     for entry in doc["candidates"]:
         if entry["verdict"] == "reject":
             continue
@@ -1572,6 +1713,365 @@ def document_problems(directory, doc, socket, leaves, group, clearance, tally):
         except BooleanFailed as failed:
             problems.append(f"{where}: {failed} failed in Open CASCADE")
     return problems
+
+
+# ---------------------------------------------------------------- match mode: failures re-measured (KO4)
+
+SAME = 1e-6  # mm: a re-measured length agrees with fitment's within this
+SAME_RAD = 1e-9  # rad
+JOIN = 1e-9  # relative: pieces of one wall join end to end within this
+PROBE_PAST = 0.05  # mm: how far past a wall's end its opening is probed
+
+# The codes a failed measure of each quantity may give (KO4: codes swapped between checks are caught here).
+CODES = {
+    "diameter_mm": {"diameter_out_of_limits:min", "diameter_out_of_limits:max", "wall_missing"},
+    "clear_margin_mm": {"diameter_out_of_limits:min", "diameter_out_of_limits:max"},
+    "core_distance_mm": {"core_intruded"},
+    "wall_from_mm": {"wall_missing"},
+    "wall_to_mm": {"wall_missing"},
+    "open_start": {"end_not_open"},
+    "open_finish": {"end_not_open"},
+    "covers": {"contact_not_covered", "unknown_outline"},
+    "plane_offset_mm": {"seat_missing", "no_feature"},
+    "plane_sine": {"seat_missing", "no_feature"},
+    "axis_offset_mm": {"axis_offset"},
+    "axis_sine": {"axis_angle"},
+    "cone_angle_rad": {"cone_mismatch:angle"},
+    "apex_offset_mm": {"cone_mismatch:apex"},
+    "cone_range_mm": {"cone_mismatch:range"},
+    "grip_length_mm": {"grip_length"},
+    "profile_offset_mm": {"diameter_out_of_limits:profile"},
+}
+
+
+def placed_face(face, m):
+    """A face of the candidate, in its own frame, placed by `m` (a copy: its #id is known already)."""
+    return as_face(moved(face, m))
+
+
+class Revolution:
+    """A coaxial piece of a candidate's stack, in the requirement's stations: its extent, its radius (None for a
+    zone, a cone or torus between cylinders), and whether it is a hole's (concave) wall."""
+
+    def __init__(self, lo, hi, radius, hole):
+        self.lo, self.hi, self.radius, self.hole = lo, hi, radius, hole
+
+
+def revolution_of(face):
+    """(axis point, axis direction, radius or None, concave) of a cylindrical, conical or toroidal face."""
+    from OCP.BRepGProp import BRepGProp_Face
+    from OCP.gp import gp_Vec
+    surface = BRepAdaptor_Surface(face)
+    kind = surface.GetType()
+    if kind == Kind.GeomAbs_Cylinder:
+        c = surface.Cylinder()
+        point, d, radius = xyz(c.Location()), norm(xyz(c.Axis().Direction())), c.Radius()
+    elif kind == Kind.GeomAbs_Cone:
+        c = surface.Cone()
+        point, d, radius = xyz(c.Apex()), norm(xyz(c.Axis().Direction())), None
+    elif kind == Kind.GeomAbs_Torus:
+        t = surface.Torus()
+        point, d, radius = xyz(t.Location()), norm(xyz(t.Axis().Direction())), None
+    else:
+        return None
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+    at, normal = gp_Pnt(), gp_Vec()
+    BRepGProp_Face(face).Normal((u0 + u1) / 2, (v0 + v1) / 2, at, normal)
+    foot = add(point, d, dot(sub(xyz(at), point), d))
+    concave = dot((normal.X(), normal.Y(), normal.Z()), sub(xyz(at), foot)) < 0
+    return point, d, radius, concave
+
+
+def extent_on(face, point, d):
+    """The stations along the line (point, d) that a face's vertices span."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_VERTEX
+    stations = [dot(sub(xyz(BRep_Tool.Pnt_s(downcast("Vertex")(v))), point), d) for v in explore(face, TopAbs_VERTEX)]
+    if not stations:
+        # A face with no vertex (a whole cylinder with seam-less circles): its parameter range.
+        _, _, v0, v1 = BRepTools.UVBounds_s(face)
+        return v0, v1
+    return min(stations), max(stations)
+
+
+def stack_of(faces, seed, q, m):
+    """The candidate's stack about a requirement's axis: every placed cylinder, cone or torus coaxial with the
+    seed's axis (the named feature's, or with none the nearest coaxial cylinder within 1 mm), of the seed's
+    sense, as pieces in the requirement's stations; with the stack's axis line. None with no seed."""
+    line_point, line_dir = q["axis"]["point_mm"], norm(q["axis"]["direction"])
+    placed = {k: placed_face(f, m) for k, f in faces.items()}
+    revolutions = {k: revolution_of(f) for k, f in placed.items()}
+    if seed is None:
+        near = [(off_line(r[0], line_point, line_dir), k) for k, r in revolutions.items()
+                if r is not None and r[2] is not None and abs(dot(r[1], line_dir)) > 1 - 1e-6
+                and off_line(r[0], line_point, line_dir) <= 1.0]
+        if not near:
+            return None
+        seed = min(near)[1]
+    if revolutions.get(seed) is None:
+        return None
+    sp, sd, _, concave = revolutions[seed]
+    pieces = []
+    for k, r in revolutions.items():
+        if r is None or r[3] != concave or abs(dot(r[1], sd)) < 1 - 1e-9 or off_line(r[0], sp, sd) > SAME:
+            continue
+        a, b = extent_on(placed[k], line_point, line_dir)
+        pieces.append(Revolution(a, b, r[2], concave))
+    pieces.sort(key=lambda p: (p.lo, p.hi))
+    return pieces, (sp, sd)
+
+
+def offset_at(station, q, axis):
+    """The distance of the requirement's axis at `station` from the stack's axis line."""
+    line_point, line_dir = q["axis"]["point_mm"], norm(q["axis"]["direction"])
+    return off_line(add(line_point, line_dir, station), axis[0], axis[1])
+
+
+def overlapping(pieces, lo, hi):
+    """The pieces that overlap a span by more than τ (or, a span no longer, hold its middle), as fitment's run
+    takes them."""
+    touch = TOUCH
+    if hi - lo > touch:
+        return [p for p in pieces if min(p.hi, hi) - max(p.lo, lo) > touch]
+    return [p for p in pieces if p.lo <= (lo + hi) / 2 <= p.hi]
+
+
+def wall_run(pieces, lo, hi):
+    """The run of pieces joined end to end that holds the span's middle: its first and last stations."""
+    mid = (lo + hi) / 2
+    hit = next((k for k, p in enumerate(pieces) if p.lo <= mid <= p.hi), None)
+    if hit is None:
+        return None
+    start = end = hit
+    joined = lambda a, b: abs(b.lo - a.hi) <= JOIN * (1 + abs(a.hi))  # noqa: E731
+    while start > 0 and joined(pieces[start - 1], pieces[start]):
+        start -= 1
+    while end + 1 < len(pieces) and joined(pieces[end], pieces[end + 1]):
+        end += 1
+    return pieces[start].lo, max(p.hi for p in pieces[start:end + 1])
+
+
+def span_of(q, at):
+    """The span of a requirement a measure's `span_mm` names."""
+    lo, hi = at["span_mm"]
+    return next((s_ for s_ in q.get("spans", []) if abs(s_["from_mm"] - lo) <= 1e-9 and abs(s_["to_mm"] - hi) <= 1e-9),
+                None)
+
+
+# Measures of fitment's stack, which M2's reading of holes and shafts composes (runs, zones, annular bottoms):
+# the oracle does not rebuild that reading from faces, so it tallies them unmeasured (KO4, 6c).
+STACK_MEASURES = {"wall_from_mm", "wall_to_mm", "clear_margin_mm", "open_start", "open_finish"}
+
+
+def remeasure_axial(quantity, measure, q, stack):
+    """An axial measure re-measured from the stack's cylinders; None for one of the stack's own composition (a
+    clearance span's diameters, its walls, its margin, its ends) or with no cylinder to measure."""
+    pieces, axis = stack
+    at = measure.get("at", {})
+    if quantity == "axis_offset_mm":
+        spans = q.get("spans", [])
+        if not spans:
+            return None
+        low = min(min(s_["from_mm"], s_["to_mm"]) for s_ in spans)
+        high = max(max(s_["from_mm"], s_["to_mm"]) for s_ in spans)
+        return max(offset_at(low, q, axis), offset_at(high, q, axis))
+    span = span_of(q, at) if "span_mm" in at else None
+    if quantity != "diameter_mm" or span is None or (span["fit"] == "clearance" and not span["pinned"]):
+        return None
+    # A pinned span's one cylinder that covers it within the tolerance.
+    lo, hi = min(span["from_mm"], span["to_mm"]), max(span["from_mm"], span["to_mm"])
+    covering = [p for p in pieces if p.radius is not None and p.lo - lo < TOL and hi - p.hi < TOL]
+    return 2 * covering[0].radius if covering else None
+
+
+def open_end(quantity, q, stack, candidate_placed):
+    """Whether the candidate's stack, at the end of the requirement's spans the measure names, is open within the
+    tolerance of that end: its wall's last station there within TOL of the spans' end, with air on the axis just
+    past it."""
+    pieces, axis = stack
+    spans = q.get("spans", [])
+    if not spans or not pieces:
+        return None
+    start = quantity == "open_start"
+    edge = (min(min(s_["from_mm"], s_["to_mm"]) for s_ in spans) if start
+            else max(max(s_["from_mm"], s_["to_mm"]) for s_ in spans))
+    end = min(p.lo for p in pieces) if start else max(p.hi for p in pieces)
+    line_point, line_dir = q["axis"]["point_mm"], norm(q["axis"]["direction"])
+    probe = add(line_point, line_dir, end + (-PROBE_PAST if start else PROBE_PAST))
+    foot = add(axis[0], axis[1], dot(sub(probe, axis[0]), axis[1]))
+    classifier = BRepClass3d_SolidClassifier(candidate_placed, gp_Pnt(*foot), 1e-7)
+    air = classifier.State() == TopAbs_OUT
+    return air and abs(end - edge) < TOL
+
+
+def plane_deviation(face, q, m):
+    """VR3's deviation of a placed plane face from a seat over its contacts' outlines: each vertex's distance, and
+    each arc's centre's plus its radius times the tilt."""
+    facts = plane_facts(face)
+    if facts is None:
+        return None
+    normal, point = turn(m, facts[0]), apply_point(m, facts[1])
+    offset = dot(normal, point)
+    sine = math.sqrt(dot(cross(normal, q["normal"]), cross(normal, q["normal"])))
+    pts = []
+    for contact in q.get("contacts", []):
+        for loop in (contact.get("outline") or {}).get("loops", []):
+            for s_ in loop.get("segments", []):
+                if s_["kind"] == "line":
+                    pts += [(s_["from_mm"], 0.0), (s_["to_mm"], 0.0)]
+                else:
+                    pts.append((s_["center_mm"], s_["radius_mm"]))
+    if not pts:
+        pts = [([c * q["offset_mm"] for c in q["normal"]], 0.0)]
+    return max(abs(dot(normal, p) - offset) + r * sine for p, r in pts)
+
+
+def uncovered_area(contact_face, candidate_placed, normal, band):
+    """The area of a target contact face no face of the candidate covers: the candidate's faces on the contact's
+    plane, facing its way within `band`, moved onto it and intersected."""
+    facts = plane_facts(contact_face)
+    if facts is None:
+        return None
+    _, point, area = facts
+    covered = 0.0
+    for f in (as_face(e) for e in explore(candidate_placed, TopAbs_FACE)):
+        mine = plane_facts(f)
+        if mine is None or dot(mine[0], normal) < 1 - 1e-9:
+            continue
+        gap = dot(sub(mine[1], point), normal)
+        if abs(gap) > band or apart(f, contact_face, band):
+            continue
+        covered += area_of(common(contact_face, translated(f, [-gap * c for c in normal])))
+    return area - covered
+
+
+def violates(value, measure):
+    """True if `value` breaks the measure's stated bound (a NaN, no value, always does)."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return True
+    lo, hi = measure.get("min"), measure.get("max")
+    return (lo is not None and value <= lo) or (hi is not None and value >= hi)
+
+
+def number(found):
+    """A measure's found value; None for none, which fitment writes as ±f64::MAX (EV2: JSON has no NaN)."""
+    return None if found is None or abs(found) >= 1e300 else found
+
+
+def agrees(value, found, quantity):
+    found = number(found)
+    if value is None:
+        return True
+    if isinstance(value, float) and math.isnan(value):
+        return found is None
+    if found is None:
+        return False
+    return abs(value - found) <= (SAME_RAD if quantity.endswith("_rad") or quantity.endswith("sine") else SAME)
+
+
+def failure_problems(where, check, q, faces, m, candidate_placed, original_faces, strict, tally):
+    """KO4 on one failed check: a failed check fails something; each failed measure re-measured by Open CASCADE
+    agrees with fitment's found and breaks its bound; and the check's codes include one its failed measures
+    allow."""
+    measures = check.get("measures") or []
+    failures = check.get("failures") or []
+    failed = [m_ for m_ in measures if m_.get("passed") is False]
+    if not failed and not failures:
+        return [f"{where}: failed with no failure and no failing measure"]
+    out = []
+    codes = {f["code"] for f in failures}
+    feature = check.get("feature")
+    seed = int(feature.split("+")[0].rsplit("-", 1)[1]) if feature else None
+    stack = None
+    if q["kind"] in ("bore", "shaft"):
+        stack = stack_of(faces, seed if seed in faces else None, q, m)
+    for measure in failed:
+        quantity = measure["quantity"]
+        allowed = CODES.get(quantity)
+        if allowed is not None and not (codes & allowed):
+            out.append(f"{where}: {quantity} failed, but the check's codes {sorted(codes)} name none of "
+                       f"{sorted(allowed)}")
+        value = None
+        if quantity in STACK_MEASURES:
+            tally["not re-measured: the stack's"] = tally.get("not re-measured: the stack's", 0) + 1
+            continue
+        if quantity in ("axis_offset_mm", "diameter_mm"):
+            # No piece found is the stack's own composition, as its walls are.
+            if number(measure.get("found")) is None:
+                tally["not re-measured: the stack's"] = tally.get("not re-measured: the stack's", 0) + 1
+                continue
+            value = remeasure_axial(quantity, measure, q, stack) if stack else None
+        elif quantity == "plane_offset_mm" and seed in faces:
+            value = plane_deviation(faces[seed], q, m)
+        elif quantity == "cone_angle_rad" and seed in faces:
+            surface = BRepAdaptor_Surface(faces[seed])
+            value = 2 * abs(surface.Cone().SemiAngle()) if surface.GetType() == Kind.GeomAbs_Cone else None
+        elif quantity == "covers":
+            face = original_faces.get(measure.get("at", {}).get("contact_face"))
+            uncovered = uncovered_area(face, candidate_placed, q["normal"], TOL) if face is not None else None
+            if uncovered is not None:
+                tally["re-measured"] += 1
+                if uncovered <= SAME:
+                    out.append(f"{where}: covers failed, but the candidate covers the contact face to "
+                               f"{uncovered:.3g} mm²")
+            continue
+        elif quantity == "core_distance_mm":
+            # A sound bound from boxes: a hole's face may lie no nearer than stated, a shaft's no farther. The
+            # true distance may keep the bound (the box was loose: a false negative by the rule, never a pass).
+            value = core_distance(check, q, measure, faces, m)
+            found = number(measure.get("found"))
+            if value is not None and found is not None:
+                tally["re-measured"] += 1
+                hole = q["kind"] == "bore"
+                if (found > value + SAME) if hole else (found < value - SAME):
+                    out.append(f"{where}: core_distance_mm states {found}, but the face lies {value} from the axis")
+                if not violates(value, measure):
+                    tally["core bounds loose"] = tally.get("core bounds loose", 0) + 1
+            continue
+        if value is None:
+            tally[f"not re-measured: {quantity}"] = tally.get(f"not re-measured: {quantity}", 0) + 1
+            continue
+        tally["re-measured"] += 1
+        if not agrees(value, measure.get("found"), quantity):
+            out.append(f"{where}: {quantity} found {measure.get('found')}, Open CASCADE measures {value}")
+        if not violates(value, measure):
+            out.append(f"{where}: {quantity} failed, but {value} keeps its bound")
+    return out
+
+
+def core_distance(check, q, measure, faces, m):
+    """The face a core failure names, placed, against the requirement's axis over the span: for a bore, its least
+    distance from the axis segment; for a shaft, its greatest radial distance within the span, from its vertices
+    and a grid of its points."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.gp import gp_Pnt2d
+    named = [int(x) for f in check.get("failures") or [] if f["code"] == "core_intruded"
+             for x in re.findall(r"face #(\d+)", f.get("detail", ""))]
+    span = span_of(q, measure.get("at", {}))
+    if not named or named[0] not in faces or span is None:
+        return None
+    face = placed_face(faces[named[0]], m)
+    line_point, line_dir = q["axis"]["point_mm"], norm(q["axis"]["direction"])
+    lo, hi = min(span["from_mm"], span["to_mm"]), max(span["from_mm"], span["to_mm"])
+    if q["kind"] == "bore":
+        a, b = add(line_point, line_dir, lo), add(line_point, line_dir, hi)
+        found = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeEdge(gp_Pnt(*a), gp_Pnt(*b)).Edge(), face)
+        return found.Value() if found.IsDone() else None
+    points = [xyz(BRep_Tool.Pnt_s(downcast("Vertex")(v))) for v in explore(face, TopAbs_VERTEX)]
+    surface = BRepAdaptor_Surface(face)
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+    n = 24
+    for i in range(n + 1):
+        for j in range(n + 1):
+            u, v = u0 + i / n * (u1 - u0), v0 + j / n * (v1 - v0)
+            if BRepClass_FaceClassifier(face, gp_Pnt2d(u, v), 1e-7).State() != TopAbs_OUT:
+                points.append(xyz(surface.Value(u, v)))
+    within = [p for p in points if lo - 1e-9 <= dot(sub(p, line_point), line_dir) <= hi + 1e-9]
+    return max((off_line(p, line_point, line_dir) for p in within), default=None)
 
 
 # ---------------------------------------------------------------- features
