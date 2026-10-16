@@ -789,6 +789,8 @@ M4_TESTS.update({
     "KH11": M4_TESTS["KH11"] + [f"{M4_MATCHING}::matching_is_deterministic"],
     "KH12": M4_CHECKER + M4_BINARY,
     "KH14": ["crates/fitment/tests/corpus.rs::every_rule_has_a_case_a_test_or_a_reason"],
+    "AL11": M4_TESTS["AL11"] + [f"{M4_MATCHING}::hostile_inputs_stay_within_their_bounds"],
+    "VR4": M4_TESTS["VR4"] + ["crates/fitment-core/src/matching/axial.rs::a_clearance_with_no_room_fails_every_candidate"],
     "VD9": M4_TESTS["VD9"] + M4_SOCKET_GATE,
     "MF2": M4_TESTS["MF2"] + M4_SOCKET_GATE,
 })
@@ -3851,6 +3853,175 @@ def build_gate_cases(w: Writer):
     case("m_r27_socket", {"case": "r27_target_refused"}, "m_bracket.stp", "b_socket", "refused",
          {"verdict": "socket_refused"}, "the bracket against r27's refused socket document", ["VD9", "MF2"])
 
+def c_block59():
+    """s59's BLOCK: 30 x 25 x 15 from (10, 5, 0); at (18, 12) a dia 6.6 hole through with a dia 11 counterbore
+    from z 8.5; at (33, 24) a dia 5 hole through. Neither the counterbore nor the side its stop seats is
+    symmetric, so no proper rotation maps its mirror image onto it."""
+    return cut(box(10, 5, 0, 30, 25, 15), cyl((18, 12, -1), UP, 3.3, 17), cyl((18, 12, 8.5), UP, 5.5, 7),
+               cyl((33, 24, -1), UP, 2.5, 17))
+
+
+def build_mirror_cases(w: Writer):
+    """b_mirror (KC9, AL9's proper rotations): s59, a match-only source, the block on a plate, a screw's head on
+    its counterbore's floor and its shank in the plate, a dia 5 pin through its off-centre hole, a stop against
+    its x = 40 side; the block itself fits, its mirror image in y = 17.5 does not, in any frame."""
+    plate = cut(box(0, 0, -10, 60, 40, 10), cyl((18, 12, -11), UP, 3, 12), cyl((33, 24, -11), UP, 2.5, 12))
+    screw = fuse(cyl((0, 0, 8.5), UP, 5, 6), cyl((0, 0, -8), UP, 3, 16.5))
+    root = Node("s59_mirror_block").add(Leaf("PLATE", plate)).add(Leaf("BLOCK", c_block59()))
+    root.add(Leaf("SCREW", screw), m_tr((18, 12, 0))).add(Leaf("PIN", cyl((33, 24, -10), UP, 2.5, 25)))
+    root.add(Leaf("STOP", box(40, 5, 0, 5, 25, 15)))
+    write_xcaf(w, root, "s59_mirror_block")
+    mirror = gp_Trsf()
+    mirror.SetMirror(gp_Ax2(gp_Pnt(0, 17.5, 0), gp_Dir(0, 1, 0)))
+    mirrored = BRepBuilderAPI_Transform(c_block59(), mirror, True).Shape()
+    if same_solid(mirrored, c_block59()):
+        raise RuntimeError("s59's block is its own mirror image")
+    bores = [l_bore((18, 12, 0)), l_bore((33, 24, 0))]
+    seats = [l_seat((0, 0, -1), 0), l_seat((1, 0, 0), 40), l_seat((0, 0, 1), 8.5)]
+    every = ("no_feature", "axis_offset", "axis_angle", "diameter_out_of_limits:min", "diameter_out_of_limits:max",
+             "wall_missing", "end_not_open", "core_intruded", "contact_not_covered", "seat_missing", "grip_length",
+             "no_placement", "alignment_exhausted")
+    may = [must(x, *every) for x in bores + seats] + [must(l_grip(8.5), *every)]
+    for cid, shape, motion, truth, klass, expect, defect, text in [
+        ("m_s59_block", c_block59(), VARIANT, "fits", "g_frame", m_ok(["thread_not_confirmed"]), [],
+         "the block itself"),
+        ("m_s59_mirror", mirrored, VARIANT, "does_not_fit", "b_mirror", m_rej([any_of(*may)], may),
+         [must(l_bore((33, 24, 0)), "no_feature", "axis_offset", "diameter_out_of_limits:min", "wall_missing")],
+         "the block mirrored in y = 17.5: no proper rotation maps it onto the block"),
+        ("m_s59_mirror_tilt", mirrored, TILT, "does_not_fit", "b_mirror", m_rej([any_of(*may)], may),
+         [must(l_bore((33, 24, 0)), "no_feature", "axis_offset", "diameter_out_of_limits:min", "wall_missing")],
+         "the mirror image, in TILT"),
+    ]:
+        w.shape(BRepBuilderAPI_Transform(shape, motion.trsf(), True).Shape(), cid)
+        w.cases.append({
+            "id": cid, "kind": "match", "file": f"{cid}.stp", "set": "corpus",
+            "socket": {"case": "s59_mirror_block", "part": "BLOCK", "occurrence": None, "review": []},
+            "candidate": {"file": f"{cid}.stp"}, "class": klass, "truth": truth,
+            "construction": {"from": "BLOCK", "defect": text},
+            "frame": {"axis": list(motion.axis), "angle_deg": motion.angle, "shift": list(motion.shift)},
+            "placement": [row[:4] for row in m_inv(m_motion(motion))[:3]],
+            "expect": {"default": expect, "functional": "default"}, "defect": defect,
+            "rules": ["KC9", "AL9"] if truth == "does_not_fit" else ["KC8"], "tests": text,
+        })
+
+def many(op, first, rest):
+    """One general-fuse boolean of `first` with every shape of `rest` (cut or fuse), run in parallel."""
+    args, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
+    args.Append(first)
+    for t in rest:
+        tools.Append(t)
+    out = op()
+    out.SetArguments(args)
+    out.SetTools(tools)
+    out.SetRunParallel(True)
+    out.Build()
+    if not out.IsDone():
+        raise RuntimeError("a general fuse failed")
+    return out.Shape()
+
+
+def hole_grid(n, pitch=10.0, d=6.6, t=8.0):
+    """A plate n x n pitches square and `t` thick, a dia `d` hole through at the middle of every pitch."""
+    return many(BRepAlgoAPI_Cut, box(0, 0, 0, n * pitch, n * pitch, t),
+                [cyl((pitch * (i + 0.5), pitch * (j + 0.5), -1), UP, d / 2, t + 2) for i in range(n) for j in range(n)])
+
+
+def build_hostile_cases(w: Writer):
+    """M4-13 and AL11's bounds on hostile inputs, each judged by matching.rs within a time bound: never a pass
+    from a bound (a reject past one names only `alignment_exhausted` or `coverage_exhausted`), and no pass that
+    does not fit. 10,000 identical holes against s01's bracket; a 1,600-bore socket (h01, a match-only source:
+    a plate on 1,600 pins standing in a base) against a 1,681-hole grid; the bracket with its body fused from
+    1,000 tiles, so each of its faces is hundreds; and the bracket with 4,000 pins of dia 0.4 standing on its top
+    face round one bore, about 10^4 faces near it."""
+    def case(cid, source, part, truth, text, rules):
+        w.cases.append({"id": cid, "kind": "hostile", "file": f"{cid}.stp", "set": "corpus",
+                        "socket": {"case": source, "part": part, "occurrence": None, "review": []},
+                        "candidate": {"file": f"{cid}.stp"}, "class": "h_bounds", "truth": truth,
+                        "expect": {"within_s": 30}, "rules": rules, "tests": text})
+    w.shape(hole_grid(100, d=6.6), "h_hole_grid")
+    case("h_hole_grid", "s01_bolted", "BRACKET", "does_not_fit",
+         "10,000 dia 6.6 holes on a 10 mm pitch: every placement of the bracket's four lands on holes, and none "
+         "covers its seats", ["AL11", "KC9"])
+    pins = Leaf("PIN", cyl((0, 0, -10), UP, 3, 18))
+    root = Node("h01_bore_grid").add(Leaf("BASE", hole_grid(40, d=6.0, t=10.0)), m_tr((0, 0, -10)))
+    root.add(Leaf("PLATE", hole_grid(40)))
+    for i in range(40):
+        for j in range(40):
+            root.add(pins, m_tr((10 * (i + 0.5), 10 * (j + 0.5), 0)))
+    write_xcaf(w, root, "h01_bore_grid")
+    w.shape(hole_grid(41), "h_bore_grid")
+    case("h_bore_grid", "h01_bore_grid", "PLATE", "fits",
+         "a 41 x 41 grid of the same holes against the 40 x 40 one's socket: it fits, a row and a column over",
+         ["AL11", "SL4", "KC8"])
+    tiles = many(BRepAlgoAPI_Fuse, box(-40, -25, 0, 2, 2, 8),
+                 [box(-40 + 2 * i, -25 + 2 * j, 0, 2, 2, 8) for i in range(40) for j in range(25)][1:])
+    cuts = [cyl((x, y, -1), UP, 3.3, 10) for x, y in PTS] + [cyl((0, 0, -1), UP, 4.0, 10)]
+    w.shape(many(BRepAlgoAPI_Cut, tiles, cuts), "h_bracket_tiles")
+    case("h_bracket_tiles", "s01_bolted", "BRACKET", "fits",
+         "the bracket fused from 1,000 tiles 2 x 2 x 8: its seats hundreds of coplanar faces", ["AL11", "KC8"])
+    stubs = [cyl((30 + r * math.cos(a), 15 + r * math.sin(a), 8), UP, 0.2, 1.0)
+             for r in (7.5 + 0.5 * k for k in range(10)) for a in (2 * math.pi * m / 400 for m in range(400))]
+    w.shape(many(BRepAlgoAPI_Fuse, c_bracket(), stubs), "h_bracket_stubs")
+    case("h_bracket_stubs", "s01_bolted", "BRACKET", "fn_rule",
+         "the bracket with 4,000 pins of dia 0.4, 1 tall, on its top face in ten rings 7.5 to 12 from the "
+         "hole at (30, 15), clear of the bolt's head: their feet cut the top face the seat's region is (R14's "
+         "target-face basis)", ["AL11", "VR22", "KC10"])
+
+def build_family_cases(w: Writer):
+    """The families PR 5 left (15.3): s07b's two sockets of one part, s21's self-paired hole, s18's countersink
+    turned to a conical boss, and the bracket written with pcurves and with its closed faces split. Each states
+    its placement as the construction's (KO1)."""
+    def case(cid, source, part, shape, motion, truth, klass, expect, defect, text, rules, pcurves=False):
+        w.shape(BRepBuilderAPI_Transform(shape, motion.trsf(), True).Shape(), cid, pcurves=pcurves)
+        w.cases.append({
+            "id": cid, "kind": "match", "file": f"{cid}.stp", "set": "corpus",
+            "socket": {"case": source, "part": part, "occurrence": None, "review": []},
+            "candidate": {"file": f"{cid}.stp"}, "class": klass, "truth": truth,
+            "construction": {"from": part, "defect": text},
+            "frame": {"axis": list(motion.axis), "angle_deg": motion.angle, "shift": list(motion.shift)},
+            "placement": [row[:4] for row in m_inv(m_motion(motion))[:3]],
+            "expect": expect if "default" in expect else {"default": expect, "functional": "default"},
+            "defect": defect, "rules": rules, "tests": text,
+        })
+    B7, B = ("s07b_one_missing", "BRACKET"), ("s01_bolted", "BRACKET")
+    bores = [l_bore((x, y, 0)) for x, y in PTS]
+    seats = [l_seat((0, 0, 1), 8), l_seat((0, 0, -1), 0)]
+    every = ("no_feature", "axis_offset", "diameter_out_of_limits:min", "diameter_out_of_limits:max",
+             "wall_missing", "end_not_open", "core_intruded", "contact_not_covered", "seat_missing")
+    may = [must(b, *every) for b in bores] + [must(x, *every) for x in seats] + [must(l_grip(8), "grip_length", "seat_missing")]
+    small = {p: (p[0], p[1], 6.4, "through", None) for p in PTS}
+    case("m_s07b_bracket", *B7, c_bracket(), VARIANT, "fits", "g_some_sockets_all", m_ok(), [],
+         "the original against both its sockets", ["KC8"])
+    case("m_s07b_dia_64", *B7, c_bracket(holes=small), VARIANT, "fn_rule", "b_some_sockets",
+         m_rej([any_of(*[must(b, "diameter_out_of_limits:min") for b in bores])], may), [],
+         "every hole dia 6.4: socket-1's clearance bores pass it, socket-2's pinned bore, the plate's hole with "
+         "nothing across (J1), does not; it fits, the rule rejects it", ["KC10", "VR7", "VD2"])
+    block10 = through(box(-20, -20, 0, 40, 40, 10), [(0, 0)], 10, 0, 10)
+    case("m_s21_block", "s21_self_rod", "BLOCK10", block10, VARIANT, "fits", "g_frame", m_ok(), [],
+         "the original against both copies' sockets", ["KC8"])
+    case("m_s21_dia_1002", "s21_self_rod", "BLOCK10", through(box(-20, -20, 0, 40, 40, 10), [(0, 0)], 10.02, 0, 10),
+         VARIANT, "fn_rule", "b_self", m_rej([must(l_bore((0, 0, 0)), "diameter_out_of_limits:max")],
+                                             [must(l_bore((0, 0, 0)), *every)]), [],
+         "its pinned dia 10 hole at 10.02: nothing passes through it, J1's pinned rule rejects it",
+         ["KC10", "VR7", "VR17"])
+    boss = fuse(cut(box(-20, -20, 0, 40, 40, 10), cyl((0, 0, -1), UP, 3.3, 12)),
+                cut(cone((0, 0, 10), UP, 8.2, 3.3, 4.9), cyl((0, 0, 9), UP, 3.3, 7)))
+    cs = l_cone((0, 0, 3.8))
+    case("m_plate18_boss", "s18_csink", "PLATE", boss, VARIANT, "does_not_fit", "b_cone_sense",
+         m_rej([must(cs, "no_feature", "cone_mismatch:angle", "cone_mismatch:apex", "cone_mismatch:range")],
+               [must(cs, *every, "cone_mismatch:angle", "cone_mismatch:apex", "cone_mismatch:range"),
+                must(l_bore((0, 0, 0)), *every), must(l_seat((0, 0, -1), 0), *every),
+                must(l_grip(3.8), "grip_length", "seat_missing")]),
+         [must(cs, "no_feature", "cone_mismatch:angle", "cone_mismatch:apex", "cone_mismatch:range")],
+         "the countersink filled, a convex cone standing on the top face round the hole in its place: the "
+         "screw's head loses its seat", ["KC9", "VR13"])
+    case("m_bracket_pcurves", *B, c_bracket(), TILT, "fits", "g_writer", m_ok(), [],
+         "the original written with pcurves", ["KC6", "KC8"], pcurves=True)
+    divide = ShapeUpgrade_ShapeDivideClosed(c_bracket())
+    divide.Perform()
+    case("m_bracket_split", *B, divide.Result(), VARIANT, "fits", "g_writer", m_ok(), [],
+         "the original with every closed face split in two", ["KC6", "KC8"])
+
 def differences(generated: Path, committed: Path):
     """How the files of `committed` differ from those just `generated`: the
     manifests must be identical, and each .stp the same text but for
@@ -3911,6 +4082,9 @@ def main():
             build_candidates(w, lambda unit_set: True)
             build_component_cases(w)
             build_gate_cases(w)
+            build_mirror_cases(w)
+            build_hostile_cases(w)
+            build_family_cases(w)
     committed = args.unit_set or args.assembly_set or args.candidate_set
     if committed:
         keep = {c["file"] for c in w.cases if c["set"] == "unit"}

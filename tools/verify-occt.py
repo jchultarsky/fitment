@@ -70,7 +70,7 @@ component candidates and grip-only thickness changes (M4-8, M7's) are not
 judged.
 
 `match` runs the built fitment on every match case's file candidate,
-under both policies, and checks each document (KO3 to KO6): every pass
+under both policies, and checks each document (KO2 to KO6): every pass
 fits as KO1 says at the placement fitment states, at every occurrence of
 every socket (under functional, the ring a larger clearance bore takes
 from its seats excused); every placement is rigid; every passed check's
@@ -95,7 +95,10 @@ marked failed, a passed measure marked failed with its code, failure
 codes swapped between two checks, a check dropped, the policy's name
 changed. A bore's core reaches on past each end it requires open as far
 as the candidate's material encloses it, so a wall continued past the
-original's rim and into a neighbour is a defect, not a collision.
+original's rim and into a neighbour is a defect, not a collision. KO2:
+every bad case but a mirror image, at its construction's placement,
+departs physically only with the neighbours its defect's requirements
+name as sources.
 
 `features` checks fitment against Open CASCADE instead. PATH is a STEP
 file, or a directory: a generated corpus (its manifest's cases), the
@@ -799,6 +802,9 @@ def check_case(directory, case):
         return check_assembly(directory, case)
     if case.get("kind") == "match":
         return match_physics(directory, case)
+    if case.get("kind") == "hostile":
+        # Bounds and time, judged by crates/fitment/tests/matching.rs; their physics would take hours here.
+        return []
     problems = []
     name = case["id"]
     path = directory / case["file"]
@@ -1698,6 +1704,15 @@ def match_group(binary, directory, source, part, files, group, scratch, tally, p
     leaves, face_id = xcaf_leaves(directory / source, bind=True)
     for _, _, shape in leaves:
         LEAF_FACE_IDS[id(shape)] = face_id
+    for case in group:
+        # A mirror image differs everywhere: it is no one defect, and KO2 does not judge it.
+        if (case.get("truth") == "does_not_fit" and case.get("defect") and "placement" in case
+                and case.get("class") != "b_mirror"):
+            tally["defects isolated"] = tally.get("defects isolated", 0) + 1
+            try:
+                problems += one_thing_broken(directory, case, socket, leaves)
+            except BooleanFailed as failed:
+                problems.append(f"{case['id']}: {failed} failed in Open CASCADE")
     for clearance in ("strict", "functional"):
         doc, problem = run_fitment(binary, ["match", str(socket_path), *files, "--format", "json", "--clearance",
                                             clearance], (0, 4, 5), cwd=directory)
@@ -1711,6 +1726,61 @@ def match_group(binary, directory, source, part, files, group, scratch, tally, p
             if mutated is not None and document_problems(directory, mutated, socket, leaves, group, clearance,
                                                          dict(tally)):
                 met.add(name)
+
+
+def locate(socket, locator):
+    """The requirement ids of a socket document that a case's locator (KC5) names: a bore or shaft by its axis
+    line, a seat by its outward normal and offset, a grip by its length, a conical seat by its apex."""
+    out = []
+    for s_ in socket["extracted"]["sockets"]:
+        for requirement in s_["requirements"]:
+            q = requirement["requires"]
+            if q["kind"] != locator["kind"]:
+                continue
+            if q["kind"] in ("bore", "shaft"):
+                d, e = norm(q["axis"]["direction"]), norm(locator["axis_direction"])
+                named = (abs(abs(dot(d, e)) - 1) <= 1e-9
+                         and off_line(locator["axis_point"], q["axis"]["point_mm"], d) <= 1e-6)
+            elif q["kind"] == "seat":
+                named = (dot(q["normal"], locator["normal"]) >= 1 - 1e-9
+                         and abs(q["offset_mm"] - locator["offset"]) <= 1e-6)
+            elif q["kind"] == "grip":
+                named = abs(q["length_mm"] - locator["length"]) <= 1e-6
+            else:
+                named = all(abs(a - b) <= 1e-6 for a, b in zip(q["apex_mm"], locator["apex"]))
+            if named:
+                out.append((s_["id"], requirement))
+    return out
+
+
+def one_thing_broken(directory, case, socket, leaves):
+    """KO2: a bad case, at its construction's placement, departs physically only with the neighbours its defect's
+    requirements concern (their sources); a defect that disturbs another is not one defect."""
+    concerned = set()
+    for locator in case["defect"]:
+        for _, requirement in locate(socket, locator):
+            concerned |= {tuple(src["neighbour"]) for src in requirement.get("sources", [])}
+    part = socket["selection"]["part"]
+    paths = {}
+    for neighbour in socket["extracted"]["neighbours"] + socket["extracted"]["occurrences"]:
+        o = placement_rows(neighbour["transform"])
+        product = neighbour["definition"]["product"]["id"]
+        for k, (name, t, shape) in enumerate(leaves):
+            if name == product and all(abs(t[i][j] - o[i][j]) <= 1e-9 for i in range(3) for j in range(4)):
+                paths[id(shape)] = tuple(neighbour["path"])
+    targets = [(m, shape) for name, m, shape in leaves if name == part]
+    candidate = one_solid(directory / case["candidate"]["file"])
+    originals = [shape for _, shape in targets]
+    placed = [moved(candidate, compose(m, case["placement"])) for m, _ in targets]
+    out = []
+    for k, (m, original) in enumerate(targets):
+        neighbours = neighbours_at(leaves, part, k, originals, placed)
+        for label, n_t, n_c in neighbours:
+            found = physics(original, placed[k], [(label, n_t, n_c)], f"{case['id']} at occurrence {k}")
+            if found and paths.get(id(n_t)) not in concerned:
+                out.append(f"{case['id']}: departs with {label}, which no requirement of its defect concerns "
+                           f"(KO2): {found[0][1]}")
+    return out
 
 
 def target_faces(original, o, face_id):
