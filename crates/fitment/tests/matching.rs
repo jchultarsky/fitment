@@ -4,8 +4,10 @@
 //! to the strict gate (KH2, KH3) and its defect at the construction's
 //! placement (KH8); the false negatives against the committed baseline
 //! (KH4, KH5); the report and its rates (KH6, KH7); the shortlist never
-//! changing a verdict (KH9); every run the same twice (KH11). Without the
-//! corpus these pass with a note, unless `FITMENT_REQUIRE_CORPUS=1`.
+//! changing a verdict (KH9); every run the same twice (KH11); every file
+//! judged from its stored document as from its bytes, and every pass
+//! admitted by level 1 (`docs/research/m5-catalog.md`, CT5, QR3). Without
+//! the corpus these pass with a note, unless `FITMENT_REQUIRE_CORPUS=1`.
 
 #[path = "../../fitment-core/tests/support/gate.rs"]
 mod gate;
@@ -20,8 +22,9 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use fitment_core::{
-    CandidateResult, CandidateSource, Clearance, ComponentRead, Grip, MatchDocument, MatchOptions,
-    MatchPolicy, Matcher, NoFitVerifier, Part, Socket, SocketDocument, Stage, TolerancePolicy,
+    Admitted, CandidateResult, CandidateSource, Clearance, ComponentRead, FeaturesDocument, Grip,
+    IndexTokens, MatchDocument, MatchOptions, MatchPolicy, Matcher, NoFitVerifier, Part,
+    PartSignature, ShortlistIndex, Socket, SocketDocument, Source, Stage, TolerancePolicy,
     VerdictKind, read_assembly,
 };
 use serde_json::{Value, json};
@@ -93,6 +96,29 @@ impl Input {
         }
     }
 
+    /// CT5: judged from the document a catalog stores, read back from its
+    /// compact form, the file gets the result its bytes get; its tokens
+    /// read back as written (IX9). `None` for a component, which no catalog
+    /// stores.
+    fn judge_stored(&self, matcher: &Matcher<'_>) -> Option<CandidateResult> {
+        let Self::File(bytes) = self else {
+            return None;
+        };
+        let read = FeaturesDocument::read(bytes);
+        let back = FeaturesDocument::from_json(&read.to_compact_json()).unwrap();
+        if let Some(part) = back.part() {
+            let tokens = IndexTokens::of(&PartSignature::of(part));
+            assert_eq!(IndexTokens::from_json(&tokens.to_json()).unwrap(), tokens);
+        }
+        let source = Source::new(
+            &fitment_core::sha256_hex(bytes),
+            u64::try_from(bytes.len()).unwrap(),
+            back.header().cloned(),
+        )
+        .unwrap();
+        Some(matcher.judge_document(&back, source).unwrap())
+    }
+
     fn part(&self) -> Option<Part> {
         match self {
             Self::File(bytes) => fitment_core::read_part(bytes).ok(),
@@ -119,6 +145,10 @@ struct Run {
     without_shortlist: VerdictKind,
     /// KH11: the document twice, byte for byte.
     same_twice: bool,
+    /// CT5: the result judged from the stored document, if a file.
+    stored: Option<CandidateResult>,
+    /// Whether level 1, over an index of this candidate alone, admits it.
+    admitted: bool,
     /// KH8: every check passes at the construction's placement.
     passes_at_construction: bool,
 }
@@ -182,6 +212,14 @@ fn compute(dir: &Path) -> Vec<Run> {
             let label = vec![case["id"].as_str().unwrap().to_owned()];
             let once = MatchDocument::new(&matcher, vec![(result.clone(), label.clone())]);
             let again = MatchDocument::new(&matcher, vec![(input.judge(&matcher), label)]);
+            let admitted = part.as_ref().is_some_and(|p| {
+                let mut index = ShortlistIndex::new();
+                index.insert(0, &IndexTokens::of(&PartSignature::of(p)));
+                matches!(
+                    matcher.admitted(&index),
+                    Ok(Admitted::Parts { candidates, .. }) if candidates == [0]
+                )
+            });
             let unshortlisted = Matcher::new(
                 document,
                 policy(name),
@@ -195,6 +233,8 @@ fn compute(dir: &Path) -> Vec<Run> {
                 policy: name,
                 without_shortlist: input.judge(&unshortlisted).verdict.kind(),
                 same_twice: once.to_json() == again.to_json(),
+                stored: input.judge_stored(&matcher),
+                admitted,
                 result,
                 sockets: sockets.clone(),
                 problems,
@@ -464,6 +504,47 @@ fn the_shortlist_never_drops_what_verification_passes() {
         let _ = &r.sockets;
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// CT5: every file case judged from its stored document gets the result
+/// its bytes get, whole.
+#[test]
+fn stored_documents_are_judged_as_their_files() {
+    let Some(runs) = runs() else {
+        return;
+    };
+    let mut files = 0;
+    for r in runs {
+        if let Some(stored) = &r.stored {
+            files += 1;
+            assert_eq!(stored, &r.result, "{} {}", r.case["id"], r.policy);
+        }
+    }
+    assert!(files > 0);
+}
+
+/// M5's QR3 and section 4.17: level 1 never hides a part verification
+/// passes, with the shortlist or without it.
+#[test]
+fn level_one_admits_every_pass() {
+    let Some(runs) = runs() else {
+        return;
+    };
+    let mut passes = 0;
+    for r in runs {
+        let any_pass = [r.result.verdict.kind(), r.without_shortlist]
+            .iter()
+            .any(|k| *k != VerdictKind::Reject);
+        if any_pass {
+            passes += 1;
+            assert!(
+                r.admitted,
+                "{} {}: a pass level 1 hides",
+                r.case["id"], r.policy
+            );
+        }
+    }
+    assert!(passes > 0);
 }
 
 /// KH11: every run gives the same document twice in one process.

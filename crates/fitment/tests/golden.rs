@@ -2,7 +2,9 @@
 //! byte for byte with `tests/golden/features/<stem>.json`; and `fitment
 //! parts` and `fitment socket` on every committed unit assembly, with
 //! `tests/golden/parts/<case>.json` and `tests/golden/socket/<case>--<part>.json`
-//! for each target its manifest names.
+//! for each target its manifest names; `fitment match` on the committed
+//! candidates, with `tests/golden/match/`; and each committed candidate's
+//! level-1 tokens, with `tests/golden/tokens/<stem>.json`.
 //!
 //! Goldens freeze bytes; they do not prove them right. Correctness comes
 //! from fitment-core's tests, which check parts against their construction.
@@ -324,6 +326,58 @@ fn match_output_matches_the_goldens() {
                 fs::remove_file(path).unwrap();
             } else {
                 failures.push(format!("match/{stem}: golden has no input"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// M5's RX11: each committed candidate's level-1 tokens, as a catalog
+/// stores them, byte for byte; a change to the tokens, their bins or the
+/// signature fails here until `SIGNATURE_VERSION` (or `EXTRACTOR_VERSION`)
+/// rises.
+#[test]
+fn tokens_match_the_goldens() {
+    use fitment_core::{
+        EXTRACTOR_VERSION, FeaturesDocument, IndexTokens, PartSignature, SIGNATURE_VERSION,
+    };
+    let bless = std::env::var_os("FITMENT_BLESS").is_some_and(|v| v == "1");
+    assert!(
+        !(bless && std::env::var_os("CI").is_some()),
+        "goldens are blessed locally, never in CI"
+    );
+    let candidates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests/candidates");
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/tokens");
+    if bless {
+        fs::create_dir_all(&golden).unwrap();
+    }
+    let mut failures = Vec::new();
+    let mut wanted = Vec::new();
+    for (stem, path) in by_stem(&candidates, "stp") {
+        let read = FeaturesDocument::read(&fs::read(&path).unwrap());
+        let Some(part) = read.part() else {
+            continue;
+        };
+        let tokens: serde_json::Value =
+            serde_json::from_str(&IndexTokens::of(&PartSignature::of(part)).to_json()).unwrap();
+        let document = serde_json::json!({
+            "extractor_version": EXTRACTOR_VERSION,
+            "signature_version": SIGNATURE_VERSION,
+            "tokens": tokens,
+        });
+        let actual = serde_json::to_string_pretty(&document).unwrap() + "\n";
+        let keys = ["extractor_version", "signature_version"];
+        let path = golden.join(format!("{stem}.json"));
+        compare(&stem, &path, &actual, &keys, bless, &mut failures);
+        wanted.push(stem);
+    }
+    assert!(wanted.len() > 1, "the candidates' tokens");
+    for (stem, path) in by_stem(&golden, "json") {
+        if !wanted.contains(&stem) {
+            if bless {
+                fs::remove_file(path).unwrap();
+            } else {
+                failures.push(format!("tokens/{stem}: golden has no input"));
             }
         }
     }

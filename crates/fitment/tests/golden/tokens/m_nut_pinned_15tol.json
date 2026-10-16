@@ -1,0 +1,19 @@
+{
+  "extractor_version": 6,
+  "signature_version": 2,
+  "tokens": {
+    "floor_mm": 1e-6,
+    "lever_mm": 18.26563873324188,
+    "pairs": [],
+    "pairs_incomplete": false,
+    "planes": 8,
+    "stacks": [
+      [
+        "hole",
+        [
+          5.015
+        ]
+      ]
+    ]
+  }
+}

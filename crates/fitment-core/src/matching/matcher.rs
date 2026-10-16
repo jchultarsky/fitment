@@ -182,8 +182,12 @@ impl CandidateSource {
 #[serde(tag = "admitted", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Admitted {
-    /// The candidates every socket may keep, ascending.
-    Parts(Vec<u64>),
+    /// The candidates every socket may keep.
+    #[non_exhaustive]
+    Parts {
+        /// Their ids, ascending.
+        candidates: Vec<u64>,
+    },
     /// A socket that admits no candidate whatever the catalog holds.
     #[non_exhaustive]
     Blocked {
@@ -426,7 +430,7 @@ impl<'a> Matcher<'a> {
     pub fn admitted<S: IndexSource>(&self, index: &S) -> Result<Admitted, S::Error> {
         let mut found: Option<Vec<u64>> = None;
         for ready in &self.sockets {
-            let ids = match level_one(&ready.signature, index)? {
+            let ids = match level_one(&ready.signature, index, found.as_deref())? {
                 Ok(ids) => ids,
                 Err(why) => {
                     return Ok(Admitted::Blocked {
@@ -435,15 +439,12 @@ impl<'a> Matcher<'a> {
                     });
                 }
             };
-            found = Some(match found.take() {
-                None => ids,
-                Some(f) => f
-                    .into_iter()
-                    .filter(|id| ids.binary_search(id).is_ok())
-                    .collect(),
-            });
+            // Within the sockets before: the intersection so far.
+            found = Some(ids);
         }
-        Ok(Admitted::Parts(found.unwrap_or_default()))
+        Ok(Admitted::Parts {
+            candidates: found.unwrap_or_default(),
+        })
     }
 
     /// Each socket's id with the active requirements that fail every
