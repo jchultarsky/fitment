@@ -79,7 +79,11 @@ jobs:
       # placement it states, its features on their requirements, and every
       # mutation of a document meets a disagreement (KO3, KO5, KO6).
       - run: tools/verify-occt.py match corpus/out
-      - run: cargo test -p fitment --test corpus --test fixtures --test shortlist --test original --test matching --locked
+      # AS1's parts across its six exports, each component written alone: the
+      # same checks, with the tallies pinned (KO8).
+      - run: tools/verify-occt.py match --expect fixtures/manifest.json fixtures
+      # In release: the corpus's match runs take most of an hour unoptimised.
+      - run: cargo test --release -p fitment --test corpus --test fixtures --test shortlist --test original --test matching --locked
         env:
           FITMENT_REQUIRE_CORPUS: "1"
           FITMENT_REQUIRE_FIXTURES: "1"

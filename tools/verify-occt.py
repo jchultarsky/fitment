@@ -9,7 +9,7 @@
     tools/verify-occt.py features [--expect MANIFEST] PATH...
     tools/verify-occt.py socket DIR
     tools/verify-occt.py mutations DIR
-    tools/verify-occt.py match DIR
+    tools/verify-occt.py match [--expect MANIFEST] DIR
 
 Reads every case of DIR/manifest.json (written by tools/gen-corpus.py) with
 Open CASCADE 8.0.1, the kernel the M7 fit verifier pins (decision 8), and
@@ -82,15 +82,20 @@ meets a disagreement somewhere in the corpus. A `collides` pass may
 depart by common volume alone, none of it inside a requirement's region.
 Every failed check of every placed candidate fails something, with a code
 its failed measures allow; each failed measure Open CASCADE can measure
-alone (an axis's offset, a pinned span's cylinder, a seat's plane over its
-contacts, a cone's angle, a contact face left uncovered) agrees with
-fitment's within 1e-6 mm (1e-9 rad) and breaks its bound; a core
-intrusion's distance is a sound bound, never past the face's true one.
-Measures of the stack M2's reading composes (walls, clearance margins and
-diameters, open ends, zone profiles) are tallied, not re-measured. The
+alone agrees with fitment's within 1e-6 mm (1e-9 rad) and breaks its
+bound: an axis's offset, a span's diameters, margin and wall from the
+named feature's coaxial pieces as fitment's run takes them, an end's
+opening, a seat's plane over its contacts (with no feature named, the
+nearest facing plane), a cone's angle, a contact face left uncovered; a
+core intrusion's distance is a sound bound, never past the face's true
+one. Where fitment found no piece (M2's reading: an annular bottom, a
+zone not taken), and zone profiles, are tallied, not re-measured. The
 other mutations: a failed measure's found changed by 0.1, a passed check
-marked failed, failure codes swapped between two checks, a check dropped,
-the policy's name changed.
+marked failed, a passed measure marked failed with its code, failure
+codes swapped between two checks, a check dropped, the policy's name
+changed. A bore's core reaches on past each end it requires open as far
+as the candidate's material encloses it, so a wall continued past the
+original's rim and into a neighbour is a defect, not a collision.
 
 `features` checks fitment against Open CASCADE instead. PATH is a STEP
 file, or a directory: a generated corpus (its manifest's cases), the
@@ -1063,8 +1068,8 @@ def neighbours_at(leaves, part, k, originals, candidates):
 
 def region_spec_from_document(socket):
     """A socket document's socket as regions to place: each bore's core (its clear diameter, or with none its
-    own, over each span), each shaft's neighbour hole and the band beyond (its clear diameter, or its own, plus
-    NEAR), each seat's plane."""
+    own, over each span, and the ends it requires open), each shaft's neighbour hole and the band beyond (its
+    clear diameter, or its own, plus NEAR), each seat's plane."""
     out = []
     for requirement in socket["requirements"]:
         q = requirement["requires"]
@@ -1072,7 +1077,10 @@ def region_spec_from_document(socket):
             own = "hole_diameter_mm" if q["kind"] == "bore" else "shaft_diameter_mm"
             spans = [(s_["from_mm"], s_["to_mm"], (s_.get("clear_diameter_mm") or s_[own]) / 2
                       + (NEAR if q["kind"] == "shaft" else 0.0)) for s_ in q.get("spans", [])]
-            out.append({"axis": (q["axis"]["point_mm"], norm(q["axis"]["direction"])), "spans": spans})
+            opened = q.get("open") or {}
+            ends = (bool(opened.get("start")), bool(opened.get("finish"))) if q["kind"] == "bore" else (False, False)
+            out.append({"axis": (q["axis"]["point_mm"], norm(q["axis"]["direction"])), "spans": spans,
+                        "open": ends})
         elif q["kind"] == "seat":
             out.append({"plane": (q["normal"], q["offset_mm"])})
     return out
@@ -1087,30 +1095,77 @@ def region_spec_from_expectation(socket):
         for s_ in q["spans"]:
             own = (s_["clear"] or s_["diameter"]) / 2 + (NEAR if q["kind"] == "shaft" else 0.0)
             spans.append((dot(sub(s_["from"], point), d), dot(sub(s_["to"], point), d), own))
-        out.append({"axis": (point, d), "spans": spans})
+        stations = [dot(sub(x, point), d) for x in q.get("open", [])]
+        ends = (False, False)
+        if spans and q["kind"] == "bore":
+            low = min(min(a, b) for a, b, _ in spans)
+            high = max(max(a, b) for a, b, _ in spans)
+            ends = (any(abs(x - low) <= 1e-6 for x in stations), any(abs(x - high) <= 1e-6 for x in stations))
+        out.append({"axis": (point, d), "spans": spans, "open": ends})
     for q in socket.get("seats", []):
         out.append({"plane": (q["normal"], dot(q["point"], q["normal"]))})
     return out
 
 
-def regions(spec, at, original):
-    """KO1's regions placed by `at`: cylinders along each axis over each span, and the original's faces on each
+def wall_past(candidate, point, d, station, radius, outward):
+    """How far the candidate's hole about a core runs on past `station` (outward +1 or -1): the last station, in
+    steps of 0.05 mm up to 50 mm, at which the candidate's material encloses the core, within 2 NEAR of its radius
+    at each of eight angles. A core required open reaches the candidate's own opening there (VR22, RS14); a leg
+    or a bar past the opening encloses nothing, and the core stops at the first station it does not."""
+    side = norm(cross(d, [1.0, 0.0, 0.0] if abs(d[0]) < 0.9 else [0.0, 1.0, 0.0]))
+    other = cross(d, side)
+    classifier = BRepClass3d_SolidClassifier(candidate)
+
+    def walled(centre, a):
+        for extra in (0.02, 0.25, 0.5, 1.0, 1.5, 2 * NEAR):
+            probe = [centre[i] + (radius + extra) * (math.cos(a) * side[i] + math.sin(a) * other[i])
+                     for i in range(3)]
+            classifier.Perform(gp_Pnt(*probe), 1e-7)
+            if classifier.State() == TopAbs_IN:
+                return True
+        return False
+
+    # Probed inside each step, at an odd offset, so no probe lands on a face's plane at a round station.
+    reach = station
+    for step in range(1, 1001):
+        at = station + outward * 0.05 * step
+        centre = add(point, d, at - outward * 0.0137)
+        if not all(walled(centre, 2 * math.pi * k / 8) for k in range(8)):
+            return reach
+        reach = at
+    return reach
+
+
+def regions(spec, at, original, candidate=None):
+    """KO1's regions placed by `at`: cylinders along each axis over each span, a bore's core reaching on to each
+    end it requires open as far as the placed candidate's wall about it runs, and the original's faces on each
     seat's plane swept through NEAR either side of it."""
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
     from OCP.gp import gp_Ax2, gp_Dir, gp_Vec
     out = []
     planes = [(f, plane_facts(f)) for f in (as_face(e) for e in explore(original, TopAbs_FACE))]
     planes = [(f, facts) for f, facts in planes if facts is not None]
+
+    def cylinder(point, d, lo, hi, radius):
+        base = apply_point(at, add(point, d, lo))
+        return BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*base), gp_Dir(*turn(at, d))), radius, hi - lo).Shape()
+
     for item in spec:
         if "axis" in item:
             point, d = item["axis"]
-            for a, b, radius in item["spans"]:
-                lo, hi = min(a, b), max(a, b)
-                if hi - lo <= 0 or radius <= 0:
+            spans = [(min(a, b), max(a, b), radius) for a, b, radius in item["spans"]
+                     if abs(b - a) > 0 and radius > 0]
+            out += [cylinder(point, d, lo, hi, radius) for lo, hi, radius in spans]
+            if candidate is None or not spans:
+                continue
+            for end, opened in zip((0, 1), item.get("open", (False, False))):
+                if not opened:
                     continue
-                base = apply_point(at, add(point, d, lo))
-                out.append(BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*base), gp_Dir(*turn(at, d))), radius,
-                                                    hi - lo).Shape())
+                lo, hi, radius = min(spans) if end == 0 else max(spans, key=lambda x: x[1])
+                station, outward = (lo, -1) if end == 0 else (hi, 1)
+                reach = wall_past(candidate, apply_point(at, point), turn(at, d), station, radius, outward)
+                if abs(reach - station) > 1e-9:
+                    out.append(cylinder(point, d, min(station, reach), max(station, reach), radius))
         else:
             normal, offset = item["plane"]
             n = turn(at, normal)
@@ -1181,7 +1236,7 @@ def match_physics(directory, case):
             if truth == "collides":
                 if not spec:
                     return [f"{name}: labelled collides, and its source states no socket to bound the collision"]
-                problems += collisions_problems(found, regions(spec, m, original))
+                problems += collisions_problems(found, regions(spec, m, original, placed[k]))
             departures += found
     except BooleanFailed as failed:
         return [f"{name}: {failed} failed in Open CASCADE"]
@@ -1316,33 +1371,27 @@ def feature_problems(where, requirement, feature, faces, m, linear, angular_rad,
     return out
 
 
-def hole_radius_on(candidate, axis_point, axis_dir):
-    """The largest radius of the placed candidate's holes on an axis line (concave cylinders whose axis lies
-    within TOL of it), from Open CASCADE alone; None with none."""
-    from OCP.BRepGProp import BRepGProp_Face
-    from OCP.gp import gp_Vec
-    best = None
+def holes_on(candidate, axis_point, axis_dir):
+    """The placed candidate's holes on an axis line: (station from, station to, radius) of each concave cylinder
+    whose axis lies within TOL of it, from Open CASCADE alone."""
+    out = []
     for face in (as_face(e) for e in explore(candidate, TopAbs_FACE)):
-        surface = BRepAdaptor_Surface(face)
-        if surface.GetType() != Kind.GeomAbs_Cylinder:
+        r = revolution_of(face)
+        if r is None or r[2] is None or not r[3]:
             continue
-        c = surface.Cylinder()
-        d, loc = norm(xyz(c.Axis().Direction())), xyz(c.Location())
-        if abs(dot(d, axis_dir)) < 1 - 1e-9 or off_line(loc, axis_point, axis_dir) > TOL:
+        if abs(dot(r[1], axis_dir)) < 1 - 1e-9 or off_line(r[0], axis_point, axis_dir) > TOL:
             continue
-        u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
-        at, normal = gp_Pnt(), gp_Vec()
-        BRepGProp_Face(face).Normal((u0 + u1) / 2, (v0 + v1) / 2, at, normal)
-        foot = add(loc, d, dot(sub(xyz(at), loc), d))
-        if dot((normal.X(), normal.Y(), normal.Z()), sub(xyz(at), foot)) < 0:
-            best = max(best or 0.0, c.Radius())
-    return best
+        a, b = extent_on(face, axis_point, axis_dir)
+        out.append((a, b, r[2]))
+    return out
 
 
 def ring_excused(original, candidate, socket, at):
-    """D6 functional: the original with each clearance span of each bore widened to the candidate's own hole on
-    that axis, measured by Open CASCADE, so the ring a larger clearance hole takes from its seats is excused
-    (KO3). Pinned and interference spans are never widened: functional excuses no lost engagement."""
+    """D6 functional: the original with each clearance span of each bore widened to the candidate's own hole
+    over that span (the least radius of its coaxial holes overlapping the span by more than τ, as Open CASCADE
+    measures them), so the ring a larger clearance hole takes from its seats is excused (KO3). Pinned and
+    interference spans are never widened: functional excuses no lost engagement; nor is a span widened to a
+    counterbore beside it."""
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Ax2, gp_Dir
     shape = original
@@ -1352,15 +1401,16 @@ def ring_excused(original, candidate, socket, at):
             continue
         d = norm(turn(at, q["axis"]["direction"]))
         point = apply_point(at, q["axis"]["point_mm"])
-        radius = hole_radius_on(candidate, point, d)
+        holes = holes_on(candidate, point, d)
         for span in q.get("spans", []):
-            if span["fit"] != "clearance" or span["pinned"] or radius is None:
+            if span["fit"] != "clearance" or span["pinned"]:
                 continue
-            if radius <= span["hole_diameter_mm"] / 2:
+            lo, hi = min(span["from_mm"], span["to_mm"]), max(span["from_mm"], span["to_mm"])
+            over = [r for a, b, r in holes if min(b, hi) - max(a, lo) > RUN_TOUCH]
+            if not over or min(over) <= span["hole_diameter_mm"] / 2:
                 continue
-            base = add(point, d, span["from_mm"])
-            tool = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*base), gp_Dir(*d)), radius,
-                                            span["to_mm"] - span["from_mm"]).Shape()
+            base = add(point, d, lo)
+            tool = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*base), gp_Dir(*d)), min(over), hi - lo).Shape()
             shape = without(shape, tool)
     return shape
 
@@ -1440,6 +1490,7 @@ MATCH_MUTATIONS = [
     ("a placement turned 180 degrees about a hole's axis", lambda doc, socket: with_placements(doc, socket, half_turn)),
     ("a failed check's found changed by 0.1", lambda doc, socket: found_changed(doc)),
     ("a passed check marked failed", lambda doc, socket: passed_failed(doc)),
+    ("a passed measure marked failed, with its code", lambda doc, socket: measure_failed(doc)),
     ("failure codes swapped between two checks", lambda doc, socket: codes_swapped(doc)),
     ("a check dropped", lambda doc, socket: check_dropped(doc)),
     ("a policy name changed", lambda doc, socket: dict(doc, policy=dict(doc["policy"], name="cli"))),
@@ -1475,6 +1526,24 @@ def passed_failed(doc):
         if check["result"] == "passed" and check.get("measures"):
             check["result"] = "failed"
             return out
+    return None
+
+
+def measure_failed(doc):
+    """A passed check's re-measurable measure (a pinned diameter, an axis offset) marked failed, the check failed
+    with that measure's code: a lie only re-measurement can catch."""
+    import copy
+    out = copy.deepcopy(doc)
+    for _, _, check in each_check(out):
+        if check["result"] != "passed":
+            continue
+        for measure in check.get("measures") or []:
+            if measure["quantity"] in ("axis_offset_mm", "diameter_mm") and measure.get("passed") is True:
+                measure["passed"] = False
+                check["result"] = "failed"
+                code = "axis_offset" if measure["quantity"] == "axis_offset_mm" else "diameter_out_of_limits:max"
+                check["failures"] = [{"code": code, "at": measure.get("at", {}), "detail": "mutated"}]
+                return out
     return None
 
 
@@ -1515,62 +1584,133 @@ def run_fitment(binary, args, codes, cwd=None):
         return None, f"fitment {' '.join(args[:2])}: no JSON ({error}): {run.stderr.decode(errors='replace')}"
 
 
+def write_part(shape, path):
+    """A component's solid, in its own frame, written alone (Open CASCADE's writer, no pcurves, millimetres)."""
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+    writer = STEPControl_Writer()
+    Interface_Static.SetIVal_s("write.surfacecurve.mode", 0)
+    Interface_Static.SetIVal_s("write.step.assembly", 0)
+    Interface_Static.SetCVal_s("write.step.unit", "MM")
+    if writer.Transfer(shape, STEPControl_AsIs) != IFSelect_RetDone or writer.Write(str(path)) != IFSelect_RetDone:
+        raise OSError(f"Open CASCADE cannot write {path}")
+
+
+def inverse_of(o):
+    r_ = [row[:3] for row in o]
+    return [[r_[j][i] for j in range(3)] + [-sum(r_[j][i] * o[j][3] for j in range(3))] for i in range(3)]
+
+
+def fixture_groups(directory, expect, scratch):
+    """KO8: AS1's cross-export runs (KC12) as match groups: for each part and each export whose socket of it the
+    fixtures' manifest pins, every export's component of that part written alone into `scratch`, as candidates.
+    Yields (export path, part name, candidate files, cases)."""
+    for k, _ in enumerate(AS1_EXPORTS[0][2]):
+        files = []
+        for name, path, parts in AS1_EXPORTS:
+            leaves = xcaf_leaves(directory / path)
+            mine = [(m, shape) for product, m, shape in leaves if product == parts[k]]
+            if not mine:
+                continue
+            out = scratch / f"as1-{name}-{k}.stp"
+            write_part(moved(mine[0][1], inverse_of(mine[0][0])), out)
+            files.append(out)
+        cases = [{"candidate": {"file": str(f)}, "truth": "fits"} for f in files]
+        for _, path, parts in AS1_EXPORTS:
+            yield path, parts[k], files, cases
+
+
+AS1_EXPORTS = [
+    ("ac", "steptools/as1-ac-214.stp", ["PLATE", "L-BRACKET", "BOLT", "NUT", "ROD"]),
+    ("md", "steptools/as1-md-214.stp", ["PLATE", "LBRACKET", "BOLT", "NUT", "ROD"]),
+    ("ug", "steptools/as1-ug-214.stp", ["plate", "l_bracket", "bolt", "nut", "rod"]),
+    ("pe", "nist-edm/as1_pe.stp", ["PLATE", "L-BRACKET", "BOLT", "NUT", "ROD"]),
+    ("ec", "steptools/as1-ec-214.stp", ["as1 1.2", "as1 1.1.1", "as1 1.1.2.2", "as1 1.1.2.1", "as1 1.4.1"]),
+    ("tc", "steptools/as1-tc-214.stp", ["plate", "l-bracket", "bolt", "nut", "rod"]),
+]
+
+
 def match_main(argv):
-    """`match DIR`: every match case's file candidate judged by the built fitment against its source's socket,
-    under both policies M4 offers, each document then checked by Open CASCADE: every pass fits physically at the
-    placement fitment states, at every occurrence (KO3), and its placement is rigid with each passed check's
-    feature on the requirement (KO5); and each mutation of a document meets a disagreement somewhere (KO6)."""
+    """`match [--expect MANIFEST] DIR`: every match case's file candidate judged by the built fitment against its
+    source's socket, under both policies M4 offers, each document then checked by Open CASCADE: every pass fits
+    physically at the placement fitment states, at every occurrence (KO3); every failure is re-measured (KO4); its
+    placement is rigid with each passed check's feature on the requirement (KO5); and each mutation of a document
+    meets a disagreement somewhere (KO6). With --expect, the fixtures: AS1's parts across its exports (KC12), each
+    export's component written alone, with the tallies pinned under `match_oracle` (KO8)."""
+    import argparse
     import tempfile
-    directory = Path(argv[0])
+    parser = argparse.ArgumentParser(prog="verify-occt.py match")
+    parser.add_argument("directory", metavar="DIR")
+    parser.add_argument("--expect", metavar="MANIFEST")
+    args = parser.parse_args(argv)
+    directory = Path(args.directory)
     binary = Path(os.environ.get("FITMENT", Path(__file__).resolve().parent.parent / "target/release/fitment"))
     if not binary.is_file():
         sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
-    cases = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))["cases"]
-    groups = {}
-    for case in cases:
-        if case.get("kind") != "match" or "file" not in case["candidate"] or case["truth"] == "refused":
-            continue
-        groups.setdefault((case["socket"]["case"], case["socket"]["part"]), []).append(case)
     tally = {"documents": 0, "passes": 0, "occurrences": 0, "features": 0, "collisions excused": 0,
              "re-measured": 0}
     problems, met = [], set()
     with tempfile.TemporaryDirectory(prefix="fitment-match-oracle-") as scratch:
-        for (source, part), group in sorted(groups.items()):
-            before = len(problems)
-            socket_path = Path(scratch) / f"{source}--{part}.json"
-            socket, problem = run_fitment(binary, ["socket", str(directory / f"{source}.stp"), "--part", part,
-                                                   "--format", "json"], (0,))
-            if problem:
-                problems.append(f"{source} {part}: {problem}")
-                continue
-            socket_path.write_text(json.dumps(socket), encoding="utf-8")
-            leaves, face_id = xcaf_leaves(directory / f"{source}.stp", bind=True)
-            for _, _, shape in leaves:
-                LEAF_FACE_IDS[id(shape)] = face_id
-            files = sorted({c["candidate"]["file"] for c in group})
-            for clearance in ("strict", "functional"):
-                doc, problem = run_fitment(binary, ["match", str(socket_path), *files, "--format", "json",
-                                                    "--clearance", clearance], (0, 4, 5), cwd=directory)
-                if problem:
-                    problems.append(f"{source} {part} {clearance}: {problem}")
+        if args.expect is None:
+            cases = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))["cases"]
+            groups = {}
+            for case in cases:
+                if case.get("kind") != "match" or "file" not in case["candidate"] or case["truth"] == "refused":
                     continue
-                tally["documents"] += 1
-                problems += document_problems(directory, doc, socket, leaves, group, clearance, tally)
-                for name, mutate in MATCH_MUTATIONS:
-                    mutated = mutate(doc, socket)
-                    if mutated is not None and document_problems(directory, mutated, socket, leaves, group,
-                                                                 clearance, dict(tally)):
-                        met.add(name)
+                groups.setdefault((case["socket"]["case"], case["socket"]["part"]), []).append(case)
+            runs = [(f"{source}.stp", part, sorted({c["candidate"]["file"] for c in group}), group)
+                    for (source, part), group in sorted(groups.items())]
+        else:
+            runs = list(fixture_groups(directory, None, Path(scratch)))
+        for source, part, files, group in runs:
+            before = len(problems)
+            match_group(binary, directory, source, part, [str(f) for f in files], group, Path(scratch), tally,
+                        problems, met)
             print(f"{'ok  ' if len(problems) == before else 'FAIL'} {source} {part}")
-    unmet = [name for name, _ in MATCH_MUTATIONS if name not in met]
-    if unmet:
-        problems.append(f"mutations no check disagreed with anywhere (KO6): {unmet}")
-    if any(v == 0 for k, v in tally.items() if k != "collisions excused" and not k.startswith("not ")):
-        problems.append("a match check examined nothing: " + ", ".join(f"{v} {k}" for k, v in tally.items()))
+    if args.expect is None:
+        unmet = [name for name, _ in MATCH_MUTATIONS if name not in met]
+        if unmet:
+            problems.append(f"mutations no check disagreed with anywhere (KO6): {unmet}")
+        if any(v == 0 for k, v in tally.items() if k != "collisions excused" and not k.startswith("not ")):
+            problems.append("a match check examined nothing: " + ", ".join(f"{v} {k}" for k, v in tally.items()))
+    else:
+        pinned = json.loads(Path(args.expect).read_text(encoding="utf-8")).get("match_oracle")
+        if pinned != tally:
+            changed = {k: (pinned.get(k) if pinned else None, tally.get(k))
+                       for k in sorted(set(pinned or {}) | set(tally)) if (pinned or {}).get(k) != tally.get(k)}
+            problems.append(f"the tallies differ from the pinned `match_oracle` ones (pinned, now): {changed}")
     for problem in problems:
         print(problem, file=sys.stderr)
     print(", ".join(f"{v} {k}" for k, v in tally.items()) + f"; {len(problems)} disagreements with Open CASCADE")
     sys.exit(1 if problems else 0)
+
+
+def match_group(binary, directory, source, part, files, group, scratch, tally, problems, met):
+    """One socket: written by fitment, its candidates judged under both policies, each document checked, and
+    each mutation of it tried."""
+    socket_path = scratch / f"{Path(source).stem}--{part}.json"
+    socket, problem = run_fitment(binary, ["socket", str(directory / source), "--part", part, "--format", "json"],
+                                  (0,))
+    if problem:
+        problems.append(f"{source} {part}: {problem}")
+        return
+    socket_path.write_text(json.dumps(socket), encoding="utf-8")
+    leaves, face_id = xcaf_leaves(directory / source, bind=True)
+    for _, _, shape in leaves:
+        LEAF_FACE_IDS[id(shape)] = face_id
+    for clearance in ("strict", "functional"):
+        doc, problem = run_fitment(binary, ["match", str(socket_path), *files, "--format", "json", "--clearance",
+                                            clearance], (0, 4, 5), cwd=directory)
+        if problem:
+            problems.append(f"{source} {part} {clearance}: {problem}")
+            continue
+        tally["documents"] += 1
+        problems += document_problems(directory, doc, socket, leaves, group, clearance, tally)
+        for name, mutate in MATCH_MUTATIONS:
+            mutated = mutate(doc, socket)
+            if mutated is not None and document_problems(directory, mutated, socket, leaves, group, clearance,
+                                                         dict(tally)):
+                met.add(name)
 
 
 def target_faces(original, o, face_id):
@@ -1611,7 +1751,11 @@ def ko4_problems(directory, doc, socket, by_socket, occurrences, originals, clea
             if result.get("placement") is None:
                 continue
             if faces is None:
-                _, faces, _ = bound_faces(directory / label)
+                try:
+                    _, faces, _ = bound_faces(directory / label)
+                except OSError as error:
+                    problems.append(f"{where}: {error}")
+                    break
                 candidate = one_solid(directory / label)
             m = placement_rows(result["placement"])
             candidate_placed = moved(candidate, m)
@@ -1674,7 +1818,11 @@ def document_problems(directory, doc, socket, leaves, group, clearance, tally):
         if {r_["socket"] for r_ in entry["sockets"]} != set(by_socket):
             problems.append(f"{where}: a pass whose socket results are not the document's sockets")
             continue
-        _, faces, _ = bound_faces(directory / label)
+        try:
+            _, faces, _ = bound_faces(directory / label)
+        except OSError as error:
+            problems.append(f"{where}: {error}")
+            continue
         candidate = one_solid(directory / label)
         placements = {}
         for result in entry["sockets"]:
@@ -1704,7 +1852,7 @@ def document_problems(directory, doc, socket, leaves, group, clearance, tally):
                                 f"{where} at {occurrence['path']}")
                 if "collides" in truths and found:
                     inside = collisions_problems(found, regions(region_spec_from_document(result_socket), o,
-                                                                originals[k]))
+                                                                originals[k], placed[k]))
                     if not inside:
                         tally["collisions excused"] += 1
                     problems += [f"{text}: a collides pass that does not merely collide" for text in inside]
@@ -1720,21 +1868,23 @@ def document_problems(directory, doc, socket, leaves, group, clearance, tally):
 SAME = 1e-6  # mm: a re-measured length agrees with fitment's within this
 SAME_RAD = 1e-9  # rad
 JOIN = 1e-9  # relative: pieces of one wall join end to end within this
+RUN_TOUCH = 1e-9  # mm: axial.rs's TOUCH_MM, the least overlap with a span that counts
 PROBE_PAST = 0.05  # mm: how far past a wall's end its opening is probed
 
 # The codes a failed measure of each quantity may give (KO4: codes swapped between checks are caught here).
 CODES = {
-    "diameter_mm": {"diameter_out_of_limits:min", "diameter_out_of_limits:max", "wall_missing"},
+    "diameter_mm": {"diameter_out_of_limits:min", "diameter_out_of_limits:max"},
     "clear_margin_mm": {"diameter_out_of_limits:min", "diameter_out_of_limits:max"},
     "core_distance_mm": {"core_intruded"},
     "wall_from_mm": {"wall_missing"},
     "wall_to_mm": {"wall_missing"},
     "open_start": {"end_not_open"},
     "open_finish": {"end_not_open"},
-    "covers": {"contact_not_covered", "unknown_outline"},
+    "covers": {"contact_not_covered", "unknown_outline", "coverage_exhausted", "floor_above_tolerance"},
     "plane_offset_mm": {"seat_missing", "no_feature"},
     "plane_sine": {"seat_missing", "no_feature"},
-    "axis_offset_mm": {"axis_offset"},
+    # One code for both axis measures: axis_angle whenever the tilt fails too (axial.rs's `missing`).
+    "axis_offset_mm": {"axis_offset", "axis_angle"},
     "axis_sine": {"axis_angle"},
     "cone_angle_rad": {"cone_mismatch:angle"},
     "apex_offset_mm": {"cone_mismatch:apex"},
@@ -1828,9 +1978,9 @@ def offset_at(station, q, axis):
 
 
 def overlapping(pieces, lo, hi):
-    """The pieces that overlap a span by more than τ (or, a span no longer, hold its middle), as fitment's run
-    takes them."""
-    touch = TOUCH
+    """The pieces that overlap a span by more than axial.rs's TOUCH_MM (or, a span no longer, hold its middle),
+    as fitment's run takes them."""
+    touch = RUN_TOUCH
     if hi - lo > touch:
         return [p for p in pieces if min(p.hi, hi) - max(p.lo, lo) > touch]
     return [p for p in pieces if p.lo <= (lo + hi) / 2 <= p.hi]
@@ -1858,14 +2008,11 @@ def span_of(q, at):
                 None)
 
 
-# Measures of fitment's stack, which M2's reading of holes and shafts composes (runs, zones, annular bottoms):
-# the oracle does not rebuild that reading from faces, so it tallies them unmeasured (KO4, 6c).
-STACK_MEASURES = {"wall_from_mm", "wall_to_mm", "clear_margin_mm", "open_start", "open_finish"}
-
-
 def remeasure_axial(quantity, measure, q, stack):
-    """An axial measure re-measured from the stack's cylinders; None for one of the stack's own composition (a
-    clearance span's diameters, its walls, its margin, its ends) or with no cylinder to measure."""
+    """An axial measure re-measured from the stack's pieces (the coaxial cylinders, cones and tori of the named
+    feature's sense) as fitment's run takes them: an axis's offset at the requirement's ends; a pinned span's
+    covering cylinder; a clearance span's greatest (bore) or least (shaft) radius over it, and its margin; the
+    run of joined pieces holding the span's middle. None where the oracle cannot (a span it cannot name)."""
     pieces, axis = stack
     at = measure.get("at", {})
     if quantity == "axis_offset_mm":
@@ -1876,12 +2023,30 @@ def remeasure_axial(quantity, measure, q, stack):
         high = max(max(s_["from_mm"], s_["to_mm"]) for s_ in spans)
         return max(offset_at(low, q, axis), offset_at(high, q, axis))
     span = span_of(q, at) if "span_mm" in at else None
-    if quantity != "diameter_mm" or span is None or (span["fit"] == "clearance" and not span["pinned"]):
+    if span is None:
         return None
-    # A pinned span's one cylinder that covers it within the tolerance.
     lo, hi = min(span["from_mm"], span["to_mm"]), max(span["from_mm"], span["to_mm"])
-    covering = [p for p in pieces if p.radius is not None and p.lo - lo < TOL and hi - p.hi < TOL]
-    return 2 * covering[0].radius if covering else None
+    hole = q["kind"] == "bore"
+    if quantity in ("wall_from_mm", "wall_to_mm"):
+        run = wall_run(pieces, lo, hi)
+        return None if run is None else run[0] if quantity == "wall_from_mm" else run[1]
+    over = [p for p in overlapping(pieces, lo, hi) if p.radius is not None]
+    if quantity == "diameter_mm":
+        if span["fit"] == "clearance" and not span["pinned"]:
+            if not over:
+                return None
+            return 2 * (max(p.radius for p in over) if hole else min(p.radius for p in over))
+        covering = [p for p in over if p.lo - lo < TOL and hi - p.hi < TOL]
+        return 2 * covering[0].radius if covering else None
+    if quantity == "clear_margin_mm":
+        clear = span.get("clear_diameter_mm")
+        if not over or clear is None:
+            return None
+        delta = max(offset_at(span["from_mm"], q, axis), offset_at(span["to_mm"], q, axis))
+        if hole:
+            return min(p.radius for p in over) - delta - clear / 2
+        return clear / 2 - max(p.radius for p in over) - delta
+    return None
 
 
 def open_end(quantity, q, stack, candidate_placed):
@@ -1992,17 +2157,35 @@ def failure_problems(where, check, q, faces, m, candidate_placed, original_faces
             out.append(f"{where}: {quantity} failed, but the check's codes {sorted(codes)} name none of "
                        f"{sorted(allowed)}")
         value = None
-        if quantity in STACK_MEASURES:
-            tally["not re-measured: the stack's"] = tally.get("not re-measured: the stack's", 0) + 1
+        if quantity in ("open_start", "open_finish"):
+            is_open = open_end(quantity, q, stack, candidate_placed) if stack else None
+            if is_open is None:
+                count(tally, f"not re-measured: {quantity}")
+            else:
+                tally["re-measured"] += 1
+                if is_open:
+                    out.append(f"{where}: {quantity} failed, but the candidate's wall ends open within the "
+                               f"tolerance of the span's end")
             continue
-        if quantity in ("axis_offset_mm", "diameter_mm"):
-            # No piece found is the stack's own composition, as its walls are.
+        if quantity in ("axis_offset_mm", "diameter_mm", "clear_margin_mm", "wall_from_mm", "wall_to_mm"):
+            # No piece found (±f64::MAX) is the stack's own composition, M2's reading: an annular bottom, a
+            # zone not taken.
             if number(measure.get("found")) is None:
-                tally["not re-measured: the stack's"] = tally.get("not re-measured: the stack's", 0) + 1
+                count(tally, "not re-measured: no piece fitment found")
                 continue
             value = remeasure_axial(quantity, measure, q, stack) if stack else None
-        elif quantity == "plane_offset_mm" and seed in faces:
-            value = plane_deviation(faces[seed], q, m)
+        elif quantity == "plane_offset_mm":
+            # With no feature named (no plane within the band), fitment's nearest facing plane.
+            if seed in faces:
+                value = plane_deviation(faces[seed], q, m)
+            else:
+                value = min((dev for dev in (plane_deviation(f, q, m) for f in faces.values()
+                                              if facing(f, q, m)) if dev is not None), default=None)
+        elif quantity == "plane_sine" and seed in faces:
+            facts = plane_facts(faces[seed])
+            if facts is not None:
+                n = turn(m, facts[0])
+                value = math.sqrt(dot(cross(n, q["normal"]), cross(n, q["normal"])))
         elif quantity == "cone_angle_rad" and seed in faces:
             surface = BRepAdaptor_Surface(faces[seed])
             value = 2 * abs(surface.Cone().SemiAngle()) if surface.GetType() == Kind.GeomAbs_Cone else None
@@ -2020,7 +2203,11 @@ def failure_problems(where, check, q, faces, m, candidate_placed, original_faces
             # true distance may keep the bound (the box was loose: a false negative by the rule, never a pass).
             value = core_distance(check, q, measure, faces, m)
             found = number(measure.get("found"))
-            if value is not None and found is not None:
+            if value is None or found is None:
+                count(tally, "not re-measured: core_distance_mm, " + ("no distance stated" if found is None
+                                                                      else "no span or face to measure"))
+                continue
+            if True:
                 tally["re-measured"] += 1
                 hole = q["kind"] == "bore"
                 if (found > value + SAME) if hole else (found < value - SAME):
@@ -2029,7 +2216,7 @@ def failure_problems(where, check, q, faces, m, candidate_placed, original_faces
                     tally["core bounds loose"] = tally.get("core bounds loose", 0) + 1
             continue
         if value is None:
-            tally[f"not re-measured: {quantity}"] = tally.get(f"not re-measured: {quantity}", 0) + 1
+            count(tally, f"not re-measured: {quantity}")
             continue
         tally["re-measured"] += 1
         if not agrees(value, measure.get("found"), quantity):
@@ -2037,6 +2224,16 @@ def failure_problems(where, check, q, faces, m, candidate_placed, original_faces
         if not violates(value, measure):
             out.append(f"{where}: {quantity} failed, but {value} keeps its bound")
     return out
+
+
+def count(tally, key):
+    tally[key] = tally.get(key, 0) + 1
+
+
+def facing(face, q, m):
+    """True if a candidate face, placed, is a plane facing the seat's way (fitment's candidates for a seat)."""
+    facts = plane_facts(face)
+    return facts is not None and dot(turn(m, facts[0]), q["normal"]) > 0
 
 
 def core_distance(check, q, measure, faces, m):
@@ -3773,7 +3970,7 @@ def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "socket":
         quiet()
         socket_main(sys.argv[2:])
-    if len(sys.argv) == 3 and sys.argv[1] == "match":
+    if len(sys.argv) >= 3 and sys.argv[1] == "match":
         quiet()
         match_main(sys.argv[2:])
     if len(sys.argv) >= 3 and sys.argv[1] == "features":
