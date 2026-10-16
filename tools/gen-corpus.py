@@ -3928,20 +3928,21 @@ def hole_grid(n, pitch=10.0, d=6.6, t=8.0):
 
 def build_hostile_cases(w: Writer):
     """M4-13 and AL11's bounds on hostile inputs, each judged by matching.rs within a time bound: never a pass
-    from a bound (a reject past one names only `alignment_exhausted` or `coverage_exhausted`), and no pass that
-    does not fit. 10,000 identical holes against s01's bracket; a 1,600-bore socket (h01, a match-only source:
-    a plate on 1,600 pins standing in a base) against a 1,681-hole grid; the bracket with its body fused from
-    1,000 tiles, so each of its faces is hundreds; and the bracket with 4,000 pins of dia 0.4 standing on its top
-    face round one bore, about 10^4 faces near it."""
-    def case(cid, source, part, truth, text, rules):
+    from a bound (a fit rejected only by checks carrying `alignment_exhausted` or `coverage_exhausted`), and no
+    pass that does not fit; where a case names the bound that fires, it fires. 10,000 identical holes against
+    s01's bracket (alignment's placement bound); a 1,600-bore socket (h01, a match-only source: a plate on 1,600
+    pins standing in a base) against a 1,681-hole grid (coverage's); the bracket with its body fused from 1,000
+    tiles, so each of its faces is hundreds; and the bracket with ten rings of 400 dia 0.4 stubs on its top face
+    round one bore, fused into scalloped walls of about 29,000 faces outside the bore's core."""
+    def case(cid, source, part, truth, text, rules, **expect):
         w.cases.append({"id": cid, "kind": "hostile", "file": f"{cid}.stp", "set": "corpus",
                         "socket": {"case": source, "part": part, "occurrence": None, "review": []},
                         "candidate": {"file": f"{cid}.stp"}, "class": "h_bounds", "truth": truth,
-                        "expect": {"within_s": 30}, "rules": rules, "tests": text})
+                        "expect": {"within_s": 30, **expect}, "rules": rules, "tests": text})
     w.shape(hole_grid(100, d=6.6), "h_hole_grid")
     case("h_hole_grid", "s01_bolted", "BRACKET", "does_not_fit",
-         "10,000 dia 6.6 holes on a 10 mm pitch: every placement of the bracket's four lands on holes, and none "
-         "covers its seats", ["AL11", "KC9"])
+         "10,000 dia 6.6 holes on a 10 mm pitch: alignment reaches its 4,096 placements, none covering the "
+         "bracket's seats", ["AL11", "KC9"], placements_exhausted=True)
     pins = Leaf("PIN", cyl((0, 0, -10), UP, 3, 18))
     root = Node("h01_bore_grid").add(Leaf("BASE", hole_grid(40, d=6.0, t=10.0)), m_tr((0, 0, -10)))
     root.add(Leaf("PLATE", hole_grid(40)))
@@ -3951,8 +3952,9 @@ def build_hostile_cases(w: Writer):
     write_xcaf(w, root, "h01_bore_grid")
     w.shape(hole_grid(41), "h_bore_grid")
     case("h_bore_grid", "h01_bore_grid", "PLATE", "fits",
-         "a 41 x 41 grid of the same holes against the 40 x 40 one's socket: it fits, a row and a column over",
-         ["AL11", "SL4", "KC8"])
+         "a 41 x 41 grid of the same holes against the 40 x 40 one's socket: it fits, a row and a column over; "
+         "the 1,601 requirements' coverage exhausts its bound, as the original's own does", ["AL11", "SL4", "KC8"],
+         bound="coverage_exhausted")
     tiles = many(BRepAlgoAPI_Fuse, box(-40, -25, 0, 2, 2, 8),
                  [box(-40 + 2 * i, -25 + 2 * j, 0, 2, 2, 8) for i in range(40) for j in range(25)][1:])
     cuts = [cyl((x, y, -1), UP, 3.3, 10) for x, y in PTS] + [cyl((0, 0, -1), UP, 4.0, 10)]
@@ -3963,9 +3965,10 @@ def build_hostile_cases(w: Writer):
              for r in (7.5 + 0.5 * k for k in range(10)) for a in (2 * math.pi * m / 400 for m in range(400))]
     w.shape(many(BRepAlgoAPI_Fuse, c_bracket(), stubs), "h_bracket_stubs")
     case("h_bracket_stubs", "s01_bolted", "BRACKET", "fn_rule",
-         "the bracket with 4,000 pins of dia 0.4, 1 tall, on its top face in ten rings 7.5 to 12 from the "
-         "hole at (30, 15), clear of the bolt's head: their feet cut the top face the seat's region is (R14's "
-         "target-face basis)", ["AL11", "VR22", "KC10"])
+         "the bracket with ten rings of 400 dia 0.4 stubs, 1 tall, on its top face 7.5 to 12 from the hole at "
+         "(30, 15), each ring fused into a scalloped wall, about 29,000 faces, clear of the bolt's head and of the "
+         "bore's core: their feet cut the top face the seat's region is (R14's target-face basis)",
+         ["AL11", "KC10"])
 
 def build_family_cases(w: Writer):
     """The families PR 5 left (15.3): s07b's two sockets of one part, s21's self-paired hole, s18's countersink

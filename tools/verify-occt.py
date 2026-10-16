@@ -1754,12 +1754,15 @@ def locate(socket, locator):
 
 
 def one_thing_broken(directory, case, socket, leaves):
-    """KO2: a bad case, at its construction's placement, departs physically only with the neighbours its defect's
-    requirements concern (their sources); a defect that disturbs another is not one defect."""
+    """KO2: a bad case, at its construction's placement, departs physically at each occurrence only with the
+    neighbours its defect's requirements concern there (their sources at that occurrence); a defect that disturbs
+    another is not one defect."""
+    # Per occurrence: a neighbour concerns the defect at the occurrences whose sources name it there.
     concerned = set()
     for locator in case["defect"]:
         for _, requirement in locate(socket, locator):
-            concerned |= {tuple(src["neighbour"]) for src in requirement.get("sources", [])}
+            concerned |= {(tuple(src["occurrence"]), tuple(src["neighbour"]))
+                          for src in requirement.get("sources", [])}
     part = socket["selection"]["part"]
     paths = {}
     for neighbour in socket["extracted"]["neighbours"] + socket["extracted"]["occurrences"]:
@@ -1775,9 +1778,10 @@ def one_thing_broken(directory, case, socket, leaves):
     out = []
     for k, (m, original) in enumerate(targets):
         neighbours = neighbours_at(leaves, part, k, originals, placed)
+        here = paths.get(id(original))
         for label, n_t, n_c in neighbours:
             found = physics(original, placed[k], [(label, n_t, n_c)], f"{case['id']} at occurrence {k}")
-            if found and paths.get(id(n_t)) not in concerned:
+            if found and (here, paths.get(id(n_t))) not in concerned:
                 out.append(f"{case['id']}: departs with {label}, which no requirement of its defect concerns "
                            f"(KO2): {found[0][1]}")
     return out
