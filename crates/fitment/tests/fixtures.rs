@@ -574,3 +574,84 @@ fn every_fixture_is_judged_from_its_stored_document_as_from_its_file() {
         assert_eq!(stored, matcher.judge_step(&bytes), "{path}");
     }
 }
+
+/// M5 PR 2's exit (`docs/research/m5-catalog.md`, section 10): every
+/// fixture ingests into a catalog with its pinned gate result, and `get
+/// --format features` gives `fitment features` of the file, byte for byte.
+#[cfg(feature = "catalog")]
+#[test]
+fn every_fixture_ingests_with_its_pinned_gate_result() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("manifest.json")).unwrap()).unwrap();
+    let fixtures: Vec<&Value> = manifest["fixtures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| root.join(f["path"].as_str().unwrap()).is_file())
+        .collect();
+    if fixtures.is_empty() {
+        let required = std::env::var_os("FITMENT_REQUIRE_FIXTURES").is_some_and(|v| v == "1");
+        assert!(
+            !required,
+            "FITMENT_REQUIRE_FIXTURES=1 but fixtures are missing"
+        );
+        eprintln!("skipped: run tools/fetch-fixtures.sh core");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("fitment-fixtures-catalog-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let catalog = dir.join("cat");
+    let fitment = || Command::cargo_bin("fitment").unwrap();
+    fitment()
+        .args(["catalog", "init", "-C", catalog.to_str().unwrap()])
+        .assert()
+        .success();
+    let mut failures = Vec::new();
+    for fixture in fixtures {
+        let path = root.join(fixture["path"].as_str().unwrap());
+        let sha = fitment_core::sha256_hex(&fs::read(&path).unwrap());
+        // Ids from file names may clash across sets; the content names it.
+        let id = format!("f{}", &sha[..16]);
+        let ingest = fitment()
+            .args([
+                "catalog",
+                "ingest",
+                "-C",
+                catalog.to_str().unwrap(),
+                "--id",
+                &id,
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        let accepted = fixture["features"] == "accepted";
+        let want = if accepted { 0 } else { 3 };
+        if ingest.status.code() != Some(want) {
+            failures.push(format!(
+                "{}: ingest exit {:?}",
+                path.display(),
+                ingest.status.code()
+            ));
+            continue;
+        }
+        let stored = fitment()
+            .args([
+                "catalog",
+                "get",
+                "-C",
+                catalog.to_str().unwrap(),
+                &id,
+                "--format",
+                "features",
+            ])
+            .output()
+            .unwrap();
+        let direct = fitment().arg("features").arg(&path).output().unwrap();
+        if stored.stdout != direct.stdout || stored.status.code() != Some(want) {
+            failures.push(format!("{}: get --format features differs", path.display()));
+        }
+    }
+    let _ = fs::remove_dir_all(&dir);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
