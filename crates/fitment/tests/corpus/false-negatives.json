@@ -1,0 +1,825 @@
+{
+  "cases": [
+    "m_base02",
+    "m_base02_post",
+    "m_base02_short",
+    "m_bearing04",
+    "m_bearing04_outer",
+    "m_block02",
+    "m_block02_cb_deep",
+    "m_block02_membrane",
+    "m_bolt",
+    "m_bolt_longer",
+    "m_bolt_short",
+    "m_bolt_thick",
+    "m_bracket",
+    "m_bracket_blind",
+    "m_bracket_centre_10",
+    "m_bracket_centre_none",
+    "m_bracket_decoy",
+    "m_bracket_dia_clear_id",
+    "m_bracket_dia_clear_skew",
+    "m_bracket_dia_clear_tilt",
+    "m_bracket_dia_clear_var",
+    "m_bracket_dia_large",
+    "m_bracket_dia_small",
+    "m_bracket_face_hole",
+    "m_bracket_inside_tol",
+    "m_bracket_larger",
+    "m_bracket_lug",
+    "m_bracket_missing_hole",
+    "m_bracket_shift_05",
+    "m_bracket_shift_15tol",
+    "m_bracket_shift_tol_id",
+    "m_bracket_shift_tol_skew",
+    "m_bracket_shift_tol_tilt",
+    "m_bracket_shift_tol_var",
+    "m_bracket_side_hole",
+    "m_bracket_spot",
+    "m_bracket_thick",
+    "m_bracket_thin_15tol",
+    "m_bracket_tilt_inch",
+    "m_bracket_top_pocket",
+    "m_cover19",
+    "m_cover19_long",
+    "m_cover19_wide",
+    "m_housing",
+    "m_housing04",
+    "m_housing04_seat",
+    "m_housing_bar",
+    "m_housing_cross",
+    "m_housing_dome",
+    "m_housing_lip",
+    "m_housing_post",
+    "m_housing_spike",
+    "m_mirror15",
+    "m_nut",
+    "m_nut_bar",
+    "m_nut_bridge",
+    "m_nut_clearance",
+    "m_nut_ext",
+    "m_nut_ext_lip",
+    "m_nut_lip",
+    "m_nut_long",
+    "m_nut_pinned_15tol",
+    "m_nut_pinned_tol_id",
+    "m_nut_pinned_tol_skew",
+    "m_nut_pinned_tol_tilt",
+    "m_nut_pinned_tol_var",
+    "m_plate01",
+    "m_plate01_blind",
+    "m_plate01_thin",
+    "m_plate03",
+    "m_plate03_pin_shift_tol",
+    "m_plate03_press_15tol",
+    "m_plate16",
+    "m_plate16_635",
+    "m_plate18",
+    "m_plate18_82",
+    "m_plate18_angle_15atol",
+    "m_plate18_cbore",
+    "m_plate18_finger",
+    "m_plate18_small_rim",
+    "m_refused_r03_two_solids",
+    "m_refused_r04_assembly",
+    "m_refused_r05_no_length_unit",
+    "m_refused_r06_shell",
+    "m_refused_r08_surface_model",
+    "m_refused_r09_two_definitions",
+    "m_refused_r10_off_surface",
+    "m_refused_r11_flipped_plane",
+    "m_refused_r12_flipped_cylinder",
+    "m_s11_bracket_own",
+    "m_s12_angled_own",
+    "m_s13_block_own",
+    "m_s13_plate_own",
+    "m_s17_plate_own",
+    "m_s47_plate_own",
+    "m_s48_dshaft_own",
+    "m_s52_pin_own",
+    "m_s52_plate_own",
+    "m_s58_plate_own",
+    "m_s61_bracket",
+    "m_s62_bracket",
+    "m_screw02",
+    "m_screw02_head",
+    "m_screw02_shank",
+    "m_tube50",
+    "m_tube50_tau_edge_id",
+    "m_tube50_tau_edge_skew",
+    "m_tube50_tau_edge_tilt",
+    "m_tube50_tau_edge_var",
+    "m_washer05",
+    "m_washer05_thick"
+  ],
+  "extractor_version": 6,
+  "false_negatives": [
+    {
+      "case": "m_bracket_centre_10",
+      "cause": "rule",
+      "class": "fn_r14",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-467"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        },
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-570"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_bracket_centre_10",
+      "cause": "rule",
+      "class": "fn_r14",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-467"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        },
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-570"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_bracket_dia_large",
+      "cause": "rule",
+      "class": "b_dia_large",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-467"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        },
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-570"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_bracket_shift_15tol",
+      "cause": "rule",
+      "class": "fn_position",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-467"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        },
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-570"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_bracket_shift_15tol",
+      "cause": "rule",
+      "class": "fn_position",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-467"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        },
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-570"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_bracket_thick",
+      "cause": "rule",
+      "class": "b_thickness",
+      "failed": [
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/seat:plane-570"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_bracket_thick",
+      "cause": "rule",
+      "class": "b_thickness",
+      "failed": [
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        },
+        {
+          "codes": [
+            "no_feature"
+          ],
+          "requirement": "socket-1/seat:plane-570"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_bracket_top_pocket",
+      "cause": "rule",
+      "class": "fn_r14",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-467"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_bracket_top_pocket",
+      "cause": "rule",
+      "class": "fn_r14",
+      "failed": [
+        {
+          "codes": [
+            "contact_not_covered"
+          ],
+          "requirement": "socket-1/seat:plane-467"
+        },
+        {
+          "codes": [
+            "seat_missing"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_housing_cross",
+      "cause": "rule",
+      "class": "g_cross_hole",
+      "failed": [
+        {
+          "codes": [
+            "core_intruded",
+            "wall_opening"
+          ],
+          "requirement": "socket-1/bore:hole-412"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_housing_cross",
+      "cause": "rule",
+      "class": "g_cross_hole",
+      "failed": [
+        {
+          "codes": [
+            "core_intruded",
+            "wall_opening"
+          ],
+          "requirement": "socket-1/bore:hole-412"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s11_bracket_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:part-752"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s11_bracket_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:part-752"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s12_angled_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:plane-110"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:plane-169"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/bore:cylinder-209"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s12_angled_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:plane-110"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:plane-169"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/bore:cylinder-209"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s13_block_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:other-283"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/seat:plane-338"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/grip:plane-338+plane-350"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/seat:plane-350"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s13_block_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:other-283"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/seat:plane-338"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/grip:plane-338+plane-350"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/seat:plane-350"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s13_plate_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:part-204"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s13_plate_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:part-204"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s17_plate_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/partial_bore:cylinder-299"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s17_plate_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/partial_bore:cylinder-299"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s47_plate_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:plane-175"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s47_plate_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:plane-175"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s48_dshaft_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/partial_shaft:cylinder-251"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s48_dshaft_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/partial_shaft:cylinder-251"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s52_pin_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:shaft-247"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s52_pin_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:shaft-247"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s52_plate_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:hole-209"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s52_plate_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:hole-209"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s58_plate_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/bore:hole-186"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:plane-211"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/conical_seat:cone-234"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s58_plate_own",
+      "cause": "rule",
+      "class": "fn_unverifiable",
+      "failed": [
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/bore:hole-186"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/unresolved:plane-211"
+        },
+        {
+          "codes": [
+            "unverifiable"
+          ],
+          "requirement": "socket-1/conical_seat:cone-234"
+        }
+      ],
+      "policy": "functional"
+    },
+    {
+      "case": "m_s61_bracket",
+      "cause": "rule",
+      "class": "fn_floor",
+      "failed": [
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/seat:plane-467"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/seat:plane-570"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/bore:hole-654"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/bore:hole-671"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/bore:hole-688"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/bore:hole-722"
+        }
+      ],
+      "policy": "default"
+    },
+    {
+      "case": "m_s61_bracket",
+      "cause": "rule",
+      "class": "fn_floor",
+      "failed": [
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/seat:plane-467"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/grip:plane-467+plane-570"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/seat:plane-570"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/bore:hole-654"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/bore:hole-671"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/bore:hole-688"
+        },
+        {
+          "codes": [
+            "floor_above_tolerance"
+          ],
+          "requirement": "socket-1/bore:hole-722"
+        }
+      ],
+      "policy": "functional"
+    }
+  ],
+  "match_rules_version": 1,
+  "signature_version": 1,
+  "socket_rules_version": 7
+}

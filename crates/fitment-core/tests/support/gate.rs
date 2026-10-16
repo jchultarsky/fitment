@@ -107,15 +107,29 @@ pub fn locate<'s>(socket: &'s Socket, locator: &Value) -> Result<&'s Requirement
     }
 }
 
-/// An expected failure: the requirement it names and the codes it allows
-/// (any, when none are listed).
-struct Entry<'s> {
-    requirement: &'s str,
+/// An expected failure: the requirement it names, in each socket that has
+/// it (`socket-1/bore:hole-88`), and the codes it allows (any, when none
+/// are listed).
+struct Entry {
+    requirements: Vec<String>,
     codes: Vec<String>,
 }
 
-fn entry<'s>(socket: &'s Socket, value: &Value) -> Result<Entry<'s>, String> {
-    let requirement = locate(socket, value)?;
+/// The requirement `value` names in every socket that has it: one per
+/// socket at most, and in some socket.
+fn entry(sockets: &[Socket], value: &Value) -> Result<Entry, String> {
+    let mut requirements = Vec::new();
+    let mut problems = Vec::new();
+    for socket in sockets {
+        match locate(socket, value) {
+            Ok(r) => requirements.push(format!("{}/{}", socket.id, r.id)),
+            Err(e) if e.contains("several") => return Err(e),
+            Err(e) => problems.push(e),
+        }
+    }
+    if requirements.is_empty() {
+        return Err(problems.join("; "));
+    }
     let Some(listed) = value["codes"].as_array() else {
         return Err(format!("{value} lists no codes"));
     };
@@ -126,14 +140,14 @@ fn entry<'s>(socket: &'s Socket, value: &Value) -> Result<Entry<'s>, String> {
         .map(str::to_owned)
         .collect();
     Ok(Entry {
-        requirement: &requirement.id,
+        requirements,
         codes,
     })
 }
 
-impl Entry<'_> {
+impl Entry {
     fn meets(&self, requirement: &str, codes: &[String]) -> bool {
-        self.requirement == requirement
+        self.requirements.iter().any(|r| r == requirement)
             && (self.codes.is_empty() || codes.iter().any(|c| self.codes.contains(c)))
     }
 }
@@ -152,11 +166,10 @@ pub fn expectation<'c>(case: &'c Value, policy: &str) -> &'c Value {
     &Value::Null
 }
 
-/// The failed checks of `socket` in a socket result: requirement and codes.
-fn failures(
-    checks: &[(fitment_core::RequirementId, fitment_core::Check)],
-) -> Vec<(String, Vec<String>)> {
-    checks
+/// The failed checks of a socket's result: `socket/requirement` and codes.
+fn failures(result: &SocketResult) -> Vec<(String, Vec<String>)> {
+    result
+        .checks
         .iter()
         .filter(|(_, c)| !c.passed())
         .map(|(r, c)| {
@@ -167,7 +180,7 @@ fn failures(
                 .map(|f| serde_json::to_value(f.code).unwrap_or_default())
                 .filter_map(|v| v.as_str().map(str::to_owned))
                 .collect();
-            (r.as_str().to_owned(), codes)
+            (format!("{}/{}", result.socket, r.as_str()), codes)
         })
         .collect()
 }
@@ -194,16 +207,16 @@ pub fn placement(case: &Value) -> Option<Rigid> {
 /// KH8 for a bad case: at the construction's own placement, every
 /// requirement its defect breaks fails, with a code it allows; wherever
 /// alignment placed it, the defect is there.
-pub fn defect(case: &Value, socket: &Socket, at_construction: &SocketResult) -> Vec<String> {
+pub fn defect(case: &Value, sockets: &[Socket], at_construction: &[SocketResult]) -> Vec<String> {
     let id = case["id"].as_str().unwrap_or("?");
-    let failed = failures(&at_construction.checks);
+    let failed: Vec<(String, Vec<String>)> = at_construction.iter().flat_map(failures).collect();
     let mut problems = Vec::new();
     for value in case["defect"].as_array().into_iter().flatten() {
-        match entry(socket, value) {
+        match entry(sockets, value) {
             Ok(e) if failed.iter().any(|(r, codes)| e.meets(r, codes)) => {}
             Ok(e) => problems.push(format!(
-                "{id}: at the construction's placement {} did not fail as its defect; failed: {failed:?}",
-                e.requirement
+                "{id}: at the construction's placement {:?} did not fail as its defect; failed: {failed:?}",
+                e.requirements
             )),
             Err(e) => problems.push(format!("{id}: harness: {e}")),
         }
@@ -211,9 +224,57 @@ pub fn defect(case: &Value, socket: &Socket, at_construction: &SocketResult) -> 
     problems
 }
 
+/// CF2, VD10: a file M2's gate refuses is a reject with its codes. VD5,
+/// VD6: a case may state how many requirements fail every candidate (its
+/// socket's construction says), each with no other code, or that all do
+/// (a floor past the tolerance, VR2); those leave `failed`. Returns the
+/// count stated.
+fn blocked(
+    at: &str,
+    expect: &Value,
+    result: &CandidateResult,
+    failed: &mut Vec<(String, Vec<String>)>,
+    problems: &mut Vec<String>,
+) -> Option<u64> {
+    if let Some(codes) = expect["refused"].as_array() {
+        let mut want: Vec<&str> = codes.iter().filter_map(Value::as_str).collect();
+        let mut got: Vec<&str> = result.refusals.iter().map(|r| r.code.name()).collect();
+        want.sort_unstable();
+        got.sort_unstable();
+        got.dedup();
+        if result.status != fitment_core::Status::Refused || got != want {
+            problems.push(format!("{at}: refused with {got:?}, expected {want:?}"));
+        }
+    }
+    let all: u64 = result.sockets.iter().map(|s| s.checks.len() as u64).sum();
+    let n = match &expect["unverifiable"] {
+        Value::String(s) if s == "all" => Some(all),
+        v => v.as_u64(),
+    }?;
+    let is_blocked = |codes: &[String]| {
+        !codes.is_empty()
+            && codes
+                .iter()
+                .all(|c| c == "unverifiable" || c == "floor_above_tolerance")
+    };
+    let count = failed.iter().filter(|(_, codes)| is_blocked(codes)).count() as u64;
+    if count != n {
+        problems.push(format!(
+            "{at}: {count} requirements fail every candidate, expected {n}"
+        ));
+    }
+    failed.retain(|(_, codes)| !is_blocked(codes));
+    Some(n)
+}
+
 /// KH2 and KH3 on one candidate's result against one socket: every way
 /// it departs from the case's expectation under `policy`.
-pub fn gate(case: &Value, policy: &str, socket: &Socket, result: &CandidateResult) -> Vec<String> {
+pub fn gate(
+    case: &Value,
+    policy: &str,
+    sockets: &[Socket],
+    result: &CandidateResult,
+) -> Vec<String> {
     let id = case["id"].as_str().unwrap_or("?");
     let expect = expectation(case, policy);
     let mut problems = Vec::new();
@@ -229,27 +290,25 @@ pub fn gate(case: &Value, policy: &str, socket: &Socket, result: &CandidateResul
             result.verdict.kind()
         ));
     }
-    // F: each failed requirement with its codes.
-    if result.sockets.len() != 1 {
+    // F: each failed requirement, in every socket, with its codes.
+    if result.sockets.len() != sockets.len() && result.status == fitment_core::Status::Accepted {
         return vec![format!(
-            "{id} {policy}: harness: {} sockets",
-            result.sockets.len()
+            "{id} {policy}: harness: {} sockets judged of {}",
+            result.sockets.len(),
+            sockets.len()
         )];
     }
-    let failed: Vec<(String, Vec<String>)> = result
-        .sockets
-        .iter()
-        .filter(|s| s.socket == socket.id)
-        .flat_map(|s| failures(&s.checks))
-        .collect();
-    let list = |key: &str| -> Result<Vec<Vec<Entry<'_>>>, String> {
+    let mut failed: Vec<(String, Vec<String>)> = result.sockets.iter().flat_map(failures).collect();
+    let at = format!("{id} {policy}");
+    let blocked_count = blocked(&at, expect, result, &mut failed, &mut problems);
+    let list = |key: &str| -> Result<Vec<Vec<Entry>>, String> {
         expect[key]
             .as_array()
             .into_iter()
             .flatten()
             .map(|v| match v["any_of"].as_array() {
-                Some(options) => options.iter().map(|o| entry(socket, o)).collect(),
-                None => entry(socket, v).map(|e| vec![e]),
+                Some(options) => options.iter().map(|o| entry(sockets, o)).collect(),
+                None => entry(sockets, v).map(|e| vec![e]),
             })
             .collect()
     };
@@ -263,7 +322,7 @@ pub fn gate(case: &Value, policy: &str, socket: &Socket, result: &CandidateResul
             .iter()
             .any(|e| failed.iter().any(|(r, codes)| e.meets(r, codes)))
         {
-            let names: Vec<&str> = options.iter().map(|e| e.requirement).collect();
+            let names: Vec<&String> = options.iter().flat_map(|e| &e.requirements).collect();
             problems.push(format!(
                 "{id} {policy}: {names:?} did not fail as expected; failed: {failed:?}"
             ));
@@ -285,7 +344,11 @@ pub fn gate(case: &Value, policy: &str, socket: &Socket, result: &CandidateResul
     {
         problems.push(format!("{id} {policy}: a bad case names no defect"));
     }
-    if truth == "fn_rule" && failed.is_empty() && want == VerdictKind::Reject {
+    if truth == "fn_rule"
+        && failed.is_empty()
+        && want == VerdictKind::Reject
+        && blocked_count.is_none_or(|n| n == 0)
+    {
         problems.push(format!(
             "{id} {policy}: a false negative by rule failed nothing"
         ));

@@ -242,6 +242,8 @@ pub struct Matcher<'a> {
     policy: MatchPolicy,
     options: MatchOptions,
     fit: &'a dyn FitVerifier,
+    /// False to skip the shortlist (KH9's cross-check).
+    shortlist: bool,
 }
 
 impl std::fmt::Debug for Matcher<'_> {
@@ -324,7 +326,17 @@ impl<'a> Matcher<'a> {
             policy,
             options,
             fit,
+            shortlist: true,
         })
+    }
+
+    /// This matcher with the shortlist off: every candidate is aligned over
+    /// all its stacks (KH9: the verdict must not change). For the harness.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn without_shortlist(mut self) -> Self {
+        self.shortlist = false;
+        self
     }
 
     /// The socket document.
@@ -512,15 +524,22 @@ impl<'a> Matcher<'a> {
         step: Option<&[u8]>,
     ) -> SocketResult {
         let view = &ready.view;
-        let kept: Result<Kept, Vec<Missing>> = shortlist(&ready.signature, cand.signature());
+        let kept: Option<Result<Kept, Vec<Missing>>> = self
+            .shortlist
+            .then(|| shortlist(&ready.signature, cand.signature()));
         let searching = view.active().iter().any(|r| self.searched(view, r));
         let placements = if searching {
-            align(view, cand, kept.as_ref().ok(), &self.policy)
+            align(
+                view,
+                cand,
+                kept.as_ref().and_then(|k| k.as_ref().ok()),
+                &self.policy,
+            )
         } else {
             Placements::none()
         };
         let built = (placements.tried, placements.exhausted);
-        let dropped = kept.is_err();
+        let dropped = matches!(kept, Some(Err(_)));
         let unplaced = |stage| Judged {
             dropped,
             stage,
@@ -551,7 +570,7 @@ impl<'a> Matcher<'a> {
             };
             self.result(ready, cand, judged, step)
         };
-        if let Err(missing) = kept {
+        if let Some(Err(missing)) = kept {
             result.stage = Stage::Shortlist;
             result.missing = missing;
             result.verdict = result.verdict.rejecting(RejectReason::Shortlist {

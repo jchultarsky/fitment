@@ -350,3 +350,221 @@ fn every_pinned_fixture_original_fails_exactly_what_no_candidate_can_pass() {
         failures.join("\n")
     );
 }
+
+/// KC12: AS1's five parts in each of its six exports, each export's part
+/// against each export's socket of it (180 runs). The same model: among
+/// ac, md and ug every socket passes every export's part, but those with a
+/// requirement that fails every candidate (each bolt's `socket-2`), which
+/// reject for exactly that; pe's parts state 0.115 to 0.672 mm and fail on
+/// the floor; ec's and tc's sockets are unverifiable, and their parts have
+/// no decided hole to place by. Nothing else passes.
+#[test]
+fn as1_parts_match_across_exports() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let exports = [
+        (
+            "ac",
+            "steptools/as1-ac-214.stp",
+            ["PLATE", "L-BRACKET", "BOLT", "NUT", "ROD"],
+        ),
+        (
+            "md",
+            "steptools/as1-md-214.stp",
+            ["PLATE", "LBRACKET", "BOLT", "NUT", "ROD"],
+        ),
+        (
+            "ug",
+            "steptools/as1-ug-214.stp",
+            ["plate", "l_bracket", "bolt", "nut", "rod"],
+        ),
+        (
+            "pe",
+            "nist-edm/as1_pe.stp",
+            ["PLATE", "L-BRACKET", "BOLT", "NUT", "ROD"],
+        ),
+        (
+            "ec",
+            "steptools/as1-ec-214.stp",
+            [
+                "as1 1.2",
+                "as1 1.1.1",
+                "as1 1.1.2.2",
+                "as1 1.1.2.1",
+                "as1 1.4.1",
+            ],
+        ),
+        (
+            "tc",
+            "steptools/as1-tc-214.stp",
+            ["plate", "l-bracket", "bolt", "nut", "rod"],
+        ),
+    ];
+    if exports.iter().any(|e| !root.join(e.1).is_file()) {
+        let required = std::env::var_os("FITMENT_REQUIRE_FIXTURES").is_some_and(|v| v == "1");
+        assert!(
+            !required,
+            "FITMENT_REQUIRE_FIXTURES=1 but fixtures are missing"
+        );
+        eprintln!("skipped: run tools/fetch-fixtures.sh core");
+        return;
+    }
+    let bytes: Vec<Vec<u8>> = exports
+        .iter()
+        .map(|e| fs::read(root.join(e.1)).unwrap())
+        .collect();
+    let good = |name: &str| ["ac", "md", "ug"].contains(&name);
+    let mut runs = 0;
+    let mut failures = Vec::new();
+    for k in 0..5 {
+        for (si, socket_export) in exports.iter().enumerate() {
+            let document =
+                SocketDocument::extract(&bytes[si], Some(socket_export.2[k]), None).unwrap();
+            let matcher = Matcher::new(
+                &document,
+                MatchPolicy::default(),
+                MatchOptions::default(),
+                &fitment_core::NoFitVerifier,
+            )
+            .unwrap();
+            for (ci, candidate_export) in exports.iter().enumerate() {
+                runs += 1;
+                let part = component(&bytes[ci], candidate_export.2[k]).unwrap();
+                let result = matcher.judge_part(&part, fitment_core::CandidateSource::Given);
+                let name = format!(
+                    "{} {} against {}",
+                    candidate_export.0, socket_export.2[k], socket_export.0
+                );
+                let passed = result.verdict.kind() != fitment_core::VerdictKind::Reject;
+                let pair = good(socket_export.0) && good(candidate_export.0);
+                if passed && !pair {
+                    failures.push(format!("{name}: passes"));
+                }
+                if pair {
+                    // Fails exactly what no candidate can pass, as the
+                    // original does.
+                    for socket in &result.sockets {
+                        let view = SocketView::new(&document, &socket.socket).unwrap();
+                        for (id, check) in &socket.checks {
+                            let requirement =
+                                view.active().iter().find(|r| r.id == id.as_str()).unwrap();
+                            let expected = requirement.verifiable()
+                                && !view.blocked(requirement, &MatchPolicy::default());
+                            if check.passed() != expected {
+                                failures.push(format!("{name}: {} {id}", socket.socket));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(runs, 180);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// KC13: every corpus socket whose original fails requirements no
+/// candidate can pass, with each of those removed in review: the original
+/// then passes, the removed requirements are listed as not checked and no
+/// check names them; and a part with none of the socket's elements is
+/// still rejected, for removal waives only what it names.
+#[test]
+fn review_waives_only_what_it_removes() {
+    let Some(dir) = corpus() else {
+        return;
+    };
+    let plain = fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests/data/p21_planes.stp"),
+    )
+    .unwrap();
+    let policy = MatchPolicy::default();
+    let mut runs = 0;
+    let mut failures = Vec::new();
+    for (id, bytes, parts) in targets(&dir) {
+        if ["_rot", "_tgt", "_pc", "_perm"]
+            .iter()
+            .any(|v| id.ends_with(v))
+        {
+            continue;
+        }
+        for part in parts {
+            let mut document = SocketDocument::extract(&bytes, Some(&part), None).unwrap();
+            let Some(extracted) = document.extracted().cloned() else {
+                continue;
+            };
+            let mut removed = Vec::new();
+            for socket in &extracted.sockets {
+                let view = SocketView::new(&document, &socket.id).unwrap();
+                for r in view.active() {
+                    if !r.verifiable() || view.blocked(r, &policy) {
+                        removed.push((socket.id.clone(), r.id.clone()));
+                    }
+                }
+            }
+            let active: usize = extracted.sockets.iter().map(|s| s.requirements.len()).sum();
+            if removed.is_empty() || removed.len() == active {
+                continue;
+            }
+            for (socket, requirement) in &removed {
+                document
+                    .decide(
+                        requirement,
+                        Some(socket),
+                        fitment_core::ReviewStatus::Removed,
+                        Some("waived"),
+                    )
+                    .unwrap();
+            }
+            runs += 1;
+            let matcher = Matcher::new(
+                &document,
+                policy.clone(),
+                MatchOptions::default(),
+                &fitment_core::NoFitVerifier,
+            )
+            .unwrap();
+            let original = component(&bytes, &part).unwrap();
+            let result = matcher.judge_part(&original, fitment_core::CandidateSource::Given);
+            let name = format!("{id} {part}");
+            for socket in &result.sockets {
+                // A socket left with nothing active rejects (VD7); others pass.
+                let left = document.active(&socket.socket).count();
+                if left > 0 && socket.verdict.kind() == fitment_core::VerdictKind::Reject {
+                    failures.push(format!(
+                        "{name} {}: rejected after review: {:?}",
+                        socket.socket,
+                        socket.verdict.reasons()
+                    ));
+                }
+                for (socket_id, requirement) in &removed {
+                    if socket_id == &socket.socket {
+                        if socket.checks.iter().any(|(r, _)| r.as_str() == requirement) {
+                            failures.push(format!("{name}: {requirement} checked though removed"));
+                        }
+                        let listed = socket.not_checked.iter().any(|n| matches!(n,
+                            fitment_core::NotChecked::Removed { requirement: r, .. } if r.as_str() == requirement));
+                        if !listed {
+                            failures.push(format!("{name}: {requirement} not listed as removed"));
+                        }
+                    }
+                }
+            }
+            // The plain block has no hole or shaft: where one is still asked,
+            // it fails.
+            let axial = extracted.sockets.iter().any(|s| {
+                document.active(&s.id).any(|r| {
+                    matches!(
+                        r.requires,
+                        fitment_core::Requires::Bore { .. } | fitment_core::Requires::Shaft { .. }
+                    )
+                })
+            });
+            if axial
+                && matcher.judge_step(&plain).verdict.kind() != fitment_core::VerdictKind::Reject
+            {
+                failures.push(format!("{name}: a plain block passes after review"));
+            }
+        }
+    }
+    assert!(runs > 5, "{runs} runs");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

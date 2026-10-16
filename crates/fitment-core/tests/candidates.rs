@@ -100,7 +100,7 @@ fn every_committed_candidate_meets_its_construction() {
         let source = assembly(case["socket"]["case"].as_str().unwrap());
         let document =
             SocketDocument::extract(source, case["socket"]["part"].as_str(), None).unwrap();
-        let socket = &document.extracted().unwrap().sockets[0];
+        let sockets = &document.extracted().unwrap().sockets;
         for (name, policy) in policies() {
             let matcher = Matcher::new(
                 &document,
@@ -110,12 +110,15 @@ fn every_committed_candidate_meets_its_construction() {
             )
             .unwrap();
             let result = matcher.judge_step(bytes);
-            problems.extend(gate::gate(case, name, socket, &result));
+            problems.extend(gate::gate(case, name, sockets, &result));
             if !case["defect"].as_array().is_none_or(Vec::is_empty) {
                 let part = fitment_core::read_part(bytes).unwrap();
                 let at = gate::placement(case).unwrap();
-                let built = matcher.verify_at(&part, &socket.id, &at).unwrap();
-                problems.extend(gate::defect(case, socket, &built));
+                let built: Vec<_> = sockets
+                    .iter()
+                    .filter_map(|s| matcher.verify_at(&part, &s.id, &at))
+                    .collect();
+                problems.extend(gate::defect(case, sockets, &built));
             }
         }
     }

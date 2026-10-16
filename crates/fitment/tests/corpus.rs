@@ -11,7 +11,7 @@
 //!   the test passes with a note, unless `FITMENT_REQUIRE_CORPUS=1`, which
 //!   CI sets: a gate that did not run must not pass green.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -337,6 +337,20 @@ const UNVERIFIABLE: [&str; 13] = [
     "U1", "U2", "U4", "U5", "U6", "U7", "U8", "U9", "U10", "U11", "C4", "C6", "Q1",
 ];
 
+/// KH14: M4's rules that yield an unverifiable requirement, a
+/// `floor_above_tolerance` or a refusal: each needs a case, as
+/// `UNVERIFIABLE` does.
+const M4_UNVERIFIABLE: [&str; 10] = [
+    "VR2", "VR4", "VR6", "VR14", "VD5", "VD6", "VD9", "VD10", "CF2", "MF2",
+];
+
+/// KH14: every rule that can fail a candidate needs a bad case
+/// (`does_not_fit` or `edge`) that cites it, so no check exists without a
+/// candidate it rejects (RS10).
+const CAN_FAIL: [&str; 13] = [
+    "CF4", "CF5", "CF8", "VR3", "VR4", "VR7", "VR8", "VR9", "VR10", "VR11", "VR12", "VR13", "VR22",
+];
+
 /// M4's rule prefixes (`docs/research/m4-match.md`): deferred to the PR
 /// that builds each until M4 closes.
 const M4_PREFIXES: [&str; 11] = [
@@ -358,6 +372,12 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         .expect("the corpus manifest lists its rule_ids");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut failures = Vec::new();
+    let truths: BTreeMap<&str, &str> = manifest["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["id"].as_str().unwrap(), c["truth"].as_str().unwrap_or("")))
+        .collect();
     for (id, entry) in rules {
         let cases = entry["cases"].as_array().map_or(0, Vec::len);
         let tests: Vec<&str> = entry["tests"]
@@ -373,11 +393,7 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         if deferred && (cases > 0 || !tests.is_empty()) {
             failures.push(format!("{id}: deferred, yet a case or test covers it"));
         }
-        if UNVERIFIABLE.contains(&id.as_str()) && cases == 0 {
-            failures.push(format!(
-                "{id}: yields an unverifiable requirement, and no case shows it"
-            ));
-        }
+        failures.extend(case_lists(id, entry, &truths));
         // M2 and M3 are closed: only these may wait, each for a reason
         // outside them (a bug's code, a withdrawn rule, a property of the
         // construction, a later milestone). M4's own rules wait for the PR
@@ -439,6 +455,37 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// KH14's and 13.1's lists for one rule: those that need a case, and
+/// those that need a bad one.
+fn case_lists(id: &str, entry: &Value, truths: &BTreeMap<&str, &str>) -> Vec<String> {
+    let mut out = Vec::new();
+    let cases: Vec<&str> = entry["cases"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if M4_UNVERIFIABLE.contains(&id) && cases.is_empty() {
+        out.push(format!(
+            "{id}: yields an unverifiable requirement, a floor or a refusal, and no case shows it"
+        ));
+    }
+    let bad = cases
+        .iter()
+        .any(|c| matches!(truths.get(c), Some(&("does_not_fit" | "edge"))));
+    if CAN_FAIL.contains(&id) && !bad {
+        out.push(format!(
+            "{id}: can fail a candidate, and no bad case shows it"
+        ));
+    }
+    if UNVERIFIABLE.contains(&id) && cases.is_empty() {
+        out.push(format!(
+            "{id}: yields an unverifiable requirement, and no case shows it"
+        ));
+    }
+    out
 }
 
 /// True if `file` has a `#[test]` function `name`.

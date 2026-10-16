@@ -769,13 +769,35 @@ M4_TESTS.update({
     "KH11": [f"{M4_CLI}::the_document_does_not_depend_on_argument_order"] + M4_GOLDEN,
     "KH12": M4_CHECKER,
 })
+# PR 5 builds the corpus's cases and its harness: the binary path beside the library's, the baseline, the report,
+# the shortlist cross-check, determinism, the runs in place (KC11 to KC13) and KH14's lists.
+M4_MATCHING = "crates/fitment/tests/matching.rs"
+M4_BINARY = [f"{M4_MATCHING}::the_binary_agrees_with_the_library"]
+M4_SOCKET_GATE = [f"{M4_MATCHING}::the_socket_gate_refuses_before_any_candidate"]
+M4_TESTS.update({
+    "KC1": M4_GATE, "KC4": M4_GATE + M4_KH10, "KC11": M4_KH10,
+    "KC12": [f"{M4_ORIGINAL}::as1_parts_match_across_exports"],
+    "KC13": [f"{M4_ORIGINAL}::review_waives_only_what_it_removes"],
+    "KC14": M4_GATE + [f"{M4_MATCHING}::the_report_states_the_rates"],
+    "KC16": ["crates/fitment/tests/corpus.rs::the_candidate_set_fits_its_budget_and_its_manifest"],
+    "KH1": M4_GATE + M4_BINARY,
+    "KH4": [f"{M4_MATCHING}::the_false_negatives_are_the_baseline"],
+    "KH5": [f"{M4_MATCHING}::the_false_negatives_are_the_baseline"],
+    "KH6": [f"{M4_MATCHING}::the_report_states_the_rates"],
+    "KH7": [f"{M4_MATCHING}::the_report_states_the_rates"],
+    "KH9": [f"{M4_MATCHING}::the_shortlist_never_drops_what_verification_passes"],
+    "KH11": M4_TESTS["KH11"] + [f"{M4_MATCHING}::matching_is_deterministic"],
+    "KH12": M4_CHECKER + M4_BINARY,
+    "KH14": ["crates/fitment/tests/corpus.rs::every_rule_has_a_case_a_test_or_a_reason"],
+    "VD9": M4_TESTS["VD9"] + M4_SOCKET_GATE,
+    "MF2": M4_TESTS["MF2"] + M4_SOCKET_GATE,
+})
 for rule, tests in M4_TESTS.items():
     RULES[rule] = {"tests": tests}
 # Shown by the match cases that cite them.
-for rule in ("CF8", "KC3", "KC7", "KC8", "KC9", "KC10", "KC15"):
+for rule in ("CF8", "KC3", "KC6", "KC7", "KC8", "KC9", "KC10", "KC15", "VR19"):
     RULES[rule] = {}
-for rule in ("VR16", "VR19"):
-    RULES[rule] = {"deferred": "M4 PR 4: the verdict lists removed requirements and carries flags"}
+RULES["VR16"] = {"tests": ["crates/fitment/tests/match_cli.rs::a_removed_requirement_is_not_checked"]}
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with
@@ -3245,6 +3267,13 @@ def m_defects():
         "m_plate18_small_rim": [must(cs, *cone_codes)],
         "m_plate18_cbore": [must(cs, *cone_codes)],
         "m_bracket_spot": [must(l_seat((0, 0, 1), 8), "contact_not_covered")],
+        "m_bracket_shift_05": [must(hole, "no_feature", "axis_offset")],
+        "m_plate16_635": [must(l_bore((0, 0, 0)), "diameter_out_of_limits:min", "core_intruded")],
+        "m_bracket_decoy": [must(hole, "no_feature", "axis_offset")],
+        **{f"m_bracket_shift_tol_{f}": [must(hole, "no_feature", "axis_offset")] for f in ("id", "var", "tilt", "skew")},
+        **{f"m_bracket_dia_clear_{f}": [must(hole, "diameter_out_of_limits:min")] for f in ("id", "var", "tilt", "skew")},
+        "m_plate01_blind": [must(l_bore((30, 15, -10)), "end_not_open", "wall_missing")],
+        "m_bolt_head_moved": [must(l_seat((0, 0, -1), 0), "no_feature", "contact_not_covered")],
     }
 
 
@@ -3422,12 +3451,223 @@ def match_cases():
                 must(l_grip(8.5), "seat_missing", "grip_length")]),
          "a 9 um ring of dia 2 between the bore and the counterbore", ["KC9", "VR4"]),
     ]
+    out += m_families(B, N, K, D3, BA, H, T, (top, bot, g8), one, near_hole, at_a_hole, may_holes)
     # VR4's edge in four frames (KC7): the tube's outside at exactly c - 2 tau.
     for name, motion in [("id", IDENTITY), ("var", VARIANT), ("tilt", TILT), ("skew", Motion((3, -2, 5), 71.0, (12.5, 7.0, -40.0)))]:
         out.append((f"m_tube50_tau_edge_{name}", T, c_tube50(20.99), motion, "edge", "e_tau",
                     m_rej([must(l_shaft((0, 0, 0)), "diameter_out_of_limits:max")]),
                     "outside dia 41.98: a margin of exactly tau beyond the cap's clear dia 42", ["KC7", "VR4"]))
     return out
+
+
+SKEW = Motion((3, -2, 5), 71.0, (12.5, 7.0, -40.0))
+
+
+def c_bolt(length=25.0, d=6.0, head_at=0.0):
+    """s01's BOLT: hex head (across flats 10) from z `head_at` to 4, its bearing face at `head_at`; the shank,
+    dia d, from z -length to it."""
+    return fuse(hex_prism(10, head_at, 4 - head_at), cyl((0, 0, -length), UP, d / 2, length + head_at))
+
+
+def c_screw(head_d=10.0, shank_d=6.0):
+    """s02's SCREW: head dia `head_d`, z 0 to 6; shank dia `shank_d` down to -16."""
+    return fuse(cyl((0, 0, 0), UP, head_d / 2, 6), cyl((0, 0, -16), UP, shank_d / 2, 16))
+
+
+def c_bearing(outer=22.0, inner=8.0):
+    """s04's BEARING: dia `outer` / `inner` x 7."""
+    return cut(cyl((0, 0, 0), UP, outer / 2, 7), cyl((0, 0, -1), UP, inner / 2, 9))
+
+
+def c_washer(h=1.6):
+    """s05's WASHER: dia 12 / 6.4, `h` thick."""
+    return cut(cyl((0, 0, 0), UP, 6, h), cyl((0, 0, -1), UP, 3.2, h + 2))
+
+
+def c_cover(boss_d=12.0, boss_h=5.0):
+    """s19's COVER: 40 x 40 x 5, a boss dia `boss_d` and `boss_h` long below it."""
+    return fuse(box(-20, -20, 0, 40, 40, 5), cyl((0, 0, -boss_h), UP, boss_d / 2, boss_h))
+
+
+def c_plate16(d0=6.6):
+    """s16's PLATE, its offset pin's hole dia `d0`."""
+    return through(through(box(-10, -20, 0, 40, 40, 8), [(0, 0)], d0, 0, 8), [(15, 0)], 7.0, 0, 8)
+
+
+def m_families(B, N, K, D3, BA, H, T, seats, one, near_hole, at_a_hole, may_holes):
+    """The families of section 15.3 beyond the committed set and the review's shapes: each source part's good
+    frames and its defects, one thing broken, just past the tolerance or grossly."""
+    top, bot, g8 = seats
+    tol, ok = M_TOL, m_ok
+    rej = m_rej
+    any_bore = ("no_feature", "axis_offset", "axis_angle", "diameter_out_of_limits:min", "diameter_out_of_limits:max",
+                "wall_missing", "end_not_open", "core_intruded", "wall_opening", "candidate_feature_unknown")
+    any_seat = ("no_feature", "contact_not_covered", "unknown_outline")
+    bracket_may = [must(top, *any_seat), must(bot, *any_seat), must(g8, "grip_length", "seat_missing")] + \
+        may_holes(*any_bore)
+    out = [
+        # The bracket's other classes (KC8 to KC10).
+        ("m_bracket_tilt_inch", B, c_bracket(), TILT, "fits", "g_unit", ok(), "in TILT, written in inches",
+         ["KC6", "KC8", "CF9"]),
+        ("m_bracket_side_hole", B, c_bracket(side_hole=True), VARIANT, "fits", "g_extra_hole", ok(),
+         "a dia 3 hole along y through the sides", ["KC8"]),
+        ("m_bracket_larger", B, c_bracket(lx=90, ly=56), VARIANT, "fits", "g_body", ok(), "90 x 56, the same holes",
+         ["KC8"]),
+        ("m_bracket_centre_10", B, c_bracket(centre=10.0), VARIANT, "fn_rule", "fn_r14",
+         rej([any_of(must(top, "contact_not_covered"), must(bot, "contact_not_covered"))], bracket_may),
+         "the left-out dia 8 hole made dia 10: it takes from the target faces the seats require (R14)",
+         ["KC10", "VR10"]),
+        ("m_bracket_centre_none", B, c_bracket(centre=0), VARIANT, "fits", "g_left_out", ok(),
+         "the left-out dia 8 hole absent", ["KC8", "VR15"]),
+        ("m_bracket_inside_tol", B, c_bracket(holes=one(x=30 + tol / 4)), VARIANT, "fits", "g_inside_tol", ok(),
+         "hole (30, 15) moved a quarter of the tolerance", ["KC8"]),
+        ("m_bracket_face_hole", B, c_bracket(extra=[(0, 15, 4)]), VARIANT, "does_not_fit", "b_seat_region",
+         rej([must(bot, "contact_not_covered")], bracket_may), "a dia 4 hole in the plate's contact", ["KC9", "VR11"]),
+        ("m_bracket_dia_large", B, c_bracket(holes=one(d=6.8)), VARIANT, "fits_functional", "b_dia_large",
+         {"default": rej([at_a_hole("diameter_out_of_limits:max")], bracket_may),
+          "functional": rej([any_of(must(top, "contact_not_covered"), must(bot, "contact_not_covered"))],
+                            bracket_may)},
+         "dia 6.8: strict rejects; functional too, for the ring its seats lose (M4-7)", ["KC9", "VR7"]),
+        ("m_bracket_thin_15tol", B, c_bracket(t=8 - 1.5 * tol), VARIANT, "does_not_fit", "b_thickness",
+         rej([must(g8, "grip_length", "seat_missing")], bracket_may), "8 - 1.5 tol thick", ["KC9", "VR12"]),
+        ("m_bracket_shift_05", B, c_bracket(holes=one(x=30.5)), VARIANT, "does_not_fit", "b_hole_shift",
+         rej([at_a_hole("no_feature", "axis_offset")], bracket_may), "hole (30, 15) moved 0.5 mm", ["KC9", "VR3"]),
+        ("m_bracket_shift_15tol", B, c_bracket(holes=one(x=30 + 1.5 * tol)), VARIANT, "fn_rule", "fn_position",
+         rej([], bracket_may), "moved 1.5 tol: the bolt still passes, the axis rejects", ["KC10", "VR3"]),
+        ("m_bracket_decoy", B, c_bracket(holes=one(kind="missing"), extra=[(30, -5, 6.6)]), VARIANT, "does_not_fit",
+         "b_decoy", rej([at_a_hole("no_feature", "axis_offset")], bracket_may),
+         "the hole at (30, 15) missing, one at (30, -5) that only a wrong placement would use", ["KC9", "AL4"]),
+    ]
+    # Edge cases in four frames (KC7): the hole moved exactly the tolerance; the clear diameter plus it.
+    for name, motion in [("id", IDENTITY), ("var", VARIANT), ("tilt", TILT), ("skew", SKEW)]:
+        out.append((f"m_bracket_shift_tol_{name}", B, c_bracket(holes=one(x=30 + tol)), motion, "edge",
+                    "b_hole_shift", rej([any_of(*at_a_hole("no_feature", "axis_offset")["any_of"],
+                                                must(top, "contact_not_covered"), must(bot, "contact_not_covered"))],
+                                        bracket_may),
+                    "hole (30, 15) moved exactly the tolerance", ["KC7", "VR3"]))
+        out.append((f"m_bracket_dia_clear_{name}", B, c_bracket(holes=one(d=6.0 + 2 * 0.01)), motion, "edge",
+                    "e_tau", rej([at_a_hole("diameter_out_of_limits:min", "core_intruded")], bracket_may),
+                    "dia 6.02: a margin of exactly tau beyond the bolt's clear dia 6", ["KC7", "VR4"]))
+    # s01's plate: through bores open both ends.
+    P = ("s01_bolted", "PLATE")
+    p_top, p_bot, p_g = l_seat((0, 0, 1), 0), l_seat((0, 0, -1), 10), l_grip(10)
+    p_bores = [l_bore((x, y, -10)) for x, y in PTS]
+    plate_may = [must(p_top, *any_seat), must(p_bot, *any_seat), must(p_g, "grip_length", "seat_missing")] + \
+        [must(b, *any_bore) for b in p_bores]
+    blind = cut(box(-50, -30, -10, 100, 60, 10), *[cyl((x, y, -11), UP, 3.3, 12) for x, y in PTS if (x, y) != (30, 15)],
+                cyl((30, 15, -5), UP, 3.3, 6))
+    out += [
+        ("m_plate01", P, a_plate(), VARIANT, "fits", "g_frame", ok(), "the original", ["KC8"]),
+        ("m_plate01_blind", P, blind, VARIANT, "does_not_fit", "b_blind",
+         rej([any_of(*[must(b, "end_not_open", "wall_missing", "core_intruded") for b in p_bores])], plate_may),
+         "hole (30, 15) blind 5 deep from the top", ["KC9", "VR7"]),
+        ("m_plate01_thin", P, a_plate(t=9.5), VARIANT, "does_not_fit", "b_thickness",
+         rej([must(p_g, "grip_length", "seat_missing")], plate_may), "9.5 thick", ["KC9", "VR12"]),
+    ]
+    # s01's nut: a pinned interference, a thread not confirmed.
+    nb, ns = l_bore((0, 0, -5)), l_seat((0, 0, 1), 0)
+    out += [
+        ("m_nut", N, c_nut(), VARIANT, "fits", "g_thread", ok(["thread_not_confirmed"]), "the original",
+         ["KC8", "VR19"]),
+        ("m_nut_clearance", N, c_nut(6.0), VARIANT, "does_not_fit", "b_thread",
+         rej([must(nb, "diameter_out_of_limits:max")], [must(ns, *any_seat)]), "dia 6: a clearance nut, no thread",
+         ["KC9", "VR7"]),
+    ]
+    for name, motion in [("id", IDENTITY), ("var", VARIANT), ("tilt", TILT), ("skew", SKEW)]:
+        out.append((f"m_nut_pinned_tol_{name}", N, c_nut(5 + tol), motion, "edge", "b_dia_pinned",
+                    rej([must(nb, "diameter_out_of_limits:max")], [must(ns, *any_seat)]),
+                    "dia 5 + tol: the edge rejects", ["KC7", "VR3"]))
+    # s01's bolt: clearance and pinned shaft spans, its head's seat.
+    BO = ("s01_bolted", "BOLT")
+    sh, hs = l_shaft((0, 0, 0), (0, 0, -1)), l_seat((0, 0, -1), 0)
+    out += [
+        ("m_bolt", BO, c_bolt(), VARIANT, "fits", "g_frame", ok(["thread_not_confirmed"]), "the original", ["KC8"]),
+        ("m_bolt_thick", BO, c_bolt(d=6.7), VARIANT, "does_not_fit", "b_shaft",
+         rej([must(sh, "diameter_out_of_limits:max", "diameter_out_of_limits:min")], [must(hs, *any_seat)]),
+         "a dia 6.7 shank in the bracket's dia 6.6", ["KC9", "VR9"]),
+        ("m_bolt_short", BO, c_bolt(length=20.0), VARIANT, "does_not_fit", "b_shaft",
+         rej([must(sh, "wall_missing")], [must(hs, *any_seat)]), "20 long: short of the nut's thread", ["KC9", "VR9"]),
+        ("m_bolt_longer", BO, c_bolt(head_at=0.5), VARIANT, "fits", "g_body", ok(["thread_not_confirmed"]),
+         "the head 0.5 higher on a shank 0.5 longer: it seats alike, 0.5 more below the nut", ["KC8"]),
+    ]
+    # s02's base and screw.
+    bb = l_bore((0, 0, -9))
+    S = ("s02_cbore", "SCREW")
+    ssh, sseat = l_shaft((0, 0, -16)), l_seat((0, 0, -1), 0)
+    out += [
+        ("m_base02_short", BA, cut(box(-30, -30, -10, 60, 60, 10), cyl((0, 0, -7), UP, 2.5, 8)), VARIANT,
+         "does_not_fit", "b_depth", rej([must(bb, "wall_missing", "core_intruded", "no_feature")],
+                                        [must(l_seat((0, 0, 1), 0), *any_seat)]),
+         "the dia 5 hole 7 deep where the thread reaches 7.5", ["KC9", "VR7"]),
+        ("m_screw02", S, c_screw(), VARIANT, "fits", "g_frame", ok(["thread_not_confirmed"]), "the original", ["KC8"]),
+        ("m_screw02_head", S, c_screw(head_d=11.2), VARIANT, "does_not_fit", "b_shaft",
+         rej([must(ssh, "diameter_out_of_limits:max")], [must(sseat, *any_seat)]),
+         "a dia 11.2 head in the dia 11 counterbore", ["KC9", "VR9"]),
+        ("m_screw02_shank", S, c_screw(shank_d=6.7), VARIANT, "does_not_fit", "b_shaft",
+         rej([must(ssh, "diameter_out_of_limits:max", "diameter_out_of_limits:min")], [must(sseat, *any_seat)]),
+         "a dia 6.7 shank in the block's dia 6.6", ["KC9", "VR9"]),
+    ]
+    # s04's bearing and housing: line to line, pinned both ways.
+    BE, HO = ("s04_bearing", "BEARING"), ("s04_bearing", "HOUSING")
+    be_out, be_in, be_seat = l_shaft((0, 0, 0)), l_bore((0, 0, 0)), l_seat((0, 0, -1), 0)
+    ho_bore, ho_seat = l_bore((0, 0, 0)), l_seat((0, 0, 1), 13)
+    housing = lambda seat=22.0: cut(box(-20, -20, 0, 40, 40, 20), cyl((0, 0, -1), UP, 9, 22),  # noqa: E731
+                                    cyl((0, 0, 13), UP, seat / 2, 8))
+    out += [
+        ("m_bearing04", BE, c_bearing(), VARIANT, "fits", "g_frame", ok(["thread_not_confirmed"]), "the original",
+         ["KC8"]),
+        ("m_bearing04_outer", BE, c_bearing(outer=22.0 + 1.5 * tol), VARIANT, "does_not_fit", "b_dia_pinned",
+         rej([must(be_out, "diameter_out_of_limits:max")], [must(be_in, *any_bore), must(be_seat, *any_seat)]),
+         "dia 22 + 1.5 tol outside, pinned line to line", ["KC9", "VR9"]),
+        ("m_housing04", HO, housing(), VARIANT, "fits", "g_frame", ok(["thread_not_confirmed"]), "the original",
+         ["KC8"]),
+        ("m_housing04_seat", HO, housing(22.0 + 1.5 * tol), VARIANT, "does_not_fit", "b_dia_pinned",
+         rej([must(ho_bore, "diameter_out_of_limits:max")], [must(ho_seat, *any_seat)]),
+         "the bearing's seat dia 22 + 1.5 tol", ["KC9", "VR7"]),
+    ]
+    # s05's washer, the other copy its neighbour (self).
+    W = ("s05_stack", "WASHER")
+    wb, wg = l_bore((0, 0, 0)), l_grip(1.6)
+    w_may = [must(wb, *any_bore), must(l_seat((0, 0, -1), 0), *any_seat), must(l_seat((0, 0, 1), 1.6), *any_seat),
+             must(l_shaft((0, 0, 0)), *any_bore)]
+    out += [
+        ("m_washer05", W, c_washer(), VARIANT, "fits", "g_frame", ok(), "the original", ["KC8", "VR17"]),
+        ("m_washer05_thick", W, c_washer(h=1.7), VARIANT, "does_not_fit", "b_self",
+         rej([must(wg, "grip_length", "seat_missing")], w_may), "1.7 thick: both copies' grips and the seat between",
+         ["KC9", "VR12", "VR17"]),
+    ]
+    # s15: the mirror image, which a rotation maps onto the block.
+    M = ("s15_mirror_part", "BLOCK")
+    block15 = cut(box(0, -10, 0, 20, 20, 8), cyl((12, 5, -1), UP, 3.3, 10))
+    mirror = gp_Trsf()
+    mirror.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)))
+    out.append(("m_mirror15", M, BRepBuilderAPI_Transform(block15, mirror, True).Shape(), VARIANT, "fits",
+                "g_mirror", ok(), "the mirror image, a half turn of the block", ["KC8", "AL9"]))
+    # s16's plate: the offset pin needs clear dia 6.4.
+    O = ("s16_offaxis", "PLATE")
+    out += [
+        ("m_plate16", O, c_plate16(), VARIANT, "fits", "g_frame", ok(), "the original", ["KC8"]),
+        ("m_plate16_635", O, c_plate16(6.35), VARIANT, "fits_functional", "b_offset_clear",
+         {"default": rej([any_of(must(l_bore((0, 0, 0)), "diameter_out_of_limits:min", "core_intruded"),
+                                 must(l_bore((15, 0, 0)), "diameter_out_of_limits:max"))],
+                         [must(l_bore((0, 0, 0)), *any_bore), must(l_bore((15, 0, 0)), *any_bore)]),
+          "functional": ok()},
+         "dia 6.35: not the offset pin's clear 6.4; turned a half turn, the dia 7 takes it and the 6.35 the tilted"
+         " pin, which functional allows", ["KC9", "VR4"]),
+    ]
+    # s19's cover: its boss in the housing's blind bore.
+    C19 = ("s19_boss", "COVER")
+    boss, cseat = l_shaft((0, 0, 0), (0, 0, -1)), l_seat((0, 0, -1), 0)
+    out += [
+        ("m_cover19", C19, c_cover(), VARIANT, "fits", "g_frame", ok(), "the original", ["KC8"]),
+        ("m_cover19_long", C19, c_cover(boss_h=8.5), VARIANT, "collides", "b_collide", ok(),
+         "the boss 3.5 longer, into the bore's floor: max_extra_mm is information (M4-11), M7's", ["KC3", "VR9"]),
+        ("m_cover19_wide", C19, c_cover(boss_d=12.15), VARIANT, "does_not_fit", "b_shaft",
+         rej([must(boss, "diameter_out_of_limits:max", "core_intruded")], [must(cseat, *any_seat)]),
+         "a dia 12.15 boss in the dia 12.1 bore", ["KC9", "VR9"]),
+    ]
+    return out
+
 
 
 def build_candidates(w: Writer, which):
@@ -3451,7 +3691,7 @@ def build_candidates(w: Writer, which):
         if not which(unit_set):
             continue
         moved = BRepBuilderAPI_Transform(shape, motion.trsf(), True).Shape()
-        w.shape(moved, cid)
+        w.shape(moved, cid, unit="INCH" if cid.endswith("_inch") else "MM")
         expects = expect if "default" in expect else {"default": expect, "functional": "default"}
         default = expects["default"]
         defect = m_defects().get(cid, [m for m in default["must_fail"] if "any_of" not in m])
@@ -3469,6 +3709,98 @@ def build_candidates(w: Writer, which):
         })
 
 
+
+# VD5 (KH14): targets whose sockets state requirements no geometry can pass, each read in place as its own
+# candidate. Every one of them fails, as M3's construction counts them, and nothing else does.
+VD5_TARGETS = [("s11_unread_neighbour", "BRACKET"), ("s12_undecided_target", "ANGLED"),
+               ("s13_unknown_outline", "BLOCK"), ("s13_unknown_outline", "PLATE"), ("s17_slot", "PLATE"),
+               ("s47_rod_on_flat", "PLATE"), ("s48_dshaft", "DSHAFT"), ("s52_skew", "PLATE"),
+               ("s52_skew", "PIN"), ("s58_csink_tilted", "PLATE")]
+
+
+def build_component_cases(w: Writer):
+    """The VD5 cases: a component candidate (KC2), its expectation the count of unverifiable requirements the
+    source's expected sockets state, under both policies (the corpus states no floor)."""
+    expected = {c["id"]: c["expect"].get("sockets") or {} for c in w.cases if c["kind"] == "assembly"}
+    identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
+    for case, part in VD5_TARGETS:
+        n = sum(sock["unverifiable"] for sock in expected[case][part])
+        if n == 0:
+            raise RuntimeError(f"{case} {part}: no unverifiable requirement to show")
+        cid = f"m_{case.split('_')[0]}_{part.lower()}_own"
+        w.cases.append({
+            "id": cid, "kind": "match", "file": f"{case}.stp", "set": "corpus",
+            "socket": {"case": case, "part": part, "occurrence": None, "review": []},
+            "candidate": {"component": {"case": case, "part": part, "occurrence": None}},
+            "class": "fn_unverifiable", "truth": "fn_rule",
+            "construction": {"from": part, "defect": "none: the original, read in place"},
+            "frame": {"axis": [0, 0, 1], "angle_deg": 0.0, "shift": [0, 0, 0]}, "placement": identity,
+            "expect": {"default": {**m_rej(), "unverifiable": n}, "functional": "default"}, "defect": [],
+            "rules": ["KC10", "VD5", "VR6", "VR14"],
+            "tests": f"{n} requirements no candidate can pass: the original fails exactly them",
+        })
+
+def stated_uncertainty(text, mm, root=None):
+    """`text` with each representation context's length uncertainty set to `mm`, or only the context of
+    `root`'s own shape representation (the placement floor, as AS1-md states it)."""
+    f = Part21(text)
+    contexts = set()
+    for sdr in f.find("SHAPE_DEFINITION_REPRESENTATION"):
+        pds, rep = f.refs(sdr)[:2]
+        pd = f.refs(pds)[0]
+        product = f.refs(f.refs(pd)[0])[0]
+        if root is None or f.inst[product].startswith(f"PRODUCT('{root}'"):
+            contexts.add(f.refs(rep)[-1])
+    changed = 0
+    for context in contexts:
+        for u in re.findall(r"GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT\(\(([^)]*)\)\)", f.inst[context]):
+            for n in re.findall(r"#(\d+)", u):
+                f.inst[int(n)] = re.sub(r"LENGTH_MEASURE\([^)]*\)", f"LENGTH_MEASURE({real(mm)})",
+                                        f.inst[int(n)])
+                changed += 1
+    if changed == 0:
+        raise RuntimeError("no uncertainty to state")
+    return f.text()
+
+
+def build_gate_cases(w: Writer):
+    """KH14's cases for the floor and the gates (RM1): s61 (every part's uncertainty 0.02 mm, past the
+    tolerance: VR2, VD6) and s62 (the root context's 0.01 mm, a placement floor that fails nothing alone: VR5),
+    both s01 restated; each refused part of the corpus as a candidate (CF2, VD10); s01's socket stale, its
+    digest broken, unreviewed under --require-reviewed, and r27's refused socket document (VD9, MF2)."""
+    s01 = (w.out / "s01_bolted.stp").read_text(encoding="latin-1")
+    w.text(stated_uncertainty(s01, 0.02), "s61_floor_parts", "s01_bolted")
+    w.text(stated_uncertainty(s01, 0.01, root="s01_bolted"), "s62_floor_placement", "s01_bolted")
+    identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
+    frame = {"axis": [0, 0, 1], "angle_deg": 0.0, "shift": [0, 0, 0]}
+
+    def case(cid, socket, candidate, klass, truth, expect, construction, rules):
+        w.cases.append({
+            "id": cid, "kind": "match", "file": candidate, "set": "corpus",
+            "socket": {"case": "s01_bolted", "part": "BRACKET", "occurrence": None, "review": [], **socket},
+            "candidate": {"file": candidate}, "class": klass, "truth": truth,
+            "construction": {"from": "BRACKET", "defect": construction}, "frame": frame, "placement": identity,
+            "expect": {"default": expect, "functional": "default"}, "defect": [], "rules": rules,
+            "tests": construction,
+        })
+    case("m_s61_bracket", {"case": "s61_floor_parts", "floor": {"parts_mm": 0.02}}, "m_bracket.stp",
+         "fn_floor", "fn_rule", {**m_rej(), "unverifiable": "all"},
+         "the bracket against s01 stated at 0.02 mm: no tolerance is left above the parts' own",
+         ["KC10", "VR2", "VD6"])
+    case("m_s62_bracket", {"case": "s62_floor_placement", "floor": {"placement_mm": 0.01}}, "m_bracket.stp",
+         "g_floor", "fits", m_ok(), "the bracket against s01 placed to 0.01 mm: the floor alone fails nothing",
+         ["KC8", "VR5"])
+    refused = {c["id"]: c["expect"]["refusals"] for c in w.cases
+               if c["kind"] == "part" and c["id"].startswith("r") and c["expect"].get("result") == "refused"}
+    for rid, codes in sorted(refused.items()):
+        case(f"m_refused_{rid}", {}, f"{rid}.stp", "b_refused", "refused",
+             {**m_rej(), "refused": sorted(codes)}, f"{rid}, which M2's gate refuses", ["CF2", "VD10"])
+    for edit, options in [("stale", {}), ("digest", {}), ("unreviewed", {"require_reviewed": True})]:
+        case(f"m_s01_socket_{edit}", {"edit": edit}, "m_bracket.stp", "b_socket", "refused",
+             {"verdict": "socket_refused", **({"options": options} if options else {})},
+             f"the bracket against s01's socket {edit}: refused before any candidate", ["VD9", "MF2"])
+    case("m_r27_socket", {"case": "r27_target_refused"}, "m_bracket.stp", "b_socket", "refused",
+         {"verdict": "socket_refused"}, "the bracket against r27's refused socket document", ["VD9", "MF2"])
 
 def differences(generated: Path, committed: Path):
     """How the files of `committed` differ from those just `generated`: the
@@ -3528,6 +3860,8 @@ def main():
         if not args.unit_set:
             build_assemblies(w, lambda unit_set: True)
             build_candidates(w, lambda unit_set: True)
+            build_component_cases(w)
+            build_gate_cases(w)
     committed = args.unit_set or args.assembly_set or args.candidate_set
     if committed:
         keep = {c["file"] for c in w.cases if c["set"] == "unit"}

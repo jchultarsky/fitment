@@ -1,20 +1,30 @@
-//! The corpus's match cases (`docs/research/m4-match.md`, section 15):
-//! every candidate the generator built, judged through the library (KH1)
-//! against its source's socket and held to the strict gate (KH2, KH3)
-//! under both policies M4 offers. Without the corpus this passes with a
-//! note, unless `FITMENT_REQUIRE_CORPUS=1`.
+//! The corpus's match cases (`docs/research/m4-match.md`, sections 15 and
+//! 16): every candidate the generator built, judged through the library
+//! (KH1) against its source's sockets under both policies M4 offers, held
+//! to the strict gate (KH2, KH3) and its defect at the construction's
+//! placement (KH8); the false negatives against the committed baseline
+//! (KH4, KH5); the report and its rates (KH6, KH7); the shortlist never
+//! changing a verdict (KH9); every run the same twice (KH11). Without the
+//! corpus these pass with a note, unless `FITMENT_REQUIRE_CORPUS=1`.
 
 #[path = "../../fitment-core/tests/support/gate.rs"]
 mod gate;
 
+#[path = "common/checker.rs"]
+mod checker;
+
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use fitment_core::{
-    Clearance, Grip, MatchOptions, MatchPolicy, Matcher, SocketDocument, TolerancePolicy,
+    CandidateResult, CandidateSource, Clearance, ComponentRead, Grip, MatchDocument, MatchOptions,
+    MatchPolicy, Matcher, NoFitVerifier, Part, Socket, SocketDocument, Stage, TolerancePolicy,
+    VerdictKind, read_assembly,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 fn corpus() -> Option<PathBuf> {
     let dir = std::env::var_os("FITMENT_CORPUS").map_or_else(
@@ -30,23 +40,112 @@ fn corpus() -> Option<PathBuf> {
     None
 }
 
-/// KH1's library path, KH2 and KH3 over every match case of the corpus.
-#[test]
-fn every_match_case_meets_its_construction() {
-    let Some(dir) = corpus() else {
-        return;
-    };
+const POLICIES: [&str; 2] = ["default", "functional"];
+
+fn policy(name: &str) -> MatchPolicy {
+    match name {
+        "functional" => MatchPolicy::new(
+            TolerancePolicy::default(),
+            Clearance::Functional,
+            Grip::Hard,
+        ),
+        _ => MatchPolicy::default(),
+    }
+}
+
+/// A case's candidate (KC2): a file's bytes, or a component read in place
+/// from a corpus assembly (the target of its own socket, VD5).
+enum Input {
+    File(Vec<u8>),
+    Component(Box<Part>, String, u64),
+}
+
+impl Input {
+    fn read(dir: &Path, case: &Value, document: &SocketDocument) -> Self {
+        let candidate = &case["candidate"];
+        if let Some(file) = candidate["file"].as_str() {
+            return Self::File(fs::read(dir.join(file)).unwrap());
+        }
+        let source = candidate["component"]["case"].as_str().unwrap();
+        let bytes = fs::read(dir.join(format!("{source}.stp"))).unwrap();
+        let instance = document.extracted().unwrap().target.definition.instance;
+        let read = read_assembly(&bytes);
+        let part = read
+            .listing()
+            .unwrap()
+            .definitions()
+            .iter()
+            .find_map(|d| match &d.read {
+                Some(ComponentRead::Accepted(part)) if d.definition.instance == instance => {
+                    Some((**part).clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        Self::Component(Box::new(part), fitment_core::sha256_hex(&bytes), instance)
+    }
+
+    fn judge(&self, matcher: &Matcher<'_>) -> CandidateResult {
+        match self {
+            Self::File(bytes) => matcher.judge_step(bytes),
+            Self::Component(part, sha, instance) => matcher.judge_part(
+                part,
+                CandidateSource::Component {
+                    assembly_sha256: sha.clone(),
+                    definition: *instance,
+                },
+            ),
+        }
+    }
+
+    fn part(&self) -> Option<Part> {
+        match self {
+            Self::File(bytes) => fitment_core::read_part(bytes).ok(),
+            Self::Component(part, ..) => Some((**part).clone()),
+        }
+    }
+}
+
+/// A case of the socket gate (VD9, MF2): refused before any candidate,
+/// so it runs through the binary alone.
+fn socket_gate(case: &Value) -> bool {
+    gate::expectation(case, "default")["verdict"] == "socket_refused"
+}
+
+/// One case judged under one policy, with what the harness asks of it.
+struct Run {
+    case: Value,
+    policy: &'static str,
+    result: CandidateResult,
+    sockets: Vec<Socket>,
+    /// The gate's and KH8's problems.
+    problems: Vec<String>,
+    /// KH9: the verdict with the shortlist off.
+    without_shortlist: VerdictKind,
+    /// KH11: the document twice, byte for byte.
+    same_twice: bool,
+    /// KH8: every check passes at the construction's placement.
+    passes_at_construction: bool,
+}
+
+/// Every run, computed once per test binary.
+fn runs() -> Option<&'static Vec<Run>> {
+    static RUNS: OnceLock<Option<Vec<Run>>> = OnceLock::new();
+    RUNS.get_or_init(|| corpus().map(|dir| compute(&dir)))
+        .as_ref()
+}
+
+fn compute(dir: &Path) -> Vec<Run> {
     let text = fs::read_to_string(dir.join("manifest.json")).unwrap();
     let manifest: Value = serde_json::from_str(&text).unwrap();
     let cases: Vec<&Value> = manifest["cases"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|c| c["kind"] == "match")
+        .filter(|c| c["kind"] == "match" && !socket_gate(c))
         .collect();
-    assert!(cases.len() > 20, "{} match cases", cases.len());
     let mut documents: BTreeMap<(String, String), SocketDocument> = BTreeMap::new();
-    let mut problems = Vec::new();
+    let mut out = Vec::new();
     for case in cases {
         let source = case["socket"]["case"].as_str().unwrap().to_owned();
         let part = case["socket"]["part"].as_str().unwrap().to_owned();
@@ -56,35 +155,507 @@ fn every_match_case_meets_its_construction() {
                 let bytes = fs::read(dir.join(format!("{source}.stp"))).unwrap();
                 SocketDocument::extract(&bytes, Some(&part), None).unwrap()
             });
-        let socket = &document.extracted().unwrap().sockets[0];
-        let bytes = fs::read(dir.join(case["candidate"]["file"].as_str().unwrap())).unwrap();
-        for (name, policy) in [
-            ("default", MatchPolicy::default()),
-            (
-                "functional",
-                MatchPolicy::new(
-                    TolerancePolicy::default(),
-                    Clearance::Functional,
-                    Grip::Hard,
-                ),
-            ),
-        ] {
+        let sockets = document.extracted().unwrap().sockets.clone();
+        let input = Input::read(dir, case, document);
+        for name in POLICIES {
             let matcher = Matcher::new(
                 document,
-                policy,
+                policy(name),
                 MatchOptions::default(),
-                &fitment_core::NoFitVerifier,
+                &NoFitVerifier,
             )
             .unwrap();
-            let result = matcher.judge_step(&bytes);
-            problems.extend(gate::gate(case, name, socket, &result));
+            let result = input.judge(&matcher);
+            let mut problems = gate::gate(case, name, &sockets, &result);
+            let part = input.part();
+            let at = gate::placement(case).unwrap();
+            let built: Vec<_> = part
+                .iter()
+                .flat_map(|p| {
+                    sockets
+                        .iter()
+                        .filter_map(|s| matcher.verify_at(p, &s.id, &at))
+                })
+                .collect();
             if !case["defect"].as_array().is_none_or(Vec::is_empty) {
-                let part = fitment_core::read_part(&bytes).unwrap();
-                let at = gate::placement(case).unwrap();
-                let built = matcher.verify_at(&part, &socket.id, &at).unwrap();
-                problems.extend(gate::defect(case, socket, &built));
+                problems.extend(gate::defect(case, &sockets, &built));
+            }
+            let passes_at_construction = !built.is_empty()
+                && built
+                    .iter()
+                    .all(|s| s.checks.iter().all(|(_, c)| c.passed()));
+            let label = vec![case["id"].as_str().unwrap().to_owned()];
+            let once = MatchDocument::new(&matcher, vec![(result.clone(), label.clone())]);
+            let again = MatchDocument::new(&matcher, vec![(input.judge(&matcher), label)]);
+            let unshortlisted = Matcher::new(
+                document,
+                policy(name),
+                MatchOptions::default(),
+                &NoFitVerifier,
+            )
+            .unwrap()
+            .without_shortlist();
+            out.push(Run {
+                case: case.clone(),
+                policy: name,
+                without_shortlist: input.judge(&unshortlisted).verdict.kind(),
+                same_twice: once.to_json() == again.to_json(),
+                result,
+                sockets: sockets.clone(),
+                problems,
+                passes_at_construction,
+            });
+        }
+    }
+    out
+}
+
+/// KH1's library path, KH2, KH3 and KH8 over every match case.
+#[test]
+fn every_match_case_meets_its_construction() {
+    let Some(runs) = runs() else {
+        return;
+    };
+    assert!(runs.len() > 40, "{} runs", runs.len());
+    let problems: Vec<&String> = runs.iter().flat_map(|r| &r.problems).collect();
+    assert!(
+        problems.is_empty(),
+        "{}",
+        problems
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// The truth a case's construction states fits under `policy`.
+fn fits(case: &Value, policy: &str) -> bool {
+    match case["truth"].as_str().unwrap_or("") {
+        "fits" | "fn_rule" | "collides" => true,
+        "fits_functional" => policy == "functional",
+        _ => false,
+    }
+}
+
+/// A run that claims a fit the construction says does not hold (KH7).
+fn false_positive(run: &Run) -> bool {
+    run.result.verdict.kind() != VerdictKind::Reject && !fits(&run.case, run.policy)
+}
+
+/// KH4: one entry per (case, policy) that fits and is rejected: the
+/// requirements that failed, with their codes, and where the rejection
+/// comes from: a stated rule, alignment (the construction's placement
+/// passes, KH8), or verification.
+fn false_negatives(runs: &[Run]) -> Vec<Value> {
+    let mut out: Vec<Value> = runs
+        .iter()
+        .filter(|r| fits(&r.case, r.policy) && r.result.verdict.kind() == VerdictKind::Reject)
+        .map(|r| {
+            let failed: Vec<Value> = r
+                .result
+                .sockets
+                .iter()
+                .flat_map(|s| {
+                    s.checks.iter().filter(|(_, c)| !c.passed()).map(move |(id, c)| {
+                        let mut codes: Vec<String> = c
+                            .evidence()
+                            .failures()
+                            .iter()
+                            .filter_map(|f| serde_json::to_value(f.code).ok())
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect();
+                        codes.sort();
+                        codes.dedup();
+                        json!({"requirement": format!("{}/{}", s.socket, id.as_str()), "codes": codes})
+                    })
+                })
+                .collect();
+            let cause = if r.case["truth"] == "fn_rule" || r.case["truth"] == "fits_functional" {
+                "rule"
+            } else if r.passes_at_construction {
+                "alignment"
+            } else {
+                "verification"
+            };
+            json!({"case": r.case["id"], "policy": r.policy, "class": r.case["class"],
+                   "failed": failed, "cause": cause})
+        })
+        .collect();
+    out.sort_by_key(|v| (v["case"].to_string(), v["policy"].to_string()));
+    out
+}
+
+fn baseline_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/false-negatives.json")
+}
+
+/// KH4, KH5: the false negatives are exactly the committed baseline.
+/// `FITMENT_BLESS=1` rewrites it, never under `CI`, and never to add an
+/// entry for a case the baseline already knew unless the matching rules'
+/// version rose: a new false negative comes from a new case or a rule
+/// change, never from an unrelated edit.
+#[test]
+fn the_false_negatives_are_the_baseline() {
+    let Some(runs) = runs() else {
+        return;
+    };
+    let found = false_negatives(runs);
+    let cases: Vec<Value> = {
+        let mut ids: Vec<Value> = runs.iter().map(|r| r.case["id"].clone()).collect();
+        ids.dedup();
+        ids
+    };
+    let document = json!({
+        "match_rules_version": fitment_core::MATCH_RULES_VERSION,
+        "signature_version": fitment_core::SIGNATURE_VERSION,
+        "extractor_version": fitment_core::EXTRACTOR_VERSION,
+        "socket_rules_version": fitment_core::SOCKET_RULES_VERSION,
+        "cases": cases,
+        "false_negatives": found,
+    });
+    let path = baseline_path();
+    let committed: Option<Value> = fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok());
+    let bless = std::env::var_os("FITMENT_BLESS").is_some_and(|v| v == "1");
+    let old = committed
+        .as_ref()
+        .map(|c| c["false_negatives"].as_array().cloned().unwrap_or_default())
+        .unwrap_or_default();
+    let added: Vec<&Value> = found.iter().filter(|f| !old.contains(f)).collect();
+    let removed: Vec<&Value> = old.iter().filter(|f| !found.contains(f)).collect();
+    if added.is_empty() && removed.is_empty() {
+        return;
+    }
+    if bless {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "the baseline is blessed locally, never in CI"
+        );
+        let known: Vec<Value> = committed
+            .as_ref()
+            .map(|c| c["cases"].as_array().cloned().unwrap_or_default())
+            .unwrap_or_default();
+        let same_rules = committed
+            .as_ref()
+            .is_some_and(|c| c["match_rules_version"] == fitment_core::MATCH_RULES_VERSION);
+        let refused: Vec<&&Value> = added
+            .iter()
+            .filter(|f| same_rules && known.contains(&f["case"]))
+            .collect();
+        assert!(
+            refused.is_empty(),
+            "new false negatives on known cases without a rules version rise: {refused:?}"
+        );
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&document).unwrap() + "\n",
+        )
+        .unwrap();
+        return;
+    }
+    panic!(
+        "the false negatives differ from {}:\nadded: {added:#?}\nremoved: {removed:#?}\n\
+         if intended, run FITMENT_BLESS=1 cargo test -p fitment --test matching",
+        path.display()
+    );
+}
+
+/// KH6, KH7: the rates, per policy and class, written to
+/// `target/fitment-corpus/report.json` and printed; false positives are
+/// zero under both policies M4 offers.
+#[test]
+fn the_report_states_the_rates() {
+    let Some(runs) = runs() else {
+        return;
+    };
+    let mut rows: BTreeMap<(String, String), [usize; 7]> = BTreeMap::new();
+    for r in runs {
+        let class = r.case["class"].as_str().unwrap_or("").to_owned();
+        let row = rows.entry((r.policy.to_owned(), class)).or_default();
+        row[0] += 1;
+        match r.result.verdict.kind() {
+            VerdictKind::Match => row[1] += 1,
+            VerdictKind::InterfaceMatch => row[2] += 1,
+            VerdictKind::Reject => row[3] += 1,
+        }
+        if false_positive(r) {
+            row[4] += 1;
+        }
+        let rejected = r.result.verdict.kind() == VerdictKind::Reject;
+        if fits(&r.case, r.policy) && rejected {
+            row[5] += 1;
+            if r.case["truth"] == "fits" {
+                row[6] += 1;
+            }
+        }
+    }
+    let mut table = Vec::new();
+    let mut text = String::from(
+        "policy      class               cases match inter reject FP FN(phys) FN(spec)\n",
+    );
+    for ((policy, class), [n, m, i, rj, fp, fnp, fns]) in &rows {
+        let _ = writeln!(
+            text,
+            "{policy:11} {class:19} {n:5} {m:5} {i:5} {rj:6} {fp:2} {fnp:8} {fns:8}"
+        );
+        table.push(
+            json!({"policy": policy, "class": class, "cases": n, "match": m, "interface_match": i,
+                          "reject": rj, "false_positives": fp, "false_negatives_physics": fnp,
+                          "false_negatives_specification": fns}),
+        );
+    }
+    let mut totals = Vec::new();
+    for policy in POLICIES {
+        let of =
+            |f: &dyn Fn(&Run) -> bool| runs.iter().filter(|r| r.policy == policy && f(r)).count();
+        let fit = of(&|r| fits(&r.case, r.policy) && r.case["truth"] != "collides");
+        let missed = of(&|r| {
+            fits(&r.case, r.policy)
+                && r.case["truth"] != "collides"
+                && r.result.verdict.kind() == VerdictKind::Reject
+        });
+        let fp = of(&false_positive);
+        let _ = writeln!(
+            text,
+            "{policy}: false positives {fp}; false negatives against physics {missed} of {fit}"
+        );
+        totals.push(json!({"policy": policy, "false_positives": fp, "fits": fit, "false_negatives": missed}));
+    }
+    eprintln!("{text}");
+    let report = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fitment-corpus");
+    fs::create_dir_all(&report).unwrap();
+    fs::write(
+        report.join("report.json"),
+        serde_json::to_string_pretty(&json!({"rows": table, "totals": totals})).unwrap(),
+    )
+    .unwrap();
+    let fps: Vec<String> = runs
+        .iter()
+        .filter(|r| false_positive(r))
+        .map(|r| format!("{} {}", r.case["id"], r.policy))
+        .collect();
+    assert!(fps.is_empty(), "false positives: {fps:?}");
+}
+
+/// KH9: the shortlist never drops what verification passes, never drops a
+/// good case, and turning it off changes no verdict.
+#[test]
+fn the_shortlist_never_drops_what_verification_passes() {
+    let Some(runs) = runs() else {
+        return;
+    };
+    let mut problems = Vec::new();
+    for r in runs {
+        let id = &r.case["id"];
+        if r.without_shortlist != r.result.verdict.kind() {
+            problems.push(format!(
+                "{id} {}: {:?} without the shortlist",
+                r.policy, r.without_shortlist
+            ));
+        }
+        let dropped = r.result.sockets.iter().any(|s| s.stage == Stage::Shortlist);
+        if dropped && fits(&r.case, r.policy) && r.case["truth"] != "fn_rule" {
+            problems.push(format!(
+                "{id} {}: a good case dropped by the shortlist",
+                r.policy
+            ));
+        }
+        let _ = &r.sockets;
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// KH11: every run gives the same document twice in one process.
+#[test]
+fn matching_is_deterministic() {
+    let Some(runs) = runs() else {
+        return;
+    };
+    let differ: Vec<String> = runs
+        .iter()
+        .filter(|r| !r.same_twice)
+        .map(|r| format!("{} {}", r.case["id"], r.policy))
+        .collect();
+    assert!(differ.is_empty(), "{differ:?}");
+}
+
+/// KH1's binary path and KH12 on the corpus: each source's socket written
+/// by `fitment socket`, each policy's file candidates judged by one
+/// `fitment match`, whose document the checker finds sound, whose exit
+/// code is its outcome's, and whose verdicts are the library's.
+#[test]
+fn the_binary_agrees_with_the_library() {
+    let (Some(dir), Some(runs)) = (corpus(), runs()) else {
+        return;
+    };
+    let scratch = scratch("binary");
+    let mut groups: BTreeMap<(String, String), Vec<&Run>> = BTreeMap::new();
+    for run in runs
+        .iter()
+        .filter(|r| r.case["candidate"]["file"].is_string())
+    {
+        let socket = &run.case["socket"];
+        let key = (
+            socket["case"].as_str().unwrap().to_owned(),
+            socket["part"].as_str().unwrap().to_owned(),
+        );
+        groups.entry(key).or_default().push(run);
+    }
+    let mut problems = Vec::new();
+    for ((source, part), group) in &groups {
+        let socket = write_socket(&dir, &scratch, source, part);
+        for policy in POLICIES {
+            let mut files: Vec<&str> = group
+                .iter()
+                .filter(|r| r.policy == policy)
+                .map(|r| r.case["candidate"]["file"].as_str().unwrap())
+                .collect();
+            files.sort_unstable();
+            files.dedup();
+            let output = fitment()
+                .current_dir(&dir)
+                .arg("match")
+                .arg(&socket)
+                .args(&files)
+                .args([
+                    "--format",
+                    "json",
+                    "--clearance",
+                    if policy == "functional" {
+                        "functional"
+                    } else {
+                        "strict"
+                    },
+                ])
+                .output()
+                .unwrap();
+            let doc: Value = serde_json::from_slice(&output.stdout).unwrap();
+            let at = format!("{source} {part} {policy}");
+            problems.extend(
+                checker::problems(&doc)
+                    .into_iter()
+                    .map(|p| format!("{at}: {p}")),
+            );
+            let code = match (
+                doc["summary"]["match"].as_u64(),
+                doc["summary"]["interface_match"].as_u64(),
+            ) {
+                (Some(m), _) if m > 0 => 0,
+                (_, Some(i)) if i > 0 => 4,
+                _ => 5,
+            };
+            if output.status.code() != Some(code) {
+                problems.push(format!(
+                    "{at}: exit {:?}, its outcome says {code}",
+                    output.status.code()
+                ));
+            }
+            for run in group.iter().filter(|r| r.policy == policy) {
+                let file = run.case["candidate"]["file"].as_str().unwrap();
+                let entry = doc["candidates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|c| c["labels"].as_array().unwrap().iter().any(|l| l == file));
+                let library = serde_json::to_value(run.result.verdict.kind()).unwrap();
+                if entry.map(|e| &e["verdict"]) != Some(&library) {
+                    problems.push(format!(
+                        "{at}: {} is {library} in the library",
+                        run.case["id"]
+                    ));
+                }
             }
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// VD9 and MF2 on the corpus: a socket document stale, with a broken
+/// digest, unreviewed under `--require-reviewed`, or refused, is refused
+/// (exit 3) before any candidate is read.
+#[test]
+fn the_socket_gate_refuses_before_any_candidate() {
+    let Some(dir) = corpus() else {
+        return;
+    };
+    let text = fs::read_to_string(dir.join("manifest.json")).unwrap();
+    let manifest: Value = serde_json::from_str(&text).unwrap();
+    let scratch = scratch("gate");
+    let mut seen = 0;
+    let mut problems = Vec::new();
+    for case in manifest["cases"].as_array().unwrap() {
+        if case["kind"] != "match" || !socket_gate(case) {
+            continue;
+        }
+        seen += 1;
+        let socket = &case["socket"];
+        let id = case["id"].as_str().unwrap();
+        let path = write_socket(
+            &dir,
+            &scratch,
+            socket["case"].as_str().unwrap(),
+            socket["part"].as_str().unwrap(),
+        );
+        let mut doc: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let mut args = vec!["match".to_owned()];
+        match socket["edit"].as_str() {
+            Some("stale") => {
+                doc["socket_rules_version"] =
+                    json!(doc["socket_rules_version"].as_u64().unwrap() - 1);
+            }
+            Some("digest") => {
+                let reach = &mut doc["extracted"]["sockets"][0]["requirements"][0]["id"];
+                *reach = json!(format!("{}-edited", reach.as_str().unwrap()));
+            }
+            Some("unreviewed") => args.push("--require-reviewed".to_owned()),
+            _ => {}
+        }
+        let edited = scratch.join(format!("{id}.socket.json"));
+        fs::write(&edited, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+        args.push(edited.display().to_string());
+        // A candidate that cannot be read: the gate must refuse first.
+        args.push(dir.join("no-such-candidate.stp").display().to_string());
+        let output = fitment().args(&args).output().unwrap();
+        if output.status.code() != Some(3) || !output.stdout.is_empty() {
+            problems.push(format!(
+                "{id}: exit {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+    }
+    assert!(seen >= 4, "{seen} socket gate cases");
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+fn fitment() -> std::process::Command {
+    std::process::Command::new(env!("CARGO_BIN_EXE_fitment"))
+}
+
+fn scratch(test: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("fitment-matching-{test}-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// `fitment socket` on a corpus source, written to `scratch`; a refused
+/// document (exit 3) is kept from stdout.
+fn write_socket(dir: &Path, scratch: &Path, source: &str, part: &str) -> PathBuf {
+    let path = scratch.join(format!("{source}--{part}.json"));
+    let output = fitment()
+        .arg("socket")
+        .arg(dir.join(format!("{source}.stp")))
+        .args(["--part", part, "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        matches!(output.status.code(), Some(0 | 3)),
+        "fitment socket {source} {part}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::write(&path, &output.stdout).unwrap();
+    path
 }
