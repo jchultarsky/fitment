@@ -150,8 +150,9 @@ fn plain_verify_recomputes_postings() {
     }
 }
 
-/// CT12: a features row moved to another key, a blob with a byte
-/// appended, an orphan, an old temporary file and a document edited.
+/// CT12: a blob with a byte appended, an abandoned orphan and temporary
+/// file, and a document edited are each reported; a fresh orphan, maybe an
+/// ingest in flight, is not.
 #[test]
 fn plain_verify_finds_damage_in_rows_and_files() {
     let (mut catalog, sha) = one("damage");
@@ -161,7 +162,14 @@ fn plain_verify_finds_damage_in_rows_and_files() {
     let mut bytes = fs::read(&blob).unwrap();
     bytes.push(b'\n');
     fs::write(&blob, &bytes).unwrap();
-    fs::write(catalog.blob_path(&Sha256Hex::of(b"orphan")), b"orphan").unwrap();
+    let orphan = Sha256Hex::of(b"orphan");
+    fs::write(catalog.blob_path(&orphan), b"orphan").unwrap();
+    let fresh = Sha256Hex::of(b"fresh");
+    fs::write(catalog.blob_path(&fresh), b"fresh").unwrap();
+    common::age(&catalog.blob_path(&orphan));
+    let temporary = root.join("tmp/7-7.part");
+    fs::write(&temporary, b"x").unwrap();
+    common::age(&temporary);
     let conn = raw(&root);
     conn.execute(
         "UPDATE features SET doc = CAST(replace(CAST(doc AS TEXT), '\"holes\"', '\"holes\" ') AS BLOB)",
@@ -169,14 +177,96 @@ fn plain_verify_finds_damage_in_rows_and_files() {
     )
     .unwrap();
     drop(conn);
+    let found = catalog.verify(false, false).unwrap();
+    let has = |kind: ProblemKind, what: &str, text: &str| {
+        found
+            .iter()
+            .any(|p| p.kind == kind && p.what == what && p.detail.contains(text))
+    };
+    assert!(
+        has(
+            ProblemKind::Damaged,
+            sha.as_str(),
+            "SHA-256 is not its name"
+        ),
+        "{found:?}"
+    );
+    assert!(
+        has(
+            ProblemKind::Damaged,
+            sha.as_str(),
+            "the row's hash does not cover"
+        ),
+        "{found:?}"
+    );
+    assert!(
+        has(ProblemKind::Orphan, orphan.as_str(), "no row names"),
+        "{found:?}"
+    );
+    assert!(
+        has(ProblemKind::Temporary, "tmp/7-7.part", "over an hour"),
+        "{found:?}"
+    );
+    assert!(!found.iter().any(|p| p.what == fresh.as_str()), "{found:?}");
+}
+
+/// IN9 and VF1 (the PR 3a reviews): postings of a kept content, and
+/// postings with no tokens row, are each a `mismatch`.
+#[test]
+fn stray_postings_are_reported() {
+    let dir = scratch("stray");
+    let mut catalog = catalog(&dir);
+    let x = copy("candidates/m_bracket.stp", &dir, "x.stp");
+    let thick = copy("candidates/m_bracket_thick.stp", &dir, "thick.stp");
+    let y = copy("data/p01_through.stp", &dir, "y.stp");
+    catalog.ingest(&[x, y], None).unwrap();
+    catalog
+        .replace(&fitment_catalog::Reference::parse("x").unwrap(), &thick)
+        .unwrap()
+        .unwrap();
+    let conn = raw(catalog.root());
+    conn.execute_batch(
+        "INSERT INTO posting VALUES (6, 2, 0, 66, (SELECT b.key FROM blob b
+            WHERE b.sha256 NOT IN (SELECT sha256 FROM live)), 0, 6.6);
+         DELETE FROM tokens WHERE sha256 = (SELECT sha256 FROM live WHERE id = 'y');",
+    )
+    .unwrap();
+    drop(conn);
     let found = kinds(&mut catalog, false);
-    let has = |kind: ProblemKind| found.iter().any(|(k, _)| *k == kind);
-    assert!(has(ProblemKind::Damaged), "{found:?}");
-    assert!(has(ProblemKind::Orphan), "{found:?}");
     assert!(
         found
             .iter()
-            .any(|(_, d)| d.contains("the row's hash does not cover")),
+            .any(|(_, d)| d.contains("derived rows for content no current")),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|(_, d)| d.contains("postings without their tokens row")),
+        "{found:?}"
+    );
+}
+
+/// A version column out of `u32`'s range is reported, and the rest of the
+/// catalog is still checked.
+#[test]
+fn a_wide_version_is_reported_not_fatal() {
+    let (mut catalog, _) = one("wide");
+    raw(catalog.root())
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF; UPDATE features SET extractor_version = 4294967296;
+             UPDATE clock SET generation = generation + 5;",
+        )
+        .unwrap();
+    let found = kinds(&mut catalog, false);
+    assert!(
+        found
+            .iter()
+            .any(|(k, d)| *k == ProblemKind::Integrity && d.contains("a version column")),
+        "{found:?}"
+    );
+    assert!(
+        found.iter().any(|(_, d)| d.contains("but the last op")),
         "{found:?}"
     );
 }

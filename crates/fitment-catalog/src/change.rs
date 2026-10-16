@@ -81,7 +81,8 @@ pub enum NotReplaced {
         of: String,
     },
     /// The file was refused: by the gate, its size or its type (exit 3);
-    /// or could not be read or stored (exit 1). As ingest reports it.
+    /// or could not be read (exit 1). As ingest reports it, without an id.
+    /// A blob that cannot be stored is an [`Error::Io`].
     File(Box<Ingested>),
 }
 
@@ -220,12 +221,19 @@ impl Catalog {
         reference: &Reference,
         file: &Path,
     ) -> Result<Result<Replaced, NotReplaced>, Error> {
+        // ST10: never a file of the catalog's own.
+        if crate::ingest::inside(self.root(), file) {
+            return Err(Error::InsideCatalog(file.to_owned()));
+        }
         // The id is the entry's; the file is read and gated first, outside
         // the lock (DB3), and a refused one changes nothing (CR4).
         let placeholder = Id::parse("x").map_err(|_| Error::Corrupt("an id"))?;
         let mut prepared = match self.read_file(file, Some(&placeholder)) {
             Ok(p) => p,
-            Err(failed) => return Ok(Err(NotReplaced::File(failed))),
+            Err(mut failed) => {
+                failed.id = None;
+                return Ok(Err(NotReplaced::File(failed)));
+            }
         };
         if prepared.status == Status::Refused {
             let mut failed = Ingested::failed(
@@ -243,17 +251,38 @@ impl Catalog {
             failed.summary = Some(prepared.summary);
             return Ok(Err(NotReplaced::File(Box::new(failed))));
         }
-        let placed = self
-            .blobs()
-            .put(&prepared.sha256, &prepared.bytes)
-            .map_err(|e| Error::Io {
-                path: self.layout.blob(&prepared.sha256),
-                source: e,
-            })?;
-        prepared.replaced_blob = placed == Placed::Replaced;
+        // A first look, outside the lock, so a replace surely refused puts
+        // no blob; the transaction decides again.
+        let likely = matches!(
+            live_entry(&self.conn, reference)?,
+            Ok(named) if named.sha256 != prepared.sha256
+        ) && !self
+            .conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM live WHERE sha256 = ?1)",
+                [prepared.sha256.as_str()],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(true);
+        if likely {
+            let placed = self
+                .blobs()
+                .put(&prepared.sha256, &prepared.bytes)
+                .map_err(|e| Error::Io {
+                    path: self.layout.blob(&prepared.sha256),
+                    source: e,
+                })?;
+            prepared.replaced_blob = placed == Placed::Replaced;
+        }
         // The old content stays held by its kept revision: nothing is
-        // released, so there is nothing to unlink.
-        self.replace_in(reference, &prepared)
+        // released. A refusal after the put leaves the new file unnamed,
+        // and the inline gc unlinks it (CR4: nothing changed).
+        let outcome = self.replace_in(reference, &prepared)?;
+        if likely && !matches!(outcome, Ok(Replaced::Replaced { .. })) {
+            let size = u64::try_from(prepared.bytes.len()).unwrap_or(u64::MAX);
+            let _ = self.unlink(&[(prepared.sha256.clone(), size)]);
+        }
+        Ok(outcome)
     }
 
     fn replace_in(
@@ -358,6 +387,12 @@ impl Catalog {
         if !unnamed.is_empty() {
             return Ok(Err(unnamed));
         }
+        if named.is_empty() {
+            return Ok(Ok(Deletion {
+                deleted: Vec::new(),
+                released: Released::default(),
+            }));
+        }
         let g = schema::next_generation(&tx)?;
         let mut contents = BTreeSet::new();
         let mut deleted = Vec::new();
@@ -413,6 +448,10 @@ impl Catalog {
         drop(stmt);
         if kept.is_empty() {
             return Ok((Vec::new(), Released::default()));
+        }
+        // Every key checked before anything is written (PH1).
+        if kept.iter().any(|k| Sha256Hex::parse(&k.4).is_err()) {
+            return Err(Error::Corrupt("a revision's content key"));
         }
         let g = schema::next_generation(&tx)?;
         let mut contents = BTreeSet::new();

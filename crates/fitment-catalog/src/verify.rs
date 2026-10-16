@@ -118,25 +118,43 @@ impl Catalog {
             deep_check(&tx, &blobs, &mut found)?;
         }
         drop(tx);
-        // CC4: a blob missing or damaged is reported only if, in a fresh
-        // snapshot, a row still names it: gc may have released it meanwhile.
-        if !suspect.is_empty() {
-            let tx = self.conn.transaction()?;
-            found.problems.retain(|p| {
-                !(matches!(p.kind, Kind::Missing | Kind::Damaged) && suspect.contains(&p.what))
-                    || tx
-                        .query_row(
-                            "SELECT EXISTS (SELECT 1 FROM blob WHERE sha256 = ?1)",
-                            [&p.what],
-                            |r| r.get::<_, bool>(0),
-                        )
-                        .unwrap_or(true)
-            });
-        }
+        recheck(&mut self.conn, &blobs, &suspect, &mut found)?;
         found.problems.sort();
         found.problems.dedup();
         Ok(found.problems)
     }
+}
+
+/// CC4: what a concurrent change may have caused is checked again in a
+/// fresh snapshot. A blob found missing or damaged is reported only if a
+/// row still names it and a second read still fails; an orphan only if
+/// still no row names it.
+fn recheck(
+    conn: &mut Connection,
+    blobs: &Blobs<'_>,
+    suspect: &BTreeSet<String>,
+    found: &mut Found,
+) -> Result<(), Error> {
+    let tx = conn.transaction()?;
+    let rowed = |sha: &str| {
+        tx.query_row("SELECT bytes FROM blob WHERE sha256 = ?1", [sha], |r| {
+            r.get::<_, i64>(0)
+        })
+        .optional()
+        .unwrap_or(Some(-1))
+    };
+    found.problems.retain(|p| match p.kind {
+        Kind::Missing | Kind::Damaged if suspect.contains(&p.what) => {
+            let Some(bytes) = rowed(&p.what) else {
+                return false;
+            };
+            let read = Sha256Hex::parse(&p.what).ok().map(|sha| blobs.read(&sha));
+            !matches!(read, Some(Ok(b)) if i64::try_from(b.len()).ok() == Some(bytes))
+        }
+        Kind::Orphan => Sha256Hex::parse(&p.what).is_err() || rowed(&p.what).is_none(),
+        _ => true,
+    });
+    Ok(())
 }
 
 /// `quick_check` (`integrity_check` with `full`) and `foreign_key_check`.
@@ -201,7 +219,14 @@ fn blob_rows(
                 found.add(Kind::Damaged, &text, "the file's SHA-256 is not its name");
                 suspect.insert(text);
             }
-            Err(e) => found.add(Kind::Damaged, &text, e.to_string()),
+            Err(BadBlob::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                found.add(Kind::Missing, &text, "no file for the content");
+                suspect.insert(text);
+            }
+            Err(e) => {
+                found.add(Kind::Damaged, &text, e.to_string());
+                suspect.insert(text);
+            }
         }
     }
     Ok(suspect)
@@ -242,6 +267,8 @@ fn held(conn: &Connection, found: &mut Found) -> Result<(), Error> {
     }
     let stray = "SELECT sha256 FROM features WHERE sha256 NOT IN (SELECT sha256 FROM live)
         UNION SELECT sha256 FROM tokens WHERE sha256 NOT IN (SELECT sha256 FROM live)
+        UNION SELECT b.sha256 FROM posting p JOIN blob b ON b.key = p.content
+          WHERE b.sha256 NOT IN (SELECT sha256 FROM live)
         ORDER BY 1";
     for text in rows::<String>(conn, stray)? {
         found.add(
@@ -249,6 +276,14 @@ fn held(conn: &Connection, found: &mut Found) -> Result<(), Error> {
             &text,
             "derived rows for content no current revision names",
         );
+    }
+    let untokened = "SELECT DISTINCT b.sha256 FROM posting p JOIN blob b ON b.key = p.content
+        WHERE NOT EXISTS (SELECT 1 FROM tokens t WHERE t.sha256 = b.sha256
+            AND t.extractor_version = p.extractor_version
+            AND t.signature_version = p.signature_version)
+        ORDER BY 1";
+    for text in rows::<String>(conn, untokened)? {
+        found.add(Kind::Mismatch, &text, "postings without their tokens row");
     }
     let shapes = "SELECT e.id FROM entry e WHERE
         (e.deleted_generation IS NULL) != EXISTS (SELECT 1 FROM revision r
@@ -284,6 +319,10 @@ fn features_rows(conn: &Connection, found: &mut Found) -> Result<(), Error> {
         .collect::<Result<_, _>>()?;
     for (text, ev, status, digest, doc, hash) in all {
         let what = format!("features (extractor {ev})");
+        let Ok(ev) = u32::try_from(ev) else {
+            found.add(Kind::Integrity, &text, format!("{what}: a version column"));
+            continue;
+        };
         let (Ok(sha), Some(status)) = (Sha256Hex::parse(&text), Status::parse(&status)) else {
             found.add(
                 Kind::Integrity,
@@ -345,10 +384,10 @@ fn features_rows(conn: &Connection, found: &mut Found) -> Result<(), Error> {
 }
 
 /// A features row's columns for its checks.
-type FeaturesRow = (String, u32, String, Option<String>, Vec<u8>, String);
+type FeaturesRow = (String, i64, String, Option<String>, Vec<u8>, String);
 
 /// A tokens row's columns, with its content's key.
-type TokensRow = (String, u32, u32, Vec<u8>, String, Option<i64>);
+type TokensRow = (String, i64, i64, Vec<u8>, String, Option<i64>);
 
 /// The postings `tokens` gives, as (sense, bin, stack, diameter's bits).
 fn postings_of(tokens: &IndexTokens) -> BTreeSet<(i64, i64, i64, u64)> {
@@ -388,6 +427,10 @@ fn tokens_rows(conn: &Connection, found: &mut Found) -> Result<(), Error> {
         .collect::<Result<_, _>>()?;
     for (text, ev, sv, bytes, hash, key) in all {
         let what = format!("tokens (signature {sv})");
+        let (Ok(ev), Ok(sv)) = (u32::try_from(ev), u32::try_from(sv)) else {
+            found.add(Kind::Integrity, &text, format!("{what}: a version column"));
+            continue;
+        };
         let Ok(sha) = Sha256Hex::parse(&text) else {
             found.add(Kind::Integrity, &text, format!("{what}: a key column"));
             continue;
@@ -472,12 +515,27 @@ fn clock(conn: &Connection, found: &mut Found) -> Result<(), Error> {
     Ok(())
 }
 
-/// IN2 and ST7: every file under `blobs/` hashes to a name a row holds;
-/// no temporary file is over an hour old.
+/// Whether the file at `path` was last changed over an hour before `now`.
+fn older_than_an_hour(blobs: &Blobs<'_>, path: &std::path::Path, now: SystemTime) -> bool {
+    blobs
+        .fs
+        .symlink_metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|m| now.duration_since(m).ok())
+        .is_some_and(|age| age > TEMPORARY_AGE)
+}
+
+/// IN2 and ST7: every file under `blobs/` over an hour old hashes to a name
+/// a row holds (a younger one may be an ingest in flight); no temporary
+/// file is over an hour old.
 fn files(conn: &Connection, blobs: &Blobs<'_>, found: &mut Found) -> Result<(), Error> {
     let rowed: BTreeSet<String> = rows::<String>(conn, "SELECT sha256 FROM blob")?
         .into_iter()
         .collect();
+    // The clock only judges a file's age here; nothing stores it.
+    #[allow(clippy::disallowed_methods)]
+    let now = SystemTime::now();
     for fan in blobs.layout.fan_outs() {
         let Ok(entries) = blobs.fs.read_dir(&fan) else {
             found.add(
@@ -492,37 +550,32 @@ fn files(conn: &Connection, blobs: &Blobs<'_>, found: &mut Found) -> Result<(), 
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            match Sha256Hex::parse(&name) {
-                Ok(sha) if rowed.contains(sha.as_str()) => {}
-                Ok(sha) => match blobs.read(&sha) {
-                    Ok(_) => found.add(
-                        Kind::Orphan,
-                        &name,
-                        "a file no row names: fitment catalog gc removes it",
-                    ),
-                    Err(_) => found.add(
-                        Kind::Damaged,
-                        &name,
-                        "a file no row names, whose SHA-256 is not its name",
-                    ),
-                },
+            let sha = Sha256Hex::parse(&name);
+            if sha.as_ref().is_ok_and(|s| rowed.contains(s.as_str()))
+                || !older_than_an_hour(blobs, &path, now)
+            {
+                continue;
+            }
+            match sha.map(|s| blobs.read(&s)) {
+                Ok(Ok(_)) => found.add(
+                    Kind::Orphan,
+                    &name,
+                    "a file no row names: fitment catalog gc removes it",
+                ),
+                // Gone meanwhile: a gc, no damage.
+                Ok(Err(BadBlob::Missing)) => {}
+                Ok(Err(_)) => found.add(
+                    Kind::Damaged,
+                    &name,
+                    "a file no row names, whose SHA-256 is not its name",
+                ),
                 Err(_) => found.add(Kind::Orphan, &name, "a file that is not the store's"),
             }
         }
     }
-    // The clock only judges a file's age here; nothing stores it.
-    #[allow(clippy::disallowed_methods)]
-    let now = SystemTime::now();
     let tmp = blobs.layout.tmp();
     for path in blobs.fs.read_dir(&tmp).unwrap_or_default() {
-        let old = blobs
-            .fs
-            .symlink_metadata(&path)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|m| now.duration_since(m).ok())
-            .is_some_and(|age| age > TEMPORARY_AGE);
-        if old {
+        if older_than_an_hour(blobs, &path, now) {
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -544,7 +597,14 @@ fn deep_check(conn: &Connection, blobs: &Blobs<'_>, found: &mut Found) -> Result
         let Ok(sha) = Sha256Hex::parse(&text) else {
             continue;
         };
-        let Ok(bytes) = blobs.read(&sha) else {
+        let current: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM features WHERE sha256 = ?1 AND extractor_version = ?2)",
+            params![&text, EXTRACTOR_VERSION],
+            |r| r.get(0),
+        )?;
+        // Stale (RX2): reindex's work, which `list` reports; and a blob
+        // that cannot be read is reported above.
+        let (true, Ok(bytes)) = (current, blobs.read(&sha)) else {
             continue;
         };
         let read = FeaturesDocument::read(&bytes);

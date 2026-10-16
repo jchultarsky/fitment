@@ -64,3 +64,40 @@ fn eight_writers_keep_one_live_entry_per_content() {
     assert_eq!(twice, 0);
     assert_eq!(invariants(&root), Vec::<String>::new());
 }
+
+/// The PR 3a review's F3: a gc that unlinks an orphan an ingest is reusing,
+/// between the ingest's read of it and its use, does not fail the ingest.
+#[test]
+fn an_ingest_survives_a_gc_of_the_orphan_it_reuses() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use fitment_catalog::fs::{Call, CountingFs};
+
+    let dir = scratch("reuse-gc");
+    let root = dir.join("cat");
+    Catalog::init(&root, Options::default()).unwrap();
+    let source = common::copy("candidates/m_bracket.stp", &dir, "m_bracket.stp");
+    let sha = fitment_catalog::Sha256Hex::of(&fs::read(&source).unwrap());
+    let blob = root
+        .join("blobs/sha256")
+        .join(sha.fan_out())
+        .join(sha.as_str());
+    fs::copy(&source, &blob).unwrap();
+    let once = AtomicBool::new(false);
+    let gc_root = root.clone();
+    let seam = Arc::new(CountingFs::with_hook(move |call| {
+        if *call == Call::Read(blob.clone()) && !once.swap(true, Ordering::SeqCst) {
+            Catalog::open(&gc_root, Options::default())
+                .unwrap()
+                .gc(false)
+                .unwrap();
+        }
+    }));
+    let mut catalog =
+        Catalog::open_with(&root, Options::default(), Box::new(common::Shared(seam))).unwrap();
+    let run = catalog.ingest(&[source], None).unwrap();
+    assert_eq!(run[0].outcome, Outcome::Added);
+    drop(catalog);
+    assert_eq!(invariants(&root), Vec::<String>::new());
+}

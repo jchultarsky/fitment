@@ -51,6 +51,19 @@ impl Blobs<'_> {
     /// Every error path removes the temporary file this call created, and
     /// no other (ST7).
     pub(crate) fn put(&self, sha256: &Sha256Hex, bytes: &[u8]) -> io::Result<Placed> {
+        // A gc may unlink an orphan of these bytes between any two steps
+        // (it checks only that no row names it): NotFound starts again,
+        // and ST6's check under the lock settles what a commit names.
+        for _ in 0..2 {
+            match self.put_once(sha256, bytes) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                done => return done,
+            }
+        }
+        self.put_once(sha256, bytes)
+    }
+
+    fn put_once(&self, sha256: &Sha256Hex, bytes: &[u8]) -> io::Result<Placed> {
         let path = self.layout.blob(sha256);
         let there = match self.read(sha256) {
             Ok(_) => {
@@ -71,7 +84,8 @@ impl Blobs<'_> {
             } else {
                 self.fs.remove_file(&path)
             };
-            if let Err(error) = cleared {
+            let gone = |e: &io::Error| e.kind() == io::ErrorKind::NotFound;
+            if let Err(error) = cleared.or_else(|e| if gone(&e) { Ok(()) } else { Err(e) }) {
                 let _ = self.fs.remove_file(&temporary);
                 return Err(error);
             }

@@ -30,6 +30,14 @@ pub fn scratch(test: &str) -> PathBuf {
     dir
 }
 
+/// Makes `path` look written long ago: an orphan or temporary file a
+/// writer abandoned, not one in flight.
+pub fn age(path: &Path) {
+    let file = fs::File::options().write(true).open(path).unwrap();
+    file.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(86_400))
+        .unwrap();
+}
+
 /// Clears read-only flags under `dir`, so it can be removed (ST4).
 pub fn make_writable(dir: &Path) {
     for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -103,7 +111,9 @@ pub fn invariants(root: &Path) -> Vec<String> {
     let stray: Vec<String> = rows(
         &conn,
         "SELECT sha256 FROM features WHERE sha256 NOT IN (SELECT sha256 FROM live)
-         UNION SELECT sha256 FROM tokens WHERE sha256 NOT IN (SELECT sha256 FROM live)",
+         UNION SELECT sha256 FROM tokens WHERE sha256 NOT IN (SELECT sha256 FROM live)
+         UNION SELECT b.sha256 FROM posting p JOIN blob b ON b.key = p.content
+           WHERE b.sha256 NOT IN (SELECT sha256 FROM live)",
     );
     if !stray.is_empty() {
         problems.push(format!("IN9: derived rows for {stray:?}"));

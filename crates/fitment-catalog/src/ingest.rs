@@ -262,7 +262,7 @@ fn expand(catalog: &Catalog, input: &Path) -> Result<Vec<PathBuf>, Box<Ingested>
 }
 
 /// ST10: an input inside the catalog's directory.
-fn inside(root: &Path, input: &Path) -> bool {
+pub(crate) fn inside(root: &Path, input: &Path) -> bool {
     let (Ok(root), Ok(input)) = (std::fs::canonicalize(root), std::fs::canonicalize(input)) else {
         return false;
     };

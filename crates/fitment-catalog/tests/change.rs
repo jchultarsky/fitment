@@ -187,6 +187,7 @@ fn gc_removes_only_what_no_row_names() {
     let root = catalog.root().to_owned();
     let orphan = catalog.blob_path(&sha(&thick));
     fs::write(&orphan, fs::read(&thick).unwrap()).unwrap();
+    common::age(&orphan);
     let stray = orphan.with_file_name("notes.txt");
     fs::write(&stray, "mine").unwrap();
     let old = root.join("tmp/1-1.part");
@@ -211,4 +212,37 @@ fn gc_removes_only_what_no_row_names() {
     fs::remove_file(&stray).unwrap();
     fs::remove_file(&recent).unwrap();
     assert_eq!(invariants(&root), Vec::<String>::new());
+}
+
+/// CR4 and ID9 (the PR 3a reviews): a replace refused for its reference
+/// leaves no file behind, a refused file no id, and an input inside the
+/// catalog is refused; a delete of nothing changes nothing.
+#[test]
+fn refusals_leave_nothing_behind() {
+    let (mut catalog, _, thick, _) = setup("refusals");
+    let root = catalog.root().to_owned();
+    let g = catalog.generation().unwrap();
+    for bad in ["nosuch", "BRKT@r2"] {
+        assert!(matches!(
+            catalog.replace(&reference(bad), &thick).unwrap(),
+            Err(NotReplaced::Unnamed(_))
+        ));
+    }
+    assert!(!catalog.blob_path(&sha(&thick)).exists());
+    let Err(NotReplaced::File(line)) = catalog
+        .replace(&reference("BRKT"), root.parent().unwrap())
+        .unwrap()
+    else {
+        panic!("a directory replaced");
+    };
+    assert_eq!(line.id, None);
+    let inside = root.join("catalog.db");
+    assert!(matches!(
+        catalog.replace(&reference("BRKT"), &inside),
+        Err(fitment_catalog::Error::InsideCatalog(_))
+    ));
+    let none = catalog.delete(&[]).unwrap().unwrap();
+    assert_eq!(none.deleted.len(), 0);
+    assert_eq!(catalog.generation().unwrap(), g);
+    assert_eq!(catalog.verify(false, false).unwrap(), Vec::new());
 }
