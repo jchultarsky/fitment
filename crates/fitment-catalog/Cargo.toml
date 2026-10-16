@@ -8,9 +8,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-# Published in M5's last PR (docs/research/m5-catalog.md, section 10), as
-# internal and unstable; until then it ships with nothing.
-publish = false
+# Internal and unstable: the fitment CLI is its one user. Publishable, so
+# `cargo package --workspace` can verify fitment, which depends on it; it is
+# first published with M5's release (docs/research/m5-catalog.md, PR 7).
+publish.workspace = true
 include = ["src/**", "LICENSE"]
 
 [features]
