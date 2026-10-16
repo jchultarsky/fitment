@@ -3258,6 +3258,14 @@ CANDIDATE_SET = {"m_bracket", "m_bracket_missing_hole", "m_bracket_dia_small", "
                  "m_plate03_press_15tol", "m_block02", "m_block02_cb_deep", "m_nut_pinned_15tol"}
 
 
+# Candidates whose shape, unmoved, is not where the original is: the motion that takes it there, before the frame's
+# inverse, so the stated placement is the construction's (KO1).
+PLACED = {
+    # The mirror image of s15's block, a half turn about y and 8 up from it.
+    "m_mirror15": m_rot((0, 1, 0), 180.0, (0, 0, 8)),
+}
+
+
 def m_defects():
     """KH8 for bad cases: the requirement each defect breaks, which must fail at the construction's own
     placement, where `must_fail` may only say that one of several does (alignment may place the part elsewhere).
@@ -3622,8 +3630,8 @@ def m_families(B, N, K, D3, BA, H, T, seats, one, near_hole, at_a_hole, may_hole
          "a dia 6.7 shank in the bracket's dia 6.6", ["KC9", "VR9"]),
         ("m_bolt_short", BO, c_bolt(length=20.0), VARIANT, "does_not_fit", "b_shaft",
          rej([must(sh, "wall_missing")], [must(hs, *any_seat)]), "20 long: short of the nut's thread", ["KC9", "VR9"]),
-        ("m_bolt_longer", BO, c_bolt(head_at=0.5), VARIANT, "fits", "g_body", ok(["thread_not_confirmed"]),
-         "the head 0.5 higher on a shank 0.5 longer: it seats alike, 0.5 more below the nut", ["KC8"]),
+        ("m_bolt_longer", BO, c_bolt(length=25.5), VARIANT, "fits", "g_body", ok(["thread_not_confirmed"]),
+         "a shank 0.5 longer: it seats alike, 0.5 more below the nut", ["KC8"]),
     ]
     # s02's base and screw.
     bb = l_bore((0, 0, -9))
@@ -3744,7 +3752,7 @@ def build_candidates(w: Writer, which):
             "construction": {"from": part, "defect": construction},
             "frame": {"axis": list(motion.axis), "angle_deg": motion.angle, "shift": list(motion.shift)},
             # Unrounded (KC2): the inverse of the frame motion, candidate to target.
-            "placement": [row[:4] for row in m_inv(m_motion(motion))[:3]],
+            "placement": [row[:4] for row in m_mul(PLACED.get(cid, m_tr((0, 0, 0))), m_inv(m_motion(motion)))[:3]],
             "expect": expects, "defect": defect, "rules": rules, "tests": construction,
         })
 
@@ -3811,8 +3819,9 @@ def build_gate_cases(w: Writer):
     s01 = (w.out / "s01_bolted.stp").read_text(encoding="latin-1")
     w.text(stated_uncertainty(s01, 0.02), "s61_floor_parts", "s01_bolted")
     w.text(stated_uncertainty(s01, 0.01, root="s01_bolted"), "s62_floor_placement", "s01_bolted")
-    identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
-    frame = {"axis": [0, 0, 1], "angle_deg": 0.0, "shift": [0, 0, 0]}
+    # The bracket file's own frame and placement, which these cases share.
+    bracket = next(c for c in w.cases if c["id"] == "m_bracket")
+    identity, frame = bracket["placement"], bracket["frame"]
 
     def case(cid, socket, candidate, klass, truth, expect, construction, rules):
         w.cases.append({
