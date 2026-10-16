@@ -236,6 +236,8 @@ fn files_refused_at_the_door_store_nothing() {
     let big = copy("candidates/m_bracket.stp", &dir, "big.stp");
     let empty = dir.join("empty.stp");
     fs::write(&empty, "").unwrap();
+    // Pushed to on Unix, which has FIFOs.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut inputs = vec![big, dir.join("nowhere.stp"), empty];
     #[cfg(unix)]
     {
@@ -278,7 +280,9 @@ fn files_refused_at_the_door_store_nothing() {
 }
 
 /// PH3 and CT15: hostile file names are stored as text and mapped to ids
-/// that hold none of their characters.
+/// that hold none of their characters. Unix only: Windows forbids control
+/// characters in a file name.
+#[cfg(unix)]
 #[test]
 fn hostile_names_are_stored_and_mapped() {
     let dir = scratch("names");
