@@ -246,3 +246,26 @@ fn refusals_leave_nothing_behind() {
     assert_eq!(catalog.generation().unwrap(), g);
     assert_eq!(catalog.verify(false, false).unwrap(), Vec::new());
 }
+
+/// CR5: a quarantined entry replaced by a file the gate accepts becomes
+/// indexed.
+#[test]
+fn a_quarantined_entry_replaced_is_indexed() {
+    let dir = scratch("cr5");
+    let mut catalog = catalog(&dir);
+    let junk = dir.join("junk.stp");
+    fs::write(&junk, "not STEP").unwrap();
+    catalog.ingest(&[junk], None).unwrap();
+    let fixed = copy("data/p03_blind_flat.stp", &dir, "fixed.stp");
+    catalog
+        .replace(&reference("junk"), &fixed)
+        .unwrap()
+        .unwrap();
+    let snapshot = catalog.snapshot().unwrap();
+    let listed = snapshot.list().unwrap();
+    assert_eq!(
+        listed[0].status,
+        Some(fitment_catalog::EntryStatus::Indexed)
+    );
+    assert_eq!(listed[0].revision, 2);
+}

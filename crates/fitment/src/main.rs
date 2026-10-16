@@ -51,7 +51,8 @@ enum Command {
     /// 2 usage, 3 the socket document refused.
     Match(cmd::match_::Args),
     /// Store STEP parts by content, indexed for matching: init, ingest,
-    /// list and get, in the catalog named by -C DIR.
+    /// list, get, replace, delete, prune, gc and verify, in the catalog
+    /// named by -C DIR.
     ///
     /// Exit codes: 0 done, 1 error, 2 usage (and not a catalog), 3 refused
     /// input.

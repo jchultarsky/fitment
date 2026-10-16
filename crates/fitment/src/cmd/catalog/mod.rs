@@ -2,9 +2,11 @@
 //! (`docs/research/m5-catalog.md`, section 7). The catalog is named by
 //! `-C/--catalog DIR` only, anywhere after `catalog` (CL1).
 
+mod change;
 mod get;
 mod ingest;
 mod list;
+mod maintain;
 
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -49,6 +51,34 @@ enum Command {
     /// or malformed reference, bytes no longer kept), 3 a quarantined or
     /// stale entry's features.
     Get(get::Args),
+    /// Give an entry the bytes of another file as its next revision; the
+    /// old revision's bytes are kept for `get ID@rN` until `prune`.
+    ///
+    /// Exit codes: 0 replaced or unchanged, 1 error, 2 usage (an unknown or
+    /// stale reference, another entry's bytes, a file inside DIR), 3 the
+    /// file refused (the entry unchanged).
+    Replace(change::ReplaceArgs),
+    /// Delete entries, all or none: their bytes and rows go, their history
+    /// stays.
+    ///
+    /// Exit codes: 0 deleted, 1 error, 2 an unknown id, a stale ID@rN or a
+    /// content reference (nothing deleted).
+    Delete(change::DeleteArgs),
+    /// Release kept revisions' bytes (`--revisions`).
+    ///
+    /// Exit codes: 0 done (also when nothing was kept), 1 error, 2 usage.
+    Prune(change::PruneArgs),
+    /// Remove orphan files and temporary files over an hour old.
+    ///
+    /// Exit codes: 0 done, 1 error (a file it could not remove), 2 not a
+    /// catalog.
+    Gc(maintain::GcArgs),
+    /// Check the catalog: its database, every stored file, row hash, part
+    /// digest and posting; with --deep, every part extracted again.
+    ///
+    /// Exit codes: 0 consistent, 1 verify cannot run, 2 not a catalog,
+    /// 3 problems found.
+    Verify(maintain::VerifyArgs),
 }
 
 /// How `ingest`, `list` and `get` print (CL3).
@@ -139,6 +169,7 @@ pub fn run(args: &Args) -> ExitCode {
     }
     let options = match &args.command {
         Command::Ingest(ingest) => ingest.options(),
+        Command::Replace(replace) => replace.options(),
         _ => Options::default(),
     };
     let mut catalog = match Catalog::open(dir, options) {
@@ -150,5 +181,10 @@ pub fn run(args: &Args) -> ExitCode {
         Command::Ingest(ingest) => ingest::run(ingest, dir, &mut catalog),
         Command::List(list) => list::run(list, dir, &mut catalog),
         Command::Get(get) => get::run(get, dir, &mut catalog),
+        Command::Replace(replace) => change::replace(replace, dir, &mut catalog),
+        Command::Delete(delete) => change::delete(delete, dir, &mut catalog),
+        Command::Prune(prune) => change::prune(prune, dir, &mut catalog),
+        Command::Gc(gc) => maintain::gc(gc, dir, &mut catalog),
+        Command::Verify(verify) => maintain::verify(verify, dir, &mut catalog),
     }
 }

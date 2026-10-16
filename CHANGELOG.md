@@ -37,6 +37,13 @@ Until 1.0, minor versions may contain breaking changes.
   features`), or the file's bytes to `-o`, re-hashed first. Without the
   feature, `fitment catalog` exits 2.
 
+- **M5, PR 3 (changes and upkeep):** `fitment catalog replace`, `delete`,
+  `prune --revisions`, `gc` and `verify`. A replace keeps the old
+  revision's bytes for `get ID@rN` until a prune; delete is all or nothing
+  across ids; gc unlinks a file only under the write lock, having checked
+  no row names it; verify checks every stored file, row hash, part digest
+  and posting, and with `--deep` extracts every part again.
+
 ### Changed
 
 - `signature_version` is 2: pair tokens name their two stacks by index
