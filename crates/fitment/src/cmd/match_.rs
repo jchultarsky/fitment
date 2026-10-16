@@ -122,7 +122,10 @@ pub fn run(args: &Args) -> ExitCode {
     let mut original = None;
     if let Some(path) = &args.original {
         match judge_original(&matcher, path) {
-            Ok(Some(result)) => original = Some(result),
+            Ok(Some((result, bug))) => {
+                failed |= bug;
+                original = Some(result);
+            }
             Ok(None) => failed = true,
             Err(code) => return code,
         }
@@ -398,9 +401,14 @@ fn reported(label: &str, result: &CandidateResult) -> bool {
 }
 
 /// VD15: the target read from its own assembly, judged as a candidate; it
-/// must fail exactly what no candidate can pass. `Ok(None)` when it fails
-/// more (exit 1); `Err` on a usage error (another file than the socket's).
-fn judge_original(matcher: &Matcher<'_>, path: &Path) -> Result<Option<CandidateResult>, ExitCode> {
+/// must fail exactly what no candidate can pass. With true when it fails
+/// more (exit 1, the evidence kept in the document); `Ok(None)` when it
+/// cannot be read (exit 1); `Err` on a usage error (another file than the
+/// socket's).
+fn judge_original(
+    matcher: &Matcher<'_>,
+    path: &Path,
+) -> Result<Option<(CandidateResult, bool)>, ExitCode> {
     let shown = printable(&path.display().to_string());
     let bytes = std::fs::read(path).map_err(|error| {
         note(&format!("error: cannot read {shown}: {error}"));
@@ -437,10 +445,23 @@ fn judge_original(matcher: &Matcher<'_>, path: &Path) -> Result<Option<Candidate
             definition: instance,
         },
     );
-    if reported("original", &result) {
-        return Ok(None);
-    }
+    let bug = reported("original", &result) || original_bug(&result);
+    Ok(Some((result, bug)))
+}
+
+/// VD15's test of the original's result: true, with a note, if it fails a
+/// requirement VD5 and VD6 do not explain, or the shortlist drops it
+/// where every requirement verification ran on passes or fails as
+/// expected (SL1). AL11's bounds are noted and excuse their socket.
+fn original_bug(result: &CandidateResult) -> bool {
+    let bug = |at: &str| {
+        note(&format!(
+            "fitment: the original fails its own socket at {at}: this is a fitment bug"
+        ));
+        true
+    };
     for socket in &result.sockets {
+        let mut excused = false;
         for (id, check) in &socket.checks {
             if check.passed() {
                 continue;
@@ -448,36 +469,35 @@ fn judge_original(matcher: &Matcher<'_>, path: &Path) -> Result<Option<Candidate
             let codes: Vec<FailureCode> =
                 check.evidence().failures().iter().map(|f| f.code).collect();
             let at = format!("{}/{}", socket.socket, printable(id.as_str()));
-            // AL11's bounds are no bug: the run names them (VR21's s55).
-            if !codes.is_empty()
-                && codes.iter().all(|c| {
-                    matches!(
-                        c,
-                        FailureCode::AlignmentExhausted | FailureCode::CoverageExhausted
-                    )
-                })
-            {
+            let within = |allowed: &dyn Fn(&FailureCode) -> bool| {
+                !codes.is_empty() && codes.iter().all(allowed)
+            };
+            if within(&|c| {
+                matches!(
+                    c,
+                    FailureCode::AlignmentExhausted | FailureCode::CoverageExhausted
+                )
+            }) {
+                // AL11's bounds are no bug: the run names them (VR21's s55).
                 note(&format!(
                     "fitment: the original exhausts the search at {at}: not checked"
                 ));
-                continue;
-            }
-            let expected = |c: &FailureCode| {
+                excused = true;
+            } else if !within(&|c| {
                 matches!(
                     c,
                     FailureCode::Unverifiable | FailureCode::FloorAboveTolerance
                 )
-            };
-            // A failure with no code is not one VD5 or VD6 explains.
-            if codes.is_empty() || !codes.iter().all(expected) {
-                note(&format!(
-                    "fitment: the original fails its own socket at {at}: this is a fitment bug"
-                ));
-                return Ok(None);
+            }) {
+                // A failure with no code is not one VD5 or VD6 explains.
+                return bug(&at);
             }
         }
+        if socket.stage == fitment_core::Stage::Shortlist && !excused {
+            return bug(&format!("{} (the shortlist dropped it)", socket.socket));
+        }
     }
-    Ok(Some(result))
+    false
 }
 
 /// MF10's stderr: the summary; a warning per socket every candidate fails
