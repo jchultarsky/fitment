@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::Serialize;
 
-use crate::fit::{CANDIDATE_REFUSED, FitStatus};
+use crate::fit::{CANDIDATE_REFUSED, FitStatus, Interference};
 use crate::gate::RefusalCode;
 use crate::matching::{Evidence, FailureCode};
 
@@ -142,6 +142,21 @@ pub enum RejectReason {
     },
     /// The candidate's body interferes with a neighbor.
     BodyInterferes,
+    /// The shortlist found what a socket demands missing (M4-17): the
+    /// checks were still made, for the evidence.
+    Shortlist {
+        /// The socket.
+        socket: String,
+    },
+    /// No placement of the candidate was found in a socket (KH3).
+    NoPlacement {
+        /// The socket.
+        socket: String,
+        /// The requirements no candidate feature could anchor.
+        unanchored: Vec<RequirementId>,
+    },
+    /// The socket document has no socket to judge against (VD2).
+    NoSockets,
 }
 
 /// The judgment on one candidate, with the reasons for a rejection.
@@ -164,7 +179,6 @@ pub struct Verdict {
 impl Verdict {
     /// A candidate M2's gate refused: a `Reject` with its codes, no fit
     /// checked (VD1, VD10). Only the matcher builds it.
-    #[allow(dead_code)] // The matcher (PR 3) calls it.
     pub(crate) fn refused(mut codes: Vec<RefusalCode>) -> Self {
         codes.sort_unstable();
         codes.dedup();
@@ -175,6 +189,13 @@ impl Verdict {
             },
             reasons: vec![RejectReason::CandidateRefused { codes }],
         }
+    }
+
+    /// This verdict, rejecting for `reason` first.
+    pub(crate) fn rejecting(mut self, reason: RejectReason) -> Self {
+        self.kind = VerdictKind::Reject;
+        self.reasons.insert(0, reason);
+        self
     }
 
     /// What the verdict says.
@@ -265,6 +286,75 @@ pub fn decide(
         VerdictKind::InterfaceMatch
     };
 
+    Verdict { kind, fit, reasons }
+}
+
+/// A candidate's verdict from its sockets' (VD2): the worst of them, a
+/// candidate that fits one occurrence and not another being a `Reject`;
+/// with none, a `Reject`. Each reason's requirement is named with its
+/// socket (`socket-1/bore:hole-88`). The body fits only if it fits in
+/// every socket; it interferes if it does in any.
+pub fn combine(sockets: &[(String, Verdict)]) -> Verdict {
+    if sockets.is_empty() {
+        return Verdict {
+            kind: VerdictKind::Reject,
+            fit: FitStatus::no_verifier(),
+            reasons: vec![RejectReason::NoSockets],
+        };
+    }
+    let rank = |k: VerdictKind| match k {
+        VerdictKind::Match => 0,
+        VerdictKind::InterfaceMatch => 1,
+        VerdictKind::Reject => 2,
+    };
+    let kind = sockets
+        .iter()
+        .map(|(_, v)| v.kind)
+        .max_by_key(|k| rank(*k))
+        .unwrap_or(VerdictKind::Reject);
+    let interferences: Vec<Interference> = sockets
+        .iter()
+        .filter_map(|(_, v)| match &v.fit {
+            FitStatus::Interferes { interferences } => Some(interferences.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let fit = if sockets
+        .iter()
+        .any(|(_, v)| matches!(v.fit, FitStatus::Interferes { .. }))
+    {
+        FitStatus::Interferes { interferences }
+    } else {
+        sockets
+            .iter()
+            .map(|(_, v)| v.fit.clone())
+            .find(|f| !matches!(f, FitStatus::Verified { .. }))
+            .or_else(|| sockets.first().map(|(_, v)| v.fit.clone()))
+            .unwrap_or_else(FitStatus::no_verifier)
+    };
+    let named =
+        |socket: &str, r: &RequirementId| RequirementId::new(format!("{socket}/{}", r.as_str()));
+    let reasons = sockets
+        .iter()
+        .flat_map(|(socket, v)| {
+            v.reasons.iter().map(move |reason| match reason {
+                RejectReason::RequirementFailed {
+                    requirement,
+                    detail,
+                    codes,
+                } => RejectReason::RequirementFailed {
+                    requirement: named(socket, requirement),
+                    detail: detail.clone(),
+                    codes: codes.clone(),
+                },
+                RejectReason::MissingCheck { requirement } => RejectReason::MissingCheck {
+                    requirement: named(socket, requirement),
+                },
+                other => other.clone(),
+            })
+        })
+        .collect();
     Verdict { kind, fit, reasons }
 }
 

@@ -124,13 +124,21 @@ candidate view: stacks with their usable profiles,      matching/candidate.rs
   │   zones taken only where every face stays outside;
   │   a tree over the faces, each boxed from the part
   ▼
+Alignment: placements from pairs of features that       matching/align.rs
+  │   match the socket's lines, seats and cones, in a
+  │   fixed order, at most MAX_PLACEMENTS
+  ▼
 Verification at a placement, requirement by            matching/verify.rs, axial.rs,
-    requirement: axes, spans, openings, the core       region.rs
-    clear, seats covered, grips, cones; every measure
-    recorded, every failure coded
+  │   requirement: axes, spans, openings, the core       region.rs
+  │   clear, seats covered, grips, cones; every measure
+  │   recorded, every failure coded
+  ▼
+The matcher: per socket the first placement passing    matching/matcher.rs, verdict.rs
+    everything M4 can verify, or the one passing most;
+    the candidate's verdict is its worst socket's
 ```
 
-Alignment, verdicts and the `fitment.match` document follow
+The verdicts' document and the CLI follow
 (`docs/research/m4-match.md`, section 22). Every comparison the shortlist
 makes counts toward a budget; past it the candidate is kept, never
 dropped. Verification's coverage and core tests count toward their own;

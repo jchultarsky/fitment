@@ -8,19 +8,21 @@ mod axial;
 mod candidate;
 mod evidence;
 mod index;
+mod matcher;
 mod policy;
 mod region;
 mod shortlist;
 mod signature;
 mod verify;
 
-pub use align::{Placement, Seed};
+pub use align::{MAX_ANCHOR_PAIRS, MAX_PLACEMENTS, Placement, Placements, Seed, align};
 pub use candidate::CandidateView;
 pub use evidence::{
     At, Band, BandWidth, EndSide, Evidence, Failure, FailureCode, Measure, MeasureValue, Quantity,
     Warning, WarningCode,
 };
 pub use index::{Blocked, IndexTokens, PairToken, ShortlistIndex};
+pub use matcher::{CandidateResult, Matcher, SocketRefused, SocketResult, Stage};
 pub use policy::{Clearance, Grip, MatchOptions, MatchPolicy};
 pub use shortlist::{Kept, Missing, MissingElement, shortlist};
 pub use signature::{PartSignature, SigCone, SigPlane, SigStack, SocketSignature, Unread, Window};

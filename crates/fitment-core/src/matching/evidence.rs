@@ -422,6 +422,12 @@ impl Evidence {
         )
     }
 
+    /// This evidence with one more failure.
+    pub(crate) fn with_failure(mut self, failure: Failure) -> Self {
+        self.failures.push(failure);
+        self
+    }
+
     /// The candidate features judged.
     pub fn feature(&self) -> &[FeatureId] {
         &self.feature

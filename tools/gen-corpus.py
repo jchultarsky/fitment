@@ -8,6 +8,7 @@
     tools/gen-corpus.py OUT_DIR              every case: the generated corpus
     tools/gen-corpus.py --unit-set OUT_DIR   only the committed unit set
     tools/gen-corpus.py --assembly-set OUT_DIR   only the committed assemblies
+    tools/gen-corpus.py --candidate-set OUT_DIR  only the committed match candidates
 
 Each part is built from explicit primitives (boxes, cylinders, cones, tori
 from fillets, one prism), a few through documented text edits of a written
@@ -708,10 +709,23 @@ M4_TESTS.update({
     "VR22": [f"{M4_CAND}::a_core_meets_every_face_inside_it_but_the_stack_s_own",
              f"{M4_CAND}::a_cylinder_s_surface_is_boxed_within_the_part"] + M4_Y4,
 })
+# PR 3b builds alignment and the matcher: every original, aligned from scratch, fails exactly what no candidate
+# can pass (KH10, Y4's original run).
+M4_MATCHER = "crates/fitment-core/tests/matcher.rs"
+M4_KH10 = [f"{M4_ORIGINAL}::every_original_fails_exactly_what_no_candidate_can_pass",
+           f"{M4_ORIGINAL}::every_pinned_fixture_original_fails_exactly_what_no_candidate_can_pass",
+           f"{M4_MATCHER}::each_original_fails_exactly_what_no_candidate_can_pass"]
+M4_TESTS.update({
+    "CF1": [f"{M4_MATCHER}::a_part_lacking_the_socket_s_elements_is_rejected_at_the_shortlist"] + M4_KH10[:1],
+    "CF2": [f"{M4_MATCHER}::a_refused_file_is_a_reject_with_the_gate_s_codes"],
+    **{f"AL{n}": M4_KH10 for n in range(1, 14)},
+    "VR17": M4_KH10,
+    "VR21": M4_Y4 + M4_KH10,
+    "KH10": M4_KH10,
+    "Y4.original_run": M4_KH10,
+})
 for rule, tests in M4_TESTS.items():
     RULES[rule] = {"tests": tests}
-for rule in ("CF1", "CF2", *(f"AL{n}" for n in range(1, 14)), "VR17"):
-    RULES[rule] = {"deferred": "M4 PR 3b: alignment and the matcher"}
 RULES["CF8"] = {"deferred": "M4 PR 3c: a wall opening needs a candidate that has one, from the generator"}
 for rule in ("VR16", "VR19"):
     RULES[rule] = {"deferred": "M4 PR 4: the verdict lists removed requirements and carries flags"}
@@ -783,7 +797,8 @@ class Writer:
         path.write_text(text, encoding="latin-1", newline="\n")
 
     def case(self, name, tests, rules, unit_set, construction, expect):
-        self.cases.append({"id": name, "file": f"{name}.stp", "set": "unit" if unit_set else "corpus",
+        self.cases.append({"id": name, "kind": "part", "file": f"{name}.stp",
+                           "set": "unit" if unit_set else "corpus",
                            "tests": tests, "rules": rules, "construction": construction, "expect": expect})
 
 
@@ -2983,6 +2998,321 @@ NUMBER = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[Ee][-+]?\d+)?")
 SAME_NUMBER = 1e-9
 
 
+# ------------------------------------------------------------ match cases (M4)
+# docs/research/m4-match.md, section 15: candidate parts against the sockets of the assemblies above. Each is built
+# by a parametric builder whose defaults rebuild the source's leaf exactly (checked below), written in a frame, with
+# the placement from the candidate's frame into the target's (the inverse of the frame motion, unrounded, KC2), its
+# physical truth (KC3) and, per policy, the verdict and the failures expected: requirements named by what they
+# constrain in the target's frame (KC5), never by id. A bad case's `must_fail` names its defect's requirement; an
+# entry may be {"any_of": [...]} where which of several requirements catches it is verification's to decide (KH2).
+
+M_TOL = 0.01  # mm, D9's default linear tolerance
+M_ATOL = 0.01  # deg, D9's default angular tolerance
+
+
+def c_bracket(lx=80.0, ly=50.0, t=8.0, holes=None, centre=8.0, extra=(), pocket=None, lug=False, side_hole=False):
+    """s01's BRACKET with its interfaces as parameters; the defaults are `a_bracket`. `holes` maps each of PTS
+    to (x, y, d, kind, depth): kind through, blind_top (from z = t down `depth`) or missing."""
+    body = box(-lx / 2, -ly / 2, 0, lx, ly, t)
+    if lug:
+        # A tab off the -y side reaching 5 mm down past the bottom: inside the plate below, in no seat region.
+        body = fuse(body, box(-10, -ly / 2 - 3, -5, 20, 3, t + 5))
+    holes = holes or {p: (p[0], p[1], 6.6, "through", None) for p in PTS}
+    tools = []
+    for _, (x, y, d, kind, depth) in sorted(holes.items()):
+        if kind == "through":
+            tools.append(cyl((x, y, -1), UP, d / 2, t + 2))
+        elif kind == "blind_top":
+            tools.append(cyl((x, y, t - depth), UP, d / 2, depth + 1))
+    if centre:
+        tools.append(cyl((0, 0, -1), UP, centre / 2, t + 2))
+    for x, y, d in extra:
+        tools.append(cyl((x, y, -1), UP, d / 2, t + 2))
+    if pocket:
+        px, py, depth = pocket
+        tools.append(box(-px / 2, -py / 2, t - depth, px, py, depth + 1))
+    if side_hole:
+        # A dia 3 hole along y at x = 10, z = 4: through both sides, no seat face.
+        tools.append(cyl((10, -ly / 2 - 1, 4), (0, 1, 0), 1.5, ly + 2))
+    return cut(body, *tools)
+
+
+def c_plate03(dia=None, shift=None):
+    """s03's PLATE: 80 x 40 x 10, holes at x -30, -10, 10, 30 of 5.97, 6.2, 6 and 6.015; `dia` and `shift`
+    (in x) by hole x."""
+    holes = {-30: 5.97, -10: 6.2, 10: 6.0, 30: 6.015}
+    holes.update(dia or {})
+    shape = box(-40, -20, 0, 80, 40, 10)
+    for x, d in holes.items():
+        shape = through(shape, [(x + (shift or {}).get(x, 0.0), 0)], d, 0, 10)
+    return shape
+
+
+def c_nut(d=5.0, kind="orig"):
+    """s01's NUT, dia `d`; `kind` the review's: ext (5 mm taller below, the hole continued as dia 3), long (the
+    dia 5 hole straight through the taller nut), bar (long, with a dia 1 bar across it at z -6)."""
+    if kind == "orig":
+        return through(hex_prism(10, -5, 5), [(0, 0)], d, -5, 0)
+    if kind == "ext":
+        return cut(hex_prism(10, -10, 10), cyl((0, 0, -5.0), UP, d / 2, 6.0), cyl((0, 0, -11.0), UP, 1.5, 7.0))
+    body = cut(hex_prism(10, -10, 10), cyl((0, 0, -11.0), UP, d / 2, 12.0))
+    if kind == "long":
+        return body
+    return fuse(body, cyl((-4.0, 0, -6.0), (1, 0, 0), 0.5, 8.0))
+
+
+def c_block02(cb_d=11.0, cb_depth=6.5, d=6.6, h=15.0):
+    """s02's BLOCK: 40 x 40 x h, dia d through, a dia cb_d counterbore cb_depth deep from the top."""
+    tools = [cyl((0, 0, -1), UP, d / 2, h + 2)]
+    if cb_d:
+        tools.append(cyl((0, 0, h - cb_depth), UP, cb_d / 2, cb_depth + 1))
+    return cut(box(-20, -20, 0, 40, 40, h), *tools)
+
+
+def c_base02(post=False):
+    """s02's BASE: 60 x 60 x 10, top at z 0, a dia 5 blind hole 9 deep; `post`: a dia 2 post from its floor up
+    to z -3 (the review's RS1)."""
+    body = cut(box(-30, -30, -10, 60, 60, 10), cyl((0, 0, -9), UP, 2.5, 10))
+    return fuse(body, cyl((0, 0, -9), UP, 1.0, 6.0)) if post else body
+
+
+def c_housing(kind="orig"):
+    """s19's HOUSING: 40 x 40 x 20, top at z 0, a dia 12.1 bore 8 deep; `kind` one of the review's (RS1 to RS5):
+    post, spike, dome, bar, cross, lip, split."""
+    body = box(-20, -20, -20, 40, 40, 20)
+    bore = cyl((0, 0, -8), UP, 6.05, 9)
+    if kind == "orig":
+        return cut(body, bore)
+    if kind == "post":
+        return fuse(cut(body, bore), cyl((0, 0, -8), UP, 2.0, 7.0))
+    if kind == "spike":
+        return fuse(cut(body, bore), cone((0, 0, -8), UP, 3.0, 0.0, 6.0))
+    if kind == "dome":
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeSphere
+        radius = 52.6025 / 8.0  # (8R - 16 = 6.05^2): meets the wall at z -7, top at z -3
+        cap = cut(cyl((0, 0, -9), UP, 6.05, 10), BRepPrimAPI_MakeSphere(gp_Pnt(0, 0, -3.0 - radius), radius).Shape())
+        return cut(body, cap)
+    if kind == "bar":
+        return fuse(cut(body, bore), cyl((-20, 0, -3), (1, 0, 0), 1.0, 40))
+    if kind == "cross":
+        return cut(body, bore, cyl((-21, 0, -3), (1, 0, 0), 1.0, 42))
+    if kind == "lip":
+        return cut(body, cyl((0, 0, -8), UP, 6.05, 7.5), cone((0, 0, -1), UP, 8.0, 5.0, 1.0),
+                   cyl((0, 0, -0.01), UP, 5.0, 1.0))
+    raise ValueError(kind)
+
+
+def c_tube50(r_out=20.0):
+    """s50's TUBE: dia 2 r_out outside, dia 16 bore, z 0 to 30."""
+    return cut(cyl((0, 0, 0), UP, r_out, 30), cyl((0, 0, -1), UP, 8, 32))
+
+
+def same_solid(a, b):
+    """True if two shapes enclose the same volume: both boolean differences empty (to 1e-9 mm³)."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    def volume(shape):
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(shape, props)
+        return abs(props.Mass())
+    return volume(cut(a, b)) < 1e-9 and volume(cut(b, a)) < 1e-9
+
+
+def l_bore(point, direction=(0, 0, 1)):
+    return {"kind": "bore", "axis_point": r3(point), "axis_direction": r3(direction)}
+
+
+def l_shaft(point, direction=(0, 0, 1)):
+    return {"kind": "shaft", "axis_point": r3(point), "axis_direction": r3(direction)}
+
+
+def l_seat(normal, offset):
+    return {"kind": "seat", "normal": r3(normal), "offset": r(offset)}
+
+
+def l_grip(length):
+    return {"kind": "grip", "length": r(length)}
+
+
+def l_cone(apex):
+    return {"kind": "conical_seat", "apex": r3(apex)}
+
+
+def must(locator, *codes):
+    """A requirement expected to fail with any of `codes` (KH2)."""
+    return {**locator, "codes": sorted(codes)}
+
+
+def any_of(*entries):
+    """At least one of `entries` fails (KH2.3)."""
+    return {"any_of": list(entries)}
+
+
+def m_ok(flags=()):
+    return {"verdict": "interface_match", "must_fail": [], "may_fail": [], **({"flags": list(flags)} if flags else {})}
+
+
+def m_rej(must_fail=(), may_fail=()):
+    return {"verdict": "reject", "must_fail": list(must_fail), "may_fail": list(may_fail)}
+
+
+# KC15: the committed candidates, against the committed s01, s02 and s03, in MAPPED.
+CANDIDATE_SET = {"m_bracket", "m_bracket_missing_hole", "m_bracket_dia_small", "m_bracket_thick", "m_bracket_blind",
+                 "m_bracket_lug", "m_bracket_top_pocket", "m_plate03", "m_plate03_pin_shift_tol",
+                 "m_plate03_press_15tol", "m_block02", "m_block02_cb_deep", "m_nut_pinned_15tol"}
+
+
+def match_cases():
+    """(id, (source case, target), shape, motion, truth, class, expect, construction, rules): the slice of the
+    known-answer corpus D designed (section 15.5) and the review's candidate-side shapes (RS1 to RS6, RS13, RS14).
+    `expect` is the default policy's, the functional one's equal unless stated as {"default": ..,
+    "functional": ..}."""
+    B, K, D3, N, C = (("s01_bolted", "BRACKET"), ("s02_cbore", "BLOCK"), ("s03_dowels", "PLATE"),
+                      ("s01_bolted", "NUT"), ("s18_csink", "PLATE"))
+    H, BA, T = ("s19_boss", "HOUSING"), ("s02_cbore", "BASE"), ("s50_cap", "TUBE")
+    top, bot, g8 = l_seat((0, 0, 1), 8), l_seat((0, 0, -1), 0), l_grip(8)
+    bores = [l_bore((x, y, 0)) for x, y in PTS]
+    br = {p: (p[0], p[1], 6.6, "through", None) for p in PTS}
+
+    def one(**change):
+        holes = dict(br)
+        x, y, d, kind, depth = holes[(30, 15)]
+        v = {"x": x, "y": y, "d": d, "kind": kind, "depth": depth, **change}
+        holes[(30, 15)] = (v["x"], v["y"], v["d"], v["kind"], v["depth"])
+        return holes
+
+    near_hole = [must(top, "contact_not_covered"), must(bot, "contact_not_covered")]
+
+    def at_a_hole(*codes):
+        """The bracket is symmetric under a half turn about each axis: the defect's hole may be placed at any of
+        the four bores."""
+        return any_of(*[must(b, *codes) for b in bores])
+
+    def may_holes(*codes):
+        return [must(b, *codes) for b in bores]
+    out = [
+        # The committed set (KC15), in MAPPED.
+        ("m_bracket", B, c_bracket(), MAPPED, "fits", "g_frame", m_ok(), "the original", ["KC8", "KC15"]),
+        ("m_bracket_missing_hole", B, c_bracket(holes=one(kind="missing")), MAPPED, "does_not_fit",
+         "b_missing_hole", m_rej([at_a_hole("no_feature")], near_hole + may_holes("no_feature")),
+         "no hole at (30, 15)", ["KC9", "VR7"]),
+        ("m_bracket_dia_small", B, c_bracket(holes=one(d=5.9)), MAPPED, "does_not_fit", "b_dia_small",
+         m_rej([at_a_hole("diameter_out_of_limits:min")],
+               near_hole + may_holes("diameter_out_of_limits:min", "core_intruded")),
+         "dia 5.9 under the bolt's dia 6 shank", ["KC9", "VR4", "VR22"]),
+        ("m_bracket_thick", B, c_bracket(t=8.5), MAPPED, "fn_rule", "b_thickness",
+         m_rej([must(g8, "grip_length", "seat_missing")],
+               [must(top, "no_feature", "contact_not_covered"), must(bot, "no_feature", "contact_not_covered")]
+               + [must(b, "wall_missing", "end_not_open") for b in bores]),
+         "8.5 thick: the bolts still reach, D7 is hard (M4-8)", ["KC10", "VR12"]),
+        ("m_bracket_blind", B, c_bracket(holes=one(kind="blind_top", depth=6)), MAPPED, "does_not_fit", "b_blind",
+         m_rej([at_a_hole("end_not_open", "wall_missing")],
+               near_hole + may_holes("end_not_open", "wall_missing", "core_intruded")),
+         "hole (30, 15) blind 6 deep from the top: its bottom must be open", ["KC9", "VR7"]),
+        ("m_bracket_lug", B, c_bracket(lug=True), MAPPED, "collides", "b_collide", m_ok(),
+         "a tab 5 mm into the plate, in no requirement's region: InterfaceMatch until M7", ["KC3"]),
+        ("m_bracket_top_pocket", B, c_bracket(pocket=(20, 12, 2)), MAPPED, "fn_rule", "fn_r14",
+         m_rej([must(top, "contact_not_covered")]), "a 20 x 12 x 2 pocket round the centre hole, clear of the "
+         "heads: R14's target-face basis rejects it", ["KC10", "VR11"]),
+        ("m_plate03", D3, c_plate03(), MAPPED, "fits", "g_frame", m_ok(), "the original", ["KC8"]),
+        ("m_plate03_pin_shift_tol", D3, c_plate03(shift={10: M_TOL}), MAPPED, "edge", "b_hole_shift",
+         m_rej([any_of(must(l_bore((10, 0, 0)), "axis_offset", "no_feature"),
+                       must(l_seat((0, 0, -1), 0), "contact_not_covered"))],
+               [must(l_seat((0, 0, -1), 0), "contact_not_covered")]),
+         "the line-to-line dia 6 hole moved exactly the tolerance", ["KC9", "VR3"]),
+        ("m_plate03_press_15tol", D3, c_plate03(dia={-30: 5.97 + 1.5 * M_TOL}), MAPPED, "does_not_fit",
+         "b_dia_pinned", m_rej([must(l_bore((-30, 0, 0)), "diameter_out_of_limits:max")],
+                               [must(l_seat((0, 0, -1), 0), "contact_not_covered")]),
+         "the press fit's dia 5.97 opened 1.5 tol", ["KC9", "VR7"]),
+        ("m_block02", K, c_block02(), MAPPED, "fits", "g_frame", m_ok(), "the original", ["KC8"]),
+        ("m_block02_cb_deep", K, c_block02(cb_depth=7.0), MAPPED, "does_not_fit", "b_seat_moved",
+         m_rej([must(l_seat((0, 0, 1), 8.5), "no_feature", "contact_not_covered"),
+                must(l_grip(8.5), "grip_length", "seat_missing")],
+               [must(l_bore((0, 0, 0)), "wall_missing", "core_intruded", "diameter_out_of_limits:min",
+                     "diameter_out_of_limits:max"), must(l_seat((0, 0, -1), 0), "no_feature")]),
+         "the counterbore 7 deep: the head's seat 0.5 lower", ["KC9", "VR10", "VR12"]),
+        ("m_nut_pinned_15tol", N, c_nut(5 + 1.5 * M_TOL), MAPPED, "does_not_fit", "b_dia_pinned",
+         m_rej([must(l_bore((0, 0, -5)), "diameter_out_of_limits:max")], [must(l_seat((0, 0, 1), 0), "contact_not_covered")]),
+         "the nut's pinned dia 5 opened 1.5 tol", ["KC9", "VR7"]),
+    ]
+    # The review's candidate-side shapes (section 28), against the neighbour their passing requirement cited.
+    hb, hs = l_bore((0, 0, -8)), l_seat((0, 0, 1), 0)
+    core = lambda b: must(b, "core_intruded", "wall_missing", "diameter_out_of_limits:min",  # noqa: E731
+                          "diameter_out_of_limits:max", "wall_opening", "candidate_feature_unknown")
+    out += [
+        ("m_housing", H, c_housing(), VARIANT, "fits", "g_frame", m_ok(), "the original", ["KC8"]),
+        ("m_housing_post", H, c_housing("post"), VARIANT, "does_not_fit", "b_post", m_rej([core(hb)]),
+         "a dia 4 post from the floor to z -1", ["KC9", "VR8", "VR22"]),
+        ("m_housing_spike", H, c_housing("spike"), VARIANT, "does_not_fit", "b_unknown_end", m_rej([core(hb)]),
+         "a cone from the floor to an apex at z -2", ["KC9", "VR22", "CF5"]),
+        ("m_housing_dome", H, c_housing("dome"), VARIANT, "does_not_fit", "b_unknown_end", m_rej([core(hb)]),
+         "a spherical floor rising to z -3", ["KC9", "VR22", "CF4"]),
+        ("m_housing_bar", H, c_housing("bar"), VARIANT, "does_not_fit", "b_wall_opening", m_rej([core(hb)]),
+         "a dia 2 bar across the bore at z -3", ["KC9", "CF8", "VR22"]),
+        ("m_housing_cross", H, c_housing("cross"), VARIANT, "fn_rule", "g_cross_hole", m_rej([core(hb)]),
+         "a dia 2 cross hole at z -3: air, but M2 states no wall opening's faces, so CF8 rejects it (3a)",
+         ["KC10", "CF8"]),
+        ("m_housing_lip", H, c_housing("lip"), VARIANT, "does_not_fit", "b_end_zone",
+         m_rej([any_of(core(hb), must(hs, "contact_not_covered", "no_feature"))],
+               [core(hb), must(hs, "contact_not_covered", "no_feature")]),
+         "the mouth: an annulus out to r 8, a cone back in to r 5", ["KC9", "VR8"]),
+        ("m_nut_ext", N, c_nut(kind="ext"), VARIANT, "does_not_fit", "b_open_past_rim",
+         m_rej([must(l_bore((0, 0, -5)), "end_not_open", "diameter_out_of_limits:min", "core_intruded")]),
+         "5 mm taller below, the hole narrowing to dia 3 past the original's rim", ["KC9", "VR7"]),
+        ("m_nut_long", N, c_nut(kind="long"), VARIANT, "does_not_fit", "b_open_past_rim",
+         m_rej([must(l_bore((0, 0, -5)), "end_not_open", "diameter_out_of_limits:min", "core_intruded")]),
+         "the pinned dia 5 continued 5 mm past the original's rim", ["KC9", "VR7"]),
+        ("m_nut_bar", N, c_nut(kind="bar"), VARIANT, "does_not_fit", "b_open_past_rim",
+         m_rej([must(l_bore((0, 0, -5)), "end_not_open", "wall_opening", "core_intruded",
+                     "diameter_out_of_limits:min")]), "nut_long with a dia 1 bar across the extension",
+         ["KC9", "CF8", "VR7"]),
+        ("m_base02", BA, c_base02(), VARIANT, "fits", "g_frame", m_ok(), "the original", ["KC8"]),
+        ("m_base02_post", BA, c_base02(post=True), VARIANT, "does_not_fit", "b_post",
+         m_rej([core(l_bore((0, 0, -9)))]), "a dia 2 post in the pinned span", ["KC9", "VR8", "VR22"]),
+        ("m_tube50", T, c_tube50(), VARIANT, "fits", "g_frame", m_ok(), "the original", ["KC8"]),
+    ]
+    # VR4's edge in four frames (KC7): the tube's outside at exactly c - 2 tau.
+    for name, motion in [("id", IDENTITY), ("var", VARIANT), ("tilt", TILT), ("skew", Motion((3, -2, 5), 71.0, (12.5, 7.0, -40.0)))]:
+        out.append((f"m_tube50_tau_edge_{name}", T, c_tube50(20.99), motion, "edge", "e_tau",
+                    m_rej([must(l_shaft((0, 0, 0)), "diameter_out_of_limits:max")]),
+                    "outside dia 41.98: a margin of exactly tau beyond the cap's clear dia 42", ["KC7", "VR4"]))
+    return out
+
+
+def build_candidates(w: Writer, which):
+    """Writes the match cases `which(unit_set)` selects; checks each builder rebuilds its source's leaf."""
+    for name, builder, leaf in [("c_bracket", c_bracket(), a_bracket()), ("c_nut", c_nut(), a_hex_nut()),
+                                ("c_block02", c_block02(), cut(box(-20, -20, 0, 40, 40, 15),
+                                                                cyl((0, 0, -1), UP, 3.3, 17),
+                                                                cyl((0, 0, 8.5), UP, 5.5, 7.5))),
+                                ("c_base02", c_base02(), cut(box(-30, -30, -10, 60, 60, 10),
+                                                              cyl((0, 0, -9), UP, 2.5, 10))),
+                                ("c_housing", c_housing(), cut(box(-20, -20, -20, 40, 40, 20),
+                                                                cyl((0, 0, -8), UP, 6.05, 9))),
+                                ("c_tube50", c_tube50(), cut(cyl((0, 0, 0), UP, 20, 30), cyl((0, 0, -1), UP, 8, 32)))]:
+        if not same_solid(builder, leaf):
+            raise RuntimeError(f"{name}'s defaults do not rebuild its source's leaf")
+    for cid, (case, part), shape, motion, truth, klass, expect, construction, rules in match_cases():
+        unit_set = cid in CANDIDATE_SET
+        if not which(unit_set):
+            continue
+        moved = BRepBuilderAPI_Transform(shape, motion.trsf(), True).Shape()
+        w.shape(moved, cid)
+        expects = expect if "default" in expect else {"default": expect, "functional": "default"}
+        w.cases.append({
+            "id": cid, "kind": "match", "file": f"{cid}.stp", "set": "unit" if unit_set else "corpus",
+            "socket": {"case": case, "part": part, "occurrence": None, "review": []},
+            "candidate": {"file": f"{cid}.stp"}, "class": klass, "truth": truth,
+            "construction": {"from": part, "defect": construction},
+            "frame": {"axis": list(motion.axis), "angle_deg": motion.angle, "shift": list(motion.shift)},
+            # Unrounded (KC2): the inverse of the frame motion, candidate to target.
+            "placement": [row[:4] for row in m_inv(m_motion(motion))[:3]],
+            "expect": expects, "rules": rules, "tests": construction,
+        })
+
+
+
 def differences(generated: Path, committed: Path):
     """How the files of `committed` differ from those just `generated`: the
     manifests must be identical, and each .stp the same text but for
@@ -3020,6 +3350,8 @@ def main():
     parser.add_argument("--unit-set", action="store_true", help="write only the committed unit set")
     parser.add_argument("--assembly-set", action="store_true",
                         help="write only the committed assembly set (crates/fitment-core/tests/assemblies)")
+    parser.add_argument("--candidate-set", action="store_true",
+                        help="write only the committed candidates (crates/fitment-core/tests/candidates)")
     parser.add_argument("--check", type=Path, metavar="DIR",
                         help="after writing, check that DIR holds the same files (numbers within 1e-9)")
     args = parser.parse_args()
@@ -3032,11 +3364,14 @@ def main():
     w = Writer(args.out)
     if args.assembly_set:
         build_assemblies(w, lambda unit_set: unit_set)
+    elif args.candidate_set:
+        build_candidates(w, lambda unit_set: unit_set)
     else:
         build(w, args.unit_set)
         if not args.unit_set:
             build_assemblies(w, lambda unit_set: True)
-    committed = args.unit_set or args.assembly_set
+            build_candidates(w, lambda unit_set: True)
+    committed = args.unit_set or args.assembly_set or args.candidate_set
     if committed:
         keep = {c["file"] for c in w.cases if c["set"] == "unit"}
         w.cases = [c for c in w.cases if c["set"] == "unit"]
@@ -3069,9 +3404,10 @@ def main():
         found = differences(args.out, args.check)
         for line in found:
             print(line)
+        mode = "--assembly-set" if args.assembly_set else "--candidate-set" if args.candidate_set else "--unit-set"
         if found:
             raise SystemExit(f"{args.check} is not what the generator writes: regenerate it with "
-                             f"tools/gen-corpus.py {'--assembly-set' if args.assembly_set else '--unit-set'} {args.check}")
+                             f"tools/gen-corpus.py {mode} {args.check}")
         print(f"{args.check} matches the generator")
 
 

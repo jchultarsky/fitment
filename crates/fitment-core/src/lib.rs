@@ -53,12 +53,13 @@ pub use fit::{CANDIDATE_REFUSED, FitStatus, INTERFACE_REJECTED, Interference, NO
 pub use gate::{Refusal, RefusalCode};
 pub use geom::{Dir3, Point3, Rigid, Vec3};
 pub use matching::{
-    At, Band, BandWidth, Blocked, CandidateView, Clearance, EndSide, Evidence, Failure,
-    FailureCode, GUARD_MM, Grip, IndexTokens, Kept, MATCH_RULES_VERSION, MAX_COVERAGE_STEPS,
-    MAX_SHORTLIST_CHECKS, MatchOptions, MatchPolicy, Measure, MeasureValue, Missing,
-    MissingElement, PairToken, PartSignature, Placement, Quantity, SIGNATURE_VERSION, Seed,
-    ShortlistIndex, SigCone, SigPlane, SigStack, SocketSignature, SocketView, Unread, Warning,
-    WarningCode, Window, shortlist, verify,
+    At, Band, BandWidth, Blocked, CandidateResult, CandidateView, Clearance, EndSide, Evidence,
+    Failure, FailureCode, GUARD_MM, Grip, IndexTokens, Kept, MATCH_RULES_VERSION, MAX_ANCHOR_PAIRS,
+    MAX_COVERAGE_STEPS, MAX_PLACEMENTS, MAX_SHORTLIST_CHECKS, MatchOptions, MatchPolicy, Matcher,
+    Measure, MeasureValue, Missing, MissingElement, PairToken, PartSignature, Placement,
+    Placements, Quantity, SIGNATURE_VERSION, Seed, ShortlistIndex, SigCone, SigPlane, SigStack,
+    SocketRefused, SocketResult, SocketSignature, SocketView, Stage, Unread, Warning, WarningCode,
+    Window, align, shortlist, verify,
 };
 pub use sha256::{sha256, sha256_hex};
 pub use socket::{
@@ -69,7 +70,7 @@ pub use socket::{
     SocketFormatError, SourceRef, SpanBasis, StaleReason, StaleReview, Target, Toucher,
 };
 pub use tolerance::{ToleranceError, TolerancePolicy};
-pub use verdict::{Check, RejectReason, RequirementId, Verdict, VerdictKind, decide};
+pub use verdict::{Check, RejectReason, RequirementId, Verdict, VerdictKind, combine, decide};
 
 /// The version of the rules that turn a STEP file into features. It rises
 /// whenever the output for any input could change: a rule, a constant, an
