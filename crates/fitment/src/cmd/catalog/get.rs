@@ -43,6 +43,9 @@ struct Read {
     listed: Listed,
     history: Vec<HistoryStep>,
     features: Option<Result<fitment_core::FeaturesDocument, BadRow>>,
+    /// The current revision's stated properties at this build's version
+    /// (PR7), for the table and the document.
+    properties: Option<fitment_core::StatedProperties>,
     /// Every live entry, for a document's counts.
     all: Vec<Listed>,
     generation: i64,
@@ -67,6 +70,11 @@ fn read(
     } else {
         None
     };
+    let properties = if matches!(format, GetFormat::Table | GetFormat::Json) && current {
+        snapshot.properties(&named.sha256)?
+    } else {
+        None
+    };
     let all = if format == GetFormat::Json {
         snapshot.list()?
     } else {
@@ -79,6 +87,7 @@ fn read(
         listed,
         history,
         features,
+        properties,
     }))
 }
 
@@ -116,9 +125,10 @@ fn table(read: &Read) -> String {
         let version = |v: Option<u32>| v.map_or_else(|| "-".into(), |v| v.to_string());
         let _ = writeln!(
             out,
-            "versions  extractor {}, signature {}",
+            "versions  extractor {}, signature {}, properties {}",
             version(l.versions.0),
-            version(l.versions.1)
+            version(l.versions.1),
+            version(l.versions.2)
         );
     }
     if let Some(c) = l.counts {
@@ -140,6 +150,12 @@ fn table(read: &Read) -> String {
             let _ = writeln!(out, "    {}: {}{at}", r.code, printable(&r.message));
         }
     }
+    if let Some(stated) = &read.properties {
+        properties(&mut out, stated);
+    } else if l.counts.is_some() {
+        // Accepted, but stale (properties): reindex captures them (M5-26).
+        out.push_str("properties  - (not captured by this build: fitment catalog reindex)\n");
+    }
     out.push_str("history\n");
     for s in &read.history {
         let kept = if s.bytes_kept { " (bytes kept)" } else { "" };
@@ -153,6 +169,40 @@ fn table(read: &Read) -> String {
         );
     }
     out
+}
+
+/// PR7: each stated property, escaped, with its meaning under the shipped
+/// map; the map is applied here, so a new row needs no capture again.
+fn properties(out: &mut String, stated: &fitment_core::StatedProperties) {
+    let map = fitment_core::PropertyMap::shipped();
+    let truncated = if stated.truncated {
+        " (truncated: more were stated than are kept)"
+    } else {
+        ""
+    };
+    if stated.stated.is_empty() {
+        let _ = writeln!(out, "properties  none stated{truncated}");
+        return;
+    }
+    let _ = writeln!(out, "properties{truncated}");
+    for p in &stated.stated {
+        let mut line = format!(
+            "    #{} {} = {}",
+            p.instance,
+            printable(&p.name),
+            printable(&p.value)
+        );
+        if let Some(measure) = &p.measure {
+            let _ = write!(line, "  {}", printable(measure));
+        }
+        if let Some(unit) = &p.unit {
+            let _ = write!(line, "  unit {}", printable(unit));
+        }
+        if let Some(m) = map.meaning(p) {
+            let _ = write!(line, "  -> {}: {}", m.field.as_str(), m.meaning.as_str());
+        }
+        let _ = writeln!(out, "{line}");
+    }
 }
 
 /// `--format features`: the checked stored document (GT2, QR4).
@@ -287,7 +337,10 @@ pub(super) fn run(args: &Args, dir: &Path, catalog: &mut Catalog) -> ExitCode {
     let (text, code) = match args.format {
         GetFormat::Table => (Ok(table(&read)), 0),
         GetFormat::Json => {
-            let entry = Entry::of(&read.listed, Some(&read.history));
+            let mut entry = Entry::of(&read.listed, Some(&read.history));
+            if let Some(stated) = &read.properties {
+                entry = entry.with_properties(stated, &fitment_core::PropertyMap::shipped());
+            }
             let document = CatalogDocument::new(read.generation, &read.all, vec![entry], None);
             (Ok(document.to_json()), 0)
         }

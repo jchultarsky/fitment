@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use fitment_core::{
-    EXTRACTOR_VERSION, FeaturesDocument, IndexTokens, PartSignature, RefusalCode,
-    SIGNATURE_VERSION, Sense,
+    EXTRACTOR_VERSION, FeaturesDocument, IndexTokens, PROPERTIES_VERSION, PartSignature,
+    RefusalCode, SIGNATURE_VERSION, Sense, StatedProperties,
 };
 use rusqlite::{OptionalExtension as _, Transaction, params};
 
@@ -181,6 +181,8 @@ pub(crate) struct Prepared {
     pub(crate) status: Status,
     pub(crate) part_digest: Option<Sha256Hex>,
     pub(crate) tokens: Option<IndexTokens>,
+    /// PR3: an accepted file's stated properties, from the same parse.
+    pub(crate) properties: Option<StatedProperties>,
     pub(crate) summary: Summary,
     pub(crate) replaced_blob: bool,
     /// Whether `prepare` put the blob in place, hashed.
@@ -402,7 +404,7 @@ impl Catalog {
             return Err(fail(None, Outcome::Conflict { reason }));
         };
         let sha256 = Sha256Hex::of(&bytes);
-        let read = FeaturesDocument::read(&bytes);
+        let (read, stated) = FeaturesDocument::read_with_properties(&bytes);
         let doc = read.to_compact_json();
         if doc.len() > MAX_DOCUMENT_BYTES {
             let reason = "derived_too_large: its features document is too large to store".into();
@@ -420,6 +422,7 @@ impl Catalog {
             doc,
             status: summary.status,
             part_digest,
+            properties: read.part().map(|_| stated),
             tokens,
             summary,
             bytes,
@@ -632,6 +635,7 @@ fn insert(tx: &Transaction<'_>, p: &Prepared, g: i64, n: i64) -> rusqlite::Resul
     if let Some(tokens) = &p.tokens {
         insert_tokens(tx, p, tokens, key)?;
     }
+    insert_properties(tx, p)?;
     tx.execute(
         "INSERT INTO op (generation, n, kind, entry, sha256, fitment_version)
          VALUES (?1, ?2, 'ingest', ?3, ?4, ?5)",
@@ -675,6 +679,34 @@ pub(crate) fn insert_features(tx: &Transaction<'_>, p: &Prepared) -> rusqlite::R
             c.map(|c| c.other_faces),
             s.complete,
             s.first_refusal,
+        ],
+    )?;
+    Ok(())
+}
+
+/// PR3: an accepted file's stated properties with their preimage hash. A
+/// row of this content and version already there is left as it is.
+pub(crate) fn insert_properties(tx: &Transaction<'_>, p: &Prepared) -> rusqlite::Result<()> {
+    let Some(stated) = &p.properties else {
+        return Ok(());
+    };
+    let text = stated.to_json();
+    let hash = preimage::properties(
+        &p.sha256,
+        PROPERTIES_VERSION,
+        stated.truncated,
+        text.as_bytes(),
+    );
+    tx.execute(
+        "INSERT INTO properties (sha256, properties_version, truncated, stated, stated_sha256)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (sha256, properties_version) DO NOTHING",
+        params![
+            p.sha256.as_str(),
+            PROPERTIES_VERSION,
+            stated.truncated,
+            text.as_bytes(),
+            hash.as_str(),
         ],
     )?;
     Ok(())

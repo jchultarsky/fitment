@@ -15,6 +15,7 @@ use super::{
 };
 use crate::gate::{self, Refusal, RefusalCode};
 use crate::geom::Rigid;
+use crate::properties::StatedProperties;
 
 /// The header facts a document records, accepted or refused.
 pub(crate) fn header_of(info: &Info) -> FileHeader {
@@ -41,6 +42,20 @@ fn rigid(transform: &stepq::geometry::Rigid) -> Option<Rigid> {
 /// The file's header facts, when it can be parsed, and its part or the
 /// reasons it is refused, sorted and capped.
 pub(super) fn read(step: &[u8]) -> (Option<FileHeader>, Result<Part, Vec<Refusal>>) {
+    let (header, part, _) = read_with(step, false);
+    (header, part)
+}
+
+/// [`read`], and the file's part-level properties from the same parse if
+/// `properties` (PR1).
+pub(super) fn read_with(
+    step: &[u8],
+    properties: bool,
+) -> (
+    Option<FileHeader>,
+    Result<Part, Vec<Refusal>>,
+    StatedProperties,
+) {
     match parse(step) {
         Err(error) => (
             None,
@@ -49,6 +64,7 @@ pub(super) fn read(step: &[u8]) -> (Option<FileHeader>, Result<Part, Vec<Refusal
                 None,
                 format!("the file is not ISO 10303-21: {error}"),
             )]),
+            StatedProperties::default(),
         ),
         Ok(exchange) => {
             // `build`, not `new`: a dangling reference is a refusal with its
@@ -56,7 +72,16 @@ pub(super) fn read(step: &[u8]) -> (Option<FileHeader>, Result<Part, Vec<Refusal
             let graph = Graph::build(exchange);
             let info = Info::new(&graph);
             let header = header_of(&info);
-            (Some(header), part(&graph, &info).map_err(gate::finish))
+            let stated = if properties {
+                crate::properties::of_graph(&graph)
+            } else {
+                StatedProperties::default()
+            };
+            (
+                Some(header),
+                part(&graph, &info).map_err(gate::finish),
+                stated,
+            )
         }
     }
 }

@@ -43,7 +43,11 @@ fn wanted(which: Which, status: Option<EntryStatus>) -> bool {
             | (Which::Quarantined, Some(EntryStatus::Quarantined))
             | (
                 Which::Stale,
-                Some(EntryStatus::StaleExtractor(_) | EntryStatus::StaleSignature(_))
+                Some(
+                    EntryStatus::StaleExtractor(_)
+                        | EntryStatus::StaleSignature(_)
+                        | EntryStatus::StaleProperties(_)
+                )
             )
     )
 }
@@ -54,6 +58,7 @@ pub(super) fn status_text(listed: &Listed) -> String {
         Some(EntryStatus::Indexed) if listed.complete == Some(false) => "indexed*".into(),
         Some(EntryStatus::StaleExtractor(v)) => format!("stale (extractor {v})"),
         Some(EntryStatus::StaleSignature(v)) => format!("stale (signature {v})"),
+        Some(EntryStatus::StaleProperties(_)) => "stale (properties)".into(),
         Some(status) => status.name().into(),
         None => "-".into(),
     }

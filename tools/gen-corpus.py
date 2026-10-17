@@ -1016,6 +1016,28 @@ for rule, tests in M5_PR4.items():
 # built (`gc --vacuum` runs it, `change.rs::gc_vacuums_on_request`).
 for rule in ("QR9", "QR13", "SZ4"):
     RULES[rule] = {"deferred": "M5 PR 7"}
+# PR 5 builds the properties (D10): core's capture and map, the store's rows, `get`'s display.
+P = "crates/fitment/tests/properties.rs"
+CP = f"{T}/properties.rs"
+PM = "crates/fitment-core/src/properties"
+M5_PR5 = {
+    "PR1": [f"{P}::the_shipped_row_reads_its_cited_records", f"{CP}::ingest_captures_the_stated_properties"],
+    "PR2": [f"{P}::what_is_captured_from_a_generated_file", f"{P}::hundreds_of_values_are_kept",
+            f"{PM}/mod.rs::bounds_mark_the_set_truncated"],
+    "PR3": [f"{CP}::ingest_captures_the_stated_properties", f"{CP}::each_properties_field_is_bound",
+            f"{CP}::only_deep_finds_a_rewritten_capture",
+            "crates/fitment-catalog/src/preimage.rs::every_field_is_in_the_preimage"],
+    "PR4": [f"{P}::the_shipped_row_reads_its_cited_records", f"{P}::defaults_and_notes_mean_nothing",
+            f"{PM}/map.rs::the_shipped_row_and_nothing_else"],
+    "PR5": [f"{P}::properties_and_names_change_no_verdict", f"{CP}::stale_properties_never_refuse_a_match"],
+    "PR6": [f"{P}::properties_and_names_change_no_verdict", f"{P}::defaults_and_notes_mean_nothing"],
+    "PR7": [f"{C}::get_shows_the_stated_properties"],
+    "RX11": ["crates/fitment/tests/golden.rs::tokens_match_the_goldens",
+             "crates/fitment/tests/golden.rs::properties_match_the_golden"],
+}
+for rule, tests in M5_PR5.items():
+    RULES[rule] = {"tests": tests}
+RULES["RX2"]["tests"].append(f"{CP}::stale_properties_never_refuse_a_match")
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with

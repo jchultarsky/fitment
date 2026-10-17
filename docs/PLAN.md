@@ -268,7 +268,7 @@ For each item found, note its technology and decide: depend on it, copy it, or s
 
 ## Open decisions
 
-One decision is open (D10); D1, D3, D4 and D5 were settled on 9 Oct 2026, D2 on 11 Oct 2026, D11 on 12 Oct 2026, and D6 to D9 at M4's exit on 16 Oct 2026. Each has a default that applies if nothing else is decided.
+No decision is open. D1, D3, D4 and D5 were settled on 9 Oct 2026, D2 on 11 Oct 2026, D11 on 12 Oct 2026, D6 to D9 at M4's exit on 16 Oct 2026, and D10 in M5 on 16 Oct 2026.
 
 | # | Decision | Recommended default | Needed by |
 | --- | --- | --- | --- |
@@ -281,7 +281,7 @@ One decision is open (D10); D1, D3, D4 and D5 were settled on 9 Oct 2026, D2 on 
 | D7 | Grip length: hard requirement or warning | Decided 16 Oct 2026 (M4-8): hard only in M4; a warning waits for M7, which can check where neighbours reseat. Every grip-only change of thickness is a false negative until then | M4 |
 | D8 | Real ground truth: obsolete parts with the replacement someone accepted | Decided 16 Oct 2026 (M4-38): none collected in M4; the generated corpus and AS1's exports only; revisit at M5 with catalog parts | M4 |
 | D9 | Default tolerances | Decided 16 Oct 2026 (M4-37): 0.01 mm and 0.01°, not tuned on the generated corpus; tuning waits for real catalog parts (M5) | M4 |
-| D10 | Property names that carry thread and material | Read them off real sample files | M5 |
+| D10 | Property names that carry thread and material | Decided 16 Oct 2026 (M5-5), read off the 45 fixtures ([research/m5-catalog.md](research/m5-catalog.md), section 4.13): none states a material or a thread in a form fitment can use. Part-level properties are captured at ingest, bounded and versioned, and shown by `fitment catalog get`; one evidenced mapping row ships (NX's `MaterialMissingAssignments` = `TRUE`: no material assigned). No verdict or flag changes; each later row must cite a real sample | M5 |
 | D11 | How the user names the part to replace | Decided 12 Oct 2026: by part number (or name, or `#<n>`), all occurrences, merged where they ask the same; see Choosing the part to replace | M3 |
 
 D1 was the one decision that changes what the system can honestly claim. It was answered on 9 Oct 2026 after the research in [research/d1-body-fit.md](research/d1-body-fit.md). Without a fit check, a candidate with the right interface and a body that collides is reported as an interface match, never a match. In-process bindings, monstertruck, and meshes checked with parry3d were each rejected as a source of `Match`, because each can wrongly pass a candidate. That research also defines what a sound fit check must test.
