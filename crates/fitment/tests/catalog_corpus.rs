@@ -80,14 +80,15 @@ fn sockets(dir: &Path) -> BTreeSet<(String, String)> {
         .collect()
 }
 
-/// A catalog of every corpus part file, the hostile ones aside, in
-/// `scratch`; and each live entry's label with its file's bytes.
-fn ingest(dir: &Path, scratch: &Path) -> (Catalog, Vec<(String, Vec<u8>)>) {
+/// A catalog of the corpus part files `hostile` or not (CT10's `h_`
+/// parts), in `scratch`; and each live entry's label with its file's
+/// bytes.
+fn ingest(dir: &Path, scratch: &Path, hostile: bool) -> (Catalog, Vec<(String, Vec<u8>)>) {
     let mut paths: Vec<PathBuf> = fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().path())
         .filter(|p| p.extension().is_some_and(|e| e == "stp"))
-        .filter(|p| !p.file_name().unwrap().to_string_lossy().starts_with("h_"))
+        .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("h_") == hostile)
         .collect();
     paths.sort();
     let _ = fs::remove_dir_all(scratch);
@@ -201,7 +202,7 @@ fn the_corpus_through_a_catalog_is_the_file_run() {
     };
     let scratch =
         std::env::temp_dir().join(format!("fitment-catalog-corpus-{}", std::process::id()));
-    let (mut catalog, all) = ingest(&dir, &scratch);
+    let (mut catalog, all) = ingest(&dir, &scratch, false);
     let memory = in_memory(&catalog);
     let policies = [
         MatchPolicy::default(),
@@ -243,5 +244,52 @@ fn the_corpus_through_a_catalog_is_the_file_run() {
         }
     }
     assert!(checked > 60, "{checked} socket runs");
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+/// CT10 and QR9: a catalog of the hostile parts alone, every corpus
+/// socket run against it: each run within M4's hostile bound of 30 s, and
+/// each the file run over the same files (CT1, CT2, CT3).
+#[test]
+fn hostile_parts_through_a_catalog_are_the_file_run() {
+    let Some(dir) = corpus() else {
+        return;
+    };
+    let scratch =
+        std::env::temp_dir().join(format!("fitment-catalog-hostile-{}", std::process::id()));
+    let (mut catalog, all) = ingest(&dir, &scratch, true);
+    assert_eq!(all.len(), 4, "the four h_ parts");
+    let memory = in_memory(&catalog);
+    let mut checked = 0;
+    for (case, part) in sockets(&dir) {
+        let bytes = fs::read(dir.join(format!("{case}.stp"))).unwrap();
+        let Ok(document) = SocketDocument::extract(&bytes, Some(&part), None) else {
+            continue;
+        };
+        let Ok(matcher) = Matcher::new(
+            &document,
+            MatchPolicy::default(),
+            MatchOptions::default(),
+            &NoFitVerifier,
+        ) else {
+            continue;
+        };
+        let started = std::time::Instant::now();
+        check(
+            &mut catalog,
+            &memory,
+            &matcher,
+            &all,
+            &format!("{case} {part}"),
+        );
+        // The file runs, the catalog's full and exhaustive runs together.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(90),
+            "{case} {part}: {:?}",
+            started.elapsed()
+        );
+        checked += 1;
+    }
+    assert!(checked > 20, "{checked} sockets");
     let _ = fs::remove_dir_all(&scratch);
 }

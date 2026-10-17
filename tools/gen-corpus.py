@@ -1053,6 +1053,35 @@ M5_PR6 = {
 }
 for rule, tests in M5_PR6.items():
     RULES[rule] = {"tests": tests}
+# PR 7 closes M5: every rule has a test or a reason outside M5 (CT19).
+X = "crates/fitment/tests/catalog_corpus.rs"
+M5_PR7 = {
+    "CL5": [f"{C}::a_closed_stdout_ends_output_quietly"],
+    "GT9": [f"{R}::nothing_stored_names_the_match_or_socket_rules"],
+    "PH5": [f"{C}::a_path_that_is_not_unicode_is_refused"],
+    "QR9": [f"{X}::hostile_parts_through_a_catalog_are_the_file_run"],
+    "SZ3": ["crates/fitment-core/src/matching/signature.rs::a_part_with_too_many_pairs_is_marked_incomplete"],
+    "SZ4": [f"{C}::vacuum_says_what_it_needs", f"{T}/change.rs::gc_vacuums_on_request"],
+    "QR11": [f"{Q}::a_match_reads_only_the_index", f"{Q}::a_match_runs_with_the_store_moved_away"],
+}
+for rule, tests in M5_PR7.items():
+    RULES[rule] = {"tests": tests}
+RULES.update({
+    "CC3": {"deferred": "unobservable from a test: a catalog match runs SQLite's passive checkpoint once its "
+                        "snapshot ends (match_catalog.rs), and gc truncates the WAL"},
+    "CL6": {"deferred": "holds by construction: no command reads stdin, and destructive commands take exact ids "
+                        "(ID7)"},
+    "CL10": {"deferred": "holds by construction: Rust's integer formatting has no locale and no separators, and "
+                         "fitment formats nothing through a locale"},
+    "GT8": {"deferred": "no input is known to make the gate refuse as internal, a fitment bug by definition; "
+                        "ingest and replace say so and exit 1 when one does"},
+    "QR13": {"deferred": "M7: M5 runs with NoFitVerifier and reads no stored file during a match (CT6)"},
+    "ST8": {"deferred": "holds by construction: the store takes no lock of its own; SQLite's write lock orders "
+                        "every writer (race.rs)"},
+    "SZ2": {"deferred": "a guard, not a path: under SZ1's size cap no document reaches 512 MiB (a ratio over 4 "
+                        "to its file; 1.39 is the largest measured)"},
+    "VF5": {"deferred": "documentation: the README's section on copying a catalog says to run verify --deep"},
+})
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with

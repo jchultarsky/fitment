@@ -1380,6 +1380,20 @@ Each PR comes with its tests and two adversarial reviews, as in M4, and no PR de
 7. **Scale, the exit and the release.**
    - **Contents:** `tools/scale-step.py` (section 8.3's unit edit, no kernel) and CT11 weekly; the reviews' hardening; CI's no-default-features leg, the nightly soaks and the three-OS comparison of catalog outputs; the registry gate on for M5's ids with no M5 deferral left (CT19); `tools/check-core.sh`'s package checks extended to `fitment-catalog` (no STEP file in any package, M5-14; a LICENSE in each); section 12's documents, the README (a catalog walkthrough, VF5's note on copied catalogs, CC5's on synced folders, R20's advice to run `verify` regularly and `--exhaustive` when a miss is suspected, and `prune --revisions`) and CHANGELOG; version 0.2.0 for every crate, `fitment-catalog` published as internal and unstable.
    - **Done when** PLAN's exit holds from the CLI: ingest, list, get, replace and delete work, and a match reads only the index (CT6). The publish itself is the user's.
+   - **As built,** in two PRs: 7a the exit (scale, the remaining rules, the documents) and 7b the release (0.2.0). PLAN's exit holds from the CLI, and CT6 holds three ways: the counting seam sees no call during a run, a compile-fail doctest shows the blob store cannot be named outside the crate, and with every stored file moved away each committed socket's runs give the same documents and refusals while `verify` reports each file missing (`query.rs::a_match_runs_with_the_store_moved_away`).
+     - **CT11, measured** on an 18-core Mac, `--jobs 16`, release, `catalog_scale.rs` over `tools/scale-step.py`'s copies of the corpus's 237 part and candidate files, every corpus socket under the default policy:
+
+       | Parts | Ingest | Plain `verify` | Full run, typical | Full run, slowest | Exhaustive run |
+       | --- | --- | --- | --- | --- | --- |
+       | 9,916 | 83 s | 1.9 s | 35 to 50 ms | 0.87 s (s15's block, 816 survivors) | 1.5 to 6.2 s |
+       | 99,156 | 879 s | 19 s | 0.5 s | 6.9 s (s15's block, 8,296 survivors) | 15 to 60 s |
+
+       At both sizes every full run is the exhaustive run restricted to level 1's survivors, digest for digest, and hides no pass. **M5-43 is not taken:** no query at 10⁵ comes near 60 s. A full run's floor of about 0.5 s at 10⁵ is QR1's merged stale check over every live entry, now measured. Ingest is bound by the store's durability (each blob and its directory synced, about 9 ms a part on APFS), not by reading. The weekly CI workflow (`scale.yml`) runs 10⁴, with a ceiling of 10 s a query; 10⁵ is run by hand.
+     - **CT10 and QR9:** `catalog_corpus.rs::hostile_parts_through_a_catalog_are_the_file_run` puts the four `h_` parts in a catalog and runs every corpus socket against it, each the file run, within 90 s for both together (110 s in all, release).
+     - **CT7:** two catalogs ingested in opposite orders give the same runs, and so does either under `reverse_unordered_selects` (`query.rs::ingest_order_and_select_order_change_no_run`); CI's `determinism` job compares one catalog's `list`, `get` and match documents and exit codes across Linux, macOS and Windows (`tools/catalog-outputs.sh`).
+     - **SZ4:** the standard library has no free-space query, and the catalog takes no unsafe code or platform call for one; `gc --vacuum` says what VACUUM needs before running it, and SQLite's VACUUM fails whole, changing nothing, when the copy does not fit.
+     - **CT19:** every M5 rule has a test or a reason, and the coverage test no longer allows "M5 PR" deferrals: CC3 and GT8 cannot be shown by a test (the checkpoint is SQLite's, and no input is known to give an `internal` refusal), CL6, CL10 and ST8 hold by construction, SZ2 is a guard no input reaches, QR13 is M7's and VF5 the README's.
+     - **Left:** the clevis case of CT1 (review, F3) is not a corpus case; the SG5 skip it would show is `level_one`'s, shared by both sources, tested in core (`signature.rs::one_stack_for_a_group`), and CT3 shows the SQL source equal to the in-memory one on every committed and corpus socket. Real catalog parts, and with them D8 and D9 (M5-37), wait.
 
 ## 11. Risks
 

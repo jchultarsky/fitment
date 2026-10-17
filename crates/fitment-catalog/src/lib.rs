@@ -10,6 +10,15 @@
 //! <DIR>/blobs/sha256/ab/ab12…  each content's exact bytes, read-only
 //! <DIR>/tmp/                   blob writes in flight
 //! ```
+//!
+//! A catalog match reads the database alone (CT6, QR11): the blob store
+//! is private, so no code outside this crate can read a stored file, and
+//! the match path within it is written against the snapshot only.
+//!
+//! ```compile_fail
+//! // The store cannot be named from outside the crate.
+//! use fitment_catalog::blobs::Blobs;
+//! ```
 
 mod blobs;
 mod change;

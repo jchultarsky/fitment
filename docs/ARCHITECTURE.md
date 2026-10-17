@@ -2,14 +2,19 @@
 
 How fitment is put together, and the rules every change keeps. The design
 of each part is in [PLAN.md](PLAN.md) and, for reading features (milestone
-M2) and sockets (M3), in [research/m2-features.md](research/m2-features.md)
-and [research/m3-socket.md](research/m3-socket.md); this page is the map.
+M2), sockets (M3), matching (M4) and the catalog (M5), in
+[research/m2-features.md](research/m2-features.md),
+[research/m3-socket.md](research/m3-socket.md),
+[research/m4-match.md](research/m4-match.md) and
+[research/m5-catalog.md](research/m5-catalog.md); this page is the map.
 
 ## Crates
 
 ```text
-fitment (CLI) ──> fitment-core ──> stepq (private: no type of it is public)
-                        └────────> libm, serde, serde_json, thiserror
+fitment (CLI) ──> fitment-catalog ──> rusqlite (SQLite, bundled)
+      │                 │
+      └─────────────────┴──> fitment-core ──> stepq (private: no type of it is public)
+                                   └────────> libm, serde, serde_json, thiserror
 ```
 
 - **`fitment-core`** is the library: bytes in, values out. It does no I/O
@@ -18,13 +23,20 @@ fitment (CLI) ──> fitment-core ──> stepq (private: no type of it is publ
   against `deny/core.toml`. It never panics on input: `unwrap`, `expect`
   and `panic!` are denied, and an invariant a step finds broken is an
   `internal` refusal, not a crash.
-- **stepq stays behind walls.** Only `src/gate/`, `src/features/step.rs`
-  and `src/assembly/step.rs` name it, which `tools/check-core.sh` checks;
+- **stepq stays behind walls.** Only `src/gate/`, `src/features/step.rs`,
+  `src/assembly/step.rs` and `src/properties/step.rs` name it, which `tools/check-core.sh` checks;
   everything else works on fitment's own copy of the solid
   (`features/topo.rs`) and of the product structure (`assembly/`). A stepq
   release is then a one-crate change.
-- **`fitment`** is the command line: it reads the file, calls the core,
-  and prints. It never names stepq.
+- **`fitment-catalog`** is the store (M5): a directory with a SQLite
+  database and every stored file under its SHA-256. It is the only crate
+  that may use rusqlite (`deny.toml`), and its clippy configuration bans
+  hash containers, the clock and the environment as the core's does. It
+  is internal and unstable: the CLI is its one user.
+- **`fitment`** is the command line: it reads the file, calls the core
+  and the catalog, and prints. It never names stepq. Its `catalog` cargo
+  feature, on by default, brings in `fitment-catalog`; without it,
+  `fitment catalog` and `match --catalog` exit 2.
 
 ## Reading a part
 
@@ -151,6 +163,46 @@ is a `FitVerifier` the caller hands the matcher; this build's is
 `NoFitVerifier`, so `InterfaceMatch` is the best verdict until M7. The
 design, every rule and its tests are in `docs/research/m4-match.md`.
 
+## Storing a part and matching from a catalog
+
+```text
+ingest FILE ─ read once into one buffer, capped (SZ1)      ingest.rs
+  │   SHA-256 of that buffer: the blob's name and key
+  ▼
+gate and features, and the stated properties, from one     FeaturesDocument::read_with_properties
+  │   parse; a refusal is stored too: quarantined
+  ▼
+derived rows, each hashed over a preimage naming its       preimage.rs
+  │   content and versions: the compact features
+  │   document, level 1's tokens and postings, the
+  │   properties; with the entry and its revision, in
+  │   one transaction per batch of at most 64 files
+  ▼
+catalog match ─ one read snapshot                          query.rs
+  │   stale or empty catalog, or blocked socket: refused
+  │   level 1 over the stored postings and tokens
+  ▼
+each survivor's row checked: its hash, its parse, its      snapshot.rs (QR4)
+  │   versions, its part digest recomputed; a damaged
+  │   row is named and not judged (exit 1)
+  ▼
+judged as its file would be (Matcher::judge_document),     fitment-core
+    equal parts once, then MatchDocument::new over the
+    results: a file run's document, restricted
+```
+
+The store keeps two rules. **Bytes before rows:** a blob is written,
+synced and renamed into place before the transaction that names it
+commits, so a row never names a missing file; a file is unlinked only
+under the write lock, after checking no row names it. **A match reads the
+index alone:** no stored file is opened while matching (CT6), so a run
+costs what the index admits, and the store's private blob module cannot be
+reached from the match path. Kept revisions (`replace`) keep their bytes
+for `get ID@rN` until `prune --revisions`; their derived rows go, so level
+1 never sees them. `reindex` writes the rows a newer build reads, batch by
+batch, and `gc --versions` removes older ones, never a newer build's.
+The design, every rule and its tests are in `docs/research/m5-catalog.md`.
+
 ## Soundness: refuse, or say unknown, but never guess
 
 fitment may miss a match. It must never claim one. Reading features keeps
@@ -180,6 +232,16 @@ the same rule:
   faces boxed soundly), and the original's own run (Y4, VR21): every
   original in the corpus and the pinned fixtures, read in place, passes
   every requirement M4 can verify and fails exactly the others.
+- **A catalog run is a file run, restricted.** It refuses a stale
+  catalog rather than mix versions, never searches a quarantined entry,
+  and judges each survivor from its stored document exactly as from its
+  file, so its document equals a file run's over level 1's survivors,
+  digest for digest. Each derived row's hash covers a preimage naming its
+  content and versions, so a row moved to another key is caught on load;
+  equal parts are found by digests recomputed from the loaded documents.
+  A damaged or lost posting can hide a part until `verify` reports it, and
+  can never pass one; a copied database is trusted only after `verify
+  --deep`, which reads every part again from its file.
 - **Never state a wrong known value.** Every rule that was found to guess
   in review was withdrawn or made to say `unknown` instead: the seam proof
   (F3), a walk that turns back along its axis (W7b), a drill point after a
@@ -200,7 +262,17 @@ the same rule:
   records it, and the catalog (M5) re-reads every file whose document has
   another. **`SOCKET_RULES_VERSION`** does the same for sockets, and
   `fitment.socket` (`SOCKET_FORMAT_VERSION`) is frozen at the first
-  publish like `features.v1`. A socket document of older rules is still
+  publish like `features.v1`.
+- **The catalog** writes `fitment.catalog` v1 (`list`, `get`, and the
+  changes of `ingest`, `replace`, `delete`, `reindex` and `prune`). Its
+  database has a schema version, and a newer one is refused by every
+  command. Its rows are keyed by content and version: features by
+  `EXTRACTOR_VERSION`, tokens and postings also by `SIGNATURE_VERSION`
+  (2 since M5: pair tokens name their stacks), properties by
+  `PROPERTIES_VERSION`. A catalog with rows of another extractor or
+  signature version is stale and refuses a match until `reindex`; one
+  without current properties lists as `stale (properties)` and is still
+  searched. A socket document of older rules is still
   read for its review decisions alone, its digest checked, so extracting
   again onto a reviewed file keeps the decisions on requirements that did
   not change. Golden files can only be re-blessed when a version they
@@ -226,7 +298,8 @@ The same bytes give the same output bytes on Linux, macOS and Windows:
 3. finite values only, and never `-0.0`: every stored number passes
    through `geom::finite`;
 4. nothing from the environment in a document: no path, time, host or
-   locale;
+   locale; the catalog counts changes by a generation number, not a time,
+   and every query that lists rows has an `ORDER BY`;
 5. `serde_json` with `float_roundtrip`, pinned by `Cargo.lock`.
 
 ## Hostile input
@@ -238,7 +311,11 @@ one face full of holes, and each quadratic path they found was removed.
 For sockets, `tests/hostile.rs` reads 10,008 bolts and refuses 36,008
 coincident ones by check 39, and s55 is a plate of 3,600 coplanar tiles.
 Coordinates beyond 1e6 mm are refused before any arithmetic depends on
-them, and every bound is tested so that NaN fails it.
+them, and every bound is tested so that NaN fails it. The catalog reads at
+most `--max-mib` of a file, bounds a part's stated properties while reading
+them, escapes every stored name it prints, refuses a symbolic link inside
+its store, and keeps its own files apart from the user's: an input inside
+the catalog, or an output into it, is refused.
 
 ## Testing
 
@@ -257,6 +334,9 @@ them, and every bound is tested so that NaN fails it.
 | Fixtures | `tools/fetch-fixtures.sh`, `fixtures/manifest.json`, `tests/fixtures.rs` | 45 public STEP files: pinned gate results and counts of planes, outlines, cylinders, holes and shafts; sockets pinned for chosen targets of the assemblies, and AS1's exports compared |
 | Oracle | `tools/verify-occt.py` | Open CASCADE 8.0.1, a kernel the generator does not use: `manifest` checks the construction; `features` checks fitment's planes, cylinders, holes and shafts; `socket` checks every socket against the solids, both ways (spans, seats, touchers, grips, floors, touching faces, occupied holes, conical seats' senses and ranges, zones' profiles, and cores clear of the part's own material where no requirement says otherwise), but s55's, which it skips by name (its 7,440-face plate takes Open CASCADE hours), with the fixtures' tallies pinned but the sampled count of touching faces; `mutations` edits fitment's sockets fourteen ways and requires each edit to meet a disagreement; `match` judges every corpus candidate with the built fitment and checks each document: every pass fits physically at the placement fitment states (KO3), every failure re-measured (KO4), placements rigid with their features on their requirements (KO5), each bad case but a mirror image disturbing only the neighbours its defect concerns (KO2), and ten mutations of the documents each met (KO6); with `--expect`, AS1's parts across its exports, the tallies pinned (KO8); `manifest` also places each candidate by its construction and requires the physics to agree with its truth (KO1; not `edge`, `refused`, originals read in place, or grip-only thickness changes) |
 
+| Catalog | `crates/fitment-catalog/tests`, `crates/fitment/tests/catalog_*.rs` | The store's invariants after every operation, faults at every file call and races between writers; every preimage field bound; reindex from catalogs written by older and newer builds, killed and resumed; on the generated corpus, every socket's catalog run equal to the file run restricted, and its exhaustive run to the file run, hostile parts included; a match with every stored file moved away; on Linux, macOS and Windows, the same catalog outputs |
+| Scale | `tools/scale-step.py`, `crates/fitment/tests/catalog_scale.rs` | Weekly at 10⁴ scaled corpus parts, by hand at 10⁵: every corpus socket's full run the exhaustive run restricted, no pass hidden, timings reported |
+
 The test parts' answers come from the generator's arguments, never from
 reading a written file; the oracle catches a generator whose part is not
 what its construction says. The oracle has its own blind spots, listed in
@@ -270,6 +350,10 @@ fitment's own tests.
 - Assembly gate, sockets, rules T, O, P, Z, N, X, B, I, J, H, Q, C, L, U,
   Y, A, V, review, the test assemblies and the socket oracle:
   [research/m3-socket.md](research/m3-socket.md).
+- Signature, alignment, verification, verdicts and the corpus:
+  [research/m4-match.md](research/m4-match.md).
+- The catalog: store, index, identity, changes, re-indexing, properties
+  and the catalog match: [research/m5-catalog.md](research/m5-catalog.md).
 - Milestones, matching method and verdicts: [PLAN.md](PLAN.md).
 - stepq's reading of STEP: its own repository and
   [research/m1-stepq-read.md](research/m1-stepq-read.md).

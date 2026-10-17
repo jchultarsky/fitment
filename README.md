@@ -11,7 +11,13 @@ same axes, diameters within limits, the same seating planes and grip
 length. It is deterministic (rules and arithmetic, no machine learning),
 written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 
-> **Status: M4 done (0.1.0).** `fitment features` reads one part from a
+> **Status: M5 done (the catalog).** `fitment catalog` stores STEP parts
+> by content, gated and indexed, and `fitment match --catalog` searches
+> them: a catalog run is the file run over the parts its index admits,
+> digest for digest, and on the 10⁵-part scaled corpus every full run
+> holds every part an exhaustive run passes. Released so far: M4 (0.1.0).
+>
+> `fitment features` reads one part from a
 > STEP file, refusing a file that is not a canonical part, with reasons.
 > `fitment socket` reads what the neighbours of a part in an assembly
 > require of any part that replaces it, as a reviewable socket file, and
@@ -156,11 +162,69 @@ refuse carries `larger_than_original`; `--tolerance-mm` and `--tolerance-deg` se
 `--original ASM` also judges the original part from the socket's own
 assembly, as a check of fitment itself.
 
-## Planned interface
+## Working with a catalog
 
-A catalog with create, read, update and delete, and a REST API over the
-catalog and matcher, follow once the matcher passes its zero-false-positive
-test.
+A catalog is a directory holding a SQLite database and every stored file,
+by its SHA-256. `ingest` gates each file once, as `fitment features` does,
+and indexes what it reads; a file the gate refuses is quarantined with its
+reasons and never searched.
+
+```console
+$ fitment catalog init -C parts
+fitment: parts: catalog created
+$ fitment catalog ingest -C parts in/
+fitment: parts: 7 files: 7 added
+added        m_bracket            1b77ea97  'm_bracket'  5 holes, 0 shafts, 6 planes
+…
+$ fitment catalog list -C parts
+fitment: parts: generation 2: 7 entries: 7 indexed, 0 quarantined, 0 stale
+id                        rev  status               sha256   holes shafts planes  product           file
+m_bracket                 r1   indexed              1b77ea97     5      0      6  'm_bracket'       m_bracket.stp
+…
+$ fitment match bracket.socket.json -C parts
+fitment: bracket.socket.json: catalog parts  generation 2  entries 7: 7 searched, 0 quarantined, not searched  level 1 kept 7
+…
+INTERFACE  catalog:m_bracket@r1  1b77ea97  'm_bracket'  all requirements verified; material_not_compared, requirements_unreviewed
+INTERFACE  catalog:m_bracket_lug@r1  1b9724ef  'm_bracket_lug'  all requirements verified; material_not_compared, requirements_unreviewed
+reject     catalog:m_bracket_missing_hole@r1  1e4e1790  'm_bracket_missing_hole'  1 failed: socket-1/bore:hole-688 no_feature
+…
+```
+
+A catalog match reads the index alone, never a stored file. Its document
+is the `fitment.match` document a file run over the same files gives,
+each candidate labelled `catalog:<id>@r<revision>`. `--id ID` judges
+named entries; `--exhaustive` judges every entry, the index aside; `--jobs
+N` judges N candidates at once and changes no byte of the result.
+
+- **Entries:** `get ID` shows an entry, its stated properties and its
+  history; `get ID --format step -o FILE` writes its bytes, checked
+  against their SHA-256 first. `replace ID FILE` gives an entry a new
+  revision and keeps the old one's bytes for `get ID@rN`; `delete ID...`
+  deletes all or none; `prune --revisions` releases kept revisions'
+  bytes.
+- **Upgrades:** a fitment that reads parts differently marks the catalog
+  stale, and every match refuses it until `fitment catalog reindex -C
+  DIR` has brought each entry up to date. A part that a new gate no
+  longer accepts is reported "no longer searched", and `reindex` exits 3.
+  `gc --versions` then removes the older rows.
+- **Upkeep:** run `fitment catalog verify -C DIR` regularly. It checks
+  every stored file, every row's hash and every index posting. A
+  damaged posting can hide a part from a match until `verify` reports it
+  (it can never pass one); when a part you expected is missing, run the
+  match again with `--exhaustive`. `gc` removes orphan files; `gc
+  --vacuum` compacts the database and needs free space about its size.
+- **Copying a catalog:** a copied or received catalog is trusted only
+  after `fitment catalog verify --deep`, which reads every part again
+  from its stored file: a database whose rows are consistent with each
+  other can still state a hole the file lacks, and a match believes the
+  index.
+- **Where to keep it:** on a local disk. SQLite's write-ahead log is not
+  safe on network file systems, and a folder a sync service copies while
+  fitment writes can give a torn copy.
+
+A build without the `catalog` cargo feature has no catalog: `fitment
+catalog` and `fitment match --catalog` exit 2 and say so. A REST API over
+the catalog and the matcher is M6.
 
 ## Roadmap
 
@@ -171,7 +235,7 @@ test.
 | M2 | Features of one part |
 | M3 | Socket extraction |
 | M4 | Matching, evidence, and the known-answer corpus (done, 0.1.0) |
-| M5 | Catalog |
+| M5 | Catalog (done) |
 | M6 | REST API |
 | M7 | Optional body-fit verifier |
 | M8 | Viewer |

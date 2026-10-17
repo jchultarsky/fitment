@@ -564,3 +564,85 @@ fn an_exhaustive_run_names_an_entry_without_its_row() {
         .unwrap();
     assert_eq!(run.corrupt, ["m_bracket@r1"]);
 }
+
+/// Every committed socket's full and exhaustive runs under every policy,
+/// as digests or refusals.
+fn every_run(catalog: &mut Catalog) -> Vec<String> {
+    let mut out = Vec::new();
+    for (case, part) in SOCKETS {
+        let document = socket(case, part);
+        for policy in policies() {
+            let matcher =
+                Matcher::new(&document, policy, MatchOptions::default(), &NoFitVerifier).unwrap();
+            let snapshot = catalog.snapshot().unwrap();
+            for selection in [Selection::Full, Selection::Exhaustive] {
+                out.push(
+                    match snapshot.match_catalog(&matcher, &selection, 4).unwrap() {
+                        Ok(run) => MatchDocument::new(&matcher, run.results)
+                            .digest()
+                            .to_owned(),
+                        Err(refused) => format!("{refused:?}"),
+                    },
+                );
+            }
+        }
+    }
+    out
+}
+
+/// CT6, M5's exit criterion: with every stored file moved away after
+/// ingest, each run gives the same document or the same refusal, and
+/// `verify` reports each file missing.
+#[test]
+fn a_match_runs_with_the_store_moved_away() {
+    let (mut catalog, files) = committed("moved-away");
+    let before = every_run(&mut catalog);
+    let root = catalog.root().to_owned();
+    drop(catalog);
+    common::make_writable(&root.join("blobs"));
+    fs::rename(root.join("blobs"), root.with_extension("away")).unwrap();
+    for b in 0..=255_u8 {
+        fs::create_dir_all(root.join(format!("blobs/sha256/{b:02x}"))).unwrap();
+    }
+    let mut catalog = Catalog::open(&root, Options::default()).unwrap();
+    assert_eq!(every_run(&mut catalog), before);
+    let problems = catalog.verify(false, false).unwrap();
+    let missing = problems
+        .iter()
+        .filter(|p| p.kind == fitment_catalog::ProblemKind::Missing)
+        .count();
+    assert_eq!(missing, files.len(), "{problems:?}");
+}
+
+/// CT7: two catalogs of the same files ingested one at a time in opposite
+/// orders, so that every internal key differs, give the same runs; and so
+/// does either with SQLite's unordered selects reversed.
+#[test]
+fn ingest_order_and_select_order_change_no_run() {
+    let inputs: Vec<PathBuf> = {
+        let mut files: Vec<PathBuf> = [core_tests().join("candidates"), core_tests().join("data")]
+            .iter()
+            .flat_map(|d| fs::read_dir(d).unwrap().map(|e| e.unwrap().path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "stp"))
+            .collect();
+        files.sort();
+        files
+    };
+    let build = |test: &str, files: &[PathBuf]| {
+        let mut catalog = catalog(&scratch(test));
+        for file in files {
+            catalog.ingest(std::slice::from_ref(file), None).unwrap();
+        }
+        catalog
+    };
+    let mut forward = build("order-forward", &inputs);
+    let reversed: Vec<PathBuf> = inputs.iter().rev().cloned().collect();
+    let mut backward = build("order-backward", &reversed);
+    let runs = every_run(&mut forward);
+    assert_eq!(every_run(&mut backward), runs);
+    backward
+        .connection()
+        .execute_batch("PRAGMA reverse_unordered_selects = ON")
+        .unwrap();
+    assert_eq!(every_run(&mut backward), runs);
+}
