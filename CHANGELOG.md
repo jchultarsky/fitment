@@ -73,6 +73,15 @@ Until 1.0, minor versions may contain breaking changes.
   or damaged file, which stays stale. `gc --versions` removes older
   versions' rows where current ones exist, never a newer version's.
 
+- **M5, PR 7 (the exit):** `tools/scale-step.py` scales corpus parts by
+  their length unit alone, and `catalog_scale.rs` runs every corpus socket
+  against a scaled catalog (weekly at 10⁴; by hand at 10⁵); a weekly CI
+  workflow runs it. The hostile corpus parts are matched through a
+  catalog as through files; a match runs with every stored file moved
+  away; CI compares one catalog's outputs across Linux, macOS and Windows.
+  `gc --vacuum` says what VACUUM needs first. Every M5 rule has a test or
+  a reason (CT19). The README walks through a catalog.
+
 ### Changed
 
 - `signature_version` is 2: pair tokens name their two stacks by index

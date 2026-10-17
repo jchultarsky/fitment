@@ -684,9 +684,9 @@ fn a_faulted_reindex_batch_is_all_or_nothing() {
     }
 }
 
-/// RX10: no stored row depends on the match or socket rules: no verdict
-/// is cached and no socket stored, so neither version can make a catalog
-/// stale.
+/// RX10 and GT9: no stored row depends on the match or socket rules: no
+/// verdict is cached and no socket, signature or shortlist stored, so
+/// neither version can make a catalog stale.
 #[test]
 fn nothing_stored_names_the_match_or_socket_rules() {
     let catalog = built("rules", 0);
@@ -702,4 +702,29 @@ fn nothing_stored_names_the_match_or_socket_rules() {
     for word in ["rules", "verdict", "socket"] {
         assert!(!schema.contains(word), "{word}");
     }
+    // GT9: nothing else is stored for matching: these tables, no more.
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        tables,
+        [
+            "blob",
+            "clock",
+            "entry",
+            "features",
+            "meta",
+            "name",
+            "op",
+            "posting",
+            "properties",
+            "revision",
+            "sqlite_sequence",
+            "tokens"
+        ]
+    );
 }

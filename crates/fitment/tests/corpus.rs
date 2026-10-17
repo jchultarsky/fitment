@@ -329,8 +329,12 @@ fn every_variant_has_its_base_s_sockets() {
 /// The rules left deferred when M4 closed, all M3's: `4.2#30` (internal, a
 /// bug), `F3` (withdrawn), `Z7` (holds by construction) and `V1` (M7).
 /// `Y4.original_run` left it with M4's matcher (KH10); M4 closed with none
-/// of its own.
-const DEFERRED: [&str; 4] = ["4.2#30", "F3", "Z7", "V1"];
+/// of its own. M5 closed with these, each for its reason (CT19): CC3 and
+/// GT8 cannot be shown by a test, CL6, CL10 and ST8 hold by construction,
+/// SZ2 is a guard no input reaches, QR13 is M7's and VF5 the README's.
+const DEFERRED: [&str; 12] = [
+    "4.2#30", "F3", "Z7", "V1", "CC3", "CL6", "CL10", "GT8", "QR13", "ST8", "SZ2", "VF5",
+];
 
 /// The rules that yield a requirement every candidate fails (design 8.4,
 /// Y4): each needs a case that shows it, not a test alone (13.1).
@@ -402,15 +406,11 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         }
         failures.extend(oracle_problems(id, &oracle, &root));
         failures.extend(case_lists(id, entry, &by_id));
-        // M2, M3 and M4 are closed: only these may wait, each for a reason
+        // M2 to M5 are closed: only these may wait, each for a reason
         // outside them (a bug's code, a withdrawn rule, a property of the
-        // construction, a later milestone). M4's exit removed the allowance
-        // its own rules had to wait for the PR that built them (KH14); M5's
-        // wait for theirs until M5's exit (CT19).
-        let m5 = entry["deferred"]
-            .as_str()
-            .is_some_and(|r| r.starts_with("M5 PR "));
-        if deferred && !DEFERRED.contains(&id.as_str()) && !m5 {
+        // construction, a later milestone). M5's exit removed the allowance
+        // its rules had to wait for the PR that built them (CT19).
+        if deferred && !DEFERRED.contains(&id.as_str()) {
             failures.push(format!(
                 "{id}: deferred, and not among the deferrals M4 closed with"
             ));
