@@ -1,0 +1,33 @@
+[package]
+name = "fitment-catalog"
+description = "The fitment catalog: STEP parts stored by content and indexed for matching (internal, unstable)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Published in M5's last PR (docs/research/m5-catalog.md, section 10), as
+# internal and unstable; until then it ships with nothing.
+publish = false
+include = ["src/**", "LICENSE"]
+
+[features]
+# Seams for the tests: a counting and a failing file system, and
+# constructors that write rows of other versions.
+test-support = []
+
+[dependencies]
+fitment-core = { workspace = true }
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+fitment-catalog = { path = ".", features = ["test-support"] }
+rusqlite = { workspace = true }
+
+[lints]
+workspace = true

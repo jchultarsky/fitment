@@ -33,6 +33,7 @@ deny = [
   { crate = "cxx", reason = "D1: no C++ bridge; kernels run out of process" },
   { crate = "cxx-build", reason = "D1: no C++ bridge; kernels run out of process" },
   { crate = "stepq", wrappers = ["fitment-core"], reason = "STEP reading lives in fitment-core" },
+  { crate = "rusqlite", wrappers = ["fitment-catalog"], reason = "M5's DB1: only the catalog touches SQLite" },
 ]
 # fitment-core's file formats depend on serde_json's exact features:
 # preserve_order changes map order and arbitrary_precision changes how floats

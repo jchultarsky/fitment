@@ -19,6 +19,15 @@ Until 1.0, minor versions may contain breaking changes.
   pairs in order); `FeaturesDocument::to_compact_json` and `part_digest`;
   `Source::new`.
 
+- **M5, PR 2a (the store):** the `fitment-catalog` crate, internal and
+  unpublished until M5's release: `Catalog::init` and `open` (a marker, a
+  SQLite database in WAL with schema 1, and a blob store under
+  `blobs/sha256/`), and `Catalog::ingest`: each file read once, gated,
+  stored by its SHA-256 with its features document, tokens and postings,
+  each derived row hashed over a preimage naming its key; ids from file
+  names, exact stems first; duplicates, conflicts and quarantine. Only
+  `fitment-catalog` may depend on rusqlite (`deny.toml`).
+
 ### Changed
 
 - `signature_version` is 2: pair tokens name their two stacks by index

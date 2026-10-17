@@ -1,0 +1,22 @@
+# Clippy reads this file for fitment-catalog only, its tests included
+# (docs/research/m5-catalog.md, section 3.2): no order that changes from run
+# to run, no wall time stored, no setting from the environment, and no
+# process control in a library. A local `#[allow]` with a comment is the
+# escape hatch, and it shows up in review.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "random iteration order makes output nondeterministic; use BTreeMap" },
+  { path = "std::collections::HashSet", reason = "random iteration order makes output nondeterministic; use BTreeSet" },
+]
+
+disallowed-methods = [
+  { path = "std::time::SystemTime::now", reason = "no wall time is stored; the generation orders history (DB8)" },
+  { path = "std::env::var", reason = "a catalog is named by -C only (CL1)" },
+  { path = "std::env::var_os", reason = "a catalog is named by -C only (CL1)" },
+  { path = "std::process::exit", reason = "a library never exits the process" },
+  { path = "std::process::abort", reason = "a library never ends the process" },
+  { path = "std::process::id", reason = "results must not depend on the process" },
+]
