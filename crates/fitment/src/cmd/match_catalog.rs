@@ -92,18 +92,25 @@ pub(super) fn candidates(
         failed = true;
     }
     let searched = match &selection {
-        Selection::Full => format!(
-            "catalog {shown}  generation {}  entries {}: {} searched, {} quarantined (not searched)  level 1 kept {}",
-            run.generation,
-            run.entries,
-            run.indexed,
-            run.quarantined,
-            run.level_one.unwrap_or_default()
-        ),
-        Selection::Named(named) => format!(
+        Selection::Full => {
+            // CR8: what is not searched is counted, and where to see it.
+            let see = if run.quarantined > 0 {
+                format!(" (fitment catalog list -C {shown} --status quarantined)")
+            } else {
+                String::new()
+            };
+            format!(
+                "catalog {shown}  generation {}  entries {}: {} searched, {} quarantined, not searched{see}  level 1 kept {}",
+                run.generation,
+                run.entries,
+                run.indexed,
+                run.quarantined,
+                run.level_one.unwrap_or_default()
+            )
+        }
+        Selection::Named(_) => format!(
             "catalog {shown}  generation {}  {} named entries (level 1 not used)",
-            run.generation,
-            named.len()
+            run.generation, run.selected
         ),
         _ => format!(
             "catalog {shown}  generation {}  entries {}: exhaustive: level 1 bypassed",
@@ -144,8 +151,15 @@ fn not_run(shown: &str, refused: &NotRun) -> ExitCode {
                 crate::exit::REFUSED,
             )
         }
+        // After the stale gate, an entry not indexed is quarantined.
+        NotRun::Empty { entries: 0 } => (
+            "refused: the catalog holds no part".to_owned(),
+            crate::exit::REFUSED,
+        ),
         NotRun::Empty { entries } => (
-            format!("refused: the catalog holds no searchable part: {entries} parts, none indexed"),
+            format!(
+                "refused: the catalog holds no searchable part: {entries} parts, all quarantined (fitment catalog list -C {shown} --status quarantined)"
+            ),
             crate::exit::REFUSED,
         ),
         NotRun::Blocked { socket, why, .. } => {

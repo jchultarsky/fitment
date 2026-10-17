@@ -89,7 +89,7 @@ fn labels(doc: &Value) -> Vec<String> {
 /// CM1: one catalog, never with files; --id and --exhaustive need it and
 /// exclude each other.
 #[test]
-fn the_catalog_is_one_and_alone() {
+fn one_catalog_per_run() {
     let dir = scratch("cm1");
     setup(&dir);
     for args in [
@@ -102,6 +102,7 @@ fn the_catalog_is_one_and_alone() {
             "--id",
             "m_bracket",
         ],
+        &["match", "bracket.json", "in/m_bracket.stp", "--exhaustive"],
         &[
             "match",
             "bracket.json",
@@ -330,28 +331,44 @@ fn a_damaged_row_exits_1() {
 }
 
 /// CT7, `match_cli.rs::jobs_do_not_change_a_file_runs_bytes` (the merge's
-/// open question 3): one job, two or sixteen give the same document, table
-/// and exit, for file runs and catalog runs.
+/// open question 3): one job, two or sixteen give the same document,
+/// stderr and exit, for file runs and catalog runs; a file that cannot be
+/// read is reported in the files' argument order.
 #[test]
 fn jobs_do_not_change_a_file_runs_bytes() {
     let dir = scratch("jobs");
     setup(&dir);
-    fs::write(dir.join("in/unreadable.stp"), "x").unwrap();
-    for base in [
-        &["match", "bracket.json", "in"][..],
-        &["match", "bracket.json", "-C", "parts", "--exhaustive"],
-    ] {
+    let file_run = [
+        "match",
+        "bracket.json",
+        "in/m_plate03.stp",
+        "nowhere.stp",
+        "in/m_bracket.stp",
+        "in/m_bracket_lug.stp",
+        "--format",
+        "json",
+    ];
+    let catalog_run = [
+        "match",
+        "bracket.json",
+        "-C",
+        "parts",
+        "--exhaustive",
+        "--format",
+        "json",
+    ];
+    for base in [&file_run[..], &catalog_run[..]] {
         let mut seen = Vec::new();
         for jobs in ["1", "2", "16"] {
             let mut args = base.to_vec();
             args.extend(["--jobs", jobs]);
-            let table = run(&dir, &args);
-            args.extend(["--format", "json"]);
-            let json = run(&dir, &args);
-            seen.push((table.0, table.1, json.1));
+            seen.push(run(&dir, &args));
         }
-        assert!(seen.windows(2).all(|w| w[0] == w[1]), "{base:?}");
+        assert!(seen.windows(2).all(|w| w[0] == w[1]), "{base:?}: {seen:?}");
     }
+    let (code, _, err) = run(&dir, &file_run);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("nowhere.stp"), "{err}");
 }
 
 /// CM6 (review F4(b)): after a replace, the label carries the revision.
@@ -417,4 +434,185 @@ fn the_original_is_judged_beside_a_catalog_run() {
     assert_eq!(code, 4, "{err}");
     let doc = json(&out);
     assert_eq!(doc["original"]["verdict"], "interface_match", "{doc}");
+}
+
+/// CR8 and CM10: quarantined entries are counted and pointed to; a
+/// catalog table names each candidate's PRODUCT.id.
+#[test]
+fn quarantine_is_counted_and_products_shown() {
+    let dir = scratch("cr8");
+    setup(&dir);
+    fs::write(dir.join("junk.stp"), "not STEP").unwrap();
+    run(&dir, &["catalog", "ingest", "-C", "parts", "junk.stp"]);
+    let (_, table, _) = run(&dir, &["match", "bracket.json", "-C", "parts"]);
+    assert!(
+        table.contains(
+            "1 quarantined, not searched (fitment catalog list -C parts --status quarantined)"
+        ),
+        "{table}"
+    );
+    assert!(
+        table.contains("catalog:m_bracket@r1  1b77ea97  'm_bracket'"),
+        "{table}"
+    );
+}
+
+/// Runs `sql` on the catalog in `dir/parts` through a raw connection.
+fn edit(dir: &Path, sql: &str) {
+    let catalog =
+        fitment_catalog::Catalog::open(&dir.join("parts"), fitment_catalog::Options::default())
+            .unwrap();
+    catalog.connection().execute_batch(sql).unwrap();
+}
+
+/// CT16 (review F1): a part digest forged with its preimage hash
+/// recomputed, as a bug at ingest would write it, is caught by the
+/// recomputed digest (QR4): the entry is named, not judged, and the run
+/// exits 1.
+#[test]
+fn a_part_digest_forged_with_its_hash_is_still_caught() {
+    use fitment_catalog::{Sha256Hex, Status, preimage};
+    let dir = scratch("forged");
+    setup(&dir);
+    let catalog =
+        fitment_catalog::Catalog::open(&dir.join("parts"), fitment_catalog::Options::default())
+            .unwrap();
+    let conn = catalog.connection();
+    let row = |id: &str| -> (String, Vec<u8>, String) {
+        conn.query_row(
+            "SELECT f.sha256, f.doc, f.part_digest FROM features f
+             JOIN live l ON l.sha256 = f.sha256 WHERE l.id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    };
+    let (sha, doc, _) = row("m_bracket");
+    let (_, _, other) = row("m_bracket_thick");
+    let sha = Sha256Hex::parse(&sha).unwrap();
+    let forged = Sha256Hex::parse(&other).unwrap();
+    let hash = preimage::features(
+        &sha,
+        fitment_core::EXTRACTOR_VERSION,
+        Status::Accepted,
+        Some(&forged),
+        &doc,
+    );
+    conn.execute_batch("DROP TRIGGER features_immutable")
+        .unwrap();
+    conn.execute(
+        "UPDATE features SET part_digest = ?1, doc_sha256 = ?2 WHERE sha256 = ?3",
+        [forged.as_str(), hash.as_str(), sha.as_str()],
+    )
+    .unwrap();
+    drop(catalog);
+    let (code, out, err) = run(
+        &dir,
+        &[
+            "match",
+            "bracket.json",
+            "-C",
+            "parts",
+            "--exhaustive",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("m_bracket@r1: its stored rows are damaged"),
+        "{err}"
+    );
+    assert!(!labels(&json(&out)).contains(&"catalog:m_bracket@r1".to_owned()));
+}
+
+/// CT16 (review F7, the risk recorded in section 4.12): a passing part's
+/// postings lost, a full run omits it and finds nothing; --exhaustive
+/// passes it; verify reports the damage.
+#[test]
+fn a_lost_posting_hides_a_part_until_verify() {
+    let dir = scratch("lost");
+    setup(&dir);
+    edit(
+        &dir,
+        "PRAGMA foreign_keys = OFF;
+         DELETE FROM posting WHERE content IN (SELECT b.key FROM blob b
+           JOIN live l ON l.sha256 = b.sha256
+           WHERE l.id IN ('m_bracket', 'm_bracket_lug', 'm_bracket_thick'));",
+    );
+    let (full, out, _) = run(&dir, &["match", "bracket.json", "-C", "parts"]);
+    assert!(!out.contains("catalog:m_bracket@r1"), "{out}");
+    let (exhaustive, out, _) = run(
+        &dir,
+        &["match", "bracket.json", "-C", "parts", "--exhaustive"],
+    );
+    assert!(out.contains("catalog:m_bracket@r1"), "{out}");
+    assert_ne!(full, exhaustive);
+    let (code, out, err) = run(&dir, &["catalog", "verify", "-C", "parts"]);
+    assert_ne!(code, 0, "{out}{err}");
+}
+
+/// CT16 (review F7): a plate given the bracket's postings and tokens,
+/// with their hash recomputed, as a bug at ingest would write them: level 1
+/// admits it, and the judgment over its stored document still rejects it.
+#[test]
+fn a_corrupt_posting_never_passes_a_part() {
+    use fitment_catalog::{Sha256Hex, preimage};
+    let dir = scratch("corrupt-posting");
+    setup(&dir);
+    let catalog =
+        fitment_catalog::Catalog::open(&dir.join("parts"), fitment_catalog::Options::default())
+            .unwrap();
+    let conn = catalog.connection();
+    let row = |id: &str| -> (i64, String, Vec<u8>) {
+        conn.query_row(
+            "SELECT b.key, b.sha256, t.tokens FROM blob b JOIN live l ON l.sha256 = b.sha256
+             JOIN tokens t ON t.sha256 = b.sha256 WHERE l.id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    };
+    let (good, good_sha, tokens) = row("m_bracket");
+    let (plate, plate_sha, _) = row("m_plate03");
+    let hash = preimage::tokens(
+        &Sha256Hex::parse(&plate_sha).unwrap(),
+        fitment_core::EXTRACTOR_VERSION,
+        fitment_core::SIGNATURE_VERSION,
+        &tokens,
+    );
+    conn.execute_batch("DROP TRIGGER tokens_immutable; PRAGMA foreign_keys = OFF;")
+        .unwrap();
+    conn.execute(
+        "UPDATE tokens SET (tokens, tokens_sha256, lever_mm, planes, pairs_incomplete) =
+           (SELECT ?1, ?2, lever_mm, planes, pairs_incomplete FROM tokens WHERE sha256 = ?3)
+         WHERE sha256 = ?4",
+        (
+            &tokens[..],
+            hash.as_str(),
+            good_sha.as_str(),
+            plate_sha.as_str(),
+        ),
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT OR IGNORE INTO posting
+           SELECT extractor_version, signature_version, sense, bin, ?1, stack, diameter_mm
+           FROM posting WHERE content = ?2",
+        [plate, good],
+    )
+    .unwrap();
+    drop(catalog);
+    let (_, out, err) = run(
+        &dir,
+        &["match", "bracket.json", "-C", "parts", "--format", "json"],
+    );
+    let doc = json(&out);
+    let entry = doc["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["labels"][0] == "catalog:m_plate03@r1")
+        .unwrap_or_else(|| panic!("level 1 admits it: {err}"));
+    assert_eq!(entry["verdict"], "reject", "{entry}");
 }

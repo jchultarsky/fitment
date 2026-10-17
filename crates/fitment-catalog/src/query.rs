@@ -76,6 +76,8 @@ pub struct CatalogRun {
     pub quarantined: usize,
     /// Level 1's survivors, in a full run.
     pub level_one: Option<usize>,
+    /// The distinct entries the selection named or found, before QR4.
+    pub selected: usize,
     /// Each candidate judged, with its one label `catalog:<id>@r<n>`
     /// (CM6), for `MatchDocument::new`.
     pub results: Vec<(CandidateResult, Vec<String>)>,
@@ -239,6 +241,7 @@ impl Snapshot<'_> {
             indexed,
             quarantined,
             level_one: None,
+            selected: 0,
             results: Vec::new(),
             corrupt: Vec::new(),
             judged: 0,
@@ -248,6 +251,7 @@ impl Snapshot<'_> {
             Ok(keys) => keys,
             Err(refused) => return Ok(Err(refused)),
         };
+        run.selected = keys.len();
         let mut rows = Vec::new();
         for key in keys {
             match load(conn, key)? {

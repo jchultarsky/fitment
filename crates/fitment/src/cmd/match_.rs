@@ -106,6 +106,11 @@ const INTERFACE_MATCH: u8 = 4;
 const ALL_REJECTED: u8 = 5;
 
 pub fn run(args: &Args) -> ExitCode {
+    // Usage first (section 7.12): the arguments alone decide these.
+    let rejects = match rejects(args) {
+        Ok(rejects) => rejects,
+        Err(code) => return code,
+    };
     let Some(policy) = policy(args) else {
         return ExitCode::from(USAGE);
     };
@@ -129,10 +134,6 @@ pub fn run(args: &Args) -> ExitCode {
             return ExitCode::from(exit::REFUSED);
         }
     };
-    let rejects = match rejects(args) {
-        Ok(rejects) => rejects,
-        Err(code) => return code,
-    };
     let jobs = jobs(args);
     let mut failed = false;
     let listed = candidates(&args.candidates, &mut failed);
@@ -149,11 +150,6 @@ pub fn run(args: &Args) -> ExitCode {
             return ExitCode::from(USAGE);
         }
     }
-    // QR1: the catalog's refusals come before any candidate is judged.
-    let (mut results, searched) = match from_catalog(args, &matcher, jobs, &mut failed) {
-        Ok(found) => found,
-        Err(code) => return code,
-    };
     // VD15: judged beside the candidates, never one of them.
     let mut original = None;
     if let Some(path) = &args.original {
@@ -166,6 +162,12 @@ pub fn run(args: &Args) -> ExitCode {
             Err(code) => return code,
         }
     }
+    // QR1: the catalog's refusals come before any candidate is judged; an
+    // M4 usage error of --original, before the catalog is read.
+    let (mut results, searched) = match from_catalog(args, &matcher, jobs, &mut failed) {
+        Ok(found) => found,
+        Err(code) => return code,
+    };
     if args.catalog.is_none() {
         results = judge_all(&matcher, listed, &mut failed, jobs);
     }
@@ -209,78 +211,142 @@ pub fn run(args: &Args) -> ExitCode {
     }
 }
 
-/// Every listed candidate judged, each file read once, in argument order
-/// for errors, on up to `jobs` threads (M5-30): the same bytes are one
-/// entry with every label (MF3); `failed` set by an unreadable file.
+/// No more threads than this, whatever `--jobs` asks (as the catalog's).
+const MAX_JOBS: usize = 256;
+
+/// One listed file in a window: its read error, or new bytes to judge
+/// with the labels of their duplicates; a duplicate leaves no entry.
+enum Read {
+    Failed(String),
+    New(Vec<u8>, Vec<String>),
+}
+
+/// Where a SHA-256's entry is: an earlier window's result, or this
+/// window's file.
+#[derive(Clone, Copy)]
+enum Place {
+    Result(usize),
+    Window(usize),
+}
+
+/// Every listed candidate judged, each file read once (MF3), in windows of
+/// `jobs` new files (M5-30): a window's files are judged on up to `jobs`
+/// threads and dropped before the next is read, so `--jobs 1` keeps M4's
+/// memory. Notes go out in argument order: a read error, or the judged
+/// file's (QR8). `failed` set by an unreadable file, a fitment bug, or a
+/// judgment that panicked.
 fn judge_all(
     matcher: &Matcher<'_>,
     listed: Vec<(PathBuf, String)>,
     failed: &mut bool,
     jobs: usize,
 ) -> Vec<(CandidateResult, Vec<String>)> {
-    // MF3: the same bytes judged once, with every label.
-    let mut unique: Vec<(Vec<u8>, Vec<String>)> = Vec::new();
-    let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for (path, label) in listed {
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                note(&format!(
-                    "error: cannot read {}: {error}",
-                    printable(&label)
-                ));
-                *failed = true;
-                continue;
+    let jobs = jobs.clamp(1, MAX_JOBS);
+    let mut results: Vec<(CandidateResult, Vec<String>)> = Vec::new();
+    let mut seen: std::collections::BTreeMap<String, Place> = std::collections::BTreeMap::new();
+    let mut listed = listed.into_iter().peekable();
+    while listed.peek().is_some() {
+        let mut window: Vec<(String, Read)> = Vec::new();
+        let mut shas: Vec<String> = Vec::new();
+        while shas.len() < jobs {
+            let Some((path, label)) = listed.next() else {
+                break;
+            };
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let message = format!("error: cannot read {}: {error}", printable(&label));
+                    window.push((label, Read::Failed(message)));
+                    continue;
+                }
+            };
+            let sha = sha256_hex(&bytes);
+            match seen.get(&sha).copied() {
+                Some(Place::Result(at)) => {
+                    if let Some((_, labels)) = results.get_mut(at) {
+                        labels.push(label);
+                    }
+                }
+                Some(Place::Window(at)) => {
+                    if let Some((_, Read::New(_, labels))) = window.get_mut(at) {
+                        labels.push(label);
+                    }
+                }
+                None => {
+                    seen.insert(sha.clone(), Place::Window(window.len()));
+                    shas.push(sha);
+                    window.push((label, Read::New(bytes, Vec::new())));
+                }
             }
-        };
-        let sha = sha256_hex(&bytes);
-        if let Some(at) = seen.get(&sha).copied() {
-            if let Some((_, labels)) = unique.get_mut(at) {
-                labels.push(label);
-            }
-            continue;
         }
-        seen.insert(sha, unique.len());
-        unique.push((bytes, vec![label]));
-    }
-    let judged = judge_parallel(matcher, &unique, jobs);
-    let mut results = Vec::new();
-    for ((_, labels), result) in unique.into_iter().zip(judged) {
-        let shown = printable(labels.first().map_or("", String::as_str));
-        *failed |= reported(&shown, &result);
-        results.push((result, labels));
+        let new: Vec<&[u8]> = window
+            .iter()
+            .filter_map(|(_, r)| match r {
+                Read::New(bytes, _) => Some(bytes.as_slice()),
+                Read::Failed(_) => None,
+            })
+            .collect();
+        let judged = judge_parallel(matcher, &new, jobs);
+        let mut judged = judged.into_iter().zip(shas);
+        for (label, read) in window {
+            match read {
+                Read::Failed(message) => {
+                    note(&message);
+                    *failed = true;
+                }
+                Read::New(_, more) => {
+                    let Some((result, sha)) = judged.next() else {
+                        continue;
+                    };
+                    let shown = printable(&label);
+                    if let Some(result) = result {
+                        *failed |= reported(&shown, &result);
+                        seen.insert(sha, Place::Result(results.len()));
+                        let mut labels = vec![label];
+                        labels.extend(more);
+                        results.push((result, labels));
+                    } else {
+                        seen.remove(&sha);
+                        note(&format!(
+                            "fitment: {shown}: judging it failed: this is a fitment bug"
+                        ));
+                        *failed = true;
+                    }
+                }
+            }
+        }
     }
     results
 }
 
-/// Each file's bytes judged, on up to `jobs` threads, in order.
+/// Each file's bytes judged, on up to `jobs` threads, in order; a panic
+/// caught per file, the same on one thread or many, as a catalog run's is.
 fn judge_parallel(
     matcher: &Matcher<'_>,
-    files: &[(Vec<u8>, Vec<String>)],
+    files: &[&[u8]],
     jobs: usize,
-) -> Vec<CandidateResult> {
+) -> Vec<Option<CandidateResult>> {
+    let one = |bytes: &&[u8]| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| matcher.judge_step(bytes))).ok()
+    };
     let jobs = jobs.clamp(1, files.len().max(1));
     if jobs == 1 {
-        return files.iter().map(|(b, _)| matcher.judge_step(b)).collect();
+        return files.iter().map(one).collect();
     }
     let chunk = files.len().div_ceil(jobs);
     std::thread::scope(|scope| {
         let handles: Vec<_> = files
             .chunks(chunk)
             .map(|part| {
-                scope.spawn(move || {
-                    part.iter()
-                        .map(|(b, _)| matcher.judge_step(b))
-                        .collect::<Vec<_>>()
-                })
+                (
+                    part.len(),
+                    scope.spawn(move || part.iter().map(one).collect::<Vec<_>>()),
+                )
             })
             .collect();
         handles
             .into_iter()
-            .flat_map(|h| {
-                h.join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-            })
+            .flat_map(|(n, h)| h.join().unwrap_or_else(|_| vec![None; n]))
             .collect()
     })
 }
@@ -299,6 +365,11 @@ fn jobs(args: &Args) -> usize {
 /// CM1's combinations; then `--rejects`: `all`, or a count, the default
 /// by the run's kind (CM10).
 fn rejects(args: &Args) -> Result<Option<usize>, ExitCode> {
+    // CL8: a build without the catalog has none to match against.
+    if cfg!(not(feature = "catalog")) && args.catalog.is_some() {
+        note("error: this build has no catalog (cargo feature `catalog`)");
+        return Err(ExitCode::from(USAGE));
+    }
     // CM1: --id and --exhaustive need --catalog, and exclude each other.
     if args.catalog.is_none() && (!args.ids.is_empty() || args.exhaustive) {
         note("error: --id and --exhaustive name catalog entries: give -C/--catalog DIR");
@@ -722,7 +793,7 @@ fn table(json: &str, explain: bool, searched: Option<&str>, rejects: Option<usiz
             }
             listed_rejects += 1;
         }
-        out.push_str(&candidate_line(candidate));
+        out.push_str(&candidate_line(candidate, searched.is_some()));
         let passing = s(&candidate["verdict"]) != "reject";
         if passing || explain {
             for socket in candidate["sockets"].as_array().into_iter().flatten() {
@@ -736,7 +807,8 @@ fn table(json: &str, explain: bool, searched: Option<&str>, rejects: Option<usiz
     out
 }
 
-fn candidate_line(candidate: &Value) -> String {
+/// A candidate's line; in a catalog run, with its PRODUCT.id (CM10).
+fn candidate_line(candidate: &Value, product: bool) -> String {
     let s = |v: &Value| v.as_str().unwrap_or("").to_owned();
     let verdict = match s(&candidate["verdict"]).as_str() {
         "match" => "MATCH    ",
@@ -811,8 +883,14 @@ fn candidate_line(candidate: &Value) -> String {
             failed.first().cloned().unwrap_or_default()
         )
     };
+    let product = if product {
+        let id = candidate["product"]["id"].as_str();
+        id.map_or_else(|| "  -".to_owned(), |id| format!("  '{}'", printable(id)))
+    } else {
+        String::new()
+    };
     format!(
-        "{verdict}  {}  {}  {tail}\n",
+        "{verdict}  {}  {}{product}  {tail}\n",
         labels.join(", "),
         sha.get(..8).unwrap_or("")
     )

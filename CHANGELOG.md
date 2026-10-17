@@ -49,7 +49,7 @@ Until 1.0, minor versions may contain breaking changes.
   candidates in the catalog's index, each survivor's stored document is
   checked and judged as its file would be, and the document is the file
   run's over those files, labelled `catalog:<id>@r<n>`. A stale catalog,
-  an empty one or a blocked socket refuses the run before any candidate.
+  an empty one or a blocked socket refuses a full run before any candidate.
   `--jobs N` judges N candidates at once, in file runs too, and changes no
   byte of the result.
 

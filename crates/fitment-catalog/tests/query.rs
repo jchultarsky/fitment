@@ -31,7 +31,9 @@ fn socket(case: &str, part: &str) -> SocketDocument {
     SocketDocument::extract(&bytes, Some(part), None).unwrap()
 }
 
-fn policies() -> [MatchPolicy; 2] {
+fn policies() -> [MatchPolicy; 3] {
+    let loose =
+        TolerancePolicy::new("cli", 0.05, TolerancePolicy::default().angular_deg()).unwrap();
     [
         MatchPolicy::default(),
         MatchPolicy::new(
@@ -39,6 +41,8 @@ fn policies() -> [MatchPolicy; 2] {
             Clearance::Functional,
             Grip::Hard,
         ),
+        // A wider window, as `--tolerance-mm 0.05` gives (review, F2).
+        MatchPolicy::new(loose, Clearance::Strict, Grip::Hard),
     ]
 }
 
@@ -300,7 +304,7 @@ fn a_blocked_socket_refuses_a_full_run() {
 
 /// CT3 (IX1): level 1 over the stored postings and tokens admits exactly
 /// what it admits over the in-memory index of the same tokens, id for id,
-/// for every committed socket under three policies.
+/// for every committed socket under four policies.
 #[test]
 fn the_sql_source_agrees_with_the_index_in_memory() {
     let (mut catalog, _) = committed("sources");
@@ -339,7 +343,7 @@ fn the_sql_source_agrees_with_the_index_in_memory() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 12);
+    assert_eq!(compared, 16);
 }
 
 fn bracket_matcher(document: &SocketDocument) -> Matcher<'_> {

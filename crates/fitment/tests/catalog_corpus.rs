@@ -6,7 +6,8 @@
 //! survivors, digest
 //! for digest, and holds every candidate the file run over all files
 //! passes; an exhaustive run is the file run over every live file. Without
-//! the corpus this passes with a note, unless `FITMENT_REQUIRE_CORPUS=1`.
+//! the corpus this passes with a note, unless `FITMENT_REQUIRE_CORPUS=1`;
+//! in a debug build it passes with a note, as it takes minutes there.
 
 #![cfg(feature = "catalog")]
 
@@ -22,6 +23,10 @@ use fitment_core::{
 use serde_json::Value;
 
 fn corpus() -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        eprintln!("skipped: a debug build; run with --release");
+        return None;
+    }
     let dir = std::env::var_os("FITMENT_CORPUS").map_or_else(
         || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/out"),
         PathBuf::from,
@@ -205,6 +210,12 @@ fn the_corpus_through_a_catalog_is_the_file_run() {
             Clearance::Functional,
             Grip::Hard,
         ),
+        // A wider window, as `--tolerance-mm 0.05` gives (review, F2).
+        MatchPolicy::new(
+            TolerancePolicy::new("cli", 0.05, TolerancePolicy::default().angular_deg()).unwrap(),
+            Clearance::Strict,
+            Grip::Hard,
+        ),
     ];
     let mut checked = 0;
     for (case, part) in sockets(&dir) {
@@ -231,6 +242,6 @@ fn the_corpus_through_a_catalog_is_the_file_run() {
             checked += 1;
         }
     }
-    assert!(checked > 40, "{checked} socket runs");
+    assert!(checked > 60, "{checked} socket runs");
     let _ = fs::remove_dir_all(&scratch);
 }
