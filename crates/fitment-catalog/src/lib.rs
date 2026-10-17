@@ -12,8 +12,10 @@
 //! ```
 
 mod blobs;
+mod change;
 pub mod document;
 pub mod fs;
+mod gc;
 pub mod hex;
 pub mod ids;
 mod ingest;
@@ -21,6 +23,7 @@ pub mod layout;
 pub mod preimage;
 pub mod schema;
 mod snapshot;
+mod verify;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -28,7 +31,9 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags};
 
 pub use blobs::{BadBlob, Placed};
+pub use change::{Deleted, Deletion, NotReplaced, Pruned, Released, Replaced, Unnamed};
 pub use fs::{Content, Fs, Point, StdFs};
+pub use gc::Collected;
 pub use hex::{NotHex, Sha256Hex};
 pub use ids::{BadReference, Id, Reference};
 pub use ingest::{Counts, Ingest, Ingested, Outcome, Summary};
@@ -36,6 +41,7 @@ pub use preimage::Status;
 pub use snapshot::{
     BadName, BadRow, EntryStatus, HistoryStep, Listed, Named, Snapshot, StoredRefusal, has_internal,
 };
+pub use verify::{Kind as ProblemKind, Problem};
 
 use layout::{INIT_NAMES, Layout, MARKER_TEXT};
 

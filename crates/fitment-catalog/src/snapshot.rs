@@ -412,155 +412,7 @@ impl Snapshot<'_> {
     /// [`BadName`] in an `Ok`, for a reference that names nothing usable;
     /// the database's otherwise.
     pub fn resolve(&self, reference: &Reference) -> Result<Result<Named, BadName>, Error> {
-        match reference {
-            Reference::Id(id) => self.by_id(id, None),
-            Reference::Revision(id, n) => self.by_id(id, Some(*n)),
-            Reference::Sha256(prefix) => self.by_content(prefix),
-        }
-    }
-
-    fn by_id(&self, id: &Id, revision: Option<u32>) -> Result<Result<Named, BadName>, Error> {
-        let fold = id.fold();
-        let unknown = |this: &Self| -> Result<Result<Named, BadName>, Error> {
-            Ok(Err(BadName::Unknown {
-                asked: id.to_string(),
-                suggestions: this.suggestions(&fold)?,
-            }))
-        };
-        let key: Option<i64> = match revision {
-            // ID9: any revision the id ever had, across delete (ID6).
-            Some(n) => self
-                .tx
-                .query_row(
-                    "SELECT key FROM revision WHERE id_fold = ?1 AND revision = ?2",
-                    params![&fold, n],
-                    |r| r.get(0),
-                )
-                .optional()?,
-            // The live entry's current revision, or else the latest
-            // tombstone's last.
-            None => self
-                .tx
-                .query_row(
-                    "SELECT r.key FROM entry e JOIN revision r ON r.entry = e.key
-                     WHERE e.id_fold = ?1
-                     ORDER BY e.deleted_generation IS NULL DESC, e.key DESC, r.revision DESC
-                     LIMIT 1",
-                    [&fold],
-                    |r| r.get(0),
-                )
-                .optional()?,
-        };
-        match (key, revision) {
-            (Some(key), _) => self.named(key).map(Ok),
-            (None, Some(n)) => {
-                let known: bool = self.tx.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM entry WHERE id_fold = ?1)",
-                    [&fold],
-                    |r| r.get(0),
-                )?;
-                if known {
-                    Ok(Err(BadName::NoRevision {
-                        id: id.to_string(),
-                        asked: n,
-                    }))
-                } else {
-                    unknown(self)
-                }
-            }
-            (None, None) => unknown(self),
-        }
-    }
-
-    /// The revision of row `key`, with its entry's state and the id's.
-    fn named(&self, key: i64) -> Result<Named, Error> {
-        let (id, revision, sha, fold, current): (String, i64, String, String, Option<i64>) =
-            self.tx.query_row(
-                "SELECT e.id, r.revision, r.sha256, r.id_fold,
-                        (SELECT c.revision FROM revision c
-                         WHERE c.entry = e.key AND c.superseded_generation IS NULL
-                           AND e.deleted_generation IS NULL)
-                 FROM revision r JOIN entry e ON e.key = r.entry WHERE r.key = ?1",
-                [key],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )?;
-        let id_current: Option<i64> = self
-            .tx
-            .query_row(
-                "SELECT r.revision FROM entry e JOIN revision r
-                   ON r.entry = e.key AND r.superseded_generation IS NULL
-                 WHERE e.id_fold = ?1 AND e.deleted_generation IS NULL",
-                [&fold],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let revision_of = |v: i64| u32::try_from(v).map_err(|_| corrupt("a revision"));
-        Ok(Named {
-            id: stored_id(id)?,
-            revision: revision_of(revision)?,
-            current: current.map(revision_of).transpose()?,
-            id_current: id_current.map(revision_of).transpose()?,
-            sha256: Sha256Hex::parse(&sha).map_err(|_| corrupt("a content key"))?,
-            key,
-            fold,
-        })
-    }
-
-    fn by_content(&self, prefix: &str) -> Result<Result<Named, BadName>, Error> {
-        let mut stmt = self.tx.prepare(
-            "SELECT r.key, e.id FROM entry e JOIN revision r
-               ON r.entry = e.key AND r.superseded_generation IS NULL
-             WHERE e.deleted_generation IS NULL AND substr(r.sha256, 1, length(?1)) = ?1
-             ORDER BY r.sha256",
-        )?;
-        let found: Vec<(i64, String)> = stmt
-            .query_map([prefix], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<_, _>>()?;
-        let asked = format!("sha256:{prefix}");
-        match found.as_slice() {
-            [] => Ok(Err(BadName::Unknown {
-                asked,
-                suggestions: Vec::new(),
-            })),
-            [(key, _)] => self.named(*key).map(Ok),
-            several => Ok(Err(BadName::Ambiguous {
-                asked,
-                ids: several
-                    .iter()
-                    .map(|(_, id)| stored_id(id.clone()))
-                    .collect::<Result<_, _>>()?,
-            })),
-        }
-    }
-
-    /// ID7: up to five ids, live or not, sharing the longest prefix with
-    /// `fold`, case-folded; a stored id that is not one is not suggested.
-    fn suggestions(&self, fold: &str) -> Result<Vec<String>, Error> {
-        let mut stmt = self
-            .tx
-            .prepare("SELECT DISTINCT id FROM entry WHERE id_fold != ?1 ORDER BY id_fold, id")?;
-        let ids: Vec<String> = stmt
-            .query_map([fold], |r| r.get(0))?
-            .collect::<Result<Vec<String>, _>>()?
-            .into_iter()
-            .filter(|id| Id::parse(id).is_ok())
-            .collect();
-        let common = |id: &str| {
-            id.to_ascii_lowercase()
-                .bytes()
-                .zip(fold.bytes())
-                .take_while(|(a, b)| a == b)
-                .count()
-        };
-        let best = ids.iter().map(|id| common(id)).max().unwrap_or_default();
-        if best == 0 {
-            return Ok(Vec::new());
-        }
-        Ok(ids
-            .into_iter()
-            .filter(|id| common(id) == best)
-            .take(5)
-            .collect())
+        Reader { conn: &self.tx }.resolve(reference)
     }
 
     /// `get`'s view of a named revision: as `list` shows it when current,
@@ -707,6 +559,167 @@ impl Snapshot<'_> {
             &doc,
             &hash,
         ))
+    }
+}
+
+/// The reads a reference needs, on any connection: a snapshot's, or a
+/// write transaction's, where a change decides on what it reads (DB2).
+pub(crate) struct Reader<'c> {
+    pub(crate) conn: &'c rusqlite::Connection,
+}
+
+impl Reader<'_> {
+    /// ID7 and ID9: what `reference` names (see [`Snapshot::resolve`]).
+    pub(crate) fn resolve(&self, reference: &Reference) -> Result<Result<Named, BadName>, Error> {
+        match reference {
+            Reference::Id(id) => self.by_id(id, None),
+            Reference::Revision(id, n) => self.by_id(id, Some(*n)),
+            Reference::Sha256(prefix) => self.by_content(prefix),
+        }
+    }
+
+    fn by_id(&self, id: &Id, revision: Option<u32>) -> Result<Result<Named, BadName>, Error> {
+        let fold = id.fold();
+        let unknown = |this: &Reader<'_>| -> Result<Result<Named, BadName>, Error> {
+            Ok(Err(BadName::Unknown {
+                asked: id.to_string(),
+                suggestions: this.suggestions(&fold)?,
+            }))
+        };
+        let key: Option<i64> = match revision {
+            // ID9: any revision the id ever had, across delete (ID6).
+            Some(n) => self
+                .conn
+                .query_row(
+                    "SELECT key FROM revision WHERE id_fold = ?1 AND revision = ?2",
+                    params![&fold, n],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            // The live entry's current revision, or else the latest
+            // tombstone's last.
+            None => self
+                .conn
+                .query_row(
+                    "SELECT r.key FROM entry e JOIN revision r ON r.entry = e.key
+                     WHERE e.id_fold = ?1
+                     ORDER BY e.deleted_generation IS NULL DESC, e.key DESC, r.revision DESC
+                     LIMIT 1",
+                    [&fold],
+                    |r| r.get(0),
+                )
+                .optional()?,
+        };
+        match (key, revision) {
+            (Some(key), _) => self.named(key).map(Ok),
+            (None, Some(n)) => {
+                let known: bool = self.conn.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM entry WHERE id_fold = ?1)",
+                    [&fold],
+                    |r| r.get(0),
+                )?;
+                if known {
+                    Ok(Err(BadName::NoRevision {
+                        id: id.to_string(),
+                        asked: n,
+                    }))
+                } else {
+                    unknown(self)
+                }
+            }
+            (None, None) => unknown(self),
+        }
+    }
+
+    /// The revision of row `key`, with its entry's state and the id's.
+    fn named(&self, key: i64) -> Result<Named, Error> {
+        let (id, revision, sha, fold, current): (String, i64, String, String, Option<i64>) =
+            self.conn.query_row(
+                "SELECT e.id, r.revision, r.sha256, r.id_fold,
+                        (SELECT c.revision FROM revision c
+                         WHERE c.entry = e.key AND c.superseded_generation IS NULL
+                           AND e.deleted_generation IS NULL)
+                 FROM revision r JOIN entry e ON e.key = r.entry WHERE r.key = ?1",
+                [key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )?;
+        let id_current: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT r.revision FROM entry e JOIN revision r
+                   ON r.entry = e.key AND r.superseded_generation IS NULL
+                 WHERE e.id_fold = ?1 AND e.deleted_generation IS NULL",
+                [&fold],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let revision_of = |v: i64| u32::try_from(v).map_err(|_| corrupt("a revision"));
+        Ok(Named {
+            id: stored_id(id)?,
+            revision: revision_of(revision)?,
+            current: current.map(revision_of).transpose()?,
+            id_current: id_current.map(revision_of).transpose()?,
+            sha256: Sha256Hex::parse(&sha).map_err(|_| corrupt("a content key"))?,
+            key,
+            fold,
+        })
+    }
+
+    fn by_content(&self, prefix: &str) -> Result<Result<Named, BadName>, Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT r.key, e.id FROM entry e JOIN revision r
+               ON r.entry = e.key AND r.superseded_generation IS NULL
+             WHERE e.deleted_generation IS NULL AND substr(r.sha256, 1, length(?1)) = ?1
+             ORDER BY r.sha256",
+        )?;
+        let found: Vec<(i64, String)> = stmt
+            .query_map([prefix], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let asked = format!("sha256:{prefix}");
+        match found.as_slice() {
+            [] => Ok(Err(BadName::Unknown {
+                asked,
+                suggestions: Vec::new(),
+            })),
+            [(key, _)] => self.named(*key).map(Ok),
+            several => Ok(Err(BadName::Ambiguous {
+                asked,
+                ids: several
+                    .iter()
+                    .map(|(_, id)| stored_id(id.clone()))
+                    .collect::<Result<_, _>>()?,
+            })),
+        }
+    }
+
+    /// ID7: up to five ids, live or not, sharing the longest prefix with
+    /// `fold`, case-folded; a stored id that is not one is not suggested.
+    fn suggestions(&self, fold: &str) -> Result<Vec<String>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT id FROM entry WHERE id_fold != ?1 ORDER BY id_fold, id")?;
+        let ids: Vec<String> = stmt
+            .query_map([fold], |r| r.get(0))?
+            .collect::<Result<Vec<String>, _>>()?
+            .into_iter()
+            .filter(|id| Id::parse(id).is_ok())
+            .collect();
+        let common = |id: &str| {
+            id.to_ascii_lowercase()
+                .bytes()
+                .zip(fold.bytes())
+                .take_while(|(a, b)| a == b)
+                .count()
+        };
+        let best = ids.iter().map(|id| common(id)).max().unwrap_or_default();
+        if best == 0 {
+            return Ok(Vec::new());
+        }
+        Ok(ids
+            .into_iter()
+            .filter(|id| common(id) == best)
+            .take(5)
+            .collect())
     }
 }
 
