@@ -1394,6 +1394,7 @@ Each PR comes with its tests and two adversarial reviews, as in M4, and no PR de
      - **SZ4:** the standard library has no free-space query, and the catalog takes no unsafe code or platform call for one; `gc --vacuum` says what VACUUM needs before running it, and SQLite's VACUUM fails whole, changing nothing, when the copy does not fit.
      - **CT19:** every M5 rule has a test or a reason, and the coverage test no longer allows "M5 PR" deferrals: CC3 and GT8 cannot be shown by a test (the checkpoint is SQLite's, and no input is known to give an `internal` refusal), CL6, CL10 and ST8 hold by construction, SZ2 is a guard no input reaches, QR13 is M7's and VF5 the README's.
      - **CT10's 10,000-entry bracket family** is not built: CT11's scaled catalogs, with every base's unscaled copy, take its place for ingest, list, verify and search at that size.
+     - **7b, the release:** every crate at 0.2.0, `fitment-catalog` published from it (internal and unstable, its API free to change in any release), the CHANGELOG's 0.2.0 section; the publish itself is the user's, `fitment-core` first, then `fitment-catalog`, then `fitment`.
      - **Left:** the clevis case of CT1 (review, F3) is not a corpus case; the SG5 skip it would show is `level_one`'s, shared by both sources, tested in core (`signature.rs::one_stack_for_a_group`), and CT3 shows the SQL source equal to the in-memory one on every committed and corpus socket. Real catalog parts, and with them D8 and D9 (M5-37), wait.
 
 ## 11. Risks
