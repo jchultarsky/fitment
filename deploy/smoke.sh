@@ -19,8 +19,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 image=${1:-fitment-server:ci}
-# The first measured (arm64, 2026-10-17): 15,041,033 bytes; twice that.
-ceiling=30082066
+# The first measured: 15,041,033 bytes on arm64 and 37,699,577 on amd64
+# (CI, 2026-10-17), the larger of the two architectures; twice that.
+ceiling=75399154
 base=$(sed -nE 's/^FROM (gcr\.io\/distroless\/[^ ]+).*/\1/p' deploy/Containerfile)
 version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
 work=$(mktemp -d)
