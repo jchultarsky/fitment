@@ -959,10 +959,63 @@ M5_PR3 = {
 }
 for rule, tests in M5_PR3.items():
     RULES[rule] = {"tests": tests}
-RULES["CR7"] = {"deferred": "M5 PR 4"}
-RULES["CC3"] = {"deferred": "M5 PR 4"}
+RULES["CC3"] = {"deferred": "M5 PR 7"}
 RULES["CR10"] = {"deferred": "M5 PR 6"}
 RULES["VF5"] = {"deferred": "M5 PR 7"}
+# PR 4 builds the catalog match.
+Q = f"{T}/query.rs"
+M = "crates/fitment/tests/catalog_match_cli.rs"
+K = "crates/fitment/tests/catalog_corpus.rs::the_corpus_through_a_catalog_is_the_file_run"
+M5_PR4 = {
+    "RX1": [f"{Q}::stale_and_empty_catalogs_refuse_a_full_run"],
+    "RX2": [f"{Q}::stale_and_empty_catalogs_refuse_a_full_run", f"{M}::refusals_come_before_any_candidate"],
+    "RX3": [f"{M}::refusals_come_before_any_candidate"],
+    "QR1": [f"{M}::refusals_come_before_any_candidate", f"{Q}::a_blocked_socket_refuses_a_full_run"],
+    "QR2": [f"{Q}::a_run_reads_one_snapshot"],
+    "QR3": [f"{Q}::a_catalog_run_is_the_file_run_restricted", K],
+    "QR4": [
+        f"{Q}::a_damaged_row_is_named_not_judged",
+        f"{M}::a_damaged_row_exits_1",
+        f"{M}::a_part_digest_forged_with_its_hash_is_still_caught",
+    ],
+    "QR5": [f"{Q}::a_catalog_run_is_the_file_run_restricted", f"{M}::a_corrupt_posting_never_passes_a_part", K],
+    "QR6": [f"{Q}::equal_parts_are_judged_once"],
+    "QR8": [f"{Q}::jobs_change_no_byte", f"{M}::jobs_do_not_change_a_file_runs_bytes"],
+    "QR10": [
+        f"{M}::catalog_runs_are_file_runs",
+        f"{Q}::an_exhaustive_run_names_an_entry_without_its_row",
+        f"{M}::a_lost_posting_hides_a_part_until_verify",
+        K,
+    ],
+    "QR11": [f"{Q}::a_match_reads_only_the_index"],
+    "QR12": [f"{M}::the_original_is_judged_beside_a_catalog_run"],
+    "CM1": [f"{M}::one_catalog_per_run"],
+    "CM2": [f"{M}::catalog_runs_are_file_runs", K],
+    "CM3": [f"{M}::catalog_runs_are_file_runs"],
+    "CM4": [f"{Q}::a_catalog_run_is_the_file_run_restricted"],
+    "CM5": [f"{M}::catalog_runs_are_file_runs"],
+    "CM6": [f"{M}::labels_carry_the_revision"],
+    "CM7": [f"{Q}::equal_parts_are_judged_once"],
+    "CM8": [f"{M}::the_table_says_what_was_searched", f"{M}::catalog_runs_are_file_runs"],
+    "CM9": [f"{M}::refusals_come_before_any_candidate", f"{M}::a_damaged_row_exits_1"],
+    "CM10": [f"{M}::the_table_says_what_was_searched", f"{M}::quarantine_is_counted_and_products_shown"],
+    "CM11": [f"{M}::catalog_runs_are_file_runs"],
+    "IX1": [f"{Q}::the_sql_source_agrees_with_the_index_in_memory", K],
+    "IX2": [f"{Q}::the_sql_source_agrees_with_the_index_in_memory"],
+    "IX9": [f"{Q}::a_damaged_tokens_row_is_named"],
+    "IX10": [f"{Q}::a_negative_key_is_damage"],
+    "CR7": [f"{Q}::a_run_reads_one_snapshot"],
+    "CR8": [f"{Q}::quarantine_is_counted_and_judged_only_when_named", f"{M}::quarantine_is_counted_and_products_shown"],
+    "CR9": [f"{Q}::quarantine_is_counted_and_judged_only_when_named"],
+    "DB4": [f"{Q}::a_run_reads_one_snapshot"],
+}
+for rule, tests in M5_PR4.items():
+    RULES[rule] = {"tests": tests}
+# QR9's budgets are CT10's hostile runs through a catalog, and QR13 is M7's: both wait for M5's exit, as does CC3,
+# whose checkpoint after a run is not observable from a test, and SZ4, whose free-space check before VACUUM is not
+# built (`gc --vacuum` runs it, `change.rs::gc_vacuums_on_request`).
+for rule in ("QR9", "QR13", "SZ4"):
+    RULES[rule] = {"deferred": "M5 PR 7"}
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with
