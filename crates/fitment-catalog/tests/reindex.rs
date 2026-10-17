@@ -67,6 +67,18 @@ fn raw(root: &Path) -> Connection {
     conn
 }
 
+/// The insert-only triggers `raw` dropped, back, so that reindex and gc
+/// run under them as on any catalog.
+fn restore(conn: &Connection) {
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS features_immutable BEFORE UPDATE ON features
+         BEGIN SELECT RAISE(ABORT, 'features rows are insert-only'); END;
+         CREATE TRIGGER IF NOT EXISTS tokens_immutable BEFORE UPDATE ON tokens
+         BEGIN SELECT RAISE(ABORT, 'tokens rows are insert-only'); END;",
+    )
+    .unwrap();
+}
+
 /// Every tokens row and posting rewritten as signature version `sv` wrote
 /// them.
 fn at_signature(root: &Path, sv: u32) {
@@ -88,6 +100,7 @@ fn at_signature(root: &Path, sv: u32) {
     }
     conn.execute("UPDATE posting SET signature_version = ?1", [sv])
         .unwrap();
+    restore(&conn);
 }
 
 /// Every features and tokens row and posting rewritten as extractor
@@ -139,6 +152,7 @@ fn at_extractor(root: &Path, ev: u32) {
     }
     conn.execute("UPDATE posting SET extractor_version = ?1", [ev])
         .unwrap();
+    restore(&conn);
 }
 
 fn matcher(document: &SocketDocument) -> Matcher<'_> {
@@ -300,6 +314,19 @@ fn a_newer_version_is_never_touched() {
             .unwrap()
     };
     let newer = count(&root);
+    let derived = |root: &Path| -> i64 {
+        Connection::open(root.join("catalog.db"))
+            .unwrap()
+            .query_row(
+                "SELECT (SELECT count(*) FROM tokens WHERE extractor_version = ?1)
+                      + (SELECT count(*) FROM posting WHERE extractor_version = ?1)",
+                [EXTRACTOR_VERSION + 1],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let newer_derived = derived(&root);
+    assert!(newer_derived > 0);
     assert!(
         statuses(&mut catalog)
             .iter()
@@ -314,6 +341,7 @@ fn a_newer_version_is_never_touched() {
     );
     catalog.gc(true, false).unwrap();
     assert_eq!(count(&root), newer);
+    assert_eq!(derived(&root), newer_derived);
     assert_eq!(catalog.verify(false, false).unwrap(), Vec::new());
 }
 
@@ -394,8 +422,6 @@ fn judged_as(root: &Path, to: &str, from: &str, ev: u32) {
         [&to],
     )
     .unwrap();
-    conn.execute("DELETE FROM properties WHERE sha256 = ?1", [&to])
-        .unwrap();
     let key = Sha256Hex::parse(&to).unwrap();
     let parsed = Status::parse(&status).unwrap();
     let digest_hex = digest.as_deref().map(|d| Sha256Hex::parse(d).unwrap());
@@ -407,11 +433,44 @@ fn judged_as(root: &Path, to: &str, from: &str, ev: u32) {
         params![to, ev, hash.as_str(), from],
     )
     .unwrap();
+    restore(&conn);
+}
+
+/// Gives `to` the properties row of `from`, hashed as its own: what an
+/// older gate that accepted `to` would have stored.
+fn stated_like(root: &Path, to: &str, from: &str) {
+    let conn = Connection::open(root.join("catalog.db")).unwrap();
+    let sha = |id: &str| -> String {
+        conn.query_row("SELECT sha256 FROM live WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap()
+    };
+    let (to, from) = (sha(to), sha(from));
+    let (truncated, stated): (bool, Vec<u8>) = conn
+        .query_row(
+            "SELECT truncated, stated FROM properties WHERE sha256 = ?1",
+            [&from],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let key = Sha256Hex::parse(&to).unwrap();
+    let hash = preimage::properties(&key, fitment_core::PROPERTIES_VERSION, truncated, &stated);
+    conn.execute(
+        "INSERT INTO properties VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            to,
+            fitment_core::PROPERTIES_VERSION,
+            truncated,
+            stated,
+            hash.as_str()
+        ],
+    )
+    .unwrap();
 }
 
 /// RX6 and RX9: a quarantined entry the gate now accepts is searched; an
 /// indexed one it now refuses leaves the search, loudly, with its first
-/// reason.
+/// reason, and the properties its old acceptance left go with it (PR3, the
+/// PR 6 review), so `verify` passes at once.
 #[test]
 fn transitions_are_reported() {
     let mut catalog = built("transitions", 0);
@@ -425,6 +484,8 @@ fn transitions_are_reported() {
         "m_bracket_lug",
         EXTRACTOR_VERSION - 1,
     );
+    stated_like(&root, "r04_assembly", "m_bracket_lug");
+    assert_eq!(catalog.verify(false, false).unwrap(), Vec::new());
     let run = catalog.reindex(&Scope::Stale).unwrap().unwrap();
     let line = |id: &str| run.lines.iter().find(|l| l.id == id).unwrap();
     let joined = line("m_bracket");
@@ -442,6 +503,7 @@ fn transitions_are_reported() {
         "{left:?}"
     );
     assert_eq!(run.lines.len(), 2);
+    assert_eq!(catalog.verify(false, false).unwrap(), Vec::new());
     // The older rows, another part's document under each key, go.
     assert!(catalog.gc(true, false).unwrap().old_rows >= 2);
     assert_eq!(invariants(&root), Vec::<String>::new());
@@ -462,9 +524,18 @@ fn a_damaged_file_stays_stale() {
             r.get(0)
         })
         .unwrap();
-    let blob = root.join("blobs/sha256").join(&sha[..2]).join(&sha);
+    let blob = |sha: &str| root.join("blobs/sha256").join(&sha[..2]).join(sha);
     common::make_writable(&root.join("blobs"));
-    fs::write(&blob, "not the bytes").unwrap();
+    fs::write(blob(&sha), "not the bytes").unwrap();
+    let gone: String = Connection::open(root.join("catalog.db"))
+        .unwrap()
+        .query_row(
+            "SELECT sha256 FROM live WHERE id = 'p01_through'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    fs::remove_file(blob(&gone)).unwrap();
     let run = catalog.reindex(&Scope::Stale).unwrap().unwrap();
     let damaged: Vec<&str> = run
         .lines
@@ -472,16 +543,16 @@ fn a_damaged_file_stays_stale() {
         .filter(|l| matches!(l.rebuilt, Rebuilt::Damaged(_)))
         .map(|l| l.id.as_str())
         .collect();
-    assert_eq!(damaged, ["m_bracket"]);
+    assert_eq!(damaged, ["m_bracket", "p01_through"]);
     let statuses = statuses(&mut catalog);
     let stale = statuses
         .iter()
         .filter(|s| matches!(s, Some(EntryStatus::StaleExtractor(_))))
         .count();
-    assert_eq!(stale, 1);
+    assert_eq!(stale, 2);
     assert!(matches!(
         full_run(&mut catalog, &matcher),
-        Err(NotRun::Stale { count: 1, .. })
+        Err(NotRun::Stale { count: 2, .. })
     ));
 }
 
@@ -494,6 +565,11 @@ fn named_entries_and_their_refusals() {
     let run = catalog.reindex(&named("m_bracket")).unwrap().unwrap();
     assert_eq!(run.lines.len(), 1);
     assert_eq!(run.lines[0].rebuilt, Rebuilt::Current);
+    // CR10: a quarantined entry named is gated by this build already, so
+    // nothing is missing.
+    let run = catalog.reindex(&named("r04_assembly")).unwrap().unwrap();
+    assert_eq!(run.lines[0].rebuilt, Rebuilt::Current);
+    assert_eq!(run.lines[0].after, Some(EntryStatus::Quarantined));
     assert!(matches!(
         catalog.reindex(&named("nothing")).unwrap(),
         Err(Unnamed::Name(_))
@@ -568,9 +644,9 @@ fn rows(root: &Path) -> Vec<String> {
     .unwrap()
 }
 
-/// CT13 for a reindex batch: a fault at any file call leaves the batch
-/// unwritten or written whole, the invariants holding, and a rerun
-/// completes it.
+/// CT13 for a reindex batch: a fault at any file call leaves each entry
+/// written whole or not at all (a fault at a file's read fails that entry
+/// alone), the invariants holding, and a rerun completes it.
 #[test]
 fn a_faulted_reindex_batch_is_all_or_nothing() {
     let probe = small("fault-probe");

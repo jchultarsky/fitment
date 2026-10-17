@@ -359,7 +359,8 @@ impl Catalog {
             let mut batch = Vec::new();
             let mut held = 0_u64;
             while let Some((file, tail)) = rest.split_first() {
-                let full = batch.len() >= BATCH_FILES || held >= budget;
+                // A batch takes one file at least, whatever the budget.
+                let full = !batch.is_empty() && (batch.len() >= BATCH_FILES || held >= budget);
                 if full || started.elapsed() > BATCH_TIME {
                     break;
                 }

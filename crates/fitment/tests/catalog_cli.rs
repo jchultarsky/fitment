@@ -900,3 +900,61 @@ fn reindex_brings_a_stale_catalog_back() {
     assert_eq!(code, 0, "{err}");
     assert!(err.contains("rows of older versions removed"), "{err}");
 }
+
+/// RX6 (the PR 6 review): a part an older gate accepted and this one
+/// refuses leaves the search loudly: its line, its reason on stderr, and
+/// exit 3.
+#[test]
+fn a_part_that_leaves_the_search_exits_3() {
+    use fitment_catalog::Sha256Hex;
+    use fitment_catalog::preimage::{self, Status};
+    let dir = scratch("leaves");
+    let inputs = prototype(&dir);
+    catalog(&dir, &["init", "-C", "parts"]);
+    catalog(&dir, &["ingest", "-C", "parts", inputs.to_str().unwrap()]);
+    let opened =
+        fitment_catalog::Catalog::open(&dir.join("parts"), fitment_catalog::Options::default())
+            .unwrap();
+    let conn = opened.connection();
+    let sha = |id: &str| -> String {
+        conn.query_row("SELECT sha256 FROM live WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap()
+    };
+    // junk, as an older extractor that accepted it as a bracket stored it.
+    let (junk, bracket) = (sha("junk"), sha("m_bracket"));
+    let (digest, doc): (String, Vec<u8>) = conn
+        .query_row(
+            "SELECT part_digest, doc FROM features WHERE sha256 = ?1",
+            [&bracket],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let old = fitment_core::EXTRACTOR_VERSION - 1;
+    let hash = preimage::features(
+        &Sha256Hex::parse(&junk).unwrap(),
+        old,
+        Status::Accepted,
+        Some(&Sha256Hex::parse(&digest).unwrap()),
+        &doc,
+    );
+    conn.execute("DELETE FROM features WHERE sha256 = ?1", [&junk])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO features SELECT ?1, ?2, status, encoding, doc, ?3, part_digest, product_id,
+                product_name, holes, shafts, planes, cones, other_faces, complete, first_refusal
+         FROM features WHERE sha256 = ?4",
+        (junk.as_str(), old, hash.as_str(), bracket.as_str()),
+    )
+    .unwrap();
+    drop(opened);
+    let (code, out, err) = catalog(&dir, &["reindex", "-C", "parts"]);
+    assert_eq!(code, 3, "{err}");
+    let line = out.lines().find(|l| l.contains(" junk ")).unwrap();
+    assert!(line.starts_with("quarantined "), "{line}");
+    assert!(line.ends_with("(no longer searched)"), "{line}");
+    assert!(err.contains("1 no longer searched"), "{err}");
+    assert!(
+        err.contains("junk: no longer searched: unparseable: "),
+        "{err}"
+    );
+}

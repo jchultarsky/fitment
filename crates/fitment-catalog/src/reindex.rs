@@ -4,6 +4,7 @@
 //! version written, rewritten or deleted but an older one beside its
 //! current one.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -21,6 +22,7 @@ use crate::ids::{Id, Reference};
 use crate::ingest::{
     BATCH_FILES, BATCH_TIME, Prepared, derive, insert_features, insert_properties, insert_tokens,
 };
+use crate::preimage::Status;
 use crate::snapshot::{BadRow, EntryStatus, Listed, check};
 use crate::{Catalog, Error, schema};
 
@@ -83,18 +85,24 @@ pub struct Reindexed {
 }
 
 impl Reindexed {
-    /// RX6: searched before, quarantined now.
+    /// RX6: searched before, quarantined now, by rows this run wrote.
     pub fn left_search(&self) -> bool {
-        self.searched_before && self.after == Some(EntryStatus::Quarantined)
+        self.written() && self.searched_before && self.after == Some(EntryStatus::Quarantined)
     }
 
-    /// Not searched before, searched now.
+    /// Not searched before, searched now, by rows this run wrote.
     pub fn joined_search(&self) -> bool {
-        !self.searched_before
+        self.written()
+            && !self.searched_before
             && matches!(
                 self.after,
                 Some(EntryStatus::Indexed | EntryStatus::StaleProperties(_))
             )
+    }
+
+    /// A change another command made is not this run's to report.
+    fn written(&self) -> bool {
+        matches!(self.rebuilt, Rebuilt::Written { .. })
     }
 }
 
@@ -216,24 +224,34 @@ impl Catalog {
             let started = Instant::now();
             let mut batch = Vec::new();
             let mut held = 0_u64;
+            let mut planning = None;
             while let Some((listed, tail)) = rest.split_first() {
-                let full = batch.len() >= BATCH_FILES || held >= budget;
+                // A batch takes one entry at least, whatever the budget.
+                let full = !batch.is_empty() && (batch.len() >= BATCH_FILES || held >= budget);
                 if full || started.elapsed() > BATCH_TIME {
                     break;
                 }
                 rest = tail;
-                let planned = self.plan(listed)?;
+                match self.plan(listed) {
+                    Ok(planned) => batch.push(planned),
+                    Err(error) => {
+                        planning = Some(error);
+                        break;
+                    }
+                }
                 held = held.saturating_add(listed.bytes.unwrap_or_default());
-                batch.push(planned);
             }
             let (lines, stopped) = self.commit_reindex(batch);
             out.lines.extend(lines);
-            if stopped.is_some() {
-                out.stopped = stopped;
+            // Committed batches stay reported whatever stops the run.
+            if let Some(error) = stopped.or(planning) {
+                out.stopped = Some(error);
                 break;
             }
         }
-        self.settle_lines(&mut out.lines)?;
+        if let Err(error) = self.settle_lines(&mut out.lines) {
+            out.stopped.get_or_insert(error);
+        }
         Ok(Ok(out))
     }
 
@@ -294,14 +312,14 @@ impl Catalog {
             match self.blobs().read(&listed.sha256) {
                 Ok(bytes) => Some(bytes),
                 Err(bad) => {
-                    let why = match bad {
-                        BadBlob::Missing => "missing: the file is not in the store".to_owned(),
+                    planned.line.rebuilt = match bad {
+                        BadBlob::Missing => damaged("missing: the file is not in the store".into()),
                         BadBlob::Damaged => {
-                            "damaged: the file's SHA-256 is not its name".to_owned()
+                            damaged("damaged: the file's SHA-256 is not its name".into())
                         }
-                        other => other.to_string(),
+                        // A read that failed says nothing of the file.
+                        other => Rebuilt::Failed(format!("cannot read its file: {other}")),
                     };
-                    planned.line.rebuilt = damaged(why);
                     return Ok(planned);
                 }
             }
@@ -388,10 +406,6 @@ impl Catalog {
             let mut n = 0_i64;
             for planned in &batch {
                 let mut line = planned.line.clone();
-                if line.rebuilt != Rebuilt::Current || planned.work.none() {
-                    lines.push(line);
-                    continue;
-                }
                 let entry: Option<(i64, i64)> = tx
                     .query_row(
                         "SELECT l.entry, b.key FROM live l JOIN blob b ON b.sha256 = l.sha256
@@ -400,13 +414,27 @@ impl Catalog {
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .optional()?;
+                // An entry replaced or deleted since its plan, whatever the
+                // plan found, is that change's (CC4's re-check).
                 let Some((entry, key)) = entry else {
                     line.rebuilt = Rebuilt::Changed;
                     lines.push(line);
                     continue;
                 };
-                if Work::of(&tx, &line.sha256)?.none() {
+                if line.rebuilt != Rebuilt::Current || planned.work.none() {
+                    lines.push(line);
+                    continue;
+                }
+                let now = Work::of(&tx, &line.sha256)?;
+                if now.none() {
                     // Another reindex wrote them first.
+                    lines.push(line);
+                    continue;
+                }
+                if now != planned.work {
+                    // Its rows changed under the plan (another build's
+                    // gc or reindex): planned again on the next run.
+                    line.rebuilt = Rebuilt::Changed;
                     lines.push(line);
                     continue;
                 }
@@ -457,8 +485,9 @@ impl Catalog {
     fn settle_lines(&mut self, lines: &mut [Reindexed]) -> Result<(), Error> {
         let snapshot = self.snapshot()?;
         let now = snapshot.list()?;
+        let by_id: BTreeMap<&str, &Listed> = now.iter().map(|l| (l.id.as_str(), l)).collect();
         for line in lines {
-            if let Some(listed) = now.iter().find(|l| l.id == line.id) {
+            if let Some(listed) = by_id.get(line.id.as_str()) {
                 line.after = listed.status;
                 line.first_refusal = listed
                     .refusals
@@ -475,6 +504,15 @@ fn write(tx: &rusqlite::Transaction<'_>, planned: &Planned, key: i64) -> Result<
     let sha = &planned.line.sha256;
     if let Some(derived) = &planned.derived {
         insert_features(tx, derived)?;
+        if derived.status == Status::Refused {
+            // PR3: a refused document has no properties; those an older
+            // gate's acceptance left go, this build's version or older
+            // (never a newer one, RX8).
+            tx.execute(
+                "DELETE FROM properties WHERE sha256 = ?1 AND properties_version <= ?2",
+                params![sha.as_str(), PROPERTIES_VERSION],
+            )?;
+        }
         if let Some(tokens) = &derived.tokens {
             insert_tokens(tx, sha, tokens, key)?;
         }
@@ -499,8 +537,14 @@ pub(crate) fn drop_old_versions(conn: &mut Connection) -> Result<usize, Error> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (ev, sv, pv) = (EXTRACTOR_VERSION, SIGNATURE_VERSION, PROPERTIES_VERSION);
     let mut removed = 0;
-    // An older features row goes where a current one exists; its tokens go
-    // with it (the foreign key cascades).
+    // An older features row goes where a current one exists, its tokens
+    // first, so that they are counted (a cascade's deletes are not).
+    removed += tx.execute(
+        "DELETE FROM tokens WHERE extractor_version < ?1
+           AND EXISTS (SELECT 1 FROM features c WHERE c.sha256 = tokens.sha256
+                       AND c.extractor_version = ?1)",
+        [ev],
+    )?;
     removed += tx.execute(
         "DELETE FROM features WHERE extractor_version < ?1
            AND EXISTS (SELECT 1 FROM features c WHERE c.sha256 = features.sha256
@@ -528,6 +572,14 @@ pub(crate) fn drop_old_versions(conn: &mut Connection) -> Result<usize, Error> {
            AND EXISTS (SELECT 1 FROM properties c WHERE c.sha256 = properties.sha256
                        AND c.properties_version = ?1)",
         [pv],
+    )?;
+    // PR3: properties beside a document this build refuses, left by an
+    // older gate's acceptance, this build's version or older.
+    removed += tx.execute(
+        "DELETE FROM properties WHERE properties_version <= ?1
+           AND EXISTS (SELECT 1 FROM features f WHERE f.sha256 = properties.sha256
+                       AND f.extractor_version = ?2 AND f.status = 'refused')",
+        [pv, ev],
     )?;
     if removed > 0 {
         let g = schema::next_generation(&tx)?;

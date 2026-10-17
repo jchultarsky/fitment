@@ -78,10 +78,12 @@ fn row(line: &Reindexed) -> String {
 }
 
 /// CL2's code: 1 for a damaged entry, a failed batch or a stopped run; 3
-/// for a part that left the search (RX6); else 0.
+/// for a part that left the search (RX6) or whose document is too large
+/// to store, as ingest refuses it; else 0.
 fn code(run: &Reindex) -> u8 {
     let codes = run.lines.iter().map(|line| match &line.rebuilt {
-        Rebuilt::Damaged(_) | Rebuilt::TooLarge | Rebuilt::Failed(_) => ERROR,
+        Rebuilt::Damaged(_) | Rebuilt::Failed(_) => ERROR,
+        Rebuilt::TooLarge => REFUSED,
         _ if line.left_search() => REFUSED,
         _ => 0,
     });
@@ -95,15 +97,25 @@ fn summary(dir: &Path, run: &Reindex) {
         .iter()
         .filter(|l| matches!(l.rebuilt, Rebuilt::Written { .. }))
         .collect();
-    let count = |status: EntryStatus| written.iter().filter(|l| l.after == Some(status)).count();
-    let quarantined = count(EntryStatus::Quarantined);
+    let quarantined = written
+        .iter()
+        .filter(|l| l.after == Some(EntryStatus::Quarantined))
+        .count();
+    let indexed = written
+        .iter()
+        .filter(|l| {
+            matches!(
+                l.after,
+                Some(EntryStatus::Indexed | EntryStatus::StaleProperties(_))
+            )
+        })
+        .count();
     let joined = run.lines.iter().filter(|l| l.joined_search()).count();
     let left = run.lines.iter().filter(|l| l.left_search()).count();
     note(&format!(
-        "fitment: {}: {} reindexed: {} indexed, {quarantined} quarantined; {joined} newly searched, {left} no longer searched",
+        "fitment: {}: {} reindexed: {indexed} indexed, {quarantined} quarantined; {joined} newly searched, {left} no longer searched",
         shown(dir),
-        written.len(),
-        written.len() - quarantined
+        written.len()
     ));
     for line in run.lines.iter().filter(|l| l.left_search()) {
         note(&format!(
@@ -137,9 +149,11 @@ fn summary(dir: &Path, run: &Reindex) {
 fn document(catalog: &mut Catalog, run: &Reindex) -> Result<String, Error> {
     let snapshot = catalog.snapshot()?;
     let all = snapshot.list()?;
+    let processed: std::collections::BTreeSet<&str> =
+        run.lines.iter().map(|l| l.id.as_str()).collect();
     let entries = all
         .iter()
-        .filter(|l| run.lines.iter().any(|line| line.id == l.id))
+        .filter(|l| processed.contains(l.id.as_str()))
         .map(|l| Entry::of(l, None))
         .collect();
     let changes = run

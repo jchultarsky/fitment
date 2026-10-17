@@ -1044,7 +1044,7 @@ M5_PR6 = {
     "RX4": [f"{R}::a_signature_rise_reads_no_file", f"{R}::an_extractor_rise_extracts_again",
             f"{R}::properties_are_captured_again", f"{C}::reindex_brings_a_stale_catalog_back"],
     "RX5": [f"{R}::a_damaged_file_stays_stale", f"{C}::reindex_brings_a_stale_catalog_back"],
-    "RX6": [f"{R}::transitions_are_reported"],
+    "RX6": [f"{R}::transitions_are_reported", f"{C}::a_part_that_leaves_the_search_exits_3"],
     "RX7": [f"{R}::a_killed_reindex_resumes", f"{R}::a_faulted_reindex_batch_is_all_or_nothing"],
     "RX8": [f"{R}::a_newer_version_is_never_touched", f"{R}::an_extractor_rise_extracts_again"],
     "RX9": [f"{R}::named_entries_and_their_refusals", f"{C}::reindex_brings_a_stale_catalog_back"],
