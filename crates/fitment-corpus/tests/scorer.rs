@@ -7,7 +7,9 @@
 
 use std::path::Path;
 
-use fitment_core::{MatchDocument, MatchOptions, Matcher, NoFitVerifier, SocketDocument};
+use fitment_core::{
+    MatchDocument, MatchOptions, Matcher, NoFitVerifier, SocketDocument, read_part,
+};
 use fitment_corpus::{Corpus, Outcome, Policy, Run, RunPath, Score, Truth, gate, parity};
 use serde_json::{Value, json};
 
@@ -24,28 +26,47 @@ fn hole() -> Value {
 /// A case of s01's bracket with the candidate `file`, its truth and class,
 /// its review and what it expects under both policies.
 fn case(id: &str, truth: &str, class: &str, review: &[Value], expect: &Value) -> Value {
+    let manifest: Value = serde_json::from_str(include_str!(
+        "../../fitment-core/tests/candidates/manifest.json"
+    ))
+    .unwrap();
+    let committed = manifest["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "m_bracket_missing_hole")
+        .unwrap();
     json!({
         "id": id, "kind": "match", "file": "m_bracket_missing_hole.stp", "class": class, "truth": truth,
         "socket": {"case": "s01_bolted", "part": "BRACKET", "occurrence": null, "review": review},
-        "candidate": {"file": "m_bracket_missing_hole.stp"},
+        "candidate": {"file": "m_bracket_missing_hole.stp"}, "placement": committed["placement"],
         "expect": {"default": expect, "functional": "default"}, "defect": [],
     })
+}
+
+/// A review entry removing what `locator` names.
+fn removal(locator: Value) -> Value {
+    let mut removed = locator;
+    removed["status"] = json!("removed");
+    removed["note"] = json!("left out");
+    removed
 }
 
 /// The waived case: the bracket without its hole at (30, 15), that hole's
 /// bore removed in review (M6-38).
 fn waived() -> Value {
-    let mut removed = hole();
-    removed["status"] = json!("removed");
-    removed["note"] = json!("the bolt at (30, 15) is left out");
-    case(
+    let mut case = case(
         "waived",
         "waived",
         "review_waived",
-        &[removed],
+        &[removal(hole())],
         &json!({"verdict": "interface_match", "must_fail": [], "may_fail": [],
                 "flags": ["requirements_removed"]}),
-    )
+    );
+    let mut defect = hole();
+    defect["codes"] = json!(["axis_offset", "no_feature"]);
+    case["defect"] = json!([defect]);
+    case
 }
 
 /// `case`'s socket, extracted and reviewed, and its sockets as extracted.
@@ -195,7 +216,7 @@ fn waived_is_neither_a_fit_nor_a_false_positive() {
         };
         let score = Score::new(&corpus, vec![run]);
         assert_eq!(score.false_positives(), Vec::<String>::new());
-        assert_eq!(score.false_negatives(), Vec::<Value>::new());
+        assert_eq!(score.false_negatives().unwrap(), Vec::<Value>::new());
         let report = score.report();
         assert_eq!(report["rows"][0]["class"], "review_waived");
         assert_eq!(report["totals"][0]["fits"], 0);
@@ -251,4 +272,125 @@ fn parity_reads_differences_and_exit_codes() {
         (wide["name"].as_str(), wide["linear_mm"].as_f64()),
         (Some("cli"), Some(0.05))
     );
+}
+
+/// What the waived case's candidate fails against s01's socket as
+/// extracted, unreviewed, at the construction's placement.
+fn unreviewed_at_construction(case: &Value) -> Vec<fitment_core::SocketResult> {
+    let document = SocketDocument::extract(S01, Some("BRACKET"), None).unwrap();
+    let matcher = Matcher::new(
+        &document,
+        Policy::Default.match_policy(),
+        MatchOptions::default(),
+        &NoFitVerifier,
+    )
+    .unwrap();
+    let part = read_part(MISSING_HOLE).unwrap();
+    let at = gate::placement(case).unwrap();
+    let sockets = &document.extracted().unwrap().sockets;
+    sockets
+        .iter()
+        .filter_map(|s| matcher.verify_at(&part, &s.id, &at))
+        .collect()
+}
+
+/// SC8's controls: `waived` exempts a pass from the false positives only
+/// with a review that removes something, `requirements_removed` expected,
+/// and, unreviewed at the construction's placement, a defect that is
+/// exactly what the review removes. A passing outcome under each
+/// mislabelling is caught; the true label passes.
+#[test]
+fn a_mislabelled_waived_case_is_caught() {
+    let truly = waived();
+    let (document, sockets) = socket(&truly);
+    let matcher = Matcher::new(
+        &document,
+        Policy::Default.match_policy(),
+        MatchOptions::default(),
+        &NoFitVerifier,
+    )
+    .unwrap();
+    let passed = Outcome::of_result(&matcher.judge_step(MISSING_HOLE), matcher.policy());
+    let at = unreviewed_at_construction(&truly);
+    assert_eq!(
+        gate::gate(&truly, "default", &sockets, &passed),
+        Vec::<String>::new()
+    );
+    assert_eq!(gate::waived(&truly, &sockets, &at), Vec::<String>::new());
+    // No review: the pass is the manifest's word alone.
+    let mut no_review = truly.clone();
+    no_review["socket"]["review"] = json!([]);
+    let mut unflagged = passed.clone();
+    unflagged.flags.retain(|f| f != "requirements_removed");
+    unflagged.sockets[0].removed.clear();
+    let found = gate::gate(&no_review, "default", &sockets, &unflagged);
+    assert!(
+        found.iter().any(|p| p.contains("harness: waived")),
+        "{found:?}"
+    );
+    // No flag expected.
+    let mut no_flag = truly.clone();
+    no_flag["expect"]["default"]["flags"] = json!([]);
+    let found = gate::gate(&no_flag, "default", &sockets, &passed);
+    assert!(
+        found.iter().any(|p| p.contains("harness: waived")),
+        "{found:?}"
+    );
+    // An unrelated removal: the grip, while the hole is what is missing.
+    let mut unrelated = truly.clone();
+    unrelated["socket"]["review"] = json!([removal(json!({"kind": "grip", "length": 8.0}))]);
+    let found = gate::waived(&unrelated, &sockets, &at);
+    assert!(
+        found.iter().any(|p| p.contains("which its review keeps")),
+        "{found:?}"
+    );
+    // A review is a harness error on a status fitment review does not know.
+    let mut unknown = truly;
+    unknown["socket"]["review"][0]["status"] = json!("dropped");
+    let mut fresh = SocketDocument::extract(S01, Some("BRACKET"), None).unwrap();
+    assert!(gate::apply_review(&unknown, &mut fresh).is_err());
+}
+
+/// SC5: a path that runs fewer policies is compared on those alone, and a
+/// false negative the baseline does not list is a harness error, never a
+/// cause made up.
+#[test]
+fn a_path_is_compared_on_what_it_ran() {
+    let committed = fitment_corpus::baseline::committed().unwrap();
+    let entries = committed["false_negatives"].as_array().unwrap();
+    let both = entries
+        .iter()
+        .find(|e| entries.iter().filter(|f| f["case"] == e["case"]).count() == 2)
+        .expect("a case with false negatives under both policies");
+    let policy = if both["policy"] == "functional" {
+        Policy::Functional
+    } else {
+        Policy::Default
+    };
+    let case = both["case"].as_str().unwrap().to_owned();
+    assert_eq!(
+        fitment_corpus::baseline::compare(std::slice::from_ref(both), &[(case, policy)]),
+        Ok(())
+    );
+    let unlisted = json!({"id": "unlisted", "kind": "match", "class": "g", "truth": "fits"});
+    let corpus = Corpus::of(Path::new("."), json!({"cases": [unlisted]}));
+    let run = Run {
+        case: "unlisted".to_owned(),
+        policy: Policy::Default,
+        outcome: Outcome {
+            verdict: "reject".to_owned(),
+            status: "accepted".to_owned(),
+            refusals: Vec::new(),
+            sockets: Vec::new(),
+            flags: Vec::new(),
+            fit: "not_checked".to_owned(),
+            policy: json!({}),
+        },
+        path: RunPath::Binary,
+        at_construction: None,
+    };
+    let found = Score::new(&corpus, vec![run])
+        .false_negatives()
+        .unwrap_err();
+    assert!(found.contains("harness"), "{found}");
 }

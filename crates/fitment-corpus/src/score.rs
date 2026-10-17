@@ -122,13 +122,17 @@ impl Score {
     /// comes from: a stated rule, alignment (the construction's placement
     /// passes, KH8) or verification; taken from the baseline where the
     /// path cannot place by the construction (SC5).
-    pub fn false_negatives(&self) -> Vec<Value> {
+    ///
+    /// A false negative of such a path that the baseline does not list is
+    /// a harness error: its cause is the library's to state, and only the
+    /// library suite blesses (SC5).
+    pub fn false_negatives(&self) -> Result<Vec<Value>, String> {
         let committed = baseline::committed();
         let mut out: Vec<Value> = self
             .runs
             .iter()
             .filter(|s| s.false_negative())
-            .map(|s| {
+            .map(|s| -> Result<Value, String> {
                 let failed: Vec<Value> = s
                     .run
                     .outcome
@@ -148,13 +152,32 @@ impl Score {
                     (_, Some(true)) => "alignment".to_owned(),
                     (_, Some(false)) => "verification".to_owned(),
                     (_, None) => baseline::cause(committed.as_ref(), &s.run.case, s.run.policy)
-                        .unwrap_or_else(|| "unknown".to_owned()),
+                        .ok_or_else(|| {
+                            format!(
+                                "harness: {} {}: a false negative the baseline does not list, \
+                                 whose cause only the library's run can state (SC5)",
+                                s.run.case,
+                                s.run.policy.name()
+                            )
+                        })?,
                 };
-                json!({"case": s.run.case, "policy": s.run.policy.name(), "class": s.class,
-                       "failed": failed, "cause": cause})
+                Ok(json!({"case": s.run.case, "policy": s.run.policy.name(), "class": s.class,
+                          "failed": failed, "cause": cause}))
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         out.sort_by_key(|v| (v["case"].to_string(), v["policy"].to_string()));
+        Ok(out)
+    }
+
+    /// The (case, policy) pairs run, each once, in the order given.
+    pub fn ran(&self) -> Vec<(String, Policy)> {
+        let mut out: Vec<(String, Policy)> = Vec::new();
+        for s in &self.runs {
+            let pair = (s.run.case.clone(), s.run.policy);
+            if !out.contains(&pair) {
+                out.push(pair);
+            }
+        }
         out
     }
 

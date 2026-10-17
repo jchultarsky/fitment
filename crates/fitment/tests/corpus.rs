@@ -476,14 +476,65 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// The M6 PR this tree builds: a deferral names a later one.
+const M6_PR_NOW: u32 = 1;
+
+/// The last M6 PR a rule may wait for: PR 9, M6's exit, removes the
+/// allowance (section 12; PR 10 is the release).
+const M6_PR_LAST: u32 = 9;
+
 /// True for a deferral M6's open design allows: one of its own rules,
-/// waiting for the PR that builds it (`M6 PR n`, n from 1 to 10).
+/// waiting for a later PR that builds it (`M6 PR n`, after this one and
+/// at most the exit's).
 fn m6_deferral(id: &str, reason: &str, m6: &[String]) -> bool {
     m6.iter().any(|r| r == id)
         && reason
             .strip_prefix("M6 PR ")
             .and_then(|n| n.parse::<u32>().ok())
-            .is_some_and(|n| (1..=10).contains(&n))
+            .is_some_and(|n| n > M6_PR_NOW && n <= M6_PR_LAST)
+}
+
+/// M6's lists (section 11.1): a rule of one that is not deferred has a
+/// test in the files its list names; cases alone, or tests elsewhere, do
+/// not show a bound exceeded, a CLI's parity or a fault survived.
+fn m6_list_problems(id: &str, tests: &[&str], deferred: bool) -> Vec<String> {
+    M6_LISTS
+        .iter()
+        .filter(|(list, _)| list.contains(&id) && !deferred)
+        .filter(|(_, files)| {
+            !tests
+                .iter()
+                .any(|t| files.iter().any(|f| t.starts_with(&format!("{f}::"))))
+        })
+        .map(|(_, files)| format!("{id}: no test of it in {files:?}"))
+        .collect()
+}
+
+/// VT30's controls for M6's deferrals and lists: a deferral to this PR, an
+/// earlier one or past the exit, or of a rule not M6's, is refused; a
+/// listed rule shown by cases alone, or by a test elsewhere, is refused.
+#[test]
+fn m6_deferrals_and_lists_hold() {
+    let m6 = vec!["UP2".to_owned()];
+    assert!(m6_deferral("UP2", "M6 PR 2", &m6));
+    assert!(m6_deferral("UP2", "M6 PR 9", &m6));
+    for reason in ["M6 PR 1", "M6 PR 0", "M6 PR 10", "M6 PR", "M5 PR 4"] {
+        assert!(!m6_deferral("UP2", reason, &m6), "{reason}");
+    }
+    assert!(!m6_deferral("ST1", "M6 PR 4", &m6));
+    let hostile = "crates/fitment-server/tests/hostile.rs::a_body_past_the_cap";
+    let elsewhere = "crates/fitment-server/tests/api.rs::a_body_past_the_cap";
+    assert_eq!(m6_list_problems("UP2", &[], false).len(), 1);
+    assert_eq!(m6_list_problems("UP2", &[elsewhere], false).len(), 1);
+    assert_eq!(
+        m6_list_problems("UP2", &[hostile, elsewhere], false),
+        Vec::<String>::new()
+    );
+    assert_eq!(m6_list_problems("UP2", &[], true), Vec::<String>::new());
+    assert_eq!(
+        m6_list_problems("SC1", &[elsewhere], false),
+        Vec::<String>::new()
+    );
 }
 
 /// One rule's entry: a case, a test that exists, an oracle check or a
@@ -509,7 +560,11 @@ fn rule_problems(id: &str, entry: &Value, root: &Path, m6: &[String]) -> Vec<Str
             "{id}: no case, no test, no oracle check and no reason"
         ));
     }
-    if deferred && (cases > 0 || !tests.is_empty() || !oracle.is_empty()) {
+    // While M6 is open, a rule waiting for its PR may be cited by cases
+    // that support it (XH1 by PR 1's review cases); a test still ends its
+    // wait.
+    let supporting = cases > 0 && m6_deferral(id, reason, m6);
+    if deferred && ((cases > 0 && !supporting) || !tests.is_empty() || !oracle.is_empty()) {
         failures.push(format!("{id}: deferred, yet a case or test covers it"));
     }
     failures.extend(oracle_problems(id, &oracle, root));
@@ -532,15 +587,7 @@ fn rule_problems(id: &str, entry: &Value, root: &Path, m6: &[String]) -> Vec<Str
             failures.push(format!("{id}: no test {name} in {file}"));
         }
     }
-    for (list, files) in M6_LISTS {
-        let elsewhere: Vec<&&str> = tests
-            .iter()
-            .filter(|t| !files.iter().any(|f| t.starts_with(&format!("{f}::"))))
-            .collect();
-        if list.contains(&id) && !tests.is_empty() && elsewhere.len() == tests.len() {
-            failures.push(format!("{id}: no test of it in {files:?}"));
-        }
-    }
+    failures.extend(m6_list_problems(id, &tests, deferred));
     failures
 }
 
@@ -647,8 +694,8 @@ fn is_test(file: &Path, name: &str) -> bool {
 }
 
 /// True if `text` has a test function `name`: `fn` or `async fn` under
-/// `#[test]`, `#[tokio::test]` or `#[tokio::test(...)]` on one of the two
-/// lines above it (M6-41).
+/// `#[test]`, `#[tokio::test]` or `#[tokio::test(...)]` among the
+/// attribute and doc-comment lines right above it (M6-41).
 fn is_test_in(text: &str, name: &str) -> bool {
     let lines: Vec<&str> = text.lines().collect();
     let attribute = |line: &&str| {
@@ -661,7 +708,17 @@ fn is_test_in(text: &str, name: &str) -> bool {
         let line = line.trim_start();
         let declared = line.starts_with(&format!("fn {name}("))
             || line.starts_with(&format!("async fn {name}("));
-        declared && lines[i.saturating_sub(2)..i].iter().any(attribute)
+        // Upward over its own attributes and doc comments only: a test
+        // above another function is not that function's.
+        declared
+            && lines[..i]
+                .iter()
+                .rev()
+                .take_while(|l| {
+                    let l = l.trim();
+                    l.starts_with("#[") || l.starts_with("///")
+                })
+                .any(attribute)
     })
 }
 
@@ -686,6 +743,12 @@ fn a_test_is_found_as_written() {
         ("fn f() {}", "f"),
         ("#[test]\nfn g_more() {}", "g"),
         ("#[tokio::main]\nasync fn h() {}", "h"),
+        ("#[test]\nfn a() {}\nfn helper() {}", "helper"),
+        (
+            "#[tokio::test]\nasync fn a() {}\nasync fn helper() {}",
+            "helper",
+        ),
+        ("#[test]\nfn a() {}\n\n/// Docs.\nfn helper() {}", "helper"),
     ];
     for (text, name) in not_found {
         assert!(!is_test_in(text, name), "{text}");

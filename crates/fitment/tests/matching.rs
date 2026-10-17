@@ -24,8 +24,8 @@ use fitment_core::{
     ShortlistIndex, Socket, SocketDocument, Source, Stage, VerdictKind, read_assembly,
 };
 use fitment_corpus::{
-    CandidateRef, Case, Corpus, Outcome, Policy, Run, RunPath, Score, SocketKey, baseline, checker,
-    gate, parity, report,
+    CandidateRef, Case, Corpus, Outcome, Policy, Run, RunPath, Score, SocketKey, Truth, baseline,
+    checker, gate, parity, report,
 };
 use serde_json::{Value, json};
 
@@ -105,15 +105,29 @@ impl Input {
 }
 
 /// The socket `case` is judged against: its source's target, extracted,
-/// with the case's review applied (M6-38); and its sockets as extracted.
-fn socket_document(dir: &Path, case: Case<'_>) -> (SocketDocument, Vec<Socket>) {
+/// with the case's review applied (M6-38).
+struct Judged {
+    /// As reviewed: what the case is judged against.
+    reviewed: SocketDocument,
+    /// As extracted, unreviewed: what a waived case's defect breaks (SC8).
+    extracted: SocketDocument,
+    /// Its sockets, as extracted.
+    sockets: Vec<Socket>,
+}
+
+fn socket_document(dir: &Path, case: Case<'_>) -> Judged {
     let key = case.socket();
     let bytes = fs::read(dir.join(format!("{}.stp", key.source))).unwrap();
-    let mut document = SocketDocument::extract(&bytes, Some(&key.part), None).unwrap();
-    let sockets = document.extracted().unwrap().sockets.clone();
-    gate::apply_review(case.value(), &mut document)
+    let extracted = SocketDocument::extract(&bytes, Some(&key.part), None).unwrap();
+    let sockets = extracted.extracted().unwrap().sockets.clone();
+    let mut reviewed = extracted.clone();
+    gate::apply_review(case.value(), &mut reviewed)
         .unwrap_or_else(|e| panic!("{}: harness: {e}", case.id()));
-    (document, sockets)
+    Judged {
+        reviewed,
+        extracted,
+        sockets,
+    }
 }
 
 /// One case judged by the library under one policy, with what the harness
@@ -144,19 +158,19 @@ fn runs() -> Option<&'static Vec<LibraryRun>> {
 }
 
 fn compute(corpus: &Corpus) -> Vec<LibraryRun> {
-    let mut documents: BTreeMap<SocketKey, (SocketDocument, Vec<Socket>)> = BTreeMap::new();
+    let mut documents: BTreeMap<SocketKey, Judged> = BTreeMap::new();
     let mut out = Vec::new();
     for case in corpus
         .match_cases()
         .into_iter()
         .filter(|c| !c.socket_gate())
     {
-        let (document, sockets) = documents
+        let judged = documents
             .entry(case.socket())
             .or_insert_with(|| socket_document(corpus.dir(), case));
         let input = Input::read(corpus.dir(), case);
         for policy in Policy::M4 {
-            out.push(judge(case, policy, document, sockets, &input));
+            out.push(judge(case, policy, judged, &input));
         }
     }
     out
@@ -164,14 +178,9 @@ fn compute(corpus: &Corpus) -> Vec<LibraryRun> {
 
 /// One case under one policy, and everything the library tests ask of
 /// it.
-fn judge(
-    case: Case<'_>,
-    policy: Policy,
-    document: &SocketDocument,
-    sockets: &[Socket],
-    input: &Input,
-) -> LibraryRun {
-    let matcher = |p: Policy| {
+fn judge(case: Case<'_>, policy: Policy, judged: &Judged, input: &Input) -> LibraryRun {
+    let sockets = &judged.sockets;
+    let matcher_of = |document, p: Policy| {
         Matcher::new(
             document,
             p.match_policy(),
@@ -180,6 +189,7 @@ fn judge(
         )
         .unwrap()
     };
+    let matcher = |p: Policy| matcher_of(&judged.reviewed, p);
     let own = matcher(policy);
     let result = input.judge(&own);
     let outcome = Outcome::of_result(&result, own.policy());
@@ -190,7 +200,19 @@ fn judge(
         .iter()
         .flat_map(|p| sockets.iter().filter_map(|s| own.verify_at(p, &s.id, &at)))
         .collect();
-    if !case.value()["defect"].as_array().is_none_or(Vec::is_empty) {
+    if case.truth() == Truth::Waived {
+        // SC8: the defect, unreviewed, is exactly what the review removes.
+        let unreviewed = matcher_of(&judged.extracted, policy);
+        let at_construction: Vec<_> = part
+            .iter()
+            .flat_map(|p| {
+                sockets
+                    .iter()
+                    .filter_map(|s| unreviewed.verify_at(p, &s.id, &at))
+            })
+            .collect();
+        problems.extend(gate::waived(case.value(), sockets, &at_construction));
+    } else if !case.value()["defect"].as_array().is_none_or(Vec::is_empty) {
         problems.extend(gate::defect(case.value(), sockets, &built));
     }
     let passes_at_construction = !built.is_empty()
@@ -275,7 +297,8 @@ fn the_false_negatives_are_the_baseline() {
         return;
     };
     let score = library_score(corpus, runs);
-    if let Err(e) = baseline::bless_or_compare(&score.false_negatives(), &score.cases()) {
+    let found = score.false_negatives().unwrap();
+    if let Err(e) = baseline::bless_or_compare(&found, &score.cases()) {
         panic!("{e}");
     }
 }
@@ -573,7 +596,7 @@ fn the_binary_meets_the_construction() {
         let case = corpus.case(&run.case).unwrap();
         let sockets = sockets
             .entry(case.socket())
-            .or_insert_with(|| socket_document(corpus.dir(), case).1);
+            .or_insert_with(|| socket_document(corpus.dir(), case).sockets);
         match &run.outcome {
             Ok(outcome) => problems.extend(case.gate(run.policy, sockets, outcome)),
             Err(e) => problems.push(format!("{} {}: {e}", run.case, run.policy.name())),
@@ -591,7 +614,8 @@ fn the_binary_false_negatives_are_the_baseline() {
         return;
     };
     let score = binary_score(corpus, binary);
-    if let Err(e) = baseline::compare(&score.false_negatives(), &score.cases()) {
+    let found = score.false_negatives().unwrap_or_else(|e| panic!("{e}"));
+    if let Err(e) = baseline::compare(&found, &score.ran()) {
         panic!("{e}");
     }
     let fps = score.false_positives();

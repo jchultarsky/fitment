@@ -1100,8 +1100,8 @@ for prefix, count in M6_COUNTS.items():
         rule = f"{prefix}{n}"
         RULES[rule] = {"deferred": f"M6 PR {M6_OTHER_PR.get(rule, M6_PR[prefix])}"}
 # PR 1 builds the scorer (SC1 to SC9): fitment-corpus, its gate on an Outcome, the binary path held to it (VT4), the
-# baseline compared on every path (VT5) and the review cases (M6-38), which cite XH1: the exit set holds them, so XH1
-# is covered by its cases from here and gains the exit's test in PR 6.
+# baseline compared on every path (VT5) and the review cases (M6-38), which cite XH1: the exit set holds them, but
+# XH1 is the API's and stays deferred to PR 6; the coverage test lets an M6 rule cite supporting cases while it waits.
 M6_MATCHING = "crates/fitment/tests/matching.rs"
 M6_COVER = "crates/fitment/tests/corpus.rs"
 M6_SCORER = "crates/fitment-corpus/tests/scorer.rs"
@@ -1112,22 +1112,24 @@ M6_PR1 = {
     "SC3": [f"{M6_COVER}::the_scorer_is_never_published"],
     "SC4": [f"{M6_SCORER}::a_locator_naming_no_requirement_or_several_is_a_harness_error"],
     "SC5": [f"{M4_MATCHING}::the_false_negatives_are_the_baseline",
-            f"{M6_MATCHING}::the_binary_false_negatives_are_the_baseline"],
+            f"{M6_MATCHING}::the_binary_false_negatives_are_the_baseline",
+            f"{M6_SCORER}::a_path_is_compared_on_what_it_ran"],
     "SC6": ["crates/fitment-core/tests/candidates.rs::every_committed_candidate_meets_its_construction"],
     "SC7": [f"{M6_SCORER}::a_missing_corpus_passes_with_a_note", f"{M6_SCORER}::a_required_corpus_must_be_there"],
     "SC8": [f"{M6_SCORER}::waived_is_neither_a_fit_nor_a_false_positive",
+            f"{M6_SCORER}::a_mislabelled_waived_case_is_caught",
             f"{M4_MATCHING}::every_match_case_meets_its_construction"],
     "SC9": [f"{M6_SCORER}::entries_are_found_by_content", f"{M6_MATCHING}::a_documents_outcome_is_the_librarys"],
 }
 for rule, tests in M6_PR1.items():
     RULES[rule] = {"tests": tests}
-RULES["XH1"] = {}
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],
     "KH3": [f"{M6_MATCHING}::the_binary_meets_the_construction"],
     "KH4": [f"{M6_MATCHING}::the_binary_false_negatives_are_the_baseline"],
-    "KH14": [f"{M6_COVER}::a_test_is_found_as_written", f"{M6_COVER}::no_rule_id_is_stated_twice"],
+    "KH14": [f"{M6_COVER}::a_test_is_found_as_written", f"{M6_COVER}::no_rule_id_is_stated_twice",
+             f"{M6_COVER}::m6_deferrals_and_lists_hold"],
 }.items():
     RULES[rule]["tests"] = RULES[rule]["tests"] + tests
 
@@ -4203,9 +4205,10 @@ def build_review_cases(w: Writer):
     """M6-38 (docs/research/m6-api.md, SC8; m4-match.md, KC13): file candidates of the corpus judged against s01's
     and s02's sockets with one requirement removed in review, so every path applies `socket.review` and groups by
     it. A bad candidate whose only defect breaks the removed requirement is `waived` (class `review_waived`):
-    `InterfaceMatch` with the removal listed, outside both rates, for the user accepted it. One whose defect is
-    elsewhere is still rejected for it (`b_review`): removal waives only what it names. Each reuses its base case's
-    file, frame and placement; its expectation is the base's less the removed requirement."""
+    `InterfaceMatch` with the removal listed, outside both rates, for the user accepted it; it keeps its base's
+    defect, which the removal must name whole. One whose defect is elsewhere is still rejected for it (`b_review`):
+    removal waives only what it names. Each reuses its base case's file, frame and placement; its expectation is the
+    base's less the removed requirement."""
     by_id = {c["id"]: c for c in w.cases}
 
     def removed(locator, note):
@@ -4227,7 +4230,11 @@ def build_review_cases(w: Writer):
         b = by_id[base]
         locator = {k: v for k, v in review.items() if k not in ("status", "note")}
         if truth == "waived":
-            expect, defect = {"default": m_ok(["requirements_removed"]), "functional": "default"}, []
+            # The base's defect, which the removal must waive whole: at the construction's placement, unreviewed, the
+            # candidate fails only what the review removes (matching.rs checks it, SC8).
+            expect, defect = {"default": m_ok(["requirements_removed"]), "functional": "default"}, b["defect"]
+            if not defect or without(defect, locator):
+                raise RuntimeError(f"{cid}: its review does not remove its whole defect")
         else:
             expect = {p: e if isinstance(e, str) else {**e, "must_fail": without(e["must_fail"], locator),
                                                        "may_fail": without(e["may_fail"], locator)}

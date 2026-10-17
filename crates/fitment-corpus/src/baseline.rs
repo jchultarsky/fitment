@@ -107,12 +107,17 @@ pub fn bless_or_compare(found: &[Value], cases: &[Value]) -> Result<(), String> 
 }
 
 /// SC5, for every path but the library's: the false negatives of the
-/// cases run are the baseline's entries for those cases, keyed by (case,
-/// policy, class, failed) with the baseline's cause. It never writes.
-pub fn compare(found: &[Value], cases: &[Value]) -> Result<(), String> {
+/// (case, policy) pairs `ran` are the baseline's entries for those pairs,
+/// keyed by (case, policy, class, failed) with the baseline's cause; a
+/// path that runs fewer policies is compared on those alone. It never
+/// writes.
+pub fn compare(found: &[Value], ran: &[(String, Policy)]) -> Result<(), String> {
     let old: Vec<Value> = entries(committed().as_ref())
         .into_iter()
-        .filter(|f| cases.contains(&f["case"]))
+        .filter(|f| {
+            ran.iter()
+                .any(|(case, policy)| f["case"] == case.as_str() && f["policy"] == policy.name())
+        })
         .collect();
     if found == old.as_slice() {
         return Ok(());

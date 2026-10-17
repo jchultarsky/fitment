@@ -189,7 +189,8 @@ pub fn decisions(case: &Value, sockets: &[Socket]) -> Result<Vec<Decision>, Stri
     for value in case["socket"]["review"].as_array().into_iter().flatten() {
         let status = value["status"]
             .as_str()
-            .ok_or_else(|| format!("{value} states no status"))?;
+            .filter(|s| matches!(*s, "removed" | "kept" | "unreviewed"))
+            .ok_or_else(|| format!("{value} states no status fitment review knows"))?;
         for (socket, requirement) in named(sockets, value)? {
             out.push(Decision {
                 socket,
@@ -204,15 +205,26 @@ pub fn decisions(case: &Value, sockets: &[Socket]) -> Result<Vec<Decision>, Stri
 
 /// `case`'s review applied to `document`, a socket document as extracted
 /// from the case's source: each decision as `fitment review` records it.
+///
+/// A review of a refused document, which holds no requirement, is a
+/// harness error, as is a status `fitment review` does not know.
 pub fn apply_review(case: &Value, document: &mut SocketDocument) -> Result<(), String> {
+    let reviewed = case["socket"]["review"]
+        .as_array()
+        .is_some_and(|r| !r.is_empty());
     let Some(extracted) = document.extracted() else {
-        return Ok(());
+        return if reviewed {
+            Err("a review of a refused socket document".to_owned())
+        } else {
+            Ok(())
+        };
     };
     for d in decisions(case, &extracted.sockets.clone())? {
         let status = match d.status.as_str() {
             "removed" => ReviewStatus::Removed,
             "kept" => ReviewStatus::Kept,
-            _ => ReviewStatus::Unreviewed,
+            "unreviewed" => ReviewStatus::Unreviewed,
+            other => return Err(format!("an unknown review status {other}")),
         };
         document
             .decide(&d.requirement, Some(&d.socket), status, d.note.as_deref())
@@ -378,7 +390,9 @@ fn flags(at: &str, expect: &Value, outcome: &Outcome) -> Vec<String> {
 }
 
 /// KC13, VD7: each requirement the case's review removes is listed as
-/// removed in its socket and never checked; nothing else is removed.
+/// removed in its socket and never checked; nothing else is removed; and
+/// the candidate is flagged `requirements_removed` exactly when its review
+/// removes something (VD12).
 fn removals(at: &str, case: &Value, sockets: &[Socket], outcome: &Outcome) -> Vec<String> {
     if outcome.status != "accepted" {
         return Vec::new();
@@ -411,7 +425,64 @@ fn removals(at: &str, case: &Value, sockets: &[Socket], outcome: &Outcome) -> Ve
             out.push(format!("{at}: {}/{r} removed, yet checked", socket.socket));
         }
     }
+    let removes = decisions.iter().any(|d| d.status == "removed");
+    let flagged = outcome.flags.iter().any(|f| f == REMOVED);
+    if flagged != removes {
+        out.push(format!(
+            "{at}: flagged {REMOVED} {flagged}, its review removes {removes}"
+        ));
+    }
     out
+}
+
+/// The flag of a candidate judged against a socket with requirements
+/// removed in review (VD12).
+const REMOVED: &str = "requirements_removed";
+
+/// SC8: a case is `waived` only by a review that removes something, and
+/// it expects that removal flagged; anything else is the manifest's word
+/// alone, a harness error.
+fn waived_label(at: &str, case: &Value, sockets: &[Socket], expect: &Value) -> Option<String> {
+    if case["truth"] != "waived" {
+        return None;
+    }
+    let removes = decisions(case, sockets).is_ok_and(|d| d.iter().any(|d| d.status == "removed"));
+    let flagged = expect["flags"]
+        .as_array()
+        .is_some_and(|f| f.iter().any(|f| f == REMOVED));
+    (!removes || !flagged).then(|| {
+        format!("{at}: harness: waived without a removal in review and {REMOVED} expected")
+    })
+}
+
+/// SC8, KC13, for the library alone: a waived case's candidate, judged
+/// against the socket as extracted, unreviewed, at the construction's
+/// placement, fails something, and only requirements its review removes:
+/// the removal waives its whole defect and nothing hides behind it. Its
+/// `defect` fails there as KH8 asks.
+pub fn waived(case: &Value, sockets: &[Socket], unreviewed: &[SocketResult]) -> Vec<String> {
+    let id = case["id"].as_str().unwrap_or("?");
+    let removed: Vec<String> = match decisions(case, sockets) {
+        Ok(d) => d
+            .into_iter()
+            .filter(|d| d.status == "removed")
+            .map(|d| format!("{}/{}", d.socket, d.requirement))
+            .collect(),
+        Err(e) => return vec![format!("{id}: harness: {e}")],
+    };
+    let failed: Vec<(String, Vec<String>)> = unreviewed.iter().flat_map(typed_failures).collect();
+    let mut problems = defect(case, sockets, unreviewed);
+    if failed.is_empty() {
+        problems.push(format!(
+            "{id}: waived, yet it fails nothing at the construction's placement unreviewed"
+        ));
+    }
+    for (r, codes) in failed.iter().filter(|(r, _)| !removed.contains(r)) {
+        problems.push(format!(
+            "{id}: waived, yet {r} fails with {codes:?} unreviewed, which its review keeps"
+        ));
+    }
+    problems
 }
 
 /// The expected failures under `key` (`must_fail`, `may_fail`), each a
@@ -483,6 +554,7 @@ pub fn gate(case: &Value, policy: &str, sockets: &[Socket], outcome: &Outcome) -
     let blocked_count = blocked(&at, sockets, expect, outcome, &mut failed, &mut problems);
     problems.extend(flags(&at, expect, outcome));
     problems.extend(removals(&at, case, sockets, outcome));
+    problems.extend(waived_label(&at, case, sockets, expect));
     let (must, may) = match (
         listed(sockets, expect, "must_fail"),
         listed(sockets, expect, "may_fail"),
