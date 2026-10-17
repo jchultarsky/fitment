@@ -5,7 +5,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # CI's MSRV job reads the first `rust-version` line in this file.
 rust-version = "1.85"
@@ -21,8 +21,8 @@ publish = true
 # pin next to it. Members opt in with `foo = { workspace = true }`.
 [workspace.dependencies]
 # Internal crates: exact versions, released in lockstep.
-fitment-core = { path = "crates/fitment-core", version = "=0.1.0" }
-fitment-catalog = { path = "crates/fitment-catalog", version = "=0.1.0" }
+fitment-core = { path = "crates/fitment-core", version = "=0.2.0" }
+fitment-catalog = { path = "crates/fitment-catalog", version = "=0.2.0" }
 
 # `default-features = false` must be set here: Cargo refuses it on a member
 # that inherits the dependency, and stepq's default feature is its CLI.

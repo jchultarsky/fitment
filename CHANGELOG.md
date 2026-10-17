@@ -8,6 +8,16 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-17
+
+M5: the catalog. `fitment catalog` stores STEP parts by content, gated
+and indexed, and `fitment match --catalog` searches them: a catalog run is
+the file run over the parts its index admits, digest for digest. Publish
+`fitment-core` first, then `fitment-catalog` (new, internal and unstable:
+the CLI is its one user), then `fitment`. The four document formats of
+0.1.0 are unchanged; `fitment.catalog` v1 is new, and `signature_version`
+is 2.
+
 ### Added
 
 - **M5, PR 1 (the catalog's core):** `Matcher::judge_document` judges a
