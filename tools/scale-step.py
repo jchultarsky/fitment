@@ -4,15 +4,18 @@
 `docs/research/m5-catalog.md`, section 8.3: each copy of a base part has
 its length unit, an SI millimetre, replaced by a CONVERSION_BASED_UNIT of
 s mm, with s log-uniform in [0.5, 2), so that every length scales exactly
-as a reader applies it and no two copies are the same part. No CAD kernel
-is involved: the edit is to the unit alone.
+as a reader applies it and no two copies are the same part. The first copy
+of each base keeps s = 1, so the set holds every base's own interfaces and
+the parts that pass a corpus socket appear in it, not only scaled ones that
+mostly fail. No CAD kernel is involved: the edit is to the unit alone.
 
     tools/scale-step.py BASE_DIR OUT_DIR COUNT [--seed N] [--manifest PATH]
 
 BASE_DIR holds the bases; with --manifest (a corpus manifest), only its
 part cases' files and its match cases' candidates are taken, never an
-assembly or a hostile part. COUNT copies are written, the bases taken in
-turn, as OUT_DIR/<stem>-<n>.stp. The same arguments give the same bytes.
+assembly or a hostile part; a base without exactly one SI millimetre is
+left out, and says so. COUNT copies are written, the bases taken in turn,
+as OUT_DIR/<stem>-<n>.stp. The same arguments give the same bytes.
 """
 
 import argparse
@@ -84,20 +87,27 @@ def main():
     texts = []
     for path in files:
         text = path.read_text(encoding="latin-1")
-        if MILLIMETRE.search(text):
+        if len(MILLIMETRE.findall(text)) == 1:
             texts.append((path.stem, text))
+        else:
+            print(f"left out: {path.name}: not one SI millimetre", file=sys.stderr)
     if not texts:
         sys.exit("no base with an SI millimetre")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(args.seed)
+    # No base twice at one scale: each copy is another part.
+    used = set()
+    written = 0
     for n in range(args.count):
         stem, text = texts[n % len(texts)]
-        scale = round(math.exp(rng.uniform(math.log(0.5), math.log(2.0))), 6)
+        scale = 1.0
+        while n >= len(texts) and (stem, scale) in used:
+            scale = round(math.exp(rng.uniform(math.log(0.5), math.log(2.0))), 6)
+        used.add((stem, scale))
         out = scaled(text, scale, f"scaled {n}")
-        if out is None:
-            continue
         (args.out_dir / f"{stem}-{n}.stp").write_text(out, encoding="latin-1")
-    print(f"{args.count} copies of {len(texts)} bases in {args.out_dir}", file=sys.stderr)
+        written += 1
+    print(f"{written} copies of {len(texts)} bases in {args.out_dir}", file=sys.stderr)
 
 
 if __name__ == "__main__":

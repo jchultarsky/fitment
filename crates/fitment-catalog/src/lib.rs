@@ -11,13 +11,22 @@
 //! <DIR>/tmp/                   blob writes in flight
 //! ```
 //!
-//! A catalog match reads the database alone (CT6, QR11): the blob store
-//! is private, so no code outside this crate can read a stored file, and
-//! the match path within it is written against the snapshot only.
+//! A catalog match reads the database alone (CT6, QR11): the match path
+//! is written against the snapshot's rows only, and
+//! `tests/query.rs::a_match_runs_with_the_store_moved_away` shows it, every
+//! run the same with every stored file moved away. Outside the crate a
+//! stored file is read only through [`Catalog::read_blob`], which checks
+//! its hash (ST11), and never while a snapshot, and so a match, is open:
+//! the snapshot borrows the catalog.
 //!
-//! ```compile_fail
-//! // The store cannot be named from outside the crate.
-//! use fitment_catalog::blobs::Blobs;
+//! ```compile_fail,E0502
+//! # fn run(catalog: &mut fitment_catalog::Catalog, sha: &fitment_catalog::Sha256Hex)
+//! # -> Result<(), fitment_catalog::Error> {
+//! let snapshot = catalog.snapshot()?;
+//! let _bytes = catalog.read_blob(sha);
+//! drop(snapshot);
+//! # Ok(())
+//! # }
 //! ```
 
 mod blobs;

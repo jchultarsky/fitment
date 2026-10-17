@@ -299,7 +299,8 @@ The same bytes give the same output bytes on Linux, macOS and Windows:
    through `geom::finite`;
 4. nothing from the environment in a document: no path, time, host or
    locale; the catalog counts changes by a generation number, not a time,
-   and every query that lists rows has an `ORDER BY`;
+   and every query that lists rows has an `ORDER BY` or is collected into
+   an ordered set;
 5. `serde_json` with `float_roundtrip`, pinned by `Cargo.lock`.
 
 ## Hostile input

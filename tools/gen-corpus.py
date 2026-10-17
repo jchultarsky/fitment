@@ -1078,8 +1078,9 @@ RULES.update({
     "QR13": {"deferred": "M7: M5 runs with NoFitVerifier and reads no stored file during a match (CT6)"},
     "ST8": {"deferred": "holds by construction: the store takes no lock of its own; SQLite's write lock orders "
                         "every writer (race.rs)"},
-    "SZ2": {"deferred": "a guard, not a path: under SZ1's size cap no document reaches 512 MiB (a ratio over 4 "
-                        "to its file; 1.39 is the largest measured)"},
+    "SZ2": {"deferred": "a guard, not a path, under the default --max-mib of 128: no document reaches 512 MiB "
+                        "(a ratio over 4 to its file; 1.39 pretty is the largest measured); a raised cap can reach "
+                        "it, and the file is then refused as derived_too_large"},
     "VF5": {"deferred": "documentation: the README's section on copying a catalog says to run verify --deep"},
 })
 

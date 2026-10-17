@@ -34,13 +34,14 @@ pub struct VerifyArgs {
 
 pub(super) fn gc(args: &GcArgs, dir: &Path, catalog: &mut Catalog) -> ExitCode {
     if args.vacuum {
-        // SZ4: VACUUM copies the database, and fails whole, changing
-        // nothing, when the disk cannot hold the copy.
-        let size = std::fs::metadata(catalog.root().join("catalog.db")).map_or(0, |m| m.len());
+        // SZ4: VACUUM copies the database, its log folded in first, and
+        // fails whole when the disk cannot hold the copy.
+        let size = |name: &str| std::fs::metadata(catalog.root().join(name)).map_or(0, |m| m.len());
+        let total = size("catalog.db") + size("catalog.db-wal");
         note(&format!(
-            "fitment: {}: VACUUM needs free space about the database's size ({} MB); without it, it fails and changes nothing",
+            "fitment: {}: VACUUM needs free space about the database's size ({} MB); without it, VACUUM itself fails and changes nothing",
             shown(dir),
-            size.div_ceil(1024 * 1024)
+            total.div_ceil(1024 * 1024)
         ));
     }
     let collected = match catalog.gc(args.versions, args.vacuum) {

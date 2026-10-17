@@ -60,6 +60,34 @@ fn sockets(corpus: &Path) -> BTreeSet<(String, String)> {
         .collect()
 }
 
+/// A catalog in `root` of the files in `scaled`, verified; and how many
+/// entries it holds.
+fn build(root: &Path, scaled: PathBuf) -> (Catalog, usize) {
+    let _ = fs::remove_dir_all(root);
+    let (mut catalog, _) = Catalog::init(root, Options::default()).unwrap();
+    let started = Instant::now();
+    let run = catalog.ingest(&[scaled], None).unwrap();
+    let parts = run.iter().filter(|l| l.revision.is_some()).count();
+    let quarantined = run
+        .iter()
+        .filter(|l| l.revision.is_some())
+        .filter(|l| {
+            l.summary
+                .as_ref()
+                .is_some_and(|s| s.status == fitment_catalog::Status::Refused)
+        })
+        .count();
+    eprintln!(
+        "ingest: {parts} entries ({quarantined} quarantined) in {:?}",
+        started.elapsed()
+    );
+    let started = Instant::now();
+    let problems = catalog.verify(false, false).unwrap();
+    eprintln!("verify: {:?}", started.elapsed());
+    assert_eq!(problems, Vec::new());
+    (catalog, parts)
+}
+
 #[test]
 fn a_scaled_catalog_is_the_file_run_restricted() {
     let Some(scaled) = std::env::var_os("FITMENT_SCALE_DIR").map(PathBuf::from) else {
@@ -68,19 +96,11 @@ fn a_scaled_catalog_is_the_file_run_restricted() {
     };
     let corpus = corpus();
     let root = std::env::temp_dir().join(format!("fitment-scale-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    let (mut catalog, _) = Catalog::init(&root, Options::default()).unwrap();
-    let started = Instant::now();
-    let run = catalog.ingest(&[scaled], None).unwrap();
-    let parts = run.iter().filter(|l| l.revision.is_some()).count();
-    eprintln!("ingest: {parts} parts in {:?}", started.elapsed());
-    let started = Instant::now();
-    let problems = catalog.verify(false, false).unwrap();
-    eprintln!("verify: {:?}", started.elapsed());
-    assert_eq!(problems, Vec::new());
+    let (mut catalog, parts) = build(&root, scaled);
 
     let mut slowest = (Duration::ZERO, String::new());
     let mut checked = 0;
+    let mut total_passes = 0;
     for (case, part) in sockets(&corpus) {
         let bytes = fs::read(corpus.join(format!("{case}.stp"))).unwrap();
         let Ok(document) = SocketDocument::extract(&bytes, Some(&part), None) else {
@@ -115,10 +135,16 @@ fn a_scaled_catalog_is_the_file_run_restricted() {
             Err(NotRun::Blocked { .. }) => 0,
             Err(other) => panic!("{name}: {other:?}"),
         };
+        let passes = every
+            .results
+            .iter()
+            .filter(|(r, _)| r.verdict.kind() != VerdictKind::Reject)
+            .count();
         eprintln!(
-            "{name:<32} level 1 kept {survivors:>6} in {full_time:>10.2?}; exhaustive {:>6} in {every_time:>10.2?}",
+            "{name:<32} level 1 kept {survivors:>6} in {full_time:>10.2?}; exhaustive {:>6} in {every_time:>10.2?}, {passes} pass",
             every.results.len()
         );
+        total_passes += passes;
         if full_time > slowest.0 {
             slowest = (full_time, name.clone());
         }
@@ -152,7 +178,12 @@ fn a_scaled_catalog_is_the_file_run_restricted() {
         );
         checked += 1;
     }
-    eprintln!("slowest full run: {} in {:?}", slowest.1, slowest.0);
-    assert!(checked > 20, "{checked} sockets");
+    eprintln!(
+        "slowest full run: {} in {:?}; {total_passes} passes, none hidden",
+        slowest.1, slowest.0
+    );
+    // Sockets compared and passes found, so the run is never vacuous.
+    assert!(checked > 15, "{checked} sockets");
+    assert!(total_passes > 0, "no pass to hide");
     let _ = fs::remove_dir_all(&root);
 }

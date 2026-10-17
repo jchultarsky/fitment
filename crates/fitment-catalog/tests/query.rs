@@ -615,8 +615,9 @@ fn a_match_runs_with_the_store_moved_away() {
 }
 
 /// CT7: two catalogs of the same files ingested one at a time in opposite
-/// orders, so that every internal key differs, give the same runs; and so
-/// does either with SQLite's unordered selects reversed.
+/// orders, so that their internal keys differ (all but the middle file's),
+/// give the same runs; and so does either with SQLite's unordered selects
+/// reversed.
 #[test]
 fn ingest_order_and_select_order_change_no_run() {
     let inputs: Vec<PathBuf> = {

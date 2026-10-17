@@ -136,7 +136,7 @@ fn check(
     matcher: &Matcher<'_>,
     all: &[(String, Vec<u8>)],
     name: &str,
-) {
+) -> (std::time::Duration, std::time::Duration) {
     let judged = judge_files(matcher, all);
     let file_run = |labels: &[&String]| {
         let results = labels
@@ -155,10 +155,12 @@ fn check(
         matcher.admitted(memory).unwrap(),
         "{name}: level 1's two sources"
     );
-    match snapshot
+    let started = std::time::Instant::now();
+    let full = snapshot
         .match_catalog(matcher, &Selection::Full, 16)
-        .unwrap()
-    {
+        .unwrap();
+    let full_time = started.elapsed();
+    match full {
         Ok(full) => {
             assert!(full.corrupt.is_empty(), "{name}: {:?}", full.corrupt);
             let survivors: Vec<&String> = full.results.iter().map(|(_, l)| &l[0]).collect();
@@ -183,16 +185,19 @@ fn check(
         ),
         Err(other) => panic!("{name}: {other:?}"),
     }
+    let started = std::time::Instant::now();
     let exhaustive = snapshot
         .match_catalog(matcher, &Selection::Exhaustive, 16)
         .unwrap()
         .unwrap();
+    let every_time = started.elapsed();
     let exhaustive = MatchDocument::new(matcher, exhaustive.results);
     assert_eq!(
         exhaustive.digest(),
         everything.digest(),
         "{name}: exhaustive"
     );
+    (full_time, every_time)
 }
 
 #[test]
@@ -233,7 +238,7 @@ fn the_corpus_through_a_catalog_is_the_file_run() {
             ) else {
                 continue;
             };
-            check(
+            let _ = check(
                 &mut catalog,
                 &memory,
                 &matcher,
@@ -248,8 +253,9 @@ fn the_corpus_through_a_catalog_is_the_file_run() {
 }
 
 /// CT10 and QR9: a catalog of the hostile parts alone, every corpus
-/// socket run against it: each run within M4's hostile bound of 30 s, and
-/// each the file run over the same files (CT1, CT2, CT3).
+/// socket run against it: each catalog run, full and exhaustive, within
+/// M4's hostile bound of 30 s, and each the file run over the same files
+/// (CT1, CT2, CT3).
 #[test]
 fn hostile_parts_through_a_catalog_are_the_file_run() {
     let Some(dir) = corpus() else {
@@ -274,19 +280,18 @@ fn hostile_parts_through_a_catalog_are_the_file_run() {
         ) else {
             continue;
         };
-        let started = std::time::Instant::now();
-        check(
+        let (full, every) = check(
             &mut catalog,
             &memory,
             &matcher,
             &all,
             &format!("{case} {part}"),
         );
-        // The file runs, the catalog's full and exhaustive runs together.
+        // Each catalog run within M4's hostile bound.
+        let bound = std::time::Duration::from_secs(30);
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(90),
-            "{case} {part}: {:?}",
-            started.elapsed()
+            full < bound && every < bound,
+            "{case} {part}: {full:?}, {every:?}"
         );
         checked += 1;
     }
