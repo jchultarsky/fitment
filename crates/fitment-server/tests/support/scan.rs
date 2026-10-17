@@ -6,6 +6,8 @@
 //! Every `fitment.match`, `fitment.socket` and `features.v1` a response
 //! carries reads back and passes the checker.
 
+use std::fmt::Write as _;
+
 use super::{PREFIX, Reply};
 
 /// What a response must never hold: SQL, Rust's own paths and panics.
@@ -26,11 +28,20 @@ const NEVER_IN_A_RESPONSE: [&str; 11] = [
 /// What neither a response nor a log line may hold: secrets.
 const SECRETS: [&str; 4] = ["fitment_pat_", "Bearer ", "$argon2", "PEPPER-"];
 
-/// Every leak in a response body: a root's path, the tests' directory
+/// Every leak in a response, body and header values: a root's path, the tests' directory
 /// prefix, any of [`NEVER_IN_A_RESPONSE`] or a secret; and every document
 /// check that fails (XH11).
 pub fn response(reply: &Reply, roots: &[String]) -> Vec<String> {
-    let text = String::from_utf8_lossy(&reply.body);
+    let mut text = String::from_utf8_lossy(&reply.body).into_owned();
+    // Header values too (review S9): a path or a token in a header leaks
+    // as surely as in a body.
+    for (name, value) in &reply.headers {
+        let _ = write!(
+            text,
+            "\n{name}: {}",
+            String::from_utf8_lossy(value.as_bytes())
+        );
+    }
     let mut found = body(&text, roots);
     found.extend(documents(reply));
     found

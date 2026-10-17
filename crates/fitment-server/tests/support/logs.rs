@@ -44,3 +44,22 @@ pub fn text() -> String {
         .map(|b| String::from_utf8_lossy(&b.0.lock().unwrap()).into_owned())
         .unwrap_or_default()
 }
+
+static PLANTED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Registers a string a test plants in the log on purpose (VT34's
+/// controls): the end-of-test scan does not count its lines.
+pub fn plant(text: &str) {
+    PLANTED.lock().unwrap().push(text.to_owned());
+}
+
+/// XH13's log half at the end of every server a test made: the secrets in
+/// the whole captured log, but for the lines a control planted.
+pub fn leaks() -> Vec<String> {
+    let planted = PLANTED.lock().unwrap().clone();
+    text()
+        .lines()
+        .filter(|line| !planted.iter().any(|p| line.contains(p.as_str())))
+        .flat_map(super::scan::logs)
+        .collect()
+}

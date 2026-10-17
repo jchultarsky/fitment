@@ -1,5 +1,6 @@
 //! Concurrency (docs/research/m6-api.md, section 10.3): one server per
 //! state directory (SD6, VT16's first half).
+#![allow(clippy::disallowed_methods)] // a thread holds server.db's lock
 
 mod support;
 
@@ -84,4 +85,55 @@ async fn a_lost_lease_turns_readiness_off() {
     let reply = server.send(Call::get("/v1/ready")).await;
     assert_eq!(reply.code(), "shutting_down");
     assert_eq!(reply.json()["details"]["reason"], "lease");
+}
+
+/// SD6, review S7: losing the lease to another holder stops the server:
+/// readiness turns off and `serve` ends with an error, so the process
+/// exits non-zero.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lost_lease_stops_the_server() {
+    let dirs = Dirs::new();
+    let config = dirs.config();
+    let mut server = TestServer::bound_with(dirs, config, |s| {
+        s.set_lease_renewal(std::time::Duration::from_millis(100));
+    })
+    .await;
+    assert_eq!(server.get("/v1/ready").await.status, 204);
+    lease(&server.dirs)
+        .execute("UPDATE lease SET holder = 'l_other'", [])
+        .unwrap();
+    let ended = server.finished(std::time::Duration::from_secs(10)).await;
+    let error = ended.expect("the server stopped").unwrap_err();
+    assert!(error.to_string().contains("lease"), "{error}");
+}
+
+/// Review S7: a renewal that meets a busy database is retried, not taken
+/// for a loss: with `server.db` locked for longer than a renewal's busy
+/// timeout, the server keeps serving and its lease.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_busy_renewal_is_retried() {
+    let dirs = Dirs::new();
+    let config = dirs.config();
+    let mut server = TestServer::bound_with(dirs, config, |s| {
+        s.set_lease_renewal(std::time::Duration::from_millis(100));
+    })
+    .await;
+    let path = server.dirs.state.join("server.db");
+    let holder = std::thread::spawn(move || {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(6));
+        conn.execute_batch("COMMIT").unwrap();
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+    holder.join().unwrap();
+    assert!(
+        server
+            .finished(std::time::Duration::from_millis(500))
+            .await
+            .is_none()
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(server.get("/v1/ready").await.status, 204);
+    server.stop().await;
 }

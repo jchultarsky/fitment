@@ -60,6 +60,16 @@ for file in usr/local/bin/fitment-server usr/local/bin/fitment usr/share/doc/fit
   usr/share/doc/fitment/THIRD-PARTY.txt etc/fitment/server.toml; do
   grep -qx "$file" "$work/image.txt" || fail "the image lacks $file"
 done
+# S5 of PR 2's review: each crate's licence texts, not only their names.
+grep -qE '^usr/share/doc/fitment/licenses/tokio-[0-9.]+/LICENSE$' "$work/image.txt" ||
+  fail "the image lacks the crates' licence texts"
+id=$(docker create --entrypoint /none "$image")
+notices=$(docker cp "$id:/usr/share/doc/fitment/THIRD-PARTY.txt" - | tar -xO)
+docker rm "$id" >/dev/null
+echo "$notices" | grep -q '^tokio ' || fail "THIRD-PARTY.txt does not list tokio"
+if echo "$notices" | grep -qE '/src/|/usr/local/cargo|registry/src'; then
+  fail "THIRD-PARTY.txt names a build path"
+fi
 
 user=$(docker image inspect --format '{{.Config.User}}' "$image")
 [ "$user" = 65532 ] || fail "the image's user is '$user', not 65532"

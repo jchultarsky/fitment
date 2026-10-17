@@ -64,6 +64,9 @@ pub(super) async fn info(State(shared): State<Arc<Shared>>) -> Result<Response, 
             planted,
         )));
     }
+    let Ok(_slot) = shared.info_slots.acquire().await else {
+        return Err(ApiError::internal());
+    };
     let read = Arc::clone(&shared);
     let catalog = blocking(move || {
         #[cfg(feature = "test-support")]

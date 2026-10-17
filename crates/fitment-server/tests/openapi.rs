@@ -95,6 +95,27 @@ fn json_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The bodies of the API's goldens (`tests/golden/api/**/*.response`):
+/// each after the blank line that ends its headers (VT6, review S8).
+fn response_goldens() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut stack = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/api")];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "response") {
+                let text = fs::read_to_string(&path).unwrap();
+                if let Some((_, body)) = text.split_once("\n\n") {
+                    out.push((path.display().to_string(), body.to_owned()));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The documents fitment-core writes for the committed unit set,
 /// assemblies and candidates (VT36's "fixture" documents).
 fn library_documents() -> Vec<(String, String)> {
@@ -205,6 +226,7 @@ fn every_document_validates_against_its_schema() {
         .iter()
         .map(|p| (p.display().to_string(), fs::read_to_string(p).unwrap()))
         .collect();
+    documents.extend(response_goldens());
     documents.extend(library_documents());
     let mut checked = std::collections::BTreeMap::<String, usize>::new();
     let mut failures = Vec::new();
@@ -225,6 +247,8 @@ fn every_document_validates_against_its_schema() {
     }
     eprintln!("validated: {checked:?}");
     for format in [
+        "fitment.info",
+        "fitment.error",
         "fitment.features",
         "fitment.parts",
         "fitment.socket",
@@ -300,4 +324,39 @@ fn every_corpus_document_validates_against_its_schema() {
     assert_ne!(files.len(), 0);
     eprintln!("validated the documents of {} corpus files", files.len());
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// R1 of PR 2's review: closing a schema never treats a `properties` or
+/// `$defs` map as a schema, so no map gains a property named after a
+/// keyword (no document field is named `additionalProperties` or
+/// `unevaluatedProperties`).
+#[test]
+fn no_properties_map_names_a_keyword() {
+    fn walk(value: &Value, at: &str, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, sub) in map {
+                    if key == "properties" || key == "$defs" {
+                        if let Some(entries) = sub.as_object() {
+                            for keyword in ["additionalProperties", "unevaluatedProperties"] {
+                                if entries.contains_key(keyword) {
+                                    out.push(format!("{at}/{key} names {keyword}"));
+                                }
+                            }
+                        }
+                    }
+                    walk(sub, &format!("{at}/{key}"), out);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|v| walk(v, at, out)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    walk(&schemas(), "", &mut found);
+    assert_eq!(found, Vec::<String>::new());
+    let committed: Value =
+        serde_json::from_str(&fs::read_to_string(committed_path()).unwrap()).unwrap();
+    walk(&committed, "", &mut found);
+    assert_eq!(found, Vec::<String>::new());
 }

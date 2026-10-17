@@ -32,15 +32,17 @@ Until 1.0, minor versions may contain breaking changes.
   `/v1/info` (`fitment.info`) and `/v1/openapi.json`; one registry of
   stable error codes sent as `application/problem+json` (`fitment.error`),
   never with a path or a library error's text; configuration from flags,
-  `FITMENT_SERVER_<SECTION>_<KEY>` variables and a TOML file, with
+  `FITMENT_SERVER__<SECTION>__<KEY>` variables and a TOML file, with
   `check-config` and `healthcheck`; JSON logs on stderr and one line on
   stdout, the bound address; the server's own `server.db` with its
   `system` user and a lease, so one server holds a state directory. The
   committed OpenAPI 3.1 document is generated from the operation table and
   the documents' JSON Schemas, which `fitment-core` and `fitment-catalog`
-  derive behind a new, off-by-default `schema` feature. `deny/sync.toml`
-  keeps tokio, hyper, axum and tower out of `fitment` and
-  `fitment-catalog`. No output of `fitment` changes.
+  derive behind a new, off-by-default `schema` feature; `fitment-catalog`
+  also gains `Catalog::inspect`, which checks a catalog writing nothing,
+  and `Snapshot::status_counts`. `deny/sync.toml` keeps tokio, hyper, axum
+  and tower out of `fitment` and `fitment-catalog`. No output of `fitment`
+  changes.
 
 ## [0.2.0] - 2026-10-17
 

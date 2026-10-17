@@ -207,6 +207,7 @@ pub struct TestServer {
 impl TestServer {
     /// In process, with fixed ids and time (OP11), so bodies are exact.
     pub fn in_process(dirs: Dirs, config: Config) -> Self {
+        logs::capture();
         let server = Server::build(config).expect("the server builds");
         server.seams().ids.fix_ids();
         server.seams().ids.fix_time(1_790_000_000_000);
@@ -230,7 +231,15 @@ impl TestServer {
 
     /// On a bound socket, on this runtime (section 9.4's socket layer).
     pub async fn bound(dirs: Dirs, config: Config) -> Self {
+        Self::bound_with(dirs, config, |_| {}).await
+    }
+
+    /// As [`TestServer::bound`], `prepare` run on the server before it
+    /// serves (a seam such as the lease's renewal).
+    pub async fn bound_with(dirs: Dirs, config: Config, prepare: impl FnOnce(&Server)) -> Self {
+        logs::capture();
         let server = Server::build(config).expect("the server builds");
+        prepare(&server);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -307,6 +316,15 @@ impl TestServer {
     }
 
     /// Stops a bound server and waits for its loop to end.
+    /// Waits up to `limit` for a bound server's loop to end by itself:
+    /// its result, or `None` if it still runs.
+    pub async fn finished(&mut self, limit: Duration) -> Option<std::io::Result<()>> {
+        let task = self.task.as_mut()?;
+        let result = tokio::time::timeout(limit, task).await.ok()?;
+        self.task = None;
+        Some(result.unwrap())
+    }
+
     pub async fn stop(&mut self) {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
@@ -328,6 +346,21 @@ pub async fn wire(addr: SocketAddr, call: &Call) -> Reply {
         status: parts.status,
         headers: parts.headers,
         body,
+    }
+}
+
+impl Drop for TestServer {
+    /// XH13's log half (review S9): the whole log the test binary captured,
+    /// and a child's stderr, hold no secret, but for planted lines.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let mut found = logs::leaks();
+        if let Some(child) = &self.child {
+            found.extend(scan::logs(&child.stderr.lock().unwrap()));
+        }
+        assert!(found.is_empty(), "a secret in the log: {found:?}");
     }
 }
 

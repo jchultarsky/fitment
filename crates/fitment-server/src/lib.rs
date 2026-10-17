@@ -29,13 +29,17 @@ pub mod state;
 
 use std::future::Future;
 use std::net::IpAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::net::TcpListener;
 
 pub use config::{Config, ConfigError, Flags};
+
+/// How many `/v1/info` requests read the catalog at once; the others wait
+/// within the handler's timeout (HX3). The route needs no authentication
+/// until PR 3, so its cost is capped.
+pub const INFO_CONCURRENCY: usize = 4;
 
 /// The committed OpenAPI document, served as these bytes (VN7).
 pub const OPENAPI: &[u8] = include_bytes!("../openapi.json");
@@ -57,11 +61,10 @@ pub enum StartError {
     /// The catalog cannot be opened (its reason's exit code, ER2).
     #[error("the catalog cannot be opened: {}", .0.log)]
     Catalog(catalog::Unavailable),
-    /// A path cannot be resolved (exit 1).
-    #[error("{}: {kind}", path.display())]
+    /// The configured roots cannot be resolved (exit 1); named as
+    /// `state:` and `catalog:` (OP1).
+    #[error("state: or catalog: cannot be resolved: {kind}")]
     Io {
-        /// The path.
-        path: PathBuf,
         /// What failed.
         kind: std::io::ErrorKind,
     },
@@ -74,7 +77,8 @@ impl StartError {
         match self {
             Self::State(state::StateError::Db(state::DbError::Newer { .. })) => 3,
             Self::State(
-                state::StateError::Io { .. } | state::StateError::Db(state::DbError::Sqlite(_)),
+                state::StateError::Io { .. }
+                | state::StateError::Db(state::DbError::Sqlite(_) | state::DbError::Create(_)),
             )
             | Self::Io { .. } => 1,
             Self::Catalog(unavailable) => unavailable.reason.exit_code(),
@@ -92,18 +96,14 @@ impl StartError {
 /// A [`StartError`], each with its exit code.
 pub fn check(config: &Config) -> Result<(), StartError> {
     config.validate()?;
-    let nested =
-        state::nested(&config.paths.catalog, &config.paths.state).map_err(|e| StartError::Io {
-            path: config.paths.state.clone(),
-            kind: e.kind(),
-        })?;
+    let nested = state::nested(&config.paths.catalog, &config.paths.state)
+        .map_err(|e| StartError::Io { kind: e.kind() })?;
     if nested {
         return Err(StartError::Nested);
     }
     state::check(&config.paths.state)?;
     catalog::CatalogDir::new(&config.paths.catalog, &config.catalog)
-        .open()
-        .map(drop)
+        .inspect()
         .map_err(StartError::Catalog)
 }
 
@@ -123,11 +123,22 @@ pub(crate) struct Shared {
     pub(crate) lease_ok: AtomicBool,
     /// Set once the lease is given up.
     pub(crate) released: AtomicBool,
+    /// `/v1/info`'s catalog reads at once ([`INFO_CONCURRENCY`]): it needs
+    /// no authentication until PR 3.
+    pub(crate) info_slots: tokio::sync::Semaphore,
+    /// How often the lease is renewed, in milliseconds (SD6; a
+    /// `test-support` seam shortens it).
+    pub(crate) lease_renewal_ms: std::sync::atomic::AtomicU64,
     #[cfg(feature = "test-support")]
     pub(crate) hooks: hooks::Hooks,
 }
 
 impl Shared {
+    /// How often the lease is renewed.
+    pub(crate) fn lease_renewal(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.lease_renewal_ms.load(Ordering::SeqCst).max(1))
+    }
+
     /// Gives the lease up, once (SD6): blocking, so `serve` calls it on
     /// the blocking pool; a server dropped without serving gives it up
     /// when its last handle goes.
@@ -173,12 +184,8 @@ impl Server {
     /// A [`StartError`], each with its exit code.
     pub fn build(config: Config) -> Result<Self, StartError> {
         config.validate()?;
-        let nested = state::nested(&config.paths.catalog, &config.paths.state).map_err(|e| {
-            StartError::Io {
-                path: config.paths.state.clone(),
-                kind: e.kind(),
-            }
-        })?;
+        let nested = state::nested(&config.paths.catalog, &config.paths.state)
+            .map_err(|e| StartError::Io { kind: e.kind() })?;
         if nested {
             return Err(StartError::Nested);
         }
@@ -193,7 +200,11 @@ impl Server {
             let _ = db.release_lease(&holder);
             return Err(StartError::Catalog(unavailable));
         }
-        let trusted_proxies = config.trusted_proxies()?;
+        let trusted_proxies = config
+            .trusted_proxies()?
+            .into_iter()
+            .map(|a| a.to_canonical())
+            .collect();
         let verifier = matching::verifier(&config.fit);
         tracing::info!("the state directory and the catalog are open");
         Ok(Self {
@@ -208,6 +219,10 @@ impl Server {
                 draining: AtomicBool::new(false),
                 lease_ok: AtomicBool::new(true),
                 released: AtomicBool::new(false),
+                info_slots: tokio::sync::Semaphore::new(INFO_CONCURRENCY),
+                lease_renewal_ms: std::sync::atomic::AtomicU64::new(
+                    u64::try_from(net::LEASE_RENEWAL.as_millis()).unwrap_or(10_000),
+                ),
                 #[cfg(feature = "test-support")]
                 hooks: hooks::Hooks::default(),
             }),
@@ -252,6 +267,16 @@ impl Server {
             ids: &self.shared.ids,
             hooks: &self.shared.hooks,
         }
+    }
+
+    /// OP11: renews the lease every `interval` instead of 10 s, so a test
+    /// sees a lost lease quickly. Set before [`Server::serve`].
+    #[cfg(feature = "test-support")]
+    pub fn set_lease_renewal(&self, interval: std::time::Duration) {
+        self.shared.lease_renewal_ms.store(
+            u64::try_from(interval.as_millis()).unwrap_or(u64::MAX),
+            Ordering::SeqCst,
+        );
     }
 
     pub(crate) fn shared(&self) -> &Arc<Shared> {

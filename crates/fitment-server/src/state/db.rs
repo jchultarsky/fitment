@@ -60,6 +60,9 @@ pub enum DbError {
     /// Another server holds the lease (SD6, exit 2).
     #[error("another fitment-server holds this state directory")]
     LeaseHeld,
+    /// The file cannot be made (exit 1).
+    #[error("server.db cannot be made: {0}")]
+    Create(std::io::ErrorKind),
     /// SQLite failed.
     #[error("server.db: {0}")]
     Sqlite(#[from] rusqlite::Error),
@@ -86,32 +89,85 @@ fn configure(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// What a database with these header fields is: `objects`, whether its
+/// schema holds anything.
+fn kind_of(id: i64, version: i64, objects: bool) -> Kind {
+    match (id, version) {
+        (0, 0) if !objects => Kind::Empty,
+        (APPLICATION_ID, SCHEMA_VERSION) => Kind::Current,
+        (APPLICATION_ID, v) if v > SCHEMA_VERSION => Kind::Newer(v),
+        (APPLICATION_ID, v) if v >= 1 => Kind::Older(v),
+        _ => Kind::Foreign,
+    }
+}
+
 /// What the database at `conn` is.
 fn kind(conn: &Connection) -> rusqlite::Result<Kind> {
     let id: i64 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let objects: i64 = conn.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
-    Ok(match (id, version) {
-        (0, 0) if objects == 0 => Kind::Empty,
-        (APPLICATION_ID, SCHEMA_VERSION) => Kind::Current,
-        (APPLICATION_ID, v) if v > SCHEMA_VERSION => Kind::Newer(v),
-        (APPLICATION_ID, v) if v >= 1 => Kind::Older(v),
-        _ => Kind::Foreign,
-    })
+    Ok(kind_of(id, version, objects > 0))
 }
 
-/// Reads the header of the `server.db` at `path` without changing it
-/// (`check-config`, OP4): its kind, or `None` when there is no file yet.
+/// What the `server.db` at `path` is, from its file's first 100 bytes
+/// alone, with no connection, so nothing is written (`check-config`,
+/// OP4): `None` when there is no file, [`Kind::Empty`] for an empty file.
+/// The fields are SQLite's header's, big-endian: the schema cookie at 40,
+/// `user_version` at 60, `application_id` at 68. `open` checkpoints after
+/// creating the schema, so the file's header is current.
 ///
 /// # Errors
 ///
-/// SQLite's.
-pub fn peek(path: &Path) -> Result<Option<Kind>, DbError> {
-    if !path.exists() {
-        return Ok(None);
+/// The file's.
+pub fn header_kind(path: &Path) -> std::io::Result<Option<Kind>> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut header = Vec::with_capacity(100);
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, 100), &mut header)?;
+    if header.is_empty() {
+        return Ok(Some(Kind::Empty));
     }
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    Ok(Some(kind(&conn)?))
+    let field = |at: usize| -> Option<i64> {
+        let bytes: [u8; 4] = header.get(at..at + 4)?.try_into().ok()?;
+        Some(i64::from(i32::from_be_bytes(bytes)))
+    };
+    if !header.starts_with(b"SQLite format 3\0") {
+        return Ok(Some(Kind::Foreign));
+    }
+    Ok(Some(match (field(40), field(60), field(68)) {
+        (Some(cookie), Some(version), Some(id)) => kind_of(id, version, cookie != 0),
+        _ => Kind::Foreign,
+    }))
+}
+
+/// A reader connection: read-only, with the busy timeout and without
+/// trusted schema (OB1), however it is opened.
+fn open_reader(path: &Path) -> rusqlite::Result<Connection> {
+    let reader = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    reader.busy_timeout(std::time::Duration::from_millis(5_000))?;
+    reader.execute_batch("PRAGMA trusted_schema = OFF;")?;
+    Ok(reader)
+}
+
+/// Makes `server.db` empty, before SQLite does, with mode 0600 on Unix, so
+/// its `-wal` and `-shm`, which SQLite makes with the database's mode,
+/// are the owner's alone (S13 of PR 2's review).
+fn create_file(path: &Path) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    match options.open(path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// `server.db`: one writer and a pool of readers (OB1).
@@ -143,6 +199,7 @@ impl Db {
     /// [`DbError::Foreign`], [`DbError::Newer`], or SQLite's.
     pub fn open(dir: &Path, system_id: &str, now_ms: i64) -> Result<(Self, Kind), DbError> {
         let path = dir.join(DATABASE);
+        create_file(&path).map_err(|e| DbError::Create(e.kind()))?;
         let mut conn = Connection::open_with_flags(
             &path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -163,17 +220,11 @@ impl Db {
         configure(&conn)?;
         if found == Kind::Empty {
             create(&mut conn, system_id, now_ms)?;
+            // The header in the file itself, for `check-config`'s read.
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         }
         let readers = (0..READERS)
-            .map(|_| -> rusqlite::Result<Connection> {
-                let reader = Connection::open_with_flags(
-                    &path,
-                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-                )?;
-                reader.busy_timeout(std::time::Duration::from_millis(5_000))?;
-                reader.execute_batch("PRAGMA trusted_schema = OFF;")?;
-                Ok(reader)
-            })
+            .map(|_| open_reader(&path))
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok((
             Self {
@@ -198,10 +249,14 @@ impl Db {
         let pooled = lock(&self.readers).pop();
         let conn = match pooled {
             Some(conn) => conn,
-            None => Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
+            None => open_reader(&self.path)?,
         };
         let result = read(&conn);
-        lock(&self.readers).push(conn);
+        let mut pool = lock(&self.readers);
+        if pool.len() < READERS {
+            pool.push(conn);
+        }
+        drop(pool);
         Ok(result?)
     }
 
@@ -241,11 +296,13 @@ impl Db {
     ///
     /// SQLite's: the database is not writable.
     pub fn renew_lease(&self, holder: &str, now_ms: i64) -> Result<bool, DbError> {
-        let conn = lock(&self.writer);
-        let changed = conn.execute(
+        let mut conn = lock(&self.writer);
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
             "UPDATE lease SET heartbeat_ms = ?2 WHERE one = 1 AND holder = ?1",
             rusqlite::params![holder, now_ms],
         )?;
+        tx.commit()?;
         Ok(changed == 1)
     }
 
@@ -256,8 +313,10 @@ impl Db {
     ///
     /// SQLite's.
     pub fn release_lease(&self, holder: &str) -> Result<(), DbError> {
-        let conn = lock(&self.writer);
-        conn.execute("DELETE FROM lease WHERE one = 1 AND holder = ?1", [holder])?;
+        let mut conn = lock(&self.writer);
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM lease WHERE one = 1 AND holder = ?1", [holder])?;
+        tx.commit()?;
         Ok(())
     }
 

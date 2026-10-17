@@ -12,7 +12,10 @@ use support::{Dirs, TestServer};
 /// Reads what the server sends until it closes or `limit` passes: the
 /// bytes, and whether it closed.
 fn read_all(stream: &mut TcpStream, limit: Duration) -> (Vec<u8>, bool) {
-    stream.set_read_timeout(Some(limit)).unwrap();
+    // macOS refuses the option on a socket the server already reset.
+    if stream.set_read_timeout(Some(limit)).is_err() {
+        return (Vec::new(), true);
+    }
     let mut out = Vec::new();
     let mut buf = [0_u8; 4096];
     loop {
@@ -195,6 +198,89 @@ async fn an_idle_connection_is_closed() {
         assert!(closed && rest.is_empty(), "{rest:?}");
         assert!(
             start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+    })
+    .await
+    .unwrap();
+    server.stop().await;
+}
+
+/// Review S1: a client that pipelines requests and never reads holds its
+/// connection only until a write makes no progress for
+/// `server.write_timeout_seconds`; its slot is then free for another
+/// client, with `server.max_connections = 1`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_never_reads_loses_its_connection() {
+    let mut server = bound(|c| {
+        c.server.max_connections = 1;
+        c.server.write_timeout_seconds = 1;
+    })
+    .await;
+    let addr = server.addr();
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut stalled = socket.connect(addr).await.unwrap();
+    let requests = "GET /v1/openapi.json HTTP/1.1\r\nHost: x\r\n\r\n".repeat(64);
+    tokio::io::AsyncWriteExt::write_all(&mut stalled, requests.as_bytes())
+        .await
+        .unwrap();
+    // The stalled connection holds the one slot until its write times
+    // out; a second client is then served, the first still connected.
+    let started = Instant::now();
+    let answered = loop {
+        let reply = tokio::task::spawn_blocking(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream
+                .write_all(b"GET /v1/health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            read_all(&mut stream, Duration::from_secs(2)).0
+        })
+        .await
+        .unwrap();
+        if reply.starts_with(b"HTTP/1.1 204") {
+            break true;
+        }
+        if started.elapsed() > Duration::from_secs(20) {
+            break false;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert!(answered, "the stalled client kept the only slot");
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
+    drop(stalled);
+    server.stop().await;
+}
+
+/// Review S1: a connection lives at most `server.max_connection_seconds`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connection_lives_at_most_its_lifetime() {
+    let mut server = bound(|c| {
+        c.server.max_connection_seconds = 1;
+        c.server.header_timeout_seconds = 30;
+    })
+    .await;
+    let addr = server.addr();
+    tokio::task::spawn_blocking(move || {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let start = Instant::now();
+        // A request trickled a byte at a time never completes its head
+        // before the lifetime ends.
+        for byte in b"GET /v1/health HTTP/1.1\r\nHost: x\r\n" {
+            if stream.write_all(&[*byte]).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let (_, closed) = read_all(&mut stream, Duration::from_secs(10));
+        assert!(closed);
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
             "{:?}",
             start.elapsed()
         );

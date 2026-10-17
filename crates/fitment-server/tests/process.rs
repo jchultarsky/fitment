@@ -4,7 +4,9 @@
 
 mod support;
 
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::SystemTime;
 
 use support::{Dirs, Process, TestServer, run, write_config};
 
@@ -128,7 +130,7 @@ fn bad_starts_are_refused_before_listening() {
     let file = file.to_str().unwrap();
     let (code, _, _) = run(
         &["serve", "--config", file],
-        &[("FITMENT_SERVER_LIMITS_NOPE", "1")],
+        &[("FITMENT_SERVER__LIMITS__NOPE", "1")],
     );
     assert_eq!(code, Some(2));
 }
@@ -198,8 +200,9 @@ fn the_address_is_announced_last() {
     assert_eq!(holders, 0, "a refused start leaves the lease free");
 }
 
-/// OP2: flags, then `FITMENT_SERVER_<SECTION>_<KEY>`, then the file
-/// (`--config` or `FITMENT_SERVER_CONFIG`), then the defaults.
+/// OP2: flags, then `FITMENT_SERVER__<SECTION>__<KEY>`, then the file
+/// (`--config` or `FITMENT_SERVER_CONFIG`), then the defaults; another
+/// `FITMENT_SERVER_*` variable is ignored with a warning.
 #[test]
 fn configuration_sources_take_their_order() {
     let dirs = Dirs::new();
@@ -209,11 +212,20 @@ fn configuration_sources_take_their_order() {
         &["check-config", "--listen", "127.0.0.1:9999"],
         &[
             ("FITMENT_SERVER_CONFIG", file),
-            ("FITMENT_SERVER_LIMITS_MAX_UPLOAD_MIB", "48"),
-            ("FITMENT_SERVER_SERVER_LISTEN", "127.0.0.1:7777"),
+            ("FITMENT_SERVER__LIMITS__MAX_UPLOAD_MIB", "48"),
+            ("FITMENT_SERVER__SERVER__LISTEN", "127.0.0.1:7777"),
+            // Kubernetes' service links for a service named fitment-server:
+            // not keys, ignored with a warning.
+            ("FITMENT_SERVER_PORT", "tcp://10.0.0.9:8080"),
+            ("FITMENT_SERVER_LIMITS_MAX_UPLOAD_MIB", "1"),
         ],
     );
     assert_eq!(code, Some(0), "{stderr}");
+    assert!(stderr.contains("ignored FITMENT_SERVER_PORT"), "{stderr}");
+    assert!(
+        stderr.contains("ignored FITMENT_SERVER_LIMITS_MAX_UPLOAD_MIB"),
+        "{stderr}"
+    );
     let effective: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(effective["limits"]["max_upload_mib"], 48);
     assert_eq!(effective["limits"]["max_json_kib"], 512);
@@ -253,9 +265,32 @@ fn the_paths_are_required_and_limits_are_keys() {
     assert_eq!(effective["log"]["format"], "json");
 }
 
-/// OP4: `check-config` loads and checks the configuration, opens the
-/// catalog and reads `server.db`'s header without writing anything, prints
-/// the effective configuration and exits 0 or 2.
+/// Every file under `dir`, with its size and modification time.
+fn listing(dir: &Path) -> BTreeMap<String, (u64, SystemTime)> {
+    let mut out = BTreeMap::new();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).unwrap() {
+            let path = entry.unwrap().path();
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            if meta.is_dir() {
+                stack.push(path.clone());
+            }
+            out.insert(
+                path.display().to_string(),
+                (meta.len(), meta.modified().unwrap()),
+            );
+        }
+    }
+    out
+}
+
+/// OP4, review R2: `check-config` loads and checks the configuration,
+/// checks the catalog and reads `server.db`'s header as bytes, and writes
+/// nothing: on a fresh configuration it makes no state directory, and on
+/// a state and a catalog a server has used, every file's listing, size and
+/// time are unchanged (no `-wal` or `-shm`, no migration). It prints the
+/// effective configuration and exits 0, or 2 for what it refuses.
 #[test]
 fn check_config_checks_and_writes_nothing() {
     let dirs = Dirs::new();
@@ -267,9 +302,56 @@ fn check_config_checks_and_writes_nothing() {
         !dirs.state.exists(),
         "check-config made the state directory"
     );
+
+    let process = Process::start(&dirs, "", &[]).unwrap();
+    assert_eq!(process.stop().0, Some(0));
+    let (state, catalog) = (listing(&dirs.state), listing(&dirs.catalog));
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let (code, _, stderr) = run(&["check-config", "--config", file.to_str().unwrap()], &[]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        listing(&dirs.state),
+        state,
+        "check-config changed the state directory"
+    );
+    assert_eq!(
+        listing(&dirs.catalog),
+        catalog,
+        "check-config changed the catalog"
+    );
+
     std::fs::remove_file(dirs.catalog.join("FITMENT-CATALOG")).unwrap();
     let (code, _, stderr) = run(&["check-config", "--config", file.to_str().unwrap()], &[]);
     assert_eq!(code, Some(2), "{stderr}");
+}
+
+/// SV6, review S3: a `..` in either directory is refused (exit 2): through
+/// a directory that does not exist yet it would defeat the nesting check
+/// one way (a state inside the catalog) and refuse a sound layout the
+/// other.
+#[test]
+fn a_parent_component_in_a_path_is_refused() {
+    let dirs = Dirs::new();
+    let cases = [
+        (
+            dirs.catalog.clone(),
+            dirs.catalog.join("missing").join("..").join("state"),
+        ),
+        (
+            dirs.root.join("missing").join("..").join("catalog"),
+            dirs.state.clone(),
+        ),
+    ];
+    for (catalog, state) in cases {
+        let config = format!(
+            "[paths]\ncatalog = {:?}\nstate = {:?}\n",
+            catalog.display().to_string(),
+            state.display().to_string()
+        );
+        let (code, message) = refused(&dirs, &config);
+        assert_eq!(code, Some(2), "{message}");
+        assert!(message.contains("`..`"), "{message}");
+    }
 }
 
 /// OP5: `fitment-server healthcheck` asks the configured address's

@@ -551,7 +551,11 @@ pub struct Problem {
     pub status: u16,
     /// A sentence built from the code and values, never a path (ER3).
     pub detail: String,
-    /// The stable code (ER1).
+    /// The stable code (ER1): an open string, since codes are added
+    /// within v1; the known ones are the OpenAPI document's
+    /// `info.x-fitment-error-codes`, and a client that meets another acts
+    /// on `class`.
+    #[cfg_attr(feature = "schema", schemars(with = "String"))]
     pub code: ErrorCode,
     /// Its class (ER2).
     pub class: Class,

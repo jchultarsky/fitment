@@ -33,18 +33,23 @@ const NAMES: [&str; 6] = [
     "tmp",
 ];
 
-/// Why the state directory cannot be used.
+/// Why the state directory cannot be used. Messages name paths relative
+/// to the configured root, `state:` (OP1).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum StateError {
     /// A directory without the marker that holds other files (exit 2).
-    #[error("{} is neither empty nor a fitment-server state directory", .0.display())]
-    NotAState(PathBuf),
+    #[error("state: is neither empty nor a fitment-server state directory")]
+    NotAState,
+    /// The marker is there, but `server.db` is missing or empty (exit 2),
+    /// as a catalog without its database is not a catalog.
+    #[error("state: has its marker but no server.db: restore it, or start from an empty directory")]
+    NoDatabase,
     /// The directory or a file of it cannot be made or read (exit 1).
-    #[error("{}: {kind}", path.display())]
+    #[error("{what}: {kind}")]
     Io {
-        /// The path.
-        path: PathBuf,
+        /// The path, relative to the configured root (`state:…`).
+        what: String,
         /// What failed.
         kind: io::ErrorKind,
     },
@@ -53,74 +58,99 @@ pub enum StateError {
     Db(#[from] DbError),
 }
 
-fn io_at(path: &Path) -> impl FnOnce(io::Error) -> StateError + '_ {
+/// `path` written relative to the state root `dir`, as `state:<rest>`.
+fn shown(dir: &Path, path: &Path) -> String {
+    let rest = path.strip_prefix(dir).unwrap_or(path);
+    format!("state:{}", rest.display()).replace('\\', "/")
+}
+
+fn io_at<'a>(dir: &'a Path, path: &'a Path) -> impl FnOnce(io::Error) -> StateError + 'a {
     move |e| StateError::Io {
-        path: path.to_owned(),
+        what: shown(dir, path),
         kind: e.kind(),
     }
 }
 
+/// Whether `dir` is a state directory (its marker, and then a non-empty
+/// `server.db`), or a directory a first start may make one of (missing,
+/// empty, or holding only the state's own names).
+fn marked(dir: &Path) -> Result<bool, StateError> {
+    let marker = dir.join(MARKER);
+    match std::fs::read(&marker) {
+        Ok(bytes) if bytes == MARKER_TEXT.as_bytes() => {
+            let database = dir.join(db::DATABASE);
+            match std::fs::metadata(&database) {
+                Ok(meta) if meta.is_file() && meta.len() > 0 => Ok(true),
+                Ok(_) => Err(StateError::NoDatabase),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Err(StateError::NoDatabase),
+                Err(e) => Err(io_at(dir, &database)(e)),
+            }
+        }
+        Ok(_) => Err(StateError::NotAState),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let entries = match std::fs::read_dir(dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+                Err(e) => return Err(io_at(dir, dir)(e)),
+            };
+            for entry in entries {
+                let name = entry.map_err(io_at(dir, dir))?.file_name();
+                if !NAMES.iter().any(|n| name.to_str() == Some(n)) {
+                    return Err(StateError::NotAState);
+                }
+            }
+            Ok(false)
+        }
+        Err(e) => Err(io_at(dir, &marker)(e)),
+    }
+}
+
+/// Makes `dir` and its parents; on Unix the state's own directories are
+/// the owner's alone (0700).
+fn make_dir(dir: &Path, path: &Path) -> Result<(), StateError> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(path).map_err(io_at(dir, path))
+}
+
 /// Opens the state directory at `dir`, making it on the first start: the
-/// directories, then `server.db` with its schema and `system` user, then
-/// the marker, last (section 6.1, OB1).
+/// directories (0700 on Unix), then `server.db` (0600) with its schema and
+/// `system` user, then the marker, last (section 6.1, OB1). A marker
+/// without its database is refused.
 ///
 /// # Errors
 ///
 /// A [`StateError`].
 pub fn open(dir: &Path, system_id: &str, now_ms: i64) -> Result<(Db, Kind), StateError> {
-    std::fs::create_dir_all(dir).map_err(io_at(dir))?;
-    let marker_path = dir.join(MARKER);
-    let marked = match std::fs::read(&marker_path) {
-        Ok(bytes) if bytes == MARKER_TEXT.as_bytes() => true,
-        Ok(_) => return Err(StateError::NotAState(dir.to_owned())),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
-        Err(e) => return Err(io_at(&marker_path)(e)),
-    };
-    if !marked {
-        for entry in std::fs::read_dir(dir).map_err(io_at(dir))? {
-            let name = entry.map_err(io_at(dir))?.file_name();
-            if !NAMES.iter().any(|n| name.to_str() == Some(n)) {
-                return Err(StateError::NotAState(dir.to_owned()));
-            }
-        }
-    }
+    let was = marked(dir)?;
+    make_dir(dir, dir)?;
     for sub in [dir.join("objects").join("sha256"), dir.join("tmp")] {
-        std::fs::create_dir_all(&sub).map_err(io_at(&sub))?;
+        make_dir(dir, &sub)?;
     }
     let opened = Db::open(dir, system_id, now_ms)?;
-    if !marked {
-        std::fs::write(&marker_path, MARKER_TEXT).map_err(io_at(&marker_path))?;
+    if !was {
+        let marker = dir.join(MARKER);
+        std::fs::write(&marker, MARKER_TEXT).map_err(io_at(dir, &marker))?;
     }
     Ok(opened)
 }
 
 /// OP4: what [`open`] would refuse, found without writing anything: a
-/// directory that is not a state directory, or a `server.db` that is
-/// another application's or of a newer schema. A directory that does not
-/// exist yet is fine: the first start makes it.
+/// directory that is not a state directory, a marker without its
+/// database, or a `server.db` that is another application's or of a
+/// newer schema, read from its header's bytes with no connection (so no
+/// `-wal` or `-shm` is made). A directory that does not exist yet is
+/// fine: the first start makes it.
 ///
 /// # Errors
 ///
 /// A [`StateError`].
 pub fn check(dir: &Path) -> Result<(), StateError> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    let marker = dir.join(MARKER);
-    match std::fs::read(&marker) {
-        Ok(bytes) if bytes == MARKER_TEXT.as_bytes() => {}
-        Ok(_) => return Err(StateError::NotAState(dir.to_owned())),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            for entry in std::fs::read_dir(dir).map_err(io_at(dir))? {
-                let name = entry.map_err(io_at(dir))?.file_name();
-                if !NAMES.iter().any(|n| name.to_str() == Some(n)) {
-                    return Err(StateError::NotAState(dir.to_owned()));
-                }
-            }
-        }
-        Err(e) => return Err(io_at(&marker)(e)),
-    }
-    match db::peek(&dir.join(db::DATABASE))? {
+    marked(dir)?;
+    let database = dir.join(db::DATABASE);
+    match db::header_kind(&database).map_err(io_at(dir, &database))? {
         Some(Kind::Foreign) => Err(DbError::Foreign.into()),
         Some(Kind::Newer(found)) => Err(DbError::Newer {
             found,
@@ -129,6 +159,14 @@ pub fn check(dir: &Path) -> Result<(), StateError> {
         .into()),
         _ => Ok(()),
     }
+}
+
+/// True if a path names a parent directory (`..`): refused in
+/// `paths.catalog` and `paths.state`, since `..` through a directory that
+/// does not exist yet would defeat SV6's comparison (review S3).
+pub fn has_parent_component(path: &Path) -> bool {
+    path.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
 }
 
 /// True if either directory contains the other (SV6), after both are made

@@ -112,6 +112,12 @@ fn serve(args: &ConfigArgs) -> ExitCode {
     };
     install_logs(&config);
     tracing::info!(configuration = %config.to_json(), "starting");
+    if !config.ignored.is_empty() {
+        tracing::warn!(
+            variables = ?config.ignored,
+            "ignored: FITMENT_SERVER_* variables that name no key (a key's is FITMENT_SERVER__SECTION__KEY)"
+        );
+    }
     let jobs = &config.jobs;
     let cpu = usize::try_from(jobs.cpu_budget()).unwrap_or(1);
     let query_slots = usize::try_from(jobs.query_slots()).unwrap_or(1);
@@ -153,11 +159,12 @@ async fn run(server: Server, addr: SocketAddr) -> ExitCode {
     tracing::info!(address = %bound, "listening");
     match server.serve(listener, shutdown()).await {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => fail(1, &format!("the listener failed: {}", error.kind())),
+        Err(error) => fail(1, &error.to_string()),
     }
 }
 
-/// SD1's triggers: SIGTERM or SIGINT on Unix, Ctrl-C on Windows; under
+/// SD1's triggers: SIGTERM or SIGINT on Unix, Ctrl-C, Ctrl-Break or a
+/// close event on Windows; under
 /// `test-support`, stdin's end of file too (OP11), the portable trigger
 /// for the tests.
 async fn shutdown() {
@@ -173,7 +180,22 @@ async fn shutdown() {
             Err(_) => std::future::pending::<()>().await,
         }
     };
-    #[cfg(not(unix))]
+    // SD1 on Windows: Ctrl-Break and a console's close event, beside
+    // Ctrl-C above.
+    #[cfg(windows)]
+    let terminate = async {
+        use tokio::signal::windows::{ctrl_break, ctrl_close};
+        match (ctrl_break(), ctrl_close()) {
+            (Ok(mut brk), Ok(mut close)) => {
+                tokio::select! {
+                    _ = brk.recv() => {},
+                    _ = close.recv() => {},
+                }
+            }
+            _ => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(any(unix, windows)))]
     let terminate = std::future::pending::<()>();
     #[cfg(feature = "test-support")]
     let eof = async {
@@ -200,6 +222,11 @@ fn check_config(args: &ConfigArgs) -> ExitCode {
         Ok(config) => config,
         Err(code) => return code,
     };
+    for name in &config.ignored {
+        eprintln!(
+            "fitment-server: ignored {name}: it names no key (a key's is FITMENT_SERVER__SECTION__KEY)"
+        );
+    }
     match fitment_server::check(&config) {
         Ok(()) => {
             print!("{}", config.to_json());

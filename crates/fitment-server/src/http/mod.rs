@@ -246,10 +246,17 @@ fn cors(origins: &[String]) -> Option<CorsLayer> {
     )
 }
 
+/// HX7: whether `peer` is a trusted proxy. An IPv4 peer on a dual-stack
+/// socket arrives as `::ffff:a.b.c.d` and is compared as its IPv4 address;
+/// `trusted` holds canonical addresses.
+fn is_trusted(trusted: &[IpAddr], peer: IpAddr) -> bool {
+    trusted.contains(&peer.to_canonical())
+}
+
 /// HX7: the id a trusted proxy sent, if well formed (at most 64 of
 /// `[A-Za-z0-9._-]`), else a new one.
 fn request_id(shared: &Shared, peer: Option<IpAddr>, given: Option<&HeaderValue>) -> String {
-    let trusted = peer.is_some_and(|p| shared.trusted_proxies.contains(&p));
+    let trusted = peer.is_some_and(|p| is_trusted(&shared.trusted_proxies, p));
     let well_formed = |v: &&str| {
         !v.is_empty()
             && v.len() <= 64
@@ -317,4 +324,19 @@ async fn finish(State(shared): State<Arc<Shared>>, mut request: Request, next: N
         headers.remove(header::CONTENT_TYPE);
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// HX7: an IPv4-mapped IPv6 peer is its IPv4 address.
+    #[test]
+    fn a_mapped_peer_is_its_ipv4_address() {
+        let trusted: Vec<IpAddr> = vec!["10.0.0.1".parse().unwrap()];
+        assert!(is_trusted(&trusted, "10.0.0.1".parse().unwrap()));
+        assert!(is_trusted(&trusted, "::ffff:10.0.0.1".parse().unwrap()));
+        assert!(!is_trusted(&trusted, "10.0.0.2".parse().unwrap()));
+        assert!(!is_trusted(&trusted, "::1".parse().unwrap()));
+    }
 }

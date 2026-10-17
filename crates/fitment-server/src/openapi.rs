@@ -54,28 +54,50 @@ fn close(value: &mut Value) {
     close_part(value, false);
 }
 
-fn close_part(value: &mut Value, part: bool) {
-    match value {
-        Value::Object(object) => {
-            let composed = ["anyOf", "oneOf", "allOf"]
-                .iter()
-                .any(|k| object.contains_key(*k));
-            let owns = object.contains_key("properties");
-            if owns && !part && !object.contains_key("additionalProperties") {
-                let key = if composed {
-                    "unevaluatedProperties"
-                } else {
-                    "additionalProperties"
-                };
-                object.insert(key.into(), Value::Bool(false));
+fn close_part(schema: &mut Value, part: bool) {
+    let Value::Object(object) = schema else {
+        return;
+    };
+    let composed = ["anyOf", "oneOf", "allOf"]
+        .iter()
+        .any(|k| object.contains_key(*k));
+    let owns = object.contains_key("properties");
+    if owns && !part && !object.contains_key("additionalProperties") {
+        let key = if composed {
+            "unevaluatedProperties"
+        } else {
+            "additionalProperties"
+        };
+        object.insert(key.into(), Value::Bool(false));
+    }
+    // Only subschemas: a `properties` or `$defs` map is a map of schemas,
+    // never a schema itself, and `const`, `enum` or `default` are values.
+    for (key, sub) in object.iter_mut() {
+        match key.as_str() {
+            "properties" | "$defs" | "definitions" | "patternProperties" => {
+                if let Value::Object(map) = sub {
+                    map.values_mut().for_each(|s| close_part(s, false));
+                }
             }
-            for (key, sub) in object.iter_mut() {
-                let branch = matches!(key.as_str(), "anyOf" | "oneOf" | "allOf");
-                close_part(sub, branch && (owns || part));
+            "anyOf" | "oneOf" | "allOf" => {
+                if let Value::Array(branches) = sub {
+                    for branch in branches {
+                        close_part(branch, owns || part);
+                    }
+                }
             }
+            "prefixItems" => {
+                if let Value::Array(items) = sub {
+                    for item in items {
+                        close_part(item, false);
+                    }
+                }
+            }
+            "items" | "additionalProperties" | "unevaluatedProperties" | "not" => {
+                close_part(sub, false);
+            }
+            _ => {}
         }
-        Value::Array(items) => items.iter_mut().for_each(|v| close_part(v, part)),
-        _ => {}
     }
 }
 

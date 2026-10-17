@@ -52,6 +52,7 @@ async fn planted_leaks_in_the_log_are_found() {
     support::logs::capture();
     let server = TestServer::fresh();
     let token = "fitment_pat_cGxhbnRlZC10b2tlbg";
+    support::logs::plant(token);
     let hooks = &server.server().seams().hooks;
     hooks.set("info", Action::Log(format!("presented {token}")));
     let _ = server.send_unchecked(Call::get("/v1/info")).await;

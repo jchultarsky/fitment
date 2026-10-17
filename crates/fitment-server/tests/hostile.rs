@@ -89,3 +89,33 @@ async fn blocking_work_past_its_time_is_cut() {
     let reply = server.get("/v1/info").await;
     assert_eq!(reply.code(), "request_timeout");
 }
+
+/// Open question 2 of PR 2's review: `/v1/info` needs no authentication
+/// until PR 3, so at most four read the catalog at once; a fifth waits for
+/// a slot within the handler's time.
+#[tokio::test(flavor = "multi_thread")]
+async fn info_reads_the_catalog_four_at_a_time() {
+    let server = std::sync::Arc::new(TestServer::fresh());
+    server
+        .server()
+        .seams()
+        .hooks
+        .set("info.blocking", Action::Delay(Duration::from_millis(800)));
+    let started = Instant::now();
+    let mut calls = Vec::new();
+    for _ in 0..5 {
+        let server = std::sync::Arc::clone(&server);
+        calls.push(tokio::spawn(
+            async move { server.get("/v1/info").await.status },
+        ));
+    }
+    for call in calls {
+        assert_eq!(call.await.unwrap(), 200);
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(1600),
+        "five ran at once: {elapsed:?}"
+    );
+    assert_eq!(fitment_server::INFO_CONCURRENCY, 4);
+}

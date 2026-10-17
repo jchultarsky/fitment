@@ -30,6 +30,12 @@ CREATE TABLE token (
 CREATE TRIGGER token_not_for_system BEFORE INSERT ON token
 WHEN (SELECT kind FROM user WHERE key = NEW.user) = 'system'
 BEGIN SELECT RAISE(ABORT, 'the system user holds no token'); END;
+CREATE TRIGGER token_not_moved_to_system BEFORE UPDATE OF user ON token
+WHEN (SELECT kind FROM user WHERE key = NEW.user) = 'system'
+BEGIN SELECT RAISE(ABORT, 'the system user holds no token'); END;
+CREATE TRIGGER user_kind_fixed BEFORE UPDATE OF kind ON user           -- a person never becomes the system user
+WHEN NEW.kind IS NOT OLD.kind
+BEGIN SELECT RAISE(ABORT, 'a user''s kind never changes'); END;
 
 CREATE TABLE object (                       -- OB2: each row promises a file hashing to sha256
   sha256 TEXT PRIMARY KEY CHECK (length(sha256) = 64 AND NOT sha256 GLOB '*[^0-9a-f]*'),

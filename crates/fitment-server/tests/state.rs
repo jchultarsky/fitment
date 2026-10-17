@@ -109,7 +109,8 @@ fn a_restart_opens_the_same_state() {
 }
 
 /// OB1: every connection runs with foreign keys on and `trusted_schema`
-/// off, and socket revisions are insert-only (OB5's trigger).
+/// off; socket revisions are insert-only (OB5's trigger); a token never
+/// moves to the system user and no user changes kind (M6-56).
 #[test]
 fn the_schema_guards_itself() {
     let dirs = Dirs::new();
@@ -134,4 +135,80 @@ fn the_schema_guards_itself() {
         )
         .unwrap();
     assert!(sql.contains("insert-only"));
+    // A token never moves to the system user, and no user changes kind.
+    db.execute_batch(
+        "INSERT INTO user (id, username_fold, username, role, created_ms, updated_ms)
+         VALUES ('u_person', 'ann', 'ann', 'reader', 0, 0);",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO token (id, user, name, secret_sha256, hint, role, created_ms, expires_ms)
+         VALUES ('t_x', 2, 'n', ?1, 'abcd', 'reader', 0, 1)",
+        ["0".repeat(64)],
+    )
+    .unwrap();
+    assert!(
+        db.execute("UPDATE token SET user = 1 WHERE id = 't_x'", [])
+            .is_err()
+    );
+    assert!(
+        db.execute("UPDATE user SET kind = 'system' WHERE id = 'u_person'", [])
+            .is_err()
+    );
+    assert!(
+        db.execute("UPDATE user SET kind = 'person' WHERE kind = 'system'", [])
+            .is_err()
+    );
+}
+
+/// Review S6: a marker without its `server.db`, or with an empty one, is
+/// refused (exit 2), at start and by `check-config`, as a catalog without
+/// its database is not a catalog.
+#[test]
+fn a_marker_without_its_database_is_refused() {
+    let dirs = Dirs::new();
+    drop(Server::build(dirs.config()).unwrap());
+    for name in ["server.db", "server.db-wal", "server.db-shm"] {
+        let _ = std::fs::remove_file(dirs.state.join(name));
+    }
+    let error = Server::build(dirs.config()).unwrap_err();
+    assert_eq!(error.exit_code(), 2, "{error}");
+    assert!(fitment_server::check(&dirs.config()).is_err());
+    std::fs::write(dirs.state.join("server.db"), b"").unwrap();
+    let error = Server::build(dirs.config()).unwrap_err();
+    assert_eq!(error.exit_code(), 2, "{error}");
+    assert!(
+        !error.to_string().contains(&dirs.root.display().to_string()),
+        "{error}"
+    );
+}
+
+/// Review S13: on Unix the state directory and its subdirectories are the
+/// owner's alone (0700), and so are `server.db` and its WAL files (0600).
+#[cfg(unix)]
+#[test]
+fn the_state_is_the_owners_alone() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dirs = Dirs::new();
+    let server = Server::build(dirs.config()).unwrap();
+    let mode =
+        |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    for dir in [
+        &dirs.state,
+        &dirs.state.join("objects"),
+        &dirs.state.join("tmp"),
+    ] {
+        assert_eq!(mode(dir), 0o700, "{}", dir.display());
+    }
+    for name in ["server.db", "server.db-wal", "server.db-shm"] {
+        let path = dirs.state.join(name);
+        if path.exists() {
+            assert_eq!(mode(&path), 0o600, "{name}");
+        }
+    }
+    assert!(
+        dirs.state.join("server.db-wal").exists(),
+        "the WAL is open while the server is"
+    );
+    drop(server);
 }

@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fitment_catalog::{Catalog, EntryStatus, Error, Options};
+use fitment_catalog::{Catalog, Error, Options};
 use serde::Serialize;
 
 use crate::config::CatalogSection;
@@ -107,8 +107,20 @@ impl CatalogDir {
         Catalog::open(&self.root, self.options).map_err(|e| self.unavailable(&e))
     }
 
+    /// OP4: checks the catalog writing nothing (`Catalog::inspect`: no
+    /// connection, no pragma, no migration).
+    ///
+    /// # Errors
+    ///
+    /// [`Unavailable`] with its reason.
+    pub fn inspect(&self) -> Result<(), Unavailable> {
+        Catalog::inspect(&self.root)
+            .map(drop)
+            .map_err(|e| self.unavailable(&e))
+    }
+
     /// The catalog's generation, counts and flags (DC11), read in one
-    /// snapshot (CX2).
+    /// snapshot (CX2), the counts in one query.
     ///
     /// # Errors
     ///
@@ -120,13 +132,13 @@ impl CatalogDir {
             ApiError::from(unavailable)
         })?;
         let snapshot = catalog.snapshot().map_err(|e| self.mapped(&e))?;
-        let listed = snapshot.list().map_err(|e| self.mapped(&e))?;
+        let counts = snapshot.status_counts().map_err(|e| self.mapped(&e))?;
         let mut info = CatalogInfo {
             generation: snapshot.generation(),
-            entries: 0,
-            indexed: 0,
-            quarantined: 0,
-            stale: 0,
+            entries: counts.entries,
+            indexed: counts.indexed,
+            quarantined: counts.quarantined,
+            stale: counts.stale,
             state: CatalogState {
                 stale: false,
                 reindex: None,
@@ -134,14 +146,6 @@ impl CatalogDir {
                 queues_full: false,
             },
         };
-        for entry in &listed {
-            info.entries += 1;
-            match entry.status {
-                Some(EntryStatus::Indexed) => info.indexed += 1,
-                Some(EntryStatus::Quarantined) => info.quarantined += 1,
-                _ => info.stale += 1,
-            }
-        }
         info.state.stale = info.stale > 0;
         Ok(info)
     }
@@ -198,7 +202,10 @@ impl CatalogDir {
         let mut out = text;
         for prefix in [absolute, root] {
             if !prefix.is_empty() {
-                out = out.replace(&prefix, "catalog:");
+                let separated = format!("{prefix}{}", std::path::MAIN_SEPARATOR);
+                out = out
+                    .replace(&separated, "catalog:")
+                    .replace(&prefix, "catalog:");
             }
         }
         out

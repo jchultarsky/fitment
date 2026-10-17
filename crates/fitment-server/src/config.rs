@@ -13,8 +13,15 @@ use serde_json::Value;
 /// The environment variable naming the configuration file (OP2).
 pub const CONFIG_VAR: &str = "FITMENT_SERVER_CONFIG";
 
-/// Each key's variable: `FITMENT_SERVER_<SECTION>_<KEY>` (OP2).
-pub const VAR_PREFIX: &str = "FITMENT_SERVER_";
+/// Each key's variable: `FITMENT_SERVER__<SECTION>__<KEY>` (OP2), the
+/// separators doubled so that variables an orchestrator injects for a
+/// service named `fitment-server` (Kubernetes' `FITMENT_SERVER_PORT` and
+/// the like) are never read as keys.
+pub const VAR_PREFIX: &str = "FITMENT_SERVER__";
+
+/// The family of the server's variables; one of it that is neither
+/// [`CONFIG_VAR`] nor a key's is ignored, with a warning.
+pub const FAMILY: &str = "FITMENT_SERVER_";
 
 /// The whole configuration (OP3).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -42,6 +49,10 @@ pub struct Config {
     pub log: Log,
     /// `[metrics]`.
     pub metrics: Metrics,
+    /// Variables of the family that named no key and were ignored, for
+    /// the startup log's warning (OP2).
+    #[serde(skip)]
+    pub ignored: Vec<String>,
 }
 
 /// `[server]` (HX1, HX3, HX4, HX7).
@@ -62,6 +73,12 @@ pub struct ServerSection {
     pub header_timeout_seconds: u32,
     /// A non-streaming handler's time (HX3).
     pub handler_timeout_seconds: u32,
+    /// How long a write may make no progress before the connection is
+    /// closed (review S1): a client that never reads holds no slot.
+    pub write_timeout_seconds: u32,
+    /// The longest a connection lives (review S1); above
+    /// `limits.upload_minutes`.
+    pub max_connection_seconds: u32,
 }
 
 impl Default for ServerSection {
@@ -73,6 +90,8 @@ impl Default for ServerSection {
             cors_origins: Vec::new(),
             header_timeout_seconds: 10,
             handler_timeout_seconds: 30,
+            write_timeout_seconds: 30,
+            max_connection_seconds: 3600,
         }
     }
 }
@@ -364,7 +383,7 @@ fn value_error(key: &str, message: impl Into<String>) -> ConfigError {
 
 impl Config {
     /// Reads the configuration from the process's environment and `flags`
-    /// (OP2): flags, then `FITMENT_SERVER_<SECTION>_<KEY>`, then the file
+    /// (OP2): flags, then `FITMENT_SERVER__<SECTION>__<KEY>`, then the file
     /// (`--config` or `FITMENT_SERVER_CONFIG`), then the defaults.
     ///
     /// # Errors
@@ -375,7 +394,7 @@ impl Config {
     pub fn load(flags: &Flags) -> Result<Self, ConfigError> {
         let vars: BTreeMap<String, String> = std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-            .filter(|(k, _)| k.starts_with(VAR_PREFIX))
+            .filter(|(k, _)| k.starts_with(FAMILY))
             .collect();
         Self::from_sources(flags, &vars)
     }
@@ -397,12 +416,13 @@ impl Config {
             Some(path) => read_file(path)?,
             None => toml::Table::new(),
         };
-        overlay_vars(&mut table, vars)?;
+        let ignored = overlay_vars(&mut table, vars)?;
         let mut config: Self = table
             .try_into()
             .map_err(|e: toml::de::Error| ConfigError::Invalid(e.message().to_owned()))?;
         config.apply(flags);
         config.validate()?;
+        config.ignored = ignored;
         Ok(config)
     }
 
@@ -439,11 +459,30 @@ impl Config {
                 "required: the server's state directory",
             ));
         }
+        for (key, path) in [
+            ("paths.catalog", &self.paths.catalog),
+            ("paths.state", &self.paths.state),
+        ] {
+            if crate::state::has_parent_component(path) {
+                return Err(value_error(
+                    key,
+                    "no `..`: write the directory without it, so the nesting check (SV6) is sound",
+                ));
+            }
+        }
         self.listen_addr()?;
         if self.server.max_connections == 0 {
             return Err(value_error("server.max_connections", "must be at least 1"));
         }
-        if self.server.header_timeout_seconds == 0 || self.server.handler_timeout_seconds == 0 {
+        let server = &self.server;
+        if [
+            server.header_timeout_seconds,
+            server.handler_timeout_seconds,
+            server.write_timeout_seconds,
+            server.max_connection_seconds,
+        ]
+        .contains(&0)
+        {
             return Err(value_error("server", "timeouts must be at least 1 second"));
         }
         self.trusted_proxies()?;
@@ -514,17 +553,24 @@ fn read_file(path: &Path) -> Result<toml::Table, ConfigError> {
         .map_err(|e| ConfigError::Invalid(e.message().to_owned()))
 }
 
-/// Sets each `FITMENT_SERVER_<SECTION>_<KEY>` over the file's table. The
-/// value is read as its key's default's type: text for a text key, TOML
-/// otherwise (`64`, `true`, `["10.0.0.1"]`). A variable naming no key is
-/// refused, as an unknown key in the file is.
+/// Sets each `FITMENT_SERVER__<SECTION>__<KEY>` over the file's table.
+/// The value is read as its key's default's type: text for a text key,
+/// TOML otherwise (`64`, `true`, `["10.0.0.1"]`). A variable of that form
+/// naming no key is refused, as an unknown key in the file is; any other
+/// `FITMENT_SERVER_*` but [`CONFIG_VAR`] is returned, to be ignored with a
+/// warning.
 fn overlay_vars(
     table: &mut toml::Table,
     vars: &BTreeMap<String, String>,
-) -> Result<(), ConfigError> {
+) -> Result<Vec<String>, ConfigError> {
     let defaults = serde_json::to_value(Config::default()).unwrap_or(Value::Null);
+    let mut ignored = Vec::new();
     for (name, raw) in vars {
-        if name == CONFIG_VAR {
+        if name == CONFIG_VAR || !name.starts_with(FAMILY) {
+            continue;
+        }
+        if !name.starts_with(VAR_PREFIX) {
+            ignored.push(name.clone());
             continue;
         }
         let Some((section, key, default)) = key_of(&defaults, name) else {
@@ -549,19 +595,16 @@ fn overlay_vars(
             _ => return Err(value_error(&section, "is not a table")),
         }
     }
-    Ok(())
+    Ok(ignored)
 }
 
 /// The section, key and default a variable names, matched against the
 /// default configuration's keys.
 fn key_of<'d>(defaults: &'d Value, var: &str) -> Option<(String, String, &'d Value)> {
     let rest = var.strip_prefix(VAR_PREFIX)?.to_ascii_lowercase();
-    let sections = defaults.as_object()?;
-    sections.iter().find_map(|(section, keys)| {
-        let key = rest.strip_prefix(&format!("{section}_"))?;
-        let default = keys.as_object()?.get(key)?;
-        Some((section.clone(), key.to_owned(), default))
-    })
+    let (section, key) = rest.split_once("__")?;
+    let default = defaults.as_object()?.get(section)?.as_object()?.get(key)?;
+    Some((section.to_owned(), key.to_owned(), default))
 }
 
 #[cfg(test)]
@@ -576,6 +619,8 @@ mod tests {
     }
 
     #[test]
+    /// OP2: `FITMENT_SERVER__<SECTION>__<KEY>` sets a key as its type;
+    /// other `FITMENT_SERVER_*` variables are ignored.
     fn variables_are_read_as_their_keys_type() {
         let flags = Flags {
             catalog: Some("/c".into()),
@@ -585,10 +630,12 @@ mod tests {
         let config = Config::from_sources(
             &flags,
             &vars(&[
-                ("FITMENT_SERVER_LIMITS_MAX_UPLOAD_MIB", "64"),
-                ("FITMENT_SERVER_LOG_FILTER", "debug"),
-                ("FITMENT_SERVER_SERVER_TRUSTED_PROXIES", "[\"10.0.0.1\"]"),
-                ("FITMENT_SERVER_JOBS_REINDEX_ON_START", "false"),
+                ("FITMENT_SERVER__LIMITS__MAX_UPLOAD_MIB", "64"),
+                ("FITMENT_SERVER__LOG__FILTER", "debug"),
+                ("FITMENT_SERVER__SERVER__TRUSTED_PROXIES", "[\"10.0.0.1\"]"),
+                ("FITMENT_SERVER__JOBS__REINDEX_ON_START", "false"),
+                ("FITMENT_SERVER_PORT", "tcp://10.0.0.9:8080"),
+                ("FITMENT_SERVER_SERVICE_HOST", "10.0.0.9"),
             ]),
         )
         .unwrap();
@@ -596,9 +643,17 @@ mod tests {
         assert_eq!(config.log.filter, "debug");
         assert_eq!(config.server.trusted_proxies, ["10.0.0.1"]);
         assert!(!config.jobs.reindex_on_start);
+        // An orchestrator's variables for a service of this name are not
+        // keys: ignored, and named for the warning.
+        assert_eq!(
+            config.ignored,
+            ["FITMENT_SERVER_PORT", "FITMENT_SERVER_SERVICE_HOST"]
+        );
     }
 
     #[test]
+    /// OP2: a key's variable naming no key, or of the wrong type, refuses
+    /// the start, as an unknown key in the file does.
     fn an_unknown_variable_or_wrong_type_is_refused() {
         let flags = Flags {
             catalog: Some("/c".into()),
@@ -606,13 +661,30 @@ mod tests {
             ..Flags::default()
         };
         for (k, v) in [
-            ("FITMENT_SERVER_LIMITS_MAX_UPLOAD_MEB", "64"),
-            ("FITMENT_SERVER_LIMITS_MAX_UPLOAD_MIB", "lots"),
-            ("FITMENT_SERVER_NOPE", "1"),
+            ("FITMENT_SERVER__LIMITS__MAX_UPLOAD_MEB", "64"),
+            ("FITMENT_SERVER__LIMITS__MAX_UPLOAD_MIB", "lots"),
+            ("FITMENT_SERVER__NOPE", "1"),
+            ("FITMENT_SERVER__NOPE__MAX_UPLOAD_MIB", "1"),
         ] {
             assert!(
                 Config::from_sources(&flags, &vars(&[(k, v)])).is_err(),
                 "{k}"
+            );
+        }
+    }
+
+    /// SV6, review S3: a `..` in either directory is refused.
+    #[test]
+    fn parent_components_are_refused() {
+        for (catalog, state) in [("/c/../s/c", "/s"), ("/c", "/c/x/../.."), ("c", "../s")] {
+            let flags = Flags {
+                catalog: Some(catalog.into()),
+                state: Some(state.into()),
+                ..Flags::default()
+            };
+            assert!(
+                Config::from_sources(&flags, &BTreeMap::new()).is_err(),
+                "{catalog} {state}"
             );
         }
     }
