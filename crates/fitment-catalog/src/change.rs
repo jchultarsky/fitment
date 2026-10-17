@@ -359,9 +359,11 @@ impl Catalog {
                 [p.sha256.as_str()],
                 |r| r.get(0),
             )?;
-            insert_tokens(&tx, p, tokens, key)?;
+            insert_tokens(&tx, &p.sha256, tokens, key)?;
         }
-        insert_properties(&tx, p)?;
+        if let Some(stated) = &p.properties {
+            insert_properties(&tx, &p.sha256, stated)?;
+        }
         op(&tx, g, 0, "replace", entry, p.sha256.as_str())?;
         // CR3 and IN9: the old content's derived rows go; its blob row is
         // held by the revision just superseded, which is kept.
