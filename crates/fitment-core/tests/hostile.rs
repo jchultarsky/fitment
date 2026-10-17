@@ -186,3 +186,76 @@ fn a_hole_with_a_thousand_coaxial_neighbours_is_read() {
         2
     );
 }
+
+/// The committed bracket with `extra` added to its data section; its
+/// product definition is `#5`, its context `#2`.
+fn bracket_with(extra: &str) -> String {
+    let text = include_str!("candidates/m_bracket.stp");
+    let end = text.rfind("ENDSEC;").unwrap();
+    format!("{}{extra}{}", &text[..end], &text[end..])
+}
+
+/// PR2's bounds hold while reading (the PR 5 reviews): 4,000 user-defined
+/// properties sharing one representation of 4,000 items would be 16·10⁶
+/// values of 200 bytes, more than 3 GB, read in full; the capture stops at
+/// its bound. One item of 1 MB shared by 1,000 properties is measured,
+/// never copied, and nothing of it is kept.
+#[test]
+fn properties_sharing_a_representation_cost_what_is_kept() {
+    use fitment_core::{MAX_STATED, StatedProperties};
+    let value = "v".repeat(200);
+    let mut extra = String::from("#200000=REPRESENTATION('',(");
+    for i in 0..4000 {
+        let sep = if i == 0 { "" } else { "," };
+        write!(extra, "{sep}#{}", 210_000 + i).unwrap();
+    }
+    extra.push_str("),#2);\n");
+    for i in 0..4000 {
+        writeln!(
+            extra,
+            "#{}=DESCRIPTIVE_REPRESENTATION_ITEM('i{i}','{value}');",
+            210_000 + i
+        )
+        .unwrap();
+        writeln!(
+            extra,
+            "#{}=PROPERTY_DEFINITION('p{i}','user defined attribute',#5);",
+            300_000 + 2 * i
+        )
+        .unwrap();
+        writeln!(
+            extra,
+            "#{}=PROPERTY_DEFINITION_REPRESENTATION(#{},#200000);",
+            300_001 + 2 * i,
+            300_000 + 2 * i
+        )
+        .unwrap();
+    }
+    let stated = StatedProperties::read(bracket_with(&extra).as_bytes());
+    assert!(stated.truncated);
+    assert_eq!(stated.stated.len(), MAX_STATED);
+    assert!(stated.stated.iter().all(|p| p.instance == 300_000));
+
+    let mut extra = format!(
+        "#200000=REPRESENTATION('',(#200001),#2);\n#200001=DESCRIPTIVE_REPRESENTATION_ITEM('big','{}');\n",
+        "x".repeat(1 << 20)
+    );
+    for i in 0..1000 {
+        writeln!(
+            extra,
+            "#{}=PROPERTY_DEFINITION('p{i}','user defined attribute',#5);",
+            300_000 + 2 * i
+        )
+        .unwrap();
+        writeln!(
+            extra,
+            "#{}=PROPERTY_DEFINITION_REPRESENTATION(#{},#200000);",
+            300_001 + 2 * i,
+            300_000 + 2 * i
+        )
+        .unwrap();
+    }
+    let stated = StatedProperties::read(bracket_with(&extra).as_bytes());
+    assert!(stated.truncated);
+    assert_eq!(stated.stated, Vec::new());
+}

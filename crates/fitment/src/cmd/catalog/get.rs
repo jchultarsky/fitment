@@ -7,7 +7,9 @@ use std::process::ExitCode;
 
 use clap::ValueEnum;
 use fitment_catalog::document::{CatalogDocument, Entry};
-use fitment_catalog::{BadBlob, BadRow, Catalog, HistoryStep, Listed, Named, Reference};
+use fitment_catalog::{
+    BadBlob, BadRow, Catalog, EntryStatus, HistoryStep, Listed, Named, Reference,
+};
 
 use super::list::status_text;
 use super::{ERROR, REFUSED, USAGE, emit, fail, shown};
@@ -37,12 +39,27 @@ enum GetFormat {
     Step,
 }
 
+/// An entry's stated properties, as `get` found them.
+enum Stated {
+    /// Not shown: not asked for, not current, or not accepted.
+    Absent,
+    /// Accepted, with no row at this build's version (M5-26).
+    NotCaptured,
+    /// The checked row.
+    Kept(fitment_core::StatedProperties),
+    /// A row whose hash or read-back fails (exit 1).
+    Damaged,
+}
+
 /// What `get` read in its one snapshot.
 struct Read {
     named: Named,
     listed: Listed,
     history: Vec<HistoryStep>,
     features: Option<Result<fitment_core::FeaturesDocument, BadRow>>,
+    /// The current revision's stated properties at this build's version
+    /// (PR7), for the table and the document.
+    properties: Stated,
     /// Every live entry, for a document's counts.
     all: Vec<Listed>,
     generation: i64,
@@ -67,6 +84,23 @@ fn read(
     } else {
         None
     };
+    // Only an accepted document has properties (PR3); a stale extractor's
+    // are not this build's to show.
+    let accepted = matches!(
+        listed.status,
+        Some(EntryStatus::Indexed | EntryStatus::StaleProperties(_))
+    );
+    let shown = matches!(format, GetFormat::Table | GetFormat::Json) && accepted;
+    let properties = if shown {
+        match snapshot.properties(&named.sha256) {
+            Ok(Some(stated)) => Stated::Kept(stated),
+            Ok(None) => Stated::NotCaptured,
+            Err(fitment_catalog::Error::Corrupt(_)) => Stated::Damaged,
+            Err(other) => return Err(other),
+        }
+    } else {
+        Stated::Absent
+    };
     let all = if format == GetFormat::Json {
         snapshot.list()?
     } else {
@@ -79,6 +113,7 @@ fn read(
         listed,
         history,
         features,
+        properties,
     }))
 }
 
@@ -116,9 +151,10 @@ fn table(read: &Read) -> String {
         let version = |v: Option<u32>| v.map_or_else(|| "-".into(), |v| v.to_string());
         let _ = writeln!(
             out,
-            "versions  extractor {}, signature {}",
+            "versions  extractor {}, signature {}, properties {}",
             version(l.versions.0),
-            version(l.versions.1)
+            version(l.versions.1),
+            version(l.versions.2)
         );
     }
     if let Some(c) = l.counts {
@@ -140,6 +176,15 @@ fn table(read: &Read) -> String {
             let _ = writeln!(out, "    {}: {}{at}", r.code, printable(&r.message));
         }
     }
+    match &read.properties {
+        Stated::Absent => {}
+        Stated::Kept(stated) => properties(&mut out, stated),
+        // Stale (properties): reindex captures them (M5-26).
+        Stated::NotCaptured => {
+            out.push_str("properties  - (not captured by this build: fitment catalog reindex)\n");
+        }
+        Stated::Damaged => out.push_str("properties  damaged: not shown\n"),
+    }
     out.push_str("history\n");
     for s in &read.history {
         let kept = if s.bytes_kept { " (bytes kept)" } else { "" };
@@ -153,6 +198,65 @@ fn table(read: &Read) -> String {
         );
     }
     out
+}
+
+/// `text` in single quotes, its quotes and backslashes escaped, then
+/// made printable.
+fn quoted(text: &str) -> String {
+    format!(
+        "'{}'",
+        printable(&text.replace('\\', "\\\\").replace('\'', "\\'"))
+    )
+}
+
+/// PR7: each stated property, escaped, with its meaning under the shipped
+/// map; the map is applied here, so a new row needs no capture again.
+fn properties(out: &mut String, stated: &fitment_core::StatedProperties) {
+    let map = fitment_core::PropertyMap::shipped();
+    let truncated = if stated.truncated {
+        " (truncated: more were stated than are kept)"
+    } else {
+        ""
+    };
+    if stated.stated.is_empty() {
+        let _ = writeln!(out, "properties  none stated{truncated}");
+        return;
+    }
+    let _ = writeln!(out, "properties{truncated}");
+    for p in &stated.stated {
+        // Quoted, so no stored string can pass for a meaning or a split.
+        let mut line = format!(
+            "    #{} {} = {}",
+            p.instance,
+            quoted(&p.name),
+            quoted(&p.value)
+        );
+        if let Some(measure) = &p.measure {
+            let _ = write!(line, "  {}", printable(measure));
+        }
+        if let Some(unit) = &p.unit {
+            let _ = write!(line, "  unit {}", printable(unit));
+        }
+        if let Some(m) = map.meaning(p) {
+            let _ = write!(line, "  -> {}: {}", m.field.as_str(), m.meaning.as_str());
+        }
+        let _ = writeln!(out, "{line}");
+    }
+}
+
+/// A damaged properties row: said on stderr, and exit 1 (QR4's rule for
+/// a row that fails its check), the rest of the entry still shown.
+fn damaged(dir: &Path, read: &Read) -> u8 {
+    if !matches!(read.properties, Stated::Damaged) {
+        return 0;
+    }
+    note(&format!(
+        "fitment: {}: {}: its stored properties are damaged: run fitment catalog verify -C {}",
+        shown(dir),
+        read.named.id,
+        shown(dir)
+    ));
+    ERROR
 }
 
 /// `--format features`: the checked stored document (GT2, QR4).
@@ -285,11 +389,14 @@ pub(super) fn run(args: &Args, dir: &Path, catalog: &mut Catalog) -> ExitCode {
         read.named.sha256
     );
     let (text, code) = match args.format {
-        GetFormat::Table => (Ok(table(&read)), 0),
+        GetFormat::Table => (Ok(table(&read)), damaged(dir, &read)),
         GetFormat::Json => {
-            let entry = Entry::of(&read.listed, Some(&read.history));
+            let mut entry = Entry::of(&read.listed, Some(&read.history));
+            if let Stated::Kept(stated) = &read.properties {
+                entry = entry.with_properties(stated, &fitment_core::PropertyMap::shipped());
+            }
             let document = CatalogDocument::new(read.generation, &read.all, vec![entry], None);
-            (Ok(document.to_json()), 0)
+            (Ok(document.to_json()), damaged(dir, &read))
         }
         GetFormat::Features => features(&read),
         GetFormat::Step => {

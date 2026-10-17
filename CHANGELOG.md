@@ -53,6 +53,16 @@ Until 1.0, minor versions may contain breaking changes.
   `--jobs N` judges N candidates at once, in file runs too, and changes no
   byte of the result.
 
+- **M5, PR 5 (properties, D10):** `StatedProperties::read` and
+  `FeaturesDocument::read_with_properties` capture a part's own
+  user-defined properties and material designations as written, at most
+  1,024 values of 4 KiB, versioned by `PROPERTIES_VERSION` 1; `PropertyMap`
+  ships one evidenced row (NX's `MaterialMissingAssignments` = `TRUE`: no
+  material assigned). A catalog stores them at ingest, hashed over their
+  preimage; `fitment catalog get` shows them, escaped, with their meaning;
+  `list` shows an entry without them as `stale (properties)`, which a
+  match never refuses. No verdict or flag reads them.
+
 ### Changed
 
 - `signature_version` is 2: pair tokens name their two stacks by index

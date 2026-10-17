@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::{FeatureId, FeatureKind, Part, SolidInfo};
 use crate::EXTRACTOR_VERSION;
 use crate::gate::Refusal;
+use crate::properties::StatedProperties;
 
 /// The `format` of every features document.
 pub const FEATURES_FORMAT: &str = "fitment.features";
@@ -156,6 +157,11 @@ impl FeaturesDocument {
     /// panics.
     pub fn read(step: &[u8]) -> Self {
         let (header, result) = super::step::read(step);
+        Self::of(header, result)
+    }
+
+    /// The document of a read.
+    fn of(header: Option<FileHeader>, result: Result<Part, Vec<Refusal>>) -> Self {
         let (status, refusals, part) = match result {
             Ok(part) => (Status::Accepted, Vec::new(), Some(part)),
             Err(refusals) => (Status::Refused, refusals, None),
@@ -170,6 +176,13 @@ impl FeaturesDocument {
             refusals,
             part,
         }
+    }
+
+    /// [`FeaturesDocument::read`] and [`StatedProperties::read`] from one
+    /// parse of `step`, as a catalog's ingest reads both (PR1).
+    pub fn read_with_properties(step: &[u8]) -> (Self, StatedProperties) {
+        let (header, result, stated) = super::step::read_with(step, true);
+        (Self::of(header, result), stated)
     }
 
     /// Always [`FEATURES_FORMAT`].

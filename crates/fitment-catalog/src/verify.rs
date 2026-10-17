@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
 use fitment_core::{
-    EXTRACTOR_VERSION, FeaturesDocument, IndexTokens, PartSignature, SIGNATURE_VERSION, Sense,
+    EXTRACTOR_VERSION, FeaturesDocument, IndexTokens, PROPERTIES_VERSION, PartSignature,
+    SIGNATURE_VERSION, Sense, StatedProperties,
 };
 use rusqlite::{Connection, OptionalExtension as _, params};
 
@@ -112,6 +113,7 @@ impl Catalog {
         held(&tx, &mut found)?;
         features_rows(&tx, &mut found)?;
         tokens_rows(&tx, &mut found)?;
+        properties_rows(&tx, &mut found)?;
         clock(&tx, &mut found)?;
         files(&tx, &blobs, &mut found)?;
         if deep {
@@ -267,6 +269,7 @@ fn held(conn: &Connection, found: &mut Found) -> Result<(), Error> {
     }
     let stray = "SELECT sha256 FROM features WHERE sha256 NOT IN (SELECT sha256 FROM live)
         UNION SELECT sha256 FROM tokens WHERE sha256 NOT IN (SELECT sha256 FROM live)
+        UNION SELECT sha256 FROM properties WHERE sha256 NOT IN (SELECT sha256 FROM live)
         UNION SELECT b.sha256 FROM posting p JOIN blob b ON b.key = p.content
           WHERE b.sha256 NOT IN (SELECT sha256 FROM live)
         ORDER BY 1";
@@ -404,6 +407,9 @@ type FeaturesRow = (String, i64, String, Option<String>, Vec<u8>, String);
 /// A tokens row's columns, with its content's key.
 type TokensRow = (String, i64, i64, Vec<u8>, String, Option<i64>);
 
+/// A properties row as `properties_rows` reads it.
+type PropertiesRow = (String, i64, bool, Vec<u8>, String);
+
 /// The postings `tokens` gives, as (sense, bin, stack, diameter's bits).
 fn postings_of(tokens: &IndexTokens) -> BTreeSet<(i64, i64, i64, u64)> {
     tokens
@@ -417,6 +423,72 @@ fn postings_of(tokens: &IndexTokens) -> BTreeSet<(i64, i64, i64, u64)> {
             )
         })
         .collect()
+}
+
+/// PR3 and GT2: each properties row's preimage hash; a current one's
+/// read-back, its bounds and its truncation column; and no row beside a
+/// refused document or none.
+fn properties_rows(conn: &Connection, found: &mut Found) -> Result<(), Error> {
+    let mut stmt = conn.prepare(
+        "SELECT sha256, properties_version, truncated, stated, stated_sha256 FROM properties
+         ORDER BY sha256, properties_version",
+    )?;
+    let all: Vec<PropertiesRow> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    // PR3: properties belong to an accepted document; a row beside a
+    // refused one, or beside no document at all, is no capture of ours.
+    let orphaned = "SELECT DISTINCT p.sha256 FROM properties p
+        WHERE NOT EXISTS (SELECT 1 FROM features f WHERE f.sha256 = p.sha256)
+           OR EXISTS (SELECT 1 FROM features f WHERE f.sha256 = p.sha256
+                      AND f.extractor_version = ?1 AND f.status != 'accepted')
+        ORDER BY 1";
+    let mut stmt = conn.prepare(orphaned)?;
+    let orphans: Vec<String> = stmt
+        .query_map([EXTRACTOR_VERSION], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for text in orphans {
+        found.add(
+            Kind::Mismatch,
+            &text,
+            "properties for a refused document, or for none",
+        );
+    }
+    for (text, version, truncated, bytes, hash) in all {
+        let what = format!("properties (version {version})");
+        let Ok(version) = u32::try_from(version) else {
+            found.add(Kind::Integrity, &text, format!("{what}: a version column"));
+            continue;
+        };
+        let Ok(sha) = Sha256Hex::parse(&text) else {
+            found.add(Kind::Integrity, &text, format!("{what}: a key column"));
+            continue;
+        };
+        if preimage::properties(&sha, version, truncated, &bytes).as_str() != hash {
+            found.add(
+                Kind::Damaged,
+                &text,
+                format!("{what}: the row's hash does not cover its key"),
+            );
+            continue;
+        }
+        if version != PROPERTIES_VERSION {
+            continue;
+        }
+        let read = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|t| StatedProperties::from_json(t).ok());
+        if read.is_none_or(|r| r.truncated != truncated) {
+            found.add(
+                Kind::Damaged,
+                &text,
+                format!("{what}: the stated properties do not read back"),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// IN7, IX9, review F7: each tokens row's preimage hash and read; the
@@ -622,7 +694,7 @@ fn deep_check(conn: &Connection, blobs: &Blobs<'_>, found: &mut Found) -> Result
         let (true, Ok(bytes)) = (current, blobs.read(&sha)) else {
             continue;
         };
-        let read = FeaturesDocument::read(&bytes);
+        let (read, stated) = FeaturesDocument::read_with_properties(&bytes);
         let stored: Option<Vec<u8>> = conn
             .query_row(
                 "SELECT doc FROM features WHERE sha256 = ?1 AND extractor_version = ?2",
@@ -651,6 +723,22 @@ fn deep_check(conn: &Connection, blobs: &Blobs<'_>, found: &mut Found) -> Result
                 Kind::Mismatch,
                 &text,
                 format!("tokens (signature {SIGNATURE_VERSION}): not the file's"),
+            );
+        }
+        // A missing row is stale (properties), `list`'s to report (RX2).
+        let properties: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT stated FROM properties WHERE sha256 = ?1 AND properties_version = ?2",
+                params![&text, PROPERTIES_VERSION],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let want = read.part().map(|_| stated.to_json().into_bytes());
+        if properties.is_some() && properties != want {
+            found.add(
+                Kind::Mismatch,
+                &text,
+                format!("properties (version {PROPERTIES_VERSION}): not the file's"),
             );
         }
     }

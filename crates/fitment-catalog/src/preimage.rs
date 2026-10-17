@@ -65,9 +65,21 @@ pub fn tokens(
     Sha256Hex::of(&[head.as_bytes(), tokens].concat())
 }
 
+/// `stated_sha256`: over `<sha256>\n<properties_version>\n<truncated: 0
+/// or 1>\n<stated>` (PR3).
+pub fn properties(
+    sha256: &Sha256Hex,
+    properties_version: u32,
+    truncated: bool,
+    stated: &[u8],
+) -> Sha256Hex {
+    let head = format!("{sha256}\n{properties_version}\n{}\n", u8::from(truncated));
+    Sha256Hex::of(&[head.as_bytes(), stated].concat())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Sha256Hex, Status, features, tokens};
+    use super::{Sha256Hex, Status, features, properties, tokens};
 
     /// Every field takes part: changing any one changes the hash.
     #[test]
@@ -95,5 +107,18 @@ mod tests {
         }
         // Digits do not run into each other: version 62 is not 6 then 2.
         assert_ne!(tokens(&x, 62, 1, b""), tokens(&x, 6, 21, b""));
+        let base = properties(&x, 1, false, b"{}");
+        for other in [
+            properties(&y, 1, false, b"{}"),
+            properties(&x, 2, false, b"{}"),
+            properties(&x, 1, true, b"{}"),
+            properties(&x, 1, false, b"[]"),
+        ] {
+            assert_ne!(other, base);
+        }
+        assert_eq!(
+            base.as_str(),
+            Sha256Hex::of(format!("{x}\n1\n0\n{{}}").as_bytes()).as_str()
+        );
     }
 }

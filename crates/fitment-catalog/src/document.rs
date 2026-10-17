@@ -3,7 +3,9 @@
 //! print. It holds no time, host, absolute path or internal key, so the
 //! same catalog state gives the same bytes on every OS.
 
-use fitment_core::{EXTRACTOR_VERSION, SIGNATURE_VERSION};
+use fitment_core::{
+    EXTRACTOR_VERSION, PROPERTIES_VERSION, PropertyMap, SIGNATURE_VERSION, StatedProperties,
+};
 use serde::Serialize;
 
 use crate::ingest::{Counts, Ingested, Outcome};
@@ -36,7 +38,6 @@ pub struct CatalogDocument {
 struct Versions {
     extractor_version: Option<u32>,
     signature_version: Option<u32>,
-    /// `PROPERTIES_VERSION` arrives with M5's properties (PR 5).
     properties_version: Option<u32>,
 }
 
@@ -71,6 +72,29 @@ struct Features {
     other_faces: u32,
 }
 
+/// The stated properties `get` shows (PR7), each with its mapped meaning.
+#[derive(Debug, Clone, Serialize)]
+struct Properties {
+    truncated: bool,
+    stated: Vec<Stated>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Stated {
+    instance: u64,
+    name: String,
+    value: String,
+    measure: Option<String>,
+    unit: Option<String>,
+    mapped: Option<MappedOut>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MappedOut {
+    field: &'static str,
+    meaning: &'static str,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct Step {
     revision: u32,
@@ -94,7 +118,7 @@ pub struct Entry {
     complete: Option<bool>,
     features: Option<Features>,
     refusals: Vec<Refusal>,
-    properties: Option<()>,
+    properties: Option<Properties>,
     history: Option<Vec<Step>>,
 }
 
@@ -144,7 +168,7 @@ impl Entry {
             versions: Versions {
                 extractor_version: listed.versions.0,
                 signature_version: listed.versions.1,
-                properties_version: None,
+                properties_version: listed.versions.2,
             },
             complete: listed.complete,
             features: listed.counts.map(features),
@@ -163,6 +187,31 @@ impl Entry {
                     .collect()
             }),
         }
+    }
+
+    /// The entry with its stated properties and their meanings under
+    /// `map` (PR7), as `get` shows them.
+    #[must_use]
+    pub fn with_properties(mut self, stated: &StatedProperties, map: &PropertyMap) -> Self {
+        self.properties = Some(Properties {
+            truncated: stated.truncated,
+            stated: stated
+                .stated
+                .iter()
+                .map(|p| Stated {
+                    instance: p.instance,
+                    name: p.name.clone(),
+                    value: p.value.clone(),
+                    measure: p.measure.clone(),
+                    unit: p.unit.clone(),
+                    mapped: map.meaning(p).map(|m| MappedOut {
+                        field: m.field.as_str(),
+                        meaning: m.meaning.as_str(),
+                    }),
+                })
+                .collect(),
+        });
+        self
     }
 }
 
@@ -261,7 +310,7 @@ impl CatalogDocument {
             build: Versions {
                 extractor_version: Some(EXTRACTOR_VERSION),
                 signature_version: Some(SIGNATURE_VERSION),
-                properties_version: None,
+                properties_version: Some(PROPERTIES_VERSION),
             },
             counts,
             entries,

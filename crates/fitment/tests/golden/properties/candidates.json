@@ -1,0 +1,97 @@
+{
+  "parts": {
+    "generated": {
+      "stated": [
+        {
+          "instance": 90000,
+          "measure": null,
+          "name": "MaterialMissingAssignments",
+          "unit": null,
+          "value": "TRUE"
+        },
+        {
+          "instance": 90000,
+          "measure": null,
+          "name": "Second",
+          "unit": null,
+          "value": "x"
+        },
+        {
+          "instance": 90010,
+          "measure": "POSITIVE_RATIO_MEASURE",
+          "name": "Density",
+          "unit": "#9",
+          "value": "1000.0"
+        },
+        {
+          "instance": 90022,
+          "measure": null,
+          "name": "Part Number",
+          "unit": null,
+          "value": "été"
+        },
+        {
+          "instance": 90030,
+          "measure": null,
+          "name": "MATERIAL_DESIGNATION",
+          "unit": null,
+          "value": "Steel 304"
+        }
+      ],
+      "truncated": false
+    },
+    "m_block02": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_block02_cb_deep": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_bracket": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_bracket_blind": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_bracket_dia_small": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_bracket_lug": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_bracket_missing_hole": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_bracket_thick": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_bracket_top_pocket": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_nut_pinned_15tol": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_plate03": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_plate03_pin_shift_tol": {
+      "stated": [],
+      "truncated": false
+    },
+    "m_plate03_press_15tol": {
+      "stated": [],
+      "truncated": false
+    }
+  },
+  "properties_version": 1
+}

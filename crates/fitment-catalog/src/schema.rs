@@ -1,5 +1,5 @@
 //! The database (`docs/research/m5-catalog.md`, section 6.2, DB1, DB5):
-//! its pragmas, its tables and its version. PR 5 adds `properties` to
+//! its pragmas, its tables and its version. PR 5 added `properties` to
 //! schema 1, which stays unpublished until M5's last PR.
 
 use rusqlite::{Connection, OptionalExtension as _};
@@ -253,6 +253,18 @@ CREATE TABLE posting (
   PRIMARY KEY (extractor_version, signature_version, sense, bin, content, stack, diameter_mm)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX posting_owner ON posting(content, extractor_version, signature_version);
+
+CREATE TABLE properties (
+  sha256             TEXT NOT NULL REFERENCES blob(sha256) ON DELETE CASCADE,
+  properties_version INTEGER NOT NULL CHECK (properties_version > 0),
+  truncated          INTEGER NOT NULL CHECK (truncated IN (0, 1)),
+  stated             BLOB NOT NULL,
+  stated_sha256      TEXT NOT NULL
+                     CHECK (length(stated_sha256) = 64 AND NOT stated_sha256 GLOB '*[^0-9a-f]*'),
+  PRIMARY KEY (sha256, properties_version)
+) STRICT;
+CREATE TRIGGER properties_immutable BEFORE UPDATE ON properties
+BEGIN SELECT RAISE(ABORT, 'properties rows are insert-only'); END;
 
 CREATE VIEW live AS
 SELECT e.key AS entry, e.id, r.revision, r.sha256, r.file_name, r.added_generation

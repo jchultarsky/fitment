@@ -32,8 +32,8 @@ check "declares a static item (global state)" \
 
 # stepq stays a private dependency, named only in the gate and the adapters, so a stepq
 # release is a change in one place and its types never reach the public API.
-check "names stepq outside gate/, features/step.rs and assembly/step.rs" \
-  sh -c "grep -rlE '(^|[^[:alnum:]_])stepq::|use[[:space:]]+stepq' '$src' | grep -vxE '$src/(gate/[a-z_]+|features/step|assembly/step)\.rs' | grep ."
+check "names stepq outside gate/, features/step.rs, assembly/step.rs and properties/step.rs" \
+  sh -c "grep -rlE '(^|[^[:alnum:]_])stepq::|use[[:space:]]+stepq' '$src' | grep -vxE '$src/(gate/[a-z_]+|features/step|assembly/step|properties/step)\.rs' | grep ."
 
 # The tests hold STEP files that must never ship, in either package. Each
 # listing runs on its own first, so that a failing `cargo package` fails the
