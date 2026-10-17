@@ -1,0 +1,21 @@
+500
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:BmTd2AG1ERiW+jLVUC/JEnof/JaciAIk2s5OxRg65QQ=:
+x-request-id: r_00000000000000000000000001
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/internal",
+  "title": "An internal error",
+  "status": 500,
+  "detail": "an internal error; the server's log holds it under this request_id",
+  "code": "internal",
+  "class": "error",
+  "exit_code": 1,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000001"
+}

@@ -8,6 +8,7 @@ use super::cylinder::{Axis, Sense};
 use crate::geom::Point3;
 
 /// Edge-connected faces on one cone with one sense.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -42,6 +43,7 @@ pub struct Cone {
 }
 
 /// Edge-connected faces on one torus with one sense.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -71,6 +73,7 @@ pub struct Torus {
 }
 
 /// Why a face is an [`OtherFace`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -82,6 +85,7 @@ pub enum OtherReason {
 
 /// A face no rule reads: a sphere or an unread surface. Each is its own
 /// feature.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]

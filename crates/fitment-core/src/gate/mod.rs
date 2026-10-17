@@ -26,6 +26,7 @@ use stepq::model::{DefinitionShape, Graph, NotFollowedReason, ProductStructure, 
 /// `several_solids`. They never change meaning: a new check gets a new
 /// code. The variants are in the order the checks run, which is the order
 /// refusals are reported in.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -165,6 +166,7 @@ impl RefusalCode {
 }
 
 /// One reason a file is refused.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]

@@ -1,0 +1,24 @@
+503
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:pB0u2Jc4+ObYCEAuovYJF0DuBLLE/0qKAXdpzkqYReA=:
+retry-after: 5
+x-request-id: r_00000000000000000000000001
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/shutting_down",
+  "title": "The server is shutting down",
+  "status": 503,
+  "detail": "the server is draining: send the request to another server or later",
+  "code": "shutting_down",
+  "class": "error",
+  "exit_code": null,
+  "retryable": true,
+  "details": {
+    "reason": "draining"
+  },
+  "request_id": "r_00000000000000000000000001"
+}

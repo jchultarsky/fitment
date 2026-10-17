@@ -1,0 +1,39 @@
+# fitment-server's image (docs/research/m6-api.md, OP8; M6-31, M6-35):
+# the server and the CLI of one version from one Cargo.lock (DC8), on a
+# distroless base with glibc and libgcc only (SQLite is bundled and linked
+# statically). No shell, no package manager, no compiler, no CA
+# certificates, and no Python, uv or Open CASCADE (D1). Never built with
+# `test-support` (OP11, VT29). CI builds and smoke-tests it on every PR
+# (the `container` job); the user pushes it from a tag.
+#
+#   docker build -f deploy/Containerfile -t fitment-server .
+#
+# Run it with a read-only root file system, both volumes on a local disk
+# (never a network or sync folder: OP10, CC5), and a stop grace period of
+# at least 45 s (SD1). The catalog volume must hold a catalog:
+#
+#   docker run --rm -v cat:/var/lib/fitment/catalog --entrypoint fitment \
+#     fitment-server catalog init -C /var/lib/fitment/catalog
+
+FROM rust:1.85-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4 AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked -p fitment-server -p fitment
+# THIRD-PARTY.txt: every crate of the two binaries' locked graph with its
+# licence, from cargo alone.
+RUN cargo tree --locked --edges normal --prefix none --format '{p} {l}' \
+      -p fitment-server -p fitment | sort -u > THIRD-PARTY.txt \
+ && mkdir -p /out/catalog /out/state
+
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
+COPY --from=build /src/target/release/fitment-server /usr/local/bin/fitment-server
+COPY --from=build /src/target/release/fitment /usr/local/bin/fitment
+COPY --from=build /src/LICENSE /src/THIRD-PARTY.txt /usr/share/doc/fitment/
+COPY deploy/fitment-server.toml /etc/fitment/server.toml
+COPY --from=build --chown=65532:65532 /out/ /var/lib/fitment/
+ENV FITMENT_SERVER_CONFIG=/etc/fitment/server.toml
+USER 65532
+EXPOSE 8080
+VOLUME ["/var/lib/fitment/catalog", "/var/lib/fitment/state"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD ["fitment-server", "healthcheck"]
+ENTRYPOINT ["fitment-server", "serve"]

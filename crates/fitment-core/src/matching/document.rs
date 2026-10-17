@@ -23,6 +23,7 @@ pub const MATCH_FORMAT: &str = "fitment.match";
 pub const MATCH_FORMAT_VERSION: u32 = 1;
 
 /// How many candidates got each verdict (MF6).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[non_exhaustive]
 pub struct Summary {
@@ -222,6 +223,20 @@ fn identity(result: &CandidateResult) -> String {
     }
 }
 
+/// CO4: the schema of the document `to_json` writes. The document has no
+/// reader (M4-23); its schema is the written form's.
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for MatchDocument {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "MatchDocument".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        <Document as schemars::JsonSchema>::json_schema(generator)
+    }
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize)]
 struct Document {
     format: &'static str,
@@ -241,6 +256,7 @@ struct Document {
     digest: String,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 struct PolicyOut {
     name: String,
@@ -261,6 +277,7 @@ fn policy(matcher: &Matcher<'_>) -> PolicyOut {
     }
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 struct SocketPart {
     digest: Option<String>,
@@ -270,12 +287,14 @@ struct SocketPart {
     sockets: Vec<SocketSummary>,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 struct SourceOut {
     sha256: String,
     bytes: u64,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 struct SocketSummary {
     id: String,
@@ -287,12 +306,14 @@ struct SocketSummary {
     left_out: Vec<FeatureId>,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 struct Removed {
     requirement: String,
     note: String,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 struct Unverifiable {
     requirement: String,
@@ -369,6 +390,7 @@ fn socket_part(matcher: &Matcher<'_>) -> SocketPart {
     }
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 struct CandidateOut {
     labels: Vec<String>,
@@ -411,6 +433,7 @@ fn candidate(matcher: &Matcher<'_>, result: &CandidateResult, labels: &[String])
     }
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 struct SocketOut {
     socket: String,
@@ -424,6 +447,7 @@ struct SocketOut {
     not_checked: Vec<NotChecked>,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 struct PlacementOut {
     rotation: [[f64; 3]; 3],
@@ -436,6 +460,7 @@ struct PlacementOut {
     epsilon_mm: f64,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 struct MissingOut {
     requirements: Vec<RequirementId>,
@@ -445,6 +470,7 @@ struct MissingOut {
 
 /// One check record (EV1): in full, or, for a rejected candidate's passed
 /// check, its requirement, result and feature alone (M4-19).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
 struct CheckOut {
     requirement: String,

@@ -13,6 +13,7 @@ use super::walk::{self, Terminal, Walk, Wall};
 use crate::geom::{Dir3, Point3, finite};
 
 /// A hole: hole-sense cylinders joined by mutual steps, with its two ends.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -45,6 +46,7 @@ pub struct Hole {
 }
 
 /// What kind of hole.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -61,6 +63,7 @@ pub enum HoleKind {
 
 /// A shaft: shaft-sense cylinders joined by mutual steps, with its two
 /// ends.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -91,6 +94,7 @@ pub struct Shaft {
 }
 
 /// What kind of shaft.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -106,6 +110,7 @@ pub enum ShaftKind {
 }
 
 /// One cylinder of a hole or shaft.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -125,6 +130,7 @@ pub struct StackSegment {
 
 /// One end of a hole or shaft (W5). Stations are along the axis from its
 /// point.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
@@ -186,6 +192,7 @@ pub enum StackEnd {
 }
 
 /// How a hole's bottom is closed.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
@@ -220,6 +227,7 @@ pub enum Bottom {
 }
 
 /// A countersink an opening is reached through.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -233,6 +241,7 @@ pub struct Countersink {
 }
 
 /// Why an end is unknown.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]

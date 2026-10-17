@@ -23,6 +23,7 @@ pub const CANDIDATE_REFUSED: &str = "candidate refused";
 /// `{"status":"not_checked","reason":"no fit verifier in this build"}`.
 /// It is not deserializable: a fit result comes from a verifier, never from
 /// a file.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 // The four outcomes are fixed by decision D1; a fifth would change what a
@@ -65,6 +66,7 @@ impl FitStatus {
 }
 
 /// One neighbor that a candidate's body interferes with.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Interference {

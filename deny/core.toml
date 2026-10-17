@@ -43,6 +43,15 @@ allow = [
   { crate = "quote", reason = "derive macros" },
   { crate = "syn", reason = "derive macros" },
   { crate = "unicode-ident", reason = "derive macros" },
+  # CO4 (docs/research/m6-api.md): the documents' JSON Schemas, behind the
+  # `schema` feature alone, which only the server's OpenAPI test turns on.
+  # tools/core-deps.py checks that none of these is in the default graph.
+  { crate = "schemars", reason = "schema feature only: the documents' JSON Schemas (CO4)" },
+  { crate = "schemars_derive", reason = "schema feature only: schemars' derive (CO4)" },
+  { crate = "serde_derive_internals", reason = "schema feature only: schemars' derive (CO4)" },
+  { crate = "dyn-clone", reason = "schema feature only: part of schemars (CO4)" },
+  { crate = "ref-cast", reason = "schema feature only: part of schemars (CO4)" },
+  { crate = "ref-cast-impl", reason = "schema feature only: part of schemars (CO4)" },
 ]
 # stepq's default feature is its CLI (clap, anyhow). fitment-core reads STEP
 # through the library only; a sibling crate turning `cli` on would add both.

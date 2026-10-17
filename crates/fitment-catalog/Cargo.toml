@@ -18,6 +18,9 @@ include = ["src/**", "LICENSE"]
 # Seams for the tests: a counting and a failing file system, and
 # constructors that write rows of other versions.
 test-support = []
+# CA6 (docs/research/m6-api.md): fitment.catalog's JSON Schema, for the
+# server's OpenAPI test only; turns on fitment-core's.
+schema = ["dep:schemars", "fitment-core/schema"]
 
 [dependencies]
 fitment-core = { workspace = true }
@@ -25,6 +28,7 @@ rusqlite = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true, optional = true }
 
 [dev-dependencies]
 fitment-catalog = { path = ".", features = ["test-support"] }

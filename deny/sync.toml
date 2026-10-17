@@ -1,0 +1,30 @@
+# SV1 (docs/research/m6-api.md): fitment-server is the only async crate.
+# No async runtime, HTTP stack or executor may enter the graph of the
+# catalog or the CLI. tools/check-core.sh runs this with each as the root:
+#
+#   cargo deny --manifest-path crates/fitment-catalog/Cargo.toml \
+#     --config deny/sync.toml check bans
+#   cargo deny --manifest-path crates/fitment/Cargo.toml \
+#     --config deny/sync.toml check bans
+#
+# fitment-core has its own, stricter allowlist (deny/core.toml), which
+# names none of these.
+
+[graph]
+all-features = true
+exclude-dev = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+  { crate = "tokio", reason = "SV1: the CLI and the catalog are synchronous; only fitment-server is async" },
+  { crate = "mio", reason = "SV1: no event loop outside fitment-server" },
+  { crate = "hyper", reason = "SV1: no HTTP stack outside fitment-server" },
+  { crate = "axum", reason = "SV1: no HTTP stack outside fitment-server" },
+  { crate = "tower", reason = "SV1: no HTTP stack outside fitment-server" },
+  { crate = "async-std", reason = "SV1: no async runtime outside fitment-server" },
+  { crate = "smol", reason = "SV1: no async runtime outside fitment-server" },
+  { crate = "futures-executor", reason = "SV1: no executor outside fitment-server" },
+]

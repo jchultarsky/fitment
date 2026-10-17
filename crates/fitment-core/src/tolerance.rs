@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 /// The defaults are decision D9's starting values: 0.01 mm and 0.01°. Both
 /// values must be finite and greater than zero; a policy read from a file is
 /// checked the same way as one built in code.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawPolicy", into = "RawPolicy")]
 // Fields are private so that every policy, however it was made, has passed
@@ -87,6 +88,7 @@ impl Default for TolerancePolicy {
 }
 
 /// The policy as written in a file, before it is checked.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPolicy {

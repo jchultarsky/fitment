@@ -27,6 +27,7 @@ pub const MAX_STATED_BYTES: usize = 4096;
 /// The part-level properties a file states, as written (PR2): user-defined
 /// properties of the part's own product definition or its shape, and any
 /// `MATERIAL_DESIGNATION` of either.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -38,6 +39,7 @@ pub struct StatedProperties {
 }
 
 /// One stated value.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]

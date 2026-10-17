@@ -8,6 +8,7 @@ use crate::features::FeatureId;
 
 /// What a measure compares (EV2): a closed list whose names never change
 /// meaning.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -51,6 +52,7 @@ pub enum Quantity {
 }
 
 /// Which band a rule compared within (EV2).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -66,6 +68,7 @@ pub enum Band {
 }
 
 /// Which end of a stack.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -78,6 +81,7 @@ pub enum EndSide {
 
 /// Where in a requirement a measure or failure applies; whichever fields
 /// apply are set, and only they are written.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
 #[non_exhaustive]
 pub struct At {
@@ -121,6 +125,7 @@ impl At {
 }
 
 /// One comparison and its outcome (EV2).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Measure {
@@ -132,6 +137,7 @@ pub struct Measure {
 }
 
 /// A band's width (EV2): `band_mm`, or `band_rad` for an angle.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[non_exhaustive]
 pub enum BandWidth {
@@ -144,6 +150,7 @@ pub enum BandWidth {
 }
 
 /// What a measure found, against what.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 #[non_exhaustive]
@@ -273,6 +280,7 @@ fn finite(x: f64) -> f64 {
 
 /// Why a check failed (section 8.5): a closed list whose names never
 /// change meaning.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[non_exhaustive]
 pub enum FailureCode {
@@ -351,6 +359,7 @@ pub enum FailureCode {
 }
 
 /// One failure of a check (EV3).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Failure {
@@ -374,6 +383,7 @@ impl Failure {
 }
 
 /// A warning a passing check carries (VD12, VD13): reserved in M4.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -383,6 +393,7 @@ pub enum WarningCode {
 }
 
 /// One warning, with the measure behind it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Warning {
@@ -394,6 +405,7 @@ pub struct Warning {
 
 /// What one check records (EV1): the candidate features it judged, every
 /// comparison and every failure.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
 #[non_exhaustive]
 pub struct Evidence {

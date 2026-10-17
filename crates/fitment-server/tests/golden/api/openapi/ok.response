@@ -1,0 +1,7 @@
+200
+cache-control: no-store
+content-type: application/json
+repr-digest: sha-256=:ZiqQ/wA5TLCd7I8n8x8s/AAga0G+KCkJTmNevyNQ7Jk=:
+x-request-id: r_00000000000000000000000001
+
+<the bytes of crates/fitment-server/openapi.json>

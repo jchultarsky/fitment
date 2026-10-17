@@ -10,6 +10,7 @@ use crate::gate::RefusalCode;
 use crate::matching::{Evidence, FailureCode};
 
 /// Identifies one requirement of a socket.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 #[allow(clippy::exhaustive_structs)] // A newtype; its field is private.
@@ -47,6 +48,7 @@ impl From<String> for RequirementId {
 
 /// The outcome of checking one requirement against a placed candidate,
 /// with its evidence (`docs/research/m4-match.md`, EV1).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -84,6 +86,7 @@ impl Check {
 }
 
 /// What a verdict says about a candidate.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 // The three kinds are fixed by decision D1.
@@ -99,6 +102,7 @@ pub enum VerdictKind {
 }
 
 /// Why a candidate was rejected.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -173,6 +177,7 @@ pub enum RejectReason {
 /// (`docs/research/m4-match.md`, VD1). It serializes for reports but
 /// cannot be deserialized, so a stored or edited file can never become a
 /// `Match`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 // Fields are private so that every verdict has gone through `decide`, or
 // is a refused candidate's `Reject`.

@@ -8,6 +8,7 @@ use crate::geom::Dir3;
 
 /// One infinite plane of the solid: coplanar faces of one shell with one
 /// outward normal.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -34,6 +35,7 @@ pub struct Plane {
 }
 
 /// One face of a plane.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]

@@ -8,6 +8,7 @@ use super::FeatureId;
 use crate::geom::{Dir3, Point3};
 
 /// An axis line: a point on it and its unit direction.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -19,6 +20,7 @@ pub struct Axis {
 }
 
 /// Which side of a cylinder or cone the material lies on.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 // A wall has material on one side; there is no third.
@@ -42,6 +44,7 @@ impl Sense {
 }
 
 /// Edge-connected faces on one cylinder with one sense.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -83,6 +86,7 @@ pub struct Cylinder {
 
 /// Whether a cylinder's faces wrap all the way around its axis (rule F,
 /// section 8.3).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
@@ -124,6 +128,7 @@ impl CylinderClass {
 }
 
 /// One end of a cylinder along its axis direction.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 // An axis has two ends.
@@ -136,6 +141,7 @@ pub enum End {
 }
 
 /// Why a cylinder is [`CylinderClass::Undecided`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]

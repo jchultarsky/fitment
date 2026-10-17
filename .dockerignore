@@ -1,0 +1,16 @@
+# The image's build context (deploy/Containerfile): the workspace's sources
+# and lock only.
+target/
+corpus/
+fixtures/
+step/
+data/
+fuzz/
+.git/
+.github/
+.claude/
+docs/
+**/__pycache__/
+.venv/
+.env
+.env.*

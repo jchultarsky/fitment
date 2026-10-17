@@ -1,0 +1,23 @@
+503
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:Da5SJSKseoNFbyD/JoizeD91snUhxTPWfuDyXuoz6G8=:
+x-request-id: r_00000000000000000000000001
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/catalog_unavailable",
+  "title": "The catalog cannot be opened",
+  "status": 503,
+  "detail": "the configured catalog directory is not a catalog",
+  "code": "catalog_unavailable",
+  "class": "error",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "reason": "not_a_catalog"
+  },
+  "request_id": "r_00000000000000000000000001"
+}

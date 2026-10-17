@@ -1,0 +1,4 @@
+GET /v1/info
+content-type: application/json
+
+{}

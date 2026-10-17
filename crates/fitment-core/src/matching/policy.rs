@@ -7,6 +7,7 @@ use serde::Serialize;
 use crate::tolerance::TolerancePolicy;
 
 /// D6: how a clearance span's diameter is bounded.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -19,6 +20,7 @@ pub enum Clearance {
 }
 
 /// D7: how a grip binds. M4 offers `Hard` only (M4-8); M7 adds a warning.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -29,6 +31,7 @@ pub enum Grip {
 }
 
 /// The policy a match is judged under.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
 #[non_exhaustive]
 pub struct MatchPolicy {
@@ -74,6 +77,7 @@ impl MatchPolicy {
 }
 
 /// What a run asks beyond the policy.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[non_exhaustive]
 pub struct MatchOptions {
