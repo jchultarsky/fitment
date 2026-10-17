@@ -1,6 +1,6 @@
 //! The database (`docs/research/m5-catalog.md`, section 6.2, DB1, DB5):
-//! its pragmas, its tables and its version. PR 5 added `properties` to
-//! schema 1, which stays unpublished until M5's last PR.
+//! its pragmas, its tables and its version: schema 1, as M5 shipped it in
+//! 0.2.0.
 
 use rusqlite::{Connection, OptionalExtension as _};
 

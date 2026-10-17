@@ -110,6 +110,9 @@ crates/
   fitment-core/   lib: the matcher and every shared type (verdicts, fit
                   status, tolerances; later features, sockets, evidence)
     clippy.toml   source-level bans for this crate only, tests included
+  fitment-catalog/ lib: the catalog (M5): a SQLite database and a store of
+                  files by content; internal, the CLI its one user
+    clippy.toml   source-level bans for this crate, as the core's
   fitment/        bin `fitment`: arguments, files, output, exit codes
 deny.toml         workspace policy: licences, sources, D1 crate bans
 deny/core.toml    the exact crates fitment-core may depend on
@@ -117,8 +120,7 @@ tools/            check-core.sh and core-deps.py: fitment-core's checks
 docs/             PLAN.md, the Vectera audit, decision research, the spike
 ```
 
-Coming later: `fitment-catalog` (M5, synchronous, SQLite), `fitment-server`
-(M6, the only crate with an async runtime), `fitment-corpus` (M6, test-only,
+Coming later: `fitment-server` (M6, the only crate with an async runtime), `fitment-corpus` (M6, test-only,
 never published) and `fitment-fit` (M7, drives the Open CASCADE helper).
 The full design is in
 [docs/research/workspace-layout.md](docs/research/workspace-layout.md).

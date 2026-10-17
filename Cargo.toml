@@ -14,7 +14,8 @@ license = "MIT"
 repository = "https://github.com/jchultarsky/fitment"
 homepage = "https://github.com/jchultarsky/fitment"
 # Published from M4 on (docs/research/m4-match.md, section 22.1): `fitment-core`
-# first, then `fitment`.
+# first, then `fitment-catalog` (from 0.2.0, internal and unstable), then
+# `fitment`.
 publish = true
 
 # One version per dependency for the whole workspace, with the reason for any
