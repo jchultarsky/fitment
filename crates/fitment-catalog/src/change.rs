@@ -118,7 +118,8 @@ pub struct Pruned {
     pub revision: u32,
     /// Its content.
     pub sha256: Sha256Hex,
-    /// The bytes released, if its content was released with it.
+    /// The bytes released, if its content was released with it; for a
+    /// content several pruned revisions name, with the first only.
     pub released: Option<u64>,
 }
 
@@ -225,8 +226,14 @@ impl Catalog {
         if crate::ingest::inside(self.root(), file) {
             return Err(Error::InsideCatalog(file.to_owned()));
         }
-        // The id is the entry's; the file is read and gated first, outside
-        // the lock (DB3), and a refused one changes nothing (CR4).
+        // ID9 first: a reference that names no entry it may replace is
+        // refused before the file is read; the transaction checks again.
+        let named = match live_entry(&self.conn, reference)? {
+            Ok(named) => named,
+            Err(unnamed) => return Ok(Err(NotReplaced::Unnamed(unnamed))),
+        };
+        // The file is read and gated outside the lock (DB3), and a refused
+        // one changes nothing (CR4).
         let placeholder = Id::parse("x").map_err(|_| Error::Corrupt("an id"))?;
         let mut prepared = match self.read_file(file, Some(&placeholder)) {
             Ok(p) => p,
@@ -235,6 +242,14 @@ impl Catalog {
                 return Ok(Err(NotReplaced::File(failed)));
             }
         };
+        if prepared.sha256 == named.sha256 {
+            // CR4: the entry's own bytes, whatever the gate made of them.
+            return Ok(Ok(Replaced::Unchanged {
+                id: named.id,
+                revision: named.revision,
+                sha256: named.sha256,
+            }));
+        }
         if prepared.status == Status::Refused {
             let mut failed = Ingested::failed(
                 file,
@@ -253,10 +268,7 @@ impl Catalog {
         }
         // A first look, outside the lock, so a replace surely refused puts
         // no blob; the transaction decides again.
-        let likely = matches!(
-            live_entry(&self.conn, reference)?,
-            Ok(named) if named.sha256 != prepared.sha256
-        ) && !self
+        let likely = !self
             .conn
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM live WHERE sha256 = ?1)",
@@ -277,12 +289,12 @@ impl Catalog {
         // The old content stays held by its kept revision: nothing is
         // released. A refusal after the put leaves the new file unnamed,
         // and the inline gc unlinks it (CR4: nothing changed).
-        let outcome = self.replace_in(reference, &prepared)?;
-        if likely && !matches!(outcome, Ok(Replaced::Replaced { .. })) {
+        let outcome = self.replace_in(reference, &prepared);
+        if likely && !matches!(outcome, Ok(Ok(Replaced::Replaced { .. }))) {
             let size = u64::try_from(prepared.bytes.len()).unwrap_or(u64::MAX);
             let _ = self.unlink(&[(prepared.sha256.clone(), size)]);
         }
-        Ok(outcome)
+        outcome
     }
 
     fn replace_in(
@@ -317,6 +329,7 @@ impl Catalog {
             )
             .optional()?;
         if let Some(of) = elsewhere {
+            let of = crate::snapshot::stored_id(of)?;
             return Ok(Err(NotReplaced::Duplicate { of }));
         }
         // ST6, then ST3's directory sync before the commit.
@@ -453,6 +466,9 @@ impl Catalog {
         if kept.iter().any(|k| Sha256Hex::parse(&k.4).is_err()) {
             return Err(Error::Corrupt("a revision's content key"));
         }
+        if kept.iter().any(|k| Id::parse(&k.2).is_err()) {
+            return Err(Error::Corrupt("an id"));
+        }
         let g = schema::next_generation(&tx)?;
         let mut contents = BTreeSet::new();
         for (n, (key, entry, _, _, sha)) in (0_i64..).zip(&kept) {
@@ -466,9 +482,16 @@ impl Catalog {
         let released = settle(&tx, &contents)?;
         commit_at_points(tx, self.fs.as_ref(), &self.layout)?;
         let mut pruned = Vec::new();
+        let mut counted = BTreeSet::new();
         for (_, _, id, revision, sha) in kept {
             let sha256 = Sha256Hex::parse(&sha).map_err(|_| Error::Corrupt("a content key"))?;
-            let freed = released.iter().find(|(s, _)| *s == sha256).map(|(_, b)| *b);
+            let id = crate::snapshot::stored_id(id)?;
+            // A content two pruned revisions name is released, and counted,
+            // once: with the first.
+            let freed = released
+                .iter()
+                .find(|(s, _)| *s == sha256 && counted.insert(s.clone()))
+                .map(|(_, b)| *b);
             pruned.push(Pruned {
                 id,
                 revision,

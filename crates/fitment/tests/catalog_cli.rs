@@ -390,3 +390,280 @@ fn a_catalog_named_like_a_uri_is_a_directory() {
     assert!(!dir.join("cat/catalog.db").exists());
     assert_eq!(catalog(&dir, &["list", "-C", "file:cat"]).0, 0);
 }
+
+/// BRKT at r1 (the bracket) and `a` (p01), in `dir/parts`; the files in
+/// `dir/in`.
+fn brkt(dir: &Path) -> PathBuf {
+    let inputs = dir.join("in");
+    fs::create_dir_all(&inputs).unwrap();
+    for (from, to) in [
+        ("candidates/m_bracket.stp", "m_bracket.stp"),
+        ("candidates/m_bracket_thick.stp", "m_bracket_thick.stp"),
+        ("data/p01_through.stp", "a.stp"),
+    ] {
+        fs::copy(core(from), inputs.join(to)).unwrap();
+    }
+    fs::write(inputs.join("junk.stp"), "not STEP").unwrap();
+    catalog(dir, &["init", "-C", "parts"]);
+    catalog(
+        dir,
+        &["ingest", "-C", "parts", "--id", "BRKT", "in/m_bracket.stp"],
+    );
+    catalog(dir, &["ingest", "-C", "parts", "in/a.stp"]);
+    inputs
+}
+
+fn sha256(path: &Path) -> String {
+    fitment_core::sha256_hex(&fs::read(path).unwrap())
+}
+
+/// Section 7.5 (CR3, CR4): replace's exits; the entry is unchanged by
+/// every refusal.
+#[test]
+fn replace_refuses_without_changing_the_entry() {
+    let dir = scratch("replace");
+    brkt(&dir);
+    let replace = |file: &str| catalog(&dir, &["replace", "-C", "parts", "BRKT", file]);
+    let (code, out, _) = replace("in/m_bracket_thick.stp");
+    assert_eq!(code, 0);
+    assert!(out.starts_with("replaced     BRKT  r2"), "{out}");
+    assert_eq!(replace("in/junk.stp").0, 3);
+    assert_eq!(replace("in/a.stp").0, 2);
+    assert_eq!(replace("parts/catalog.db").0, 2);
+    let (code, out, _) = replace("in/m_bracket_thick.stp");
+    assert_eq!(code, 0);
+    assert!(out.starts_with("unchanged"), "{out}");
+    let (_, table, _) = catalog(&dir, &["get", "-C", "parts", "BRKT"]);
+    assert!(table.contains("revision  r2 (current)"), "{table}");
+}
+
+/// CT16, `catalog_cli.rs::replace_keeps_the_old_revisions_bytes` (review
+/// F4(b)): r1's bytes stay readable after a replace, until `prune
+/// --revisions`; its history stays after.
+#[test]
+fn replace_keeps_the_old_revisions_bytes() {
+    let dir = scratch("kept");
+    let inputs = brkt(&dir);
+    catalog(
+        &dir,
+        &["replace", "-C", "parts", "BRKT", "in/m_bracket_thick.stp"],
+    );
+    let (code, _, err) = catalog(
+        &dir,
+        &[
+            "get", "-C", "parts", "BRKT@r1", "--format", "step", "-o", "old.stp",
+        ],
+    );
+    assert_eq!(code, 0);
+    let old = sha256(&inputs.join("m_bracket.stp"));
+    assert!(err.contains(&format!("BRKT r1 sha256:{old}")), "{err}");
+    assert_eq!(sha256(&dir.join("old.stp")), old);
+    assert_eq!(
+        catalog(
+            &dir,
+            &["get", "-C", "parts", "BRKT@r1", "--format", "features"]
+        )
+        .0,
+        2
+    );
+    let (_, list, err) = catalog(&dir, &["list", "-C", "parts"]);
+    assert!(list.contains("BRKT") && !list.contains(&old[..8]), "{list}");
+    assert!(err.contains("1 old revisions kept"), "{err}");
+    assert_eq!(catalog(&dir, &["verify", "-C", "parts"]).0, 0);
+    assert_eq!(catalog(&dir, &["prune", "-C", "parts"]).0, 2);
+    let (code, out, _) = catalog(&dir, &["prune", "-C", "parts", "--revisions"]);
+    assert_eq!(code, 0);
+    assert!(out.starts_with("pruned       BRKT  r1"), "{out}");
+    assert_eq!(
+        catalog(
+            &dir,
+            &[
+                "get", "-C", "parts", "BRKT@r1", "--format", "step", "-o", "x.stp"
+            ]
+        )
+        .0,
+        2
+    );
+    let (code, table, _) = catalog(&dir, &["get", "-C", "parts", "BRKT@r1"]);
+    assert_eq!(code, 0);
+    assert!(table.contains("prune"), "{table}");
+    assert_eq!(
+        catalog(&dir, &["prune", "-C", "parts", "--revisions"]).1,
+        ""
+    );
+    assert_eq!(catalog(&dir, &["verify", "-C", "parts", "--deep"]).0, 0);
+}
+
+/// CT16, `catalog_cli.rs::strict_revision_references`, its second half
+/// (review F4(b)): after a replace, a command that changes an entry takes
+/// only its current revision, and changes nothing otherwise.
+#[test]
+fn changes_take_only_the_current_revision() {
+    let dir = scratch("strict");
+    brkt(&dir);
+    catalog(
+        &dir,
+        &["replace", "-C", "parts", "BRKT", "in/m_bracket_thick.stp"],
+    );
+    let (code, _, err) = catalog(
+        &dir,
+        &["replace", "-C", "parts", "BRKT@r1", "in/m_bracket.stp"],
+    );
+    assert_eq!(code, 2);
+    assert!(err.contains("BRKT is at r2, not r1"), "{err}");
+    assert_eq!(catalog(&dir, &["delete", "-C", "parts", "BRKT@r1"]).0, 2);
+    assert_eq!(
+        catalog(&dir, &["delete", "-C", "parts", "sha256:1b77ea9724e6"]).0,
+        2
+    );
+    assert_eq!(
+        catalog(&dir, &["delete", "-C", "parts", "a", "nosuch"]).0,
+        2
+    );
+    assert!(
+        catalog(&dir, &["list", "-C", "parts"]).1.contains("\na "),
+        "a is still listed"
+    );
+    let (code, out, _) = catalog(&dir, &["delete", "-C", "parts", "BRKT@r2"]);
+    assert_eq!(code, 0);
+    assert!(out.starts_with("deleted      BRKT  r2"), "{out}");
+    // Both revisions' files are gone; the history stays.
+    let blobs = dir.join("parts/blobs/sha256");
+    for sha in [
+        sha256(&dir.join("in/m_bracket.stp")),
+        sha256(&dir.join("in/m_bracket_thick.stp")),
+    ] {
+        assert!(!blobs.join(&sha[..2]).join(&sha).exists());
+    }
+    let (_, table, _) = catalog(&dir, &["get", "-C", "parts", "BRKT"]);
+    assert!(table.contains("delete"), "{table}");
+}
+
+/// Sections 7.8 and 7.9: verify reports a damaged file (exit 3); gc
+/// removes an orphan.
+#[test]
+fn verify_reports_and_gc_removes() {
+    let dir = scratch("verify");
+    let inputs = brkt(&dir);
+    let sha = sha256(&inputs.join("m_bracket.stp"));
+    let blob = dir.join("parts/blobs/sha256").join(&sha[..2]).join(&sha);
+    writable(&dir.join("parts/blobs"));
+    let original = fs::read(&blob).unwrap();
+    fs::write(&blob, b"other").unwrap();
+    let (code, out, err) = catalog(&dir, &["verify", "-C", "parts"]);
+    assert_eq!(code, 3);
+    assert!(out.starts_with("damaged") && out.contains("BRKT"), "{out}");
+    assert!(err.contains("1 problem"), "{err}");
+    fs::write(&blob, &original).unwrap();
+    let orphan = sha256(&inputs.join("m_bracket_thick.stp"));
+    let path = dir
+        .join("parts/blobs/sha256")
+        .join(&orphan[..2])
+        .join(&orphan);
+    fs::copy(inputs.join("m_bracket_thick.stp"), &path).unwrap();
+    // Abandoned long ago: a fresh one may be an ingest in flight.
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(86_400))
+        .unwrap();
+    assert_eq!(catalog(&dir, &["verify", "-C", "parts"]).0, 3);
+    let (code, _, err) = catalog(&dir, &["gc", "-C", "parts"]);
+    assert_eq!(code, 0);
+    assert!(err.contains("1 orphan files removed"), "{err}");
+    assert!(!path.exists());
+    assert_eq!(catalog(&dir, &["verify", "-C", "parts"]).0, 0);
+}
+
+/// The PR 3b review: replace checks its reference before the file (ID9),
+/// takes a quarantined entry's own bytes as unchanged (CR4), and writes a
+/// `fitment.catalog` document with `--format json` (CL3).
+#[test]
+fn replace_checks_its_reference_first() {
+    let dir = scratch("replace-ref");
+    brkt(&dir);
+    catalog(
+        &dir,
+        &["replace", "-C", "parts", "BRKT", "in/m_bracket_thick.stp"],
+    );
+    let (code, _, err) = catalog(&dir, &["replace", "-C", "parts", "BRKT@r1", "in/junk.stp"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("BRKT is at r2, not r1"), "{err}");
+    assert_eq!(
+        catalog(&dir, &["replace", "-C", "parts", "nosuch", "in/junk.stp"]).0,
+        2
+    );
+    catalog(&dir, &["ingest", "-C", "parts", "in/junk.stp"]);
+    let (code, out, _) = catalog(&dir, &["replace", "-C", "parts", "junk", "in/junk.stp"]);
+    assert_eq!(code, 0);
+    assert!(out.starts_with("unchanged"), "{out}");
+    let (code, json, err) = catalog(
+        &dir,
+        &[
+            "replace",
+            "-C",
+            "parts",
+            "BRKT",
+            "in/m_bracket.stp",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let doc: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(doc["changes"][0]["result"], "replaced");
+    assert_eq!(doc["changes"][0]["revision"], 3);
+    assert_eq!(doc["entries"][0]["revision"], 3);
+    assert!(err.contains("BRKT replaced: r2 is now r3"), "{err}");
+}
+
+/// The PR 3b review: a content two pruned revisions name is counted once,
+/// and the lines add up to the total.
+#[test]
+fn prune_counts_each_content_once() {
+    let dir = scratch("prune-count");
+    brkt(&dir);
+    for next in ["in/m_bracket_thick.stp", "in/m_bracket.stp", "in/a.stp"] {
+        let _ = catalog(&dir, &["replace", "-C", "parts", "BRKT", next]);
+    }
+    catalog(&dir, &["delete", "-C", "parts", "a"]);
+    catalog(&dir, &["replace", "-C", "parts", "BRKT", "in/a.stp"]);
+    let (code, out, err) = catalog(&dir, &["prune", "-C", "parts", "--revisions"]);
+    assert_eq!(code, 0);
+    let lines: u64 = out
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(4)?.parse::<u64>().ok())
+        .sum();
+    assert!(
+        err.contains(&format!(", {lines} bytes released")),
+        "{out}{err}"
+    );
+}
+
+/// PH6 and VF1 (the PR 3b review): a hand-edited id is a damaged row to
+/// replace and prune, never printed raw, and verify reports it.
+#[test]
+fn a_hand_edited_id_is_damage_everywhere() {
+    let dir = scratch("edited-id");
+    brkt(&dir);
+    let catalog_dir = dir.join("parts");
+    let raw =
+        fitment_catalog::Catalog::open(&catalog_dir, fitment_catalog::Options::default()).unwrap();
+    raw.connection()
+        .execute(
+            "UPDATE entry SET id = 'a' || char(27) || '[31m' WHERE id = 'a'",
+            [],
+        )
+        .unwrap();
+    drop(raw);
+    let (code, out, err) = catalog(&dir, &["replace", "-C", "parts", "BRKT", "in/a.stp"]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(!err.contains('\u{1b}') && !out.contains('\u{1b}'));
+    let (code, out, _) = catalog(&dir, &["verify", "-C", "parts"]);
+    assert_eq!(code, 3);
+    assert!(
+        out.starts_with("integrity") && !out.contains('\u{1b}'),
+        "{out}"
+    );
+}
