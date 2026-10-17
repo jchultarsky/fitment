@@ -920,6 +920,49 @@ for rule in ("DB2", "DB4", "ID6", "ID9", "CC1", "CC2"):
     RULES[rule] = {"deferred": "M5 PR 3" if rule in ("DB2", "ID6", "ID9", "CC1", "CC2") else "M5 PR 4"}
 for rule in ("ST8", "GT8", "GT9", "PH5", "SZ2", "SZ3", "CL5", "CL6", "CL10"):
     RULES[rule] = {"deferred": "M5 PR 7"}
+# PR 3 builds replace, delete, prune, gc and verify, and the races PR 2 could not show.
+M5_PR3 = {
+    "CR1": [f"{T}/change.rs::delete_is_all_or_nothing_and_ids_continue"],
+    "CR2": [f"{T}/change.rs::delete_is_all_or_nothing_and_ids_continue",
+            f"{C}::changes_take_only_the_current_revision"],
+    "CR3": [f"{T}/change.rs::replace_gives_a_new_revision_and_keeps_the_old_bytes",
+            f"{C}::replace_keeps_the_old_revisions_bytes"],
+    "CR4": [f"{T}/change.rs::refusals_leave_nothing_behind", f"{C}::replace_refuses_without_changing_the_entry"],
+    "CR5": [f"{T}/change.rs::a_quarantined_entry_replaced_is_indexed"],
+    "CR6": [f"{T}/change.rs::delete_is_all_or_nothing_and_ids_continue"],
+    "CR11": [f"{T}/change.rs::prune_releases_kept_revisions_once", f"{T}/fault.rs::prune_is_all_or_nothing",
+             f"{C}::replace_keeps_the_old_revisions_bytes"],
+    "IN1": [f"{T}/verify.rs::plain_verify_finds_damage_in_rows_and_files"],
+    "IN2": [f"{T}/verify.rs::plain_verify_finds_damage_in_rows_and_files"],
+    "IN3": [f"{T}/change.rs::prune_releases_kept_revisions_once"],
+    "IN4": [f"{S}/schema.rs::the_partial_indexes_hold_identity",
+            f"{T}/change.rs::delete_is_all_or_nothing_and_ids_continue"],
+    "IN5": [f"{T}/verify.rs::plain_verify_checks_preimages_digests_and_postings"],
+    "IN6": [f"{T}/fault.rs::an_ingest_is_all_or_nothing_under_any_fault"],
+    "IN7": [f"{T}/verify.rs::plain_verify_recomputes_postings"],
+    "IN8": [f"{T}/verify.rs::a_wide_version_is_reported_not_fatal", f"{T}/change.rs::refusals_leave_nothing_behind"],
+    "IN9": [f"{T}/verify.rs::stray_postings_are_reported"],
+    "ST5": [f"{T}/change.rs::gc_removes_only_what_no_row_names",
+            f"{T}/race.rs::an_ingest_survives_a_gc_of_the_orphan_it_reuses"],
+    "VF1": [f"{T}/verify.rs::plain_verify_checks_preimages_digests_and_postings",
+            f"{T}/verify.rs::plain_verify_recomputes_postings"],
+    "VF2": [f"{T}/verify.rs::only_deep_finds_a_consistent_forgery"],
+    "VF3": [f"{C}::verify_reports_and_gc_removes"],
+    "VF4": [f"{C}::verify_reports_and_gc_removes"],
+    "CC1": [f"{T}/race.rs::eight_writers_keep_one_live_entry_per_content",
+            f"{T}/race.rs::verify_raises_no_false_alarm_during_a_delete"],
+    "CC2": [f"{T}/race.rs::eight_writers_keep_one_live_entry_per_content"],
+    "CC4": [f"{T}/race.rs::verify_raises_no_false_alarm_during_a_delete"],
+    "DB2": [f"{T}/race.rs::eight_writers_keep_one_live_entry_per_content"],
+    "ID6": [f"{T}/change.rs::delete_is_all_or_nothing_and_ids_continue"],
+    "ID9": [f"{C}::references_are_strict", f"{C}::changes_take_only_the_current_revision"],
+}
+for rule, tests in M5_PR3.items():
+    RULES[rule] = {"tests": tests}
+RULES["CR7"] = {"deferred": "M5 PR 4"}
+RULES["CC3"] = {"deferred": "M5 PR 4"}
+RULES["CR10"] = {"deferred": "M5 PR 6"}
+RULES["VF5"] = {"deferred": "M5 PR 7"}
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with

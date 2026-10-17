@@ -285,6 +285,21 @@ fn held(conn: &Connection, found: &mut Found) -> Result<(), Error> {
     for text in rows::<String>(conn, untokened)? {
         found.add(Kind::Mismatch, &text, "postings without their tokens row");
     }
+    // ID1 and the revision's range: what every other command refuses as a
+    // damaged row, verify reports.
+    for id in rows::<String>(conn, "SELECT id FROM entry ORDER BY id")? {
+        if crate::ids::Id::parse(&id).is_err() {
+            found.add(
+                Kind::Integrity,
+                "entry",
+                format!("an id that is not one: {id:?}"),
+            );
+        }
+    }
+    let wide = "SELECT id_fold FROM revision WHERE revision > 4294967295 ORDER BY id_fold";
+    for fold in rows::<String>(conn, wide)? {
+        found.add(Kind::Integrity, &fold, "a revision out of range");
+    }
     let shapes = "SELECT e.id FROM entry e WHERE
         (e.deleted_generation IS NULL) != EXISTS (SELECT 1 FROM revision r
             WHERE r.entry = e.key AND r.superseded_generation IS NULL) ORDER BY e.id";

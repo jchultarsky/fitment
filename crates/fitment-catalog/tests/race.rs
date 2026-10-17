@@ -101,3 +101,44 @@ fn an_ingest_survives_a_gc_of_the_orphan_it_reuses() {
     drop(catalog);
     assert_eq!(invariants(&root), Vec::<String>::new());
 }
+
+/// CC4: a delete that commits and unlinks while verify reads raises no
+/// false alarm.
+#[test]
+fn verify_raises_no_false_alarm_during_a_delete() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use fitment_catalog::fs::{Call, CountingFs};
+
+    let dir = scratch("cc4");
+    let root = dir.join("cat");
+    Catalog::init(&root, Options::default()).unwrap();
+    let source = common::copy("candidates/m_bracket.stp", &dir, "m_bracket.stp");
+    Catalog::open(&root, Options::default())
+        .unwrap()
+        .ingest(std::slice::from_ref(&source), None)
+        .unwrap();
+    let sha = fitment_catalog::Sha256Hex::of(&fs::read(&source).unwrap());
+    let blob = root
+        .join("blobs/sha256")
+        .join(sha.fan_out())
+        .join(sha.as_str());
+    let once = AtomicBool::new(false);
+    let other = root.clone();
+    let seam = Arc::new(CountingFs::with_hook(move |call| {
+        if *call == Call::Metadata(blob.clone()) && !once.swap(true, Ordering::SeqCst) {
+            let mut writer = Catalog::open(&other, Options::default()).unwrap();
+            let id = Reference::parse("m_bracket").unwrap();
+            writer.delete(&[id]).unwrap().unwrap();
+        }
+    }));
+    let mut catalog =
+        Catalog::open_with(&root, Options::default(), Box::new(common::Shared(seam))).unwrap();
+    assert_eq!(catalog.verify(false, false).unwrap(), Vec::new());
+    let gone = root
+        .join("blobs/sha256")
+        .join(sha.fan_out())
+        .join(sha.as_str());
+    assert!(!gone.exists(), "the delete ran inside the verify");
+}
