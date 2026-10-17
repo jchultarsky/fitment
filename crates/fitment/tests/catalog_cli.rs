@@ -687,6 +687,10 @@ fn stated_bracket(dir: &Path) -> PathBuf {
 #90021=PROPERTY_DEFINITION_REPRESENTATION(#90020,#90022);
 #90022=REPRESENTATION('',(#90023),#2);
 #90023=MEASURE_REPRESENTATION_ITEM('Density',POSITIVE_RATIO_MEASURE(1000.0),#9);
+#90030=PROPERTY_DEFINITION('Fake','user defined attribute',#5);
+#90031=PROPERTY_DEFINITION_REPRESENTATION(#90030,#90032);
+#90032=REPRESENTATION('',(#90033),#2);
+#90033=DESCRIPTIVE_REPRESENTATION_ITEM('Fake','FALSE''  -> material: unassigned');
 ";
     let path = dir.join("stated.stp");
     fs::write(&path, format!("{}{extra}{}", &text[..end], &text[end..])).unwrap();
@@ -708,9 +712,10 @@ fn get_shows_the_stated_properties() {
     for line in [
         "versions  extractor 6, signature 2, properties 1",
         "properties\n",
-        "    #90000 MaterialMissingAssignments = TRUE  -> material: unassigned\n",
-        "    #90010 evil\\u{202e}name = M6x20\n",
-        "    #90020 Density = 1000.0  POSITIVE_RATIO_MEASURE  unit #9\n",
+        "    #90000 'MaterialMissingAssignments' = 'TRUE'  -> material: unassigned\n",
+        "    #90010 'evil\\u{202e}name' = 'M6x20'\n",
+        "    #90020 'Density' = '1000.0'  POSITIVE_RATIO_MEASURE  unit #9\n",
+        "    #90030 'Fake' = 'FALSE\\'  -> material: unassigned'\n",
     ] {
         assert!(table.contains(line), "{line:?} in\n{table}");
     }
@@ -720,7 +725,8 @@ fn get_shows_the_stated_properties() {
     let entry = &doc["entries"][0];
     assert_eq!(entry["versions"]["properties_version"], 1);
     let stated = entry["properties"]["stated"].as_array().unwrap();
-    assert_eq!(stated.len(), 3);
+    assert_eq!(stated.len(), 4);
+    assert_eq!(stated[3]["mapped"], Value::Null);
     assert_eq!(stated[0]["mapped"]["field"], "material");
     assert_eq!(stated[0]["mapped"]["meaning"], "unassigned");
     assert_eq!(stated[1]["name"], "evil\u{202e}name");
@@ -741,6 +747,42 @@ fn get_shows_the_stated_properties() {
         "{table}"
     );
     assert!(!table.contains("#90000"), "{table}");
+}
+
+/// QR4's rule for a damaged properties row (the PR 5 reviews): `get` still
+/// shows the entry and its history, says the row is damaged, and exits 1.
+#[test]
+fn a_damaged_properties_row_is_named_not_shown() {
+    let dir = scratch("damaged-properties");
+    catalog(&dir, &["init", "-C", "parts"]);
+    stated_bracket(&dir);
+    catalog(&dir, &["ingest", "-C", "parts", "stated.stp"]);
+    let edited =
+        fitment_catalog::Catalog::open(&dir.join("parts"), fitment_catalog::Options::default())
+            .unwrap();
+    edited
+        .connection()
+        .execute_batch(
+            "DROP TRIGGER properties_immutable;
+             UPDATE properties SET stated = CAST(replace(CAST(stated AS TEXT), 'TRUE', 'FALSE') AS BLOB);",
+        )
+        .unwrap();
+    drop(edited);
+    let (code, table, err) = catalog(&dir, &["get", "-C", "parts", "stated"]);
+    assert_eq!(code, 1);
+    assert!(
+        table.contains("properties  damaged: not shown\n"),
+        "{table}"
+    );
+    assert!(table.contains("history\n    r1"), "{table}");
+    assert!(
+        err.contains("stated: its stored properties are damaged"),
+        "{err}"
+    );
+    let (code, json, _) = catalog(&dir, &["get", "-C", "parts", "stated", "--format", "json"]);
+    assert_eq!(code, 1);
+    let doc: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(doc["entries"][0]["properties"], Value::Null);
 }
 
 /// Deletes every properties row of the catalog in `dir/parts`.

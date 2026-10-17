@@ -240,3 +240,45 @@ fn only_deep_finds_a_rewritten_capture() {
         "{deep:?}"
     );
 }
+
+/// PR3 (the PR 5 reviews): a properties row beside a refused document, its
+/// hash its own, is reported by plain `verify` and never shown by `get`.
+#[test]
+fn properties_of_a_refused_document_are_damage() {
+    let (mut catalog, sha) = stated("refused");
+    let conn = conn(&catalog);
+    let junk: String = conn
+        .query_row("SELECT sha256 FROM live WHERE id = 'junk'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let junk = Sha256Hex::parse(&junk).unwrap();
+    let (truncated, stated): (bool, Vec<u8>) = conn
+        .query_row(
+            "SELECT truncated, stated FROM properties WHERE sha256 = ?1",
+            [sha.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let hash = preimage::properties(&junk, PROPERTIES_VERSION, truncated, &stated);
+    conn.execute(
+        "INSERT INTO properties VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            junk.as_str(),
+            PROPERTIES_VERSION,
+            truncated,
+            stated,
+            hash.as_str()
+        ],
+    )
+    .unwrap();
+    drop(conn);
+    let problems = catalog.verify(false, false).unwrap();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.kind == ProblemKind::Mismatch && p.what == junk.as_str()),
+        "{problems:?}"
+    );
+    assert_eq!(status(&mut catalog, "junk"), Some(EntryStatus::Quarantined));
+}

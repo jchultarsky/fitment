@@ -425,10 +425,9 @@ fn postings_of(tokens: &IndexTokens) -> BTreeSet<(i64, i64, i64, u64)> {
         .collect()
 }
 
-/// IN7, IX9, review F7: each tokens row's preimage hash and read; the
-/// postings of a current one recomputed and compared, bit for bit.
 /// PR3 and GT2: each properties row's preimage hash; a current one's
-/// read-back, its bounds and its truncation column.
+/// read-back, its bounds and its truncation column; and no row beside a
+/// refused document or none.
 fn properties_rows(conn: &Connection, found: &mut Found) -> Result<(), Error> {
     let mut stmt = conn.prepare(
         "SELECT sha256, properties_version, truncated, stated, stated_sha256 FROM properties
@@ -439,6 +438,24 @@ fn properties_rows(conn: &Connection, found: &mut Found) -> Result<(), Error> {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })?
         .collect::<Result<_, _>>()?;
+    // PR3: properties belong to an accepted document; a row beside a
+    // refused one, or beside no document at all, is no capture of ours.
+    let orphaned = "SELECT DISTINCT p.sha256 FROM properties p
+        WHERE NOT EXISTS (SELECT 1 FROM features f WHERE f.sha256 = p.sha256)
+           OR EXISTS (SELECT 1 FROM features f WHERE f.sha256 = p.sha256
+                      AND f.extractor_version = ?1 AND f.status != 'accepted')
+        ORDER BY 1";
+    let mut stmt = conn.prepare(orphaned)?;
+    let orphans: Vec<String> = stmt
+        .query_map([EXTRACTOR_VERSION], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for text in orphans {
+        found.add(
+            Kind::Mismatch,
+            &text,
+            "properties for a refused document, or for none",
+        );
+    }
     for (text, version, truncated, bytes, hash) in all {
         let what = format!("properties (version {version})");
         let Ok(version) = u32::try_from(version) else {
@@ -474,6 +491,8 @@ fn properties_rows(conn: &Connection, found: &mut Found) -> Result<(), Error> {
     Ok(())
 }
 
+/// IN7, IX9, review F7: each tokens row's preimage hash and read; the
+/// postings of a current one recomputed and compared, bit for bit.
 fn tokens_rows(conn: &Connection, found: &mut Found) -> Result<(), Error> {
     let mut stmt = conn.prepare(
         "SELECT t.sha256, t.extractor_version, t.signature_version, t.tokens, t.tokens_sha256,

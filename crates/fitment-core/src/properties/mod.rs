@@ -17,7 +17,8 @@ pub(crate) use step::of_graph;
 /// keeps, or how, changes (RX11), so a catalog knows to capture again.
 pub const PROPERTIES_VERSION: u32 = 1;
 
-/// At most this many values are kept (PR2): `nist_stc_06` states 462.
+/// At most this many values are kept (PR2): `nist_stc_06` states 462
+/// values of 441 properties.
 pub const MAX_STATED: usize = 1024;
 
 /// A name or value longer than this, in bytes, is not kept (PR2).

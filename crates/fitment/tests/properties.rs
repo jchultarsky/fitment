@@ -153,6 +153,9 @@ fn what_is_captured_from_a_generated_file() {
         user(90_010, 4, "OnTheShape", "b"),
         "#90100=SHAPE_ASPECT('hole','',#4,.F.);\n".to_owned(),
         user(90_110, 90_100, "OnAnAspect", "c"),
+        // A shape of the aspect, which leads back to the part (review).
+        "#90150=PRODUCT_DEFINITION_SHAPE('','',#90100);\n".to_owned(),
+        user(90_160, 90_150, "MaterialMissingAssignments", "TRUE"),
         "#90200=PROPERTY_DEFINITION('NotUser','',#5);\n\
          #90201=PROPERTY_DEFINITION_REPRESENTATION(#90200,#90202);\n\
          #90202=REPRESENTATION('',(#90203),#2);\n\
