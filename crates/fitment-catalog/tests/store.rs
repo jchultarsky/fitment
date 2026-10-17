@@ -8,6 +8,7 @@
 mod common;
 
 use std::fs;
+#[cfg(unix)]
 use std::path::PathBuf;
 
 use common::{catalog, copy, core_tests, invariants, scratch};
