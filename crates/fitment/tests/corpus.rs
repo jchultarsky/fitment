@@ -10,12 +10,17 @@
 //!   `tests/support/expect.rs` does. Without the corpus
 //!   the test passes with a note, unless `FITMENT_REQUIRE_CORPUS=1`, which
 //!   CI sets: a gate that did not run must not pass green.
+//! - Coverage is checked, not claimed: every rule the designs state has a
+//!   case, a test or a reason (KH14, `docs/research/m6-api.md` section
+//!   11.1), and the corpus scorer is the one scorer, never published (SC1,
+//!   SC3).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use fitment_corpus::Corpus;
 
 mod common;
 use serde_json::Value;
@@ -54,23 +59,23 @@ fn manifest(dir: &Path) -> Value {
 
 #[test]
 fn the_unit_set_fits_its_budget_and_its_manifest() {
-    fits(&unit_set(), UNIT_SET_BYTES);
+    fits_budget(&unit_set(), UNIT_SET_BYTES);
 }
 
 #[test]
 fn the_assembly_set_fits_its_budget_and_its_manifest() {
-    fits(&assembly_set(), ASSEMBLY_SET_BYTES);
+    fits_budget(&assembly_set(), ASSEMBLY_SET_BYTES);
 }
 
 /// KH13: the committed candidates fit their cap and list exactly their
 /// files.
 #[test]
 fn the_candidate_set_fits_its_budget_and_its_manifest() {
-    fits(&candidate_set(), CANDIDATE_SET_BYTES);
+    fits_budget(&candidate_set(), CANDIDATE_SET_BYTES);
 }
 
 /// `dir` holds exactly the files its manifest lists, within `budget` bytes.
-fn fits(dir: &Path, budget: u64) {
+fn fits_budget(dir: &Path, budget: u64) {
     let dir = dir.to_path_buf();
     let mut total = 0;
     let mut files = BTreeSet::new();
@@ -100,26 +105,9 @@ fn fits(dir: &Path, budget: u64) {
 }
 
 /// The corpus directory, or `None` (with a note) if it is not there and
-/// not required.
+/// not required (SC7).
 fn corpus() -> Option<PathBuf> {
-    let dir = std::env::var_os("FITMENT_CORPUS").map_or_else(
-        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/out"),
-        PathBuf::from,
-    );
-    let required = std::env::var_os("FITMENT_REQUIRE_CORPUS").is_some_and(|v| v == "1");
-    if dir.join("manifest.json").is_file() {
-        return Some(dir);
-    }
-    assert!(
-        !required,
-        "FITMENT_REQUIRE_CORPUS=1 but there is no corpus in {}",
-        dir.display()
-    );
-    eprintln!(
-        "skipped: no corpus in {}; run tools/gen-corpus.py corpus/out",
-        dir.display()
-    );
-    None
+    Corpus::locate().map(|c| c.dir().to_path_buf())
 }
 
 #[test]
@@ -360,6 +348,67 @@ const CAN_FAIL: [&str; 13] = [
     "CF4", "CF5", "CF8", "VR3", "VR4", "VR7", "VR8", "VR9", "VR10", "VR11", "VR12", "VR13", "VR22",
 ];
 
+/// The designs whose rules the registry lists: each rule stated in bold
+/// in one of them is in `rule_ids`, and in one of them only.
+const DESIGNS: [&str; 5] = [
+    "docs/research/m2-features.md",
+    "docs/research/m3-socket.md",
+    "docs/research/m4-match.md",
+    "docs/research/m5-catalog.md",
+    "docs/research/m6-api.md",
+];
+
+/// M6's design, open: its rules may wait for the PR of its section 12
+/// that builds them (`"M6 PR n"`, section 11.1) until PR 9, M6's exit,
+/// removes this allowance.
+const M6: &str = "docs/research/m6-api.md";
+
+/// M6's rules that bound an input (a size, a count, a time, a depth): each
+/// test of theirs lives where a bound is exceeded (section 11.1).
+const M6_LIMITS: [&str; 17] = [
+    "UP2", "UP4", "UP6", "HX1", "HX2", "HX3", "HX8", "JS5", "JS10", "JS12", "JB7", "JB11", "AU1",
+    "AU7", "AU10", "RA8", "VN3",
+];
+
+/// M6's rules that say the API does what a CLI command does: each test of
+/// theirs is a parity or exit test.
+const M6_PARITY: [&str; 13] = [
+    "DC1", "DC3", "DC7", "JB2", "JB4", "JB10", "RA2", "SN2", "SN10", "UP6", "CU1", "CU2", "CA1",
+];
+
+/// M6's rules on durability, recovery or job state: each test of theirs is
+/// a fault, soak or concurrency test.
+const M6_FAULT: [&str; 16] = [
+    "JB5", "JB6", "JS8", "JS11", "JS13", "OB2", "OB4", "OB5", "SD1", "SD2", "SD4", "SD5", "SD6",
+    "CX3", "CX4", "CX6",
+];
+
+/// Where the tests of each of M6's lists live (section 9.4).
+const M6_LISTS: [(&[&str], &[&str]); 3] = [
+    (
+        &M6_LIMITS,
+        &[
+            "crates/fitment-server/tests/hostile.rs",
+            "crates/fitment-server/tests/slow.rs",
+        ],
+    ),
+    (
+        &M6_PARITY,
+        &[
+            "crates/fitment-server/tests/parity.rs",
+            "crates/fitment-server/tests/exit.rs",
+        ],
+    ),
+    (
+        &M6_FAULT,
+        &[
+            "crates/fitment-server/tests/fault.rs",
+            "crates/fitment-server/tests/soak.rs",
+            "crates/fitment-server/tests/concurrency.rs",
+        ],
+    ),
+];
+
 /// Coverage is checked, not claimed (design, section 13.1): every rule
 /// and gate check the corpus manifest lists has a case that cites it, a
 /// Rust test that exists, or a reason it is deferred; and every rule a case
@@ -374,56 +423,22 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         .as_object()
         .expect("the corpus manifest lists its rule_ids");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut failures = Vec::new();
     let by_id: BTreeMap<&str, &Value> = manifest["cases"]
         .as_array()
         .unwrap()
         .iter()
         .map(|c| (c["id"].as_str().unwrap(), c))
         .collect();
+    let m6 = design_rules(&fs::read_to_string(root.join(M6)).unwrap());
+    let mut failures: Vec<String> = M6_LISTS
+        .iter()
+        .flat_map(|(list, _)| list.iter())
+        .filter(|id| !m6.iter().any(|r| r == *id))
+        .map(|id| format!("{id}: in M6's lists, and not stated by {M6}"))
+        .collect();
     for (id, entry) in rules {
-        let cases = entry["cases"].as_array().map_or(0, Vec::len);
-        let tests: Vec<&str> = entry["tests"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect();
-        let oracle: Vec<&str> = entry["oracle"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect();
-        let deferred = entry["deferred"].as_str().is_some_and(|r| !r.is_empty());
-        if cases == 0 && tests.is_empty() && oracle.is_empty() && !deferred {
-            failures.push(format!(
-                "{id}: no case, no test, no oracle check and no reason"
-            ));
-        }
-        if deferred && (cases > 0 || !tests.is_empty() || !oracle.is_empty()) {
-            failures.push(format!("{id}: deferred, yet a case or test covers it"));
-        }
-        failures.extend(oracle_problems(id, &oracle, &root));
+        failures.extend(rule_problems(id, entry, &root, &m6));
         failures.extend(case_lists(id, entry, &by_id));
-        // M2 to M5 are closed: only these may wait, each for a reason
-        // outside them (a bug's code, a withdrawn rule, a property of the
-        // construction, a later milestone). M5's exit removed the allowance
-        // its rules had to wait for the PR that built them (CT19).
-        if deferred && !DEFERRED.contains(&id.as_str()) {
-            failures.push(format!(
-                "{id}: deferred, and not among the deferrals M4 closed with"
-            ));
-        }
-        for test in tests {
-            let Some((file, name)) = test.split_once("::") else {
-                failures.push(format!("{id}: '{test}' is not file::function"));
-                continue;
-            };
-            if !is_test(&root.join(file), name) {
-                failures.push(format!("{id}: no test {name} in {file}"));
-            }
-        }
     }
     // Every rule the designs state in bold (`**G1.`, `**W7b.`, `**B8.`)
     // and every gate check is listed, itself or by its parts (`K2.blind`).
@@ -432,12 +447,7 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         rules.contains_key(rule) || rules.keys().any(|k| k.starts_with(&format!("{rule}.")))
     };
     let mut stated = Vec::new();
-    for design in [
-        "docs/research/m2-features.md",
-        "docs/research/m3-socket.md",
-        "docs/research/m4-match.md",
-        "docs/research/m5-catalog.md",
-    ] {
+    for design in DESIGNS {
         stated.extend(design_rules(
             &fs::read_to_string(root.join(design)).unwrap(),
         ));
@@ -464,6 +474,74 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// True for a deferral M6's open design allows: one of its own rules,
+/// waiting for the PR that builds it (`M6 PR n`, n from 1 to 10).
+fn m6_deferral(id: &str, reason: &str, m6: &[String]) -> bool {
+    m6.iter().any(|r| r == id)
+        && reason
+            .strip_prefix("M6 PR ")
+            .and_then(|n| n.parse::<u32>().ok())
+            .is_some_and(|n| (1..=10).contains(&n))
+}
+
+/// One rule's entry: a case, a test that exists, an oracle check or a
+/// reason, and never a reason beside a case or test; a deferral only for
+/// a reason the closed milestones left or M6's open one allows; and each
+/// test where M6's lists want it.
+fn rule_problems(id: &str, entry: &Value, root: &Path, m6: &[String]) -> Vec<String> {
+    let mut failures = Vec::new();
+    let cases = entry["cases"].as_array().map_or(0, Vec::len);
+    let strings = |key: &str| -> Vec<&str> {
+        entry[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect()
+    };
+    let (tests, oracle) = (strings("tests"), strings("oracle"));
+    let reason = entry["deferred"].as_str().unwrap_or("");
+    let deferred = !reason.is_empty();
+    if cases == 0 && tests.is_empty() && oracle.is_empty() && !deferred {
+        failures.push(format!(
+            "{id}: no case, no test, no oracle check and no reason"
+        ));
+    }
+    if deferred && (cases > 0 || !tests.is_empty() || !oracle.is_empty()) {
+        failures.push(format!("{id}: deferred, yet a case or test covers it"));
+    }
+    failures.extend(oracle_problems(id, &oracle, root));
+    // M2 to M5 are closed: only these may wait, each for a reason outside
+    // them (a bug's code, a withdrawn rule, a property of the construction,
+    // a later milestone). M5's exit removed the allowance its rules had to
+    // wait for the PR that built them (CT19); M6's rules have it while M6
+    // is open.
+    if deferred && !DEFERRED.contains(&id) && !m6_deferral(id, reason, m6) {
+        failures.push(format!(
+            "{id}: deferred, and not among the deferrals M4 and M5 closed with, nor M6's to its PR"
+        ));
+    }
+    for test in &tests {
+        let Some((file, name)) = test.split_once("::") else {
+            failures.push(format!("{id}: '{test}' is not file::function"));
+            continue;
+        };
+        if !is_test(&root.join(file), name) {
+            failures.push(format!("{id}: no test {name} in {file}"));
+        }
+    }
+    for (list, files) in M6_LISTS {
+        let elsewhere: Vec<&&str> = tests
+            .iter()
+            .filter(|t| !files.iter().any(|f| t.starts_with(&format!("{f}::"))))
+            .collect();
+        if list.contains(&id) && !tests.is_empty() && elsewhere.len() == tests.len() {
+            failures.push(format!("{id}: no test of it in {files:?}"));
+        }
+    }
+    failures
 }
 
 /// KH14's and 13.1's lists for one rule: those that need a case, and
@@ -563,16 +641,174 @@ fn python_function<'t>(text: &'t str, name: &str) -> Option<&'t str> {
     Some(&rest[..end])
 }
 
-/// True if `file` has a `#[test]` function `name`.
+/// True if `file` has a test function `name`.
 fn is_test(file: &Path, name: &str) -> bool {
-    let text = fs::read_to_string(file).unwrap_or_default();
+    is_test_in(&fs::read_to_string(file).unwrap_or_default(), name)
+}
+
+/// True if `text` has a test function `name`: `fn` or `async fn` under
+/// `#[test]`, `#[tokio::test]` or `#[tokio::test(...)]` on one of the two
+/// lines above it (M6-41).
+fn is_test_in(text: &str, name: &str) -> bool {
     let lines: Vec<&str> = text.lines().collect();
+    let attribute = |line: &&str| {
+        let line = line.trim();
+        line == "#[test]"
+            || line == "#[tokio::test]"
+            || (line.starts_with("#[tokio::test(") && line.ends_with(")]"))
+    };
     lines.iter().enumerate().any(|(i, line)| {
-        line.trim_start().starts_with(&format!("fn {name}("))
-            && lines[i.saturating_sub(2)..i]
-                .iter()
-                .any(|l| l.trim() == "#[test]")
+        let line = line.trim_start();
+        let declared = line.starts_with(&format!("fn {name}("))
+            || line.starts_with(&format!("async fn {name}("));
+        declared && lines[i.saturating_sub(2)..i].iter().any(attribute)
     })
+}
+
+/// VT30's control for M6-41: a test is found as written, `#[test]` or
+/// tokio's, sync or async, and a function under no test attribute is not.
+#[test]
+fn a_test_is_found_as_written() {
+    let found = [
+        ("#[test]\nfn a() {}", "a"),
+        ("#[tokio::test]\nasync fn b() {}", "b"),
+        (
+            "#[tokio::test(flavor = \"multi_thread\")]\n/// Docs.\nasync fn c() {}",
+            "c",
+        ),
+    ];
+    for (text, name) in found {
+        assert!(is_test_in(text, name), "{text}");
+    }
+    let not_found = [
+        ("async fn d() {}", "d"),
+        ("/// Docs.\nasync fn e() {}", "e"),
+        ("fn f() {}", "f"),
+        ("#[test]\nfn g_more() {}", "g"),
+        ("#[tokio::main]\nasync fn h() {}", "h"),
+    ];
+    for (text, name) in not_found {
+        assert!(!is_test_in(text, name), "{text}");
+    }
+}
+
+/// The ids stated in bold by more than one of `designs` (name, text): one
+/// id, one rule (section 11.1).
+fn stated_twice(designs: &[(&str, String)]) -> Vec<String> {
+    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+    let mut out = Vec::new();
+    for (name, text) in designs {
+        for id in design_rules(text) {
+            if let Some(first) = seen.insert(id.clone(), name) {
+                out.push(format!("{id}: stated in bold by {first} and {name}"));
+            }
+        }
+    }
+    out
+}
+
+/// VT30: no rule id is stated in bold by two designs, and the check finds
+/// one that is (its control).
+#[test]
+fn no_rule_id_is_stated_twice() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let designs: Vec<(&str, String)> = DESIGNS
+        .iter()
+        .map(|d| (*d, fs::read_to_string(root.join(d)).unwrap()))
+        .collect();
+    assert_eq!(stated_twice(&designs), Vec::<String>::new());
+    let control = [
+        ("a.md", "- **AB1. One.** Text.".to_owned()),
+        ("b.md", "- **AB1. Another.** Text.".to_owned()),
+    ];
+    assert_eq!(stated_twice(&control).len(), 1);
+}
+
+/// SC1: no test keeps a scorer of its own. Outside `fitment-corpus`, no
+/// source names a scorer's function, the baseline's file or the corpus's
+/// variables, and only fitment-core's candidates include the scorer's
+/// files by path (SC6).
+#[test]
+fn no_test_keeps_a_scorer_of_its_own() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // Built here, so that this file does not name them itself.
+    let owned: Vec<String> = ["fits", "false_positive", "false_negatives", "expectation"]
+        .iter()
+        .map(|f| format!("fn {f}("))
+        .chain(["FITMENT_CORPUS", "FITMENT_REQUIRE_CORPUS"].map(|v| format!("var_os(\"{v}\")")))
+        .chain([
+            format!("false-{}.json", "negatives"),
+            format!("{}/gate.rs", "support"),
+        ])
+        .chain([format!("{}/checker.rs", "common")])
+        .collect();
+    let mut files = Vec::new();
+    for entry in fs::read_dir(root.join("crates")).unwrap() {
+        let krate = entry.unwrap().path();
+        if krate.ends_with("fitment-corpus") {
+            continue;
+        }
+        files.extend(sources(&krate.join("src")));
+        files.extend(sources(&krate.join("tests")));
+    }
+    assert!(files.len() > 20, "{} sources", files.len());
+    let mut failures = Vec::new();
+    for file in files {
+        let text = fs::read_to_string(&file).unwrap_or_default();
+        for pattern in owned.iter().filter(|p| text.contains(p.as_str())) {
+            failures.push(format!("{}: {pattern}", file.display()));
+        }
+        let includes = text.contains(&format!("{}/src/", "fitment-corpus"));
+        if includes && !file.ends_with("fitment-core/tests/candidates.rs") {
+            failures.push(format!("{}: includes the scorer by path", file.display()));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Every `.rs` file under `dir`.
+fn sources(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(sources(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// SC3: `fitment-corpus` is never published: `publish = false` in its
+/// manifest, a workspace dependency without a version (which `cargo
+/// publish` strips), and only ever a dev-dependency.
+#[test]
+fn the_scorer_is_never_published() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let own = fs::read_to_string(root.join("crates/fitment-corpus/Cargo.toml")).unwrap();
+    assert!(own.lines().any(|l| l.trim() == "publish = false"));
+    let workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    let line = workspace
+        .lines()
+        .find(|l| l.starts_with("fitment-corpus ="))
+        .expect("fitment-corpus in [workspace.dependencies]");
+    assert!(!line.contains("version"), "{line}");
+    let mut uses = 0;
+    for entry in fs::read_dir(root.join("crates")).unwrap() {
+        let manifest = entry.unwrap().path().join("Cargo.toml");
+        let text = fs::read_to_string(&manifest).unwrap_or_default();
+        let mut section = "";
+        for line in text.lines() {
+            if line.starts_with('[') {
+                section = line;
+            } else if line.starts_with("fitment-corpus") {
+                uses += 1;
+                assert_eq!(section, "[dev-dependencies]", "{}", manifest.display());
+            }
+        }
+    }
+    assert!(uses > 0, "no crate uses the scorer");
 }
 
 /// The rule ids the design states in bold at the start of a rule, such as

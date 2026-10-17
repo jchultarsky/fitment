@@ -8,6 +8,24 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **M6, PR 1 (the scorer, the review cases and the registry):** the
+  `fitment-corpus` crate, never published and a versionless dev-dependency
+  only: the corpus's one scorer. The strict gate, false positives and
+  negatives, the baseline, the report and the `fitment.match` checker move
+  into it from three test files, and judge an `Outcome` read from a
+  library result or from a document's entry, found by its SHA-256. The
+  binary's documents meet the strict gate and the baseline as the
+  library's results do. The corpus gains four review cases on s01's and
+  s02's sockets, one requirement removed in each: two `waived` (their only
+  defect removed, `InterfaceMatch`, outside both rates) and two still
+  rejected for their own defect; the library and the binary apply each
+  case's review. Every M6 rule is in the registry, deferred to the PR that
+  builds it; the coverage test reads the M6 design, refuses a rule id two
+  designs state, and finds `#[tokio::test]` tests. No output of `fitment`
+  changes.
+
 ## [0.2.0] - 2026-10-17
 
 M5: the catalog. `fitment catalog` stores STEP parts by content, gated

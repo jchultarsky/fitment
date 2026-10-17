@@ -2,16 +2,13 @@
 //! sections 9.4, 11 and 13): its exit codes, its outputs, and every
 //! document it writes recomputed from the JSON alone (EV7, KH12).
 
-#[path = "common/checker.rs"]
-mod checker;
-
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use predicates::str::contains;
 use serde_json::Value;
 
-use checker::{digest, problems};
+use fitment_corpus::checker::{digest, problems};
 
 fn fitment() -> Command {
     Command::cargo_bin("fitment").unwrap()

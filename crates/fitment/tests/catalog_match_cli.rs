@@ -5,9 +5,6 @@
 
 #![cfg(feature = "catalog")]
 
-#[path = "common/checker.rs"]
-mod checker;
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -71,7 +68,10 @@ fn setup(dir: &Path) -> PathBuf {
 
 fn json(text: &str) -> Value {
     let doc: Value = serde_json::from_str(text).unwrap();
-    assert_eq!(checker::problems(&doc), Vec::<String>::new());
+    assert_eq!(
+        fitment_corpus::checker::problems(&doc),
+        Vec::<String>::new()
+    );
     doc
 }
 

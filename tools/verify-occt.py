@@ -1214,10 +1214,12 @@ def match_physics(directory, case):
     physics must agree with the truth: `fits` and `fn_rule` fit, `does_not_fit` and `fits_functional` do not
     (strict), `collides` departs by common volume alone, outside every region of M3's expected sockets. `edge`
     hits a stated limit exactly, so physics cannot side with either label, `refused` inputs have no physics,
-    component candidates are the original, and the classes of UNJUDGED wait for M7."""
+    component candidates are the original, and the classes of UNJUDGED wait for M7. A reviewed case (M6-38) is its
+    base case's file judged against a socket a reviewer changed: what a review means is no physics (KO7), and the
+    base case judges the file; `waived` is the user's acceptance, never physics' answer."""
     name, truth = case["id"], case["truth"]
     socket = case["socket"]
-    if truth in ("edge", "refused") or "file" not in case["candidate"]:
+    if truth in ("edge", "refused", "waived") or socket.get("review") or "file" not in case["candidate"]:
         return []
     if truth == "fn_rule" and case["class"] in UNJUDGED:
         print(f"skip {name}: {UNJUDGED[case['class']]}")
@@ -1669,6 +1671,9 @@ def match_main(argv):
             groups = {}
             for case in cases:
                 if case.get("kind") != "match" or "file" not in case["candidate"] or case["truth"] == "refused":
+                    continue
+                # A reviewed case's file is its base case's, judged here unreviewed (KO7: what a review means).
+                if case["socket"].get("review"):
                     continue
                 groups.setdefault((case["socket"]["case"], case["socket"]["part"]), []).append(case)
             runs = [(f"{source}.stp", part, sorted({c["candidate"]["file"] for c in group}), group)

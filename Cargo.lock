@@ -198,6 +198,7 @@ dependencies = [
  "clap",
  "fitment-catalog",
  "fitment-core",
+ "fitment-corpus",
  "predicates",
  "serde",
  "serde_json",
@@ -224,6 +225,14 @@ dependencies = [
  "serde_json",
  "stepq",
  "thiserror",
+]
+
+[[package]]
+name = "fitment-corpus"
+version = "0.2.0"
+dependencies = [
+ "fitment-core",
+ "serde_json",
 ]
 
 [[package]]

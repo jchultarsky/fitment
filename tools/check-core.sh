@@ -48,6 +48,18 @@ $packaged
 EOF"
 done
 
+# SC3 (docs/research/m6-api.md): fitment-corpus, the corpus's scorer, is
+# never published and never reaches a published crate's normal graph; it is
+# a dev-dependency without a version, which `cargo publish` strips, so the
+# package lists above are unchanged by it.
+check "fitment-corpus does not say publish = false" \
+  sh -c "! grep -qx 'publish = false' crates/fitment-corpus/Cargo.toml"
+for package in fitment-core fitment fitment-catalog; do
+  tree=$(cargo tree -p "$package" -e normal,build --all-features --locked --prefix none)
+  check "fitment-corpus is in $package's normal graph" \
+    grep -q '^fitment-corpus ' <<<"$tree"
+done
+
 cargo deny --manifest-path crates/fitment-core/Cargo.toml --config deny/core.toml check bans
 python3 tools/core-deps.py
 
