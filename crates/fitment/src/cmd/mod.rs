@@ -1,5 +1,10 @@
 //! One module per command.
 
+#[cfg(feature = "catalog")]
+pub mod catalog;
+#[cfg(not(feature = "catalog"))]
+#[path = "no_catalog.rs"]
+pub mod catalog;
 pub mod features;
 pub mod match_;
 pub mod parts;

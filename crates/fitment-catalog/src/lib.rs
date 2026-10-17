@@ -12,6 +12,7 @@
 //! ```
 
 mod blobs;
+pub mod document;
 pub mod fs;
 pub mod hex;
 pub mod ids;
@@ -19,6 +20,7 @@ mod ingest;
 pub mod layout;
 pub mod preimage;
 pub mod schema;
+mod snapshot;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -29,8 +31,11 @@ pub use blobs::{BadBlob, Placed};
 pub use fs::{Content, Fs, Point, StdFs};
 pub use hex::{NotHex, Sha256Hex};
 pub use ids::{BadReference, Id, Reference};
-pub use ingest::{Ingest, Ingested, Outcome, Summary};
+pub use ingest::{Counts, Ingest, Ingested, Outcome, Summary};
 pub use preimage::Status;
+pub use snapshot::{
+    BadName, BadRow, EntryStatus, HistoryStep, Listed, Named, Snapshot, StoredRefusal, has_internal,
+};
 
 use layout::{INIT_NAMES, Layout, MARKER_TEXT};
 
@@ -133,6 +138,9 @@ pub enum Error {
     /// The database failed (exit 1).
     #[error("the catalog's database: {0}")]
     Database(rusqlite::Error),
+    /// A row holds what no build writes (exit 1): run `verify`.
+    #[error("the catalog's database holds a damaged row ({0}): run fitment catalog verify")]
+    Corrupt(&'static str),
 }
 
 impl From<rusqlite::Error> for Error {
