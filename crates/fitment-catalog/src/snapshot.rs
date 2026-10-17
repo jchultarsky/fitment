@@ -229,6 +229,11 @@ type Step = (
 type FeaturesRow = (String, u32, String, Option<String>, Vec<u8>, String);
 
 impl Snapshot<'_> {
+    /// Its transaction's connection, for the catalog match.
+    pub(crate) fn connection(&self) -> &rusqlite::Connection {
+        &self.tx
+    }
+
     /// The generation it reads.
     pub fn generation(&self) -> i64 {
         self.generation
@@ -724,7 +729,7 @@ impl Reader<'_> {
 }
 
 /// QR4's steps 2 to 5 on one row's columns.
-fn check(
+pub(crate) fn check(
     key: &Sha256Hex,
     sha: &str,
     ev: u32,

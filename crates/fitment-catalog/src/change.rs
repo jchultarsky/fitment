@@ -189,7 +189,10 @@ fn op(tx: &Connection, g: i64, n: i64, kind: &str, entry: i64, sha: &str) -> rus
 }
 
 /// The live entry `reference` names, its current revision (ID9).
-fn live_entry(tx: &Connection, reference: &Reference) -> Result<Result<Named, Unnamed>, Error> {
+pub(crate) fn live_entry(
+    tx: &Connection,
+    reference: &Reference,
+) -> Result<Result<Named, Unnamed>, Error> {
     let named = match (Reader { conn: tx }).resolve(reference)? {
         Ok(named) => named,
         Err(bad) => return Ok(Err(Unnamed::Name(bad))),

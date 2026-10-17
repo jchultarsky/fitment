@@ -86,7 +86,7 @@ jobs:
       # same checks, with the tallies pinned (KO8).
       - run: tools/verify-occt.py match --expect fixtures/manifest.json fixtures
       # In release: the corpus's match runs take most of an hour unoptimised.
-      - run: cargo test --release -p fitment --test corpus --test fixtures --test shortlist --test original --test matching --locked
+      - run: cargo test --release -p fitment --test corpus --test fixtures --test shortlist --test original --test matching --test catalog_corpus --locked
         env:
           FITMENT_REQUIRE_CORPUS: "1"
           FITMENT_REQUIRE_FIXTURES: "1"

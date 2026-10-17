@@ -7,6 +7,11 @@ pub mod catalog;
 pub mod catalog;
 pub mod features;
 pub mod match_;
+#[cfg(feature = "catalog")]
+mod match_catalog;
+#[cfg(not(feature = "catalog"))]
+#[path = "no_match_catalog.rs"]
+mod match_catalog;
 pub mod parts;
 pub mod review;
 pub mod socket;

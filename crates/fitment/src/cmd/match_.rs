@@ -20,13 +20,39 @@ use super::write_atomically;
 use crate::exit;
 
 #[derive(clap::Args)]
+// Each bool is a command-line flag.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Args {
     /// The socket document (`fitment socket … -o FILE`).
     socket: PathBuf,
     /// The candidates: STEP files, or directories whose `.stp`, `.step`
     /// and `.p21` files (any case) are each one, not recursively.
-    #[arg(required = true)]
+    #[arg(required_unless_present = "catalog")]
     candidates: Vec<PathBuf>,
+    /// Match against the catalog in DIR instead (`fitment catalog`): its
+    /// index finds the candidates, read from it alone.
+    #[arg(
+        short = 'C',
+        long = "catalog",
+        value_name = "DIR",
+        conflicts_with = "candidates"
+    )]
+    catalog: Option<PathBuf>,
+    /// Judge these catalog entries only: ID, or its current ID@rN.
+    #[arg(long = "id", value_name = "ID", requires = "catalog")]
+    ids: Vec<String>,
+    /// Judge every live catalog entry, bypassing the index: slower, and
+    /// lists every entry; for when a miss is suspected.
+    #[arg(long, requires = "catalog", conflicts_with = "ids")]
+    exhaustive: bool,
+    /// Judge at most N candidates at once (default: the machine's
+    /// parallelism); the result does not depend on it.
+    #[arg(long, value_name = "N")]
+    jobs: Option<std::num::NonZeroUsize>,
+    /// List at most N rejects in the table, all in the document: `all`, or
+    /// a number (default: 10 in catalog runs, all in file runs).
+    #[arg(long, value_name = "N|all")]
+    rejects: Option<String>,
     /// Also judge the original: the target read from this assembly, which
     /// must be the socket's own source; it must fail exactly what no
     /// candidate can pass.
@@ -80,6 +106,11 @@ const INTERFACE_MATCH: u8 = 4;
 const ALL_REJECTED: u8 = 5;
 
 pub fn run(args: &Args) -> ExitCode {
+    // Usage first (section 7.12): the arguments alone decide these.
+    let rejects = match rejects(args) {
+        Ok(rejects) => rejects,
+        Err(code) => return code,
+    };
     let Some(policy) = policy(args) else {
         return ExitCode::from(USAGE);
     };
@@ -103,9 +134,10 @@ pub fn run(args: &Args) -> ExitCode {
             return ExitCode::from(exit::REFUSED);
         }
     };
+    let jobs = jobs(args);
     let mut failed = false;
     let listed = candidates(&args.candidates, &mut failed);
-    if listed.is_empty() && !failed {
+    if listed.is_empty() && !failed && args.catalog.is_none() {
         note("error: no candidate: the directories hold no STEP file");
         return ExitCode::from(USAGE);
     }
@@ -130,8 +162,19 @@ pub fn run(args: &Args) -> ExitCode {
             Err(code) => return code,
         }
     }
-    let results = judge_all(&matcher, listed, &mut failed);
+    // QR1: the catalog's refusals come before any candidate is judged; an
+    // M4 usage error of --original, before the catalog is read.
+    let (mut results, searched) = match from_catalog(args, &matcher, jobs, &mut failed) {
+        Ok(found) => found,
+        Err(code) => return code,
+    };
+    if args.catalog.is_none() {
+        results = judge_all(&matcher, listed, &mut failed, jobs);
+    }
     let document_out = MatchDocument::with_original(&matcher, results, original.as_ref());
+    if let Some(searched) = &searched {
+        note(&format!("fitment: {socket_path}: {searched}"));
+    }
     summarize(&socket_path, &matcher, &document_out, args.require_fit);
     let json = document_out.to_json();
     if let Some(output) = &args.output {
@@ -155,7 +198,7 @@ pub fn run(args: &Args) -> ExitCode {
     let stdout = match (args.format, &args.output) {
         (Format::Json, Some(_)) => return code,
         (Format::Json, None) => json,
-        (Format::Table, _) => table(&json, args.explain),
+        (Format::Table, _) => table(&json, args.explain, searched.as_deref(), rejects),
     };
     match io::stdout().lock().write_all(stdout.as_bytes()) {
         // A closed stdout ends output quietly and keeps the verdict's code.
@@ -168,39 +211,205 @@ pub fn run(args: &Args) -> ExitCode {
     }
 }
 
-/// Every listed candidate judged, each file read once: the same bytes are
-/// one entry with every label (MF3); `failed` set by an unreadable file.
+/// No more threads than this, whatever `--jobs` asks (as the catalog's).
+const MAX_JOBS: usize = 256;
+
+/// One listed file in a window: its read error, or new bytes to judge
+/// with the labels of their duplicates; a duplicate leaves no entry.
+enum Read {
+    Failed(String),
+    New(Vec<u8>, Vec<String>),
+}
+
+/// Where a SHA-256's entry is: an earlier window's result, or this
+/// window's file.
+#[derive(Clone, Copy)]
+enum Place {
+    Result(usize),
+    Window(usize),
+}
+
+/// Every listed candidate judged, each file read once (MF3), in windows of
+/// `jobs` new files (M5-30): a window's files are judged on up to `jobs`
+/// threads and dropped before the next is read, so `--jobs 1` keeps M4's
+/// memory. Notes go out in argument order: a read error, or the judged
+/// file's (QR8). `failed` set by an unreadable file, a fitment bug, or a
+/// judgment that panicked.
 fn judge_all(
     matcher: &Matcher<'_>,
     listed: Vec<(PathBuf, String)>,
     failed: &mut bool,
+    jobs: usize,
 ) -> Vec<(CandidateResult, Vec<String>)> {
+    let jobs = jobs.clamp(1, MAX_JOBS);
     let mut results: Vec<(CandidateResult, Vec<String>)> = Vec::new();
-    // MF3: the same bytes judged once, with every label.
-    let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for (path, label) in listed {
-        let shown = printable(&label);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                note(&format!("error: cannot read {shown}: {error}"));
-                *failed = true;
-                continue;
+    let mut seen: std::collections::BTreeMap<String, Place> = std::collections::BTreeMap::new();
+    let mut listed = listed.into_iter().peekable();
+    while listed.peek().is_some() {
+        let mut window: Vec<(String, Read)> = Vec::new();
+        let mut shas: Vec<String> = Vec::new();
+        while shas.len() < jobs {
+            let Some((path, label)) = listed.next() else {
+                break;
+            };
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let message = format!("error: cannot read {}: {error}", printable(&label));
+                    window.push((label, Read::Failed(message)));
+                    continue;
+                }
+            };
+            let sha = sha256_hex(&bytes);
+            match seen.get(&sha).copied() {
+                Some(Place::Result(at)) => {
+                    if let Some((_, labels)) = results.get_mut(at) {
+                        labels.push(label);
+                    }
+                }
+                Some(Place::Window(at)) => {
+                    if let Some((_, Read::New(_, labels))) = window.get_mut(at) {
+                        labels.push(label);
+                    }
+                }
+                None => {
+                    seen.insert(sha.clone(), Place::Window(window.len()));
+                    shas.push(sha);
+                    window.push((label, Read::New(bytes, Vec::new())));
+                }
             }
-        };
-        let sha = sha256_hex(&bytes);
-        if let Some(at) = seen.get(&sha).copied() {
-            if let Some((_, labels)) = results.get_mut(at) {
-                labels.push(label);
-            }
-            continue;
         }
-        let result = matcher.judge_step(&bytes);
-        *failed |= reported(&shown, &result);
-        seen.insert(sha, results.len());
-        results.push((result, vec![label]));
+        let new: Vec<&[u8]> = window
+            .iter()
+            .filter_map(|(_, r)| match r {
+                Read::New(bytes, _) => Some(bytes.as_slice()),
+                Read::Failed(_) => None,
+            })
+            .collect();
+        let judged = judge_parallel(matcher, &new, jobs);
+        let mut judged = judged.into_iter().zip(shas);
+        for (label, read) in window {
+            match read {
+                Read::Failed(message) => {
+                    note(&message);
+                    *failed = true;
+                }
+                Read::New(_, more) => {
+                    let Some((result, sha)) = judged.next() else {
+                        continue;
+                    };
+                    let shown = printable(&label);
+                    if let Some(result) = result {
+                        *failed |= reported(&shown, &result);
+                        seen.insert(sha, Place::Result(results.len()));
+                        let mut labels = vec![label];
+                        labels.extend(more);
+                        results.push((result, labels));
+                    } else {
+                        seen.remove(&sha);
+                        note(&format!(
+                            "fitment: {shown}: judging it failed: this is a fitment bug"
+                        ));
+                        *failed = true;
+                    }
+                }
+            }
+        }
     }
     results
+}
+
+/// Each file's bytes judged, on up to `jobs` threads, in order; a panic
+/// caught per file, the same on one thread or many, as a catalog run's is.
+fn judge_parallel(
+    matcher: &Matcher<'_>,
+    files: &[&[u8]],
+    jobs: usize,
+) -> Vec<Option<CandidateResult>> {
+    let one = |bytes: &&[u8]| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| matcher.judge_step(bytes))).ok()
+    };
+    let jobs = jobs.clamp(1, files.len().max(1));
+    if jobs == 1 {
+        return files.iter().map(one).collect();
+    }
+    let chunk = files.len().div_ceil(jobs);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = files
+            .chunks(chunk)
+            .map(|part| {
+                (
+                    part.len(),
+                    scope.spawn(move || part.iter().map(one).collect::<Vec<_>>()),
+                )
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|(n, h)| h.join().unwrap_or_else(|_| vec![None; n]))
+            .collect()
+    })
+}
+
+/// Labelled results, as `MatchDocument::new` takes them.
+type Labelled = Vec<(CandidateResult, Vec<String>)>;
+
+/// `--jobs`, or the machine's parallelism (QR8, M5-30).
+fn jobs(args: &Args) -> usize {
+    args.jobs.map_or_else(
+        || std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
+        std::num::NonZeroUsize::get,
+    )
+}
+
+/// CM1's combinations; then `--rejects`: `all`, or a count, the default
+/// by the run's kind (CM10).
+fn rejects(args: &Args) -> Result<Option<usize>, ExitCode> {
+    // CL8: a build without the catalog has none to match against.
+    if cfg!(not(feature = "catalog")) && args.catalog.is_some() {
+        note("error: this build has no catalog (cargo feature `catalog`)");
+        return Err(ExitCode::from(USAGE));
+    }
+    // CM1: --id and --exhaustive need --catalog, and exclude each other.
+    if args.catalog.is_none() && (!args.ids.is_empty() || args.exhaustive) {
+        note("error: --id and --exhaustive name catalog entries: give -C/--catalog DIR");
+        return Err(ExitCode::from(USAGE));
+    }
+    if args.exhaustive && !args.ids.is_empty() {
+        note("error: --exhaustive judges every entry; --id names some: give one");
+        return Err(ExitCode::from(USAGE));
+    }
+    match args.rejects.as_deref() {
+        None if args.catalog.is_some() => Ok(Some(10)),
+        None | Some("all") => Ok(None),
+        Some(n) => n.parse::<usize>().map(Some).map_err(|_| {
+            note(&format!(
+                "error: --rejects takes a number or `all`, not {}",
+                printable(n)
+            ));
+            ExitCode::from(USAGE)
+        }),
+    }
+}
+
+/// The candidates a catalog run judged, with CM8's line; none for a file
+/// run. `Err` is QR1's refusal, nothing on stdout.
+fn from_catalog(
+    args: &Args,
+    matcher: &Matcher<'_>,
+    jobs: usize,
+    failed: &mut bool,
+) -> Result<(Labelled, Option<String>), ExitCode> {
+    let Some(dir) = &args.catalog else {
+        return Ok((Vec::new(), None));
+    };
+    let found = super::match_catalog::candidates(dir, matcher, &args.ids, args.exhaustive, jobs)?;
+    *failed |= found.failed;
+    for (result, labels) in &found.results {
+        let label = labels.first().map_or("", String::as_str);
+        *failed |= reported(&printable(label), result);
+    }
+    Ok((found.results, Some(found.searched)))
 }
 
 /// D9 from the flags: the default unless a value differs; a zero,
@@ -303,6 +512,21 @@ fn clobbers(output: &Path, args: &Args, listed: &[(PathBuf, String)]) -> Option<
     };
     if same(&args.socket) {
         return Some("it is the socket document");
+    }
+    if let Some(dir) = &args.catalog {
+        // ST10: never inside the catalog's directory.
+        let parent = match output.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        if let (Ok(dir), Ok(parent)) = (dir.canonicalize(), parent.canonicalize()) {
+            let target = output
+                .file_name()
+                .map_or(parent.clone(), |n| parent.join(n));
+            if target.starts_with(dir) {
+                return Some("it is inside the catalog");
+            }
+        }
     }
     if args.candidates.iter().any(|c| same(c))
         || listed.iter().any(|(p, _)| same(p))
@@ -531,7 +755,7 @@ fn summarize(path: &str, matcher: &Matcher<'_>, document: &MatchDocument, requir
 /// MF9's table, from the document itself: a header, a line per candidate,
 /// and each passing candidate's checks (every candidate's with
 /// --explain).
-fn table(json: &str, explain: bool) -> String {
+fn table(json: &str, explain: bool, searched: Option<&str>, rejects: Option<usize>) -> String {
     let Ok(doc) = serde_json::from_str::<Value>(json) else {
         return String::new();
     };
@@ -555,8 +779,21 @@ fn table(json: &str, explain: bool) -> String {
         },
         fitment_core::NO_FIT_VERIFIER
     );
+    if let Some(searched) = searched {
+        // CM8: what the catalog run searched, and what it did not.
+        let _ = writeln!(out, "{searched}");
+    }
+    let mut listed_rejects = 0;
+    let mut more = 0;
     for candidate in doc["candidates"].as_array().into_iter().flatten() {
-        out.push_str(&candidate_line(candidate));
+        if s(&candidate["verdict"]) == "reject" {
+            if rejects.is_some_and(|n| listed_rejects >= n) {
+                more += 1;
+                continue;
+            }
+            listed_rejects += 1;
+        }
+        out.push_str(&candidate_line(candidate, searched.is_some()));
         let passing = s(&candidate["verdict"]) != "reject";
         if passing || explain {
             for socket in candidate["sockets"].as_array().into_iter().flatten() {
@@ -564,10 +801,14 @@ fn table(json: &str, explain: bool) -> String {
             }
         }
     }
+    if more > 0 {
+        let _ = writeln!(out, "  … {more} more rejects (in the document)");
+    }
     out
 }
 
-fn candidate_line(candidate: &Value) -> String {
+/// A candidate's line; in a catalog run, with its PRODUCT.id (CM10).
+fn candidate_line(candidate: &Value, product: bool) -> String {
     let s = |v: &Value| v.as_str().unwrap_or("").to_owned();
     let verdict = match s(&candidate["verdict"]).as_str() {
         "match" => "MATCH    ",
@@ -642,8 +883,14 @@ fn candidate_line(candidate: &Value) -> String {
             failed.first().cloned().unwrap_or_default()
         )
     };
+    let product = if product {
+        let id = candidate["product"]["id"].as_str();
+        id.map_or_else(|| "  -".to_owned(), |id| format!("  '{}'", printable(id)))
+    } else {
+        String::new()
+    };
     format!(
-        "{verdict}  {}  {}  {tail}\n",
+        "{verdict}  {}  {}{product}  {tail}\n",
         labels.join(", "),
         sha.get(..8).unwrap_or("")
     )

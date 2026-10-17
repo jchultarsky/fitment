@@ -269,3 +269,23 @@ fn a_quarantined_entry_replaced_is_indexed() {
     );
     assert_eq!(listed[0].revision, 2);
 }
+
+/// SZ4: `gc --vacuum` shrinks the database after a delete, and leaves the
+/// catalog consistent.
+#[test]
+fn gc_vacuums_on_request() {
+    let (mut catalog, _, _, _) = setup("vacuum");
+    let pages = |c: &Catalog| -> i64 {
+        c.connection()
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .unwrap()
+    };
+    catalog
+        .delete(&[reference("BRKT"), reference("a")])
+        .unwrap()
+        .unwrap();
+    let before = pages(&catalog);
+    catalog.gc(true).unwrap();
+    assert!(pages(&catalog) < before);
+    assert_eq!(catalog.verify(false, false).unwrap(), Vec::new());
+}

@@ -21,6 +21,7 @@ pub mod ids;
 mod ingest;
 pub mod layout;
 pub mod preimage;
+mod query;
 pub mod schema;
 mod snapshot;
 mod verify;
@@ -38,6 +39,7 @@ pub use hex::{NotHex, Sha256Hex};
 pub use ids::{BadReference, Id, Reference};
 pub use ingest::{Counts, Ingest, Ingested, Outcome, Summary};
 pub use preimage::Status;
+pub use query::{CatalogRun, NotRun, Selection};
 pub use snapshot::{
     BadName, BadRow, EntryStatus, HistoryStep, Listed, Named, Snapshot, StoredRefusal, has_internal,
 };
@@ -358,6 +360,14 @@ impl Catalog {
     /// The database's.
     pub fn generation(&self) -> Result<i64, Error> {
         Ok(schema::generation(&self.conn)?)
+    }
+
+    /// CC3: folds the WAL back into the database where no reader still
+    /// needs it; a catalog match calls it once its snapshot is over.
+    pub fn checkpoint(&self) {
+        let _ = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
     }
 
     /// The database connection, for the tests' raw edits.
