@@ -63,6 +63,16 @@ Until 1.0, minor versions may contain breaking changes.
   `list` shows an entry without them as `stale (properties)`, which a
   match never refuses. No verdict or flag reads them.
 
+- **M5, PR 6 (re-indexing):** `fitment catalog reindex` writes what this
+  build reads where an entry lacks it: an extractor rise reads each file
+  through its hash check and extracts it again, a signature rise rebuilds
+  tokens from the stored documents without reading a file, and properties
+  are captured again. Batches of at most 64 entries, each one
+  transaction, so a killed reindex resumes; one line per entry with its
+  transition, exit 3 when a part leaves the search, exit 1 for a missing
+  or damaged file, which stays stale. `gc --versions` removes older
+  versions' rows where current ones exist, never a newer version's.
+
 ### Changed
 
 - `signature_version` is 2: pair tokens name their two stacks by index

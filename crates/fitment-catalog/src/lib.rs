@@ -22,6 +22,7 @@ mod ingest;
 pub mod layout;
 pub mod preimage;
 mod query;
+mod reindex;
 pub mod schema;
 mod snapshot;
 mod verify;
@@ -40,6 +41,7 @@ pub use ids::{BadReference, Id, Reference};
 pub use ingest::{Counts, Ingest, Ingested, Outcome, Summary};
 pub use preimage::Status;
 pub use query::{CatalogRun, NotRun, Selection};
+pub use reindex::{Rebuilt, Reindex, Reindexed, Scope};
 pub use snapshot::{
     BadName, BadRow, EntryStatus, HistoryStep, Listed, Named, Snapshot, StoredRefusal, has_internal,
 };

@@ -25,10 +25,10 @@ use crate::preimage::{self, Status};
 use crate::{Catalog, Error, MAX_DOCUMENT_BYTES, schema};
 
 /// At most this many files per write transaction (DB3).
-const BATCH_FILES: usize = 64;
+pub(crate) const BATCH_FILES: usize = 64;
 
 /// And at most this much work.
-const BATCH_TIME: Duration = Duration::from_secs(1);
+pub(crate) const BATCH_TIME: Duration = Duration::from_secs(1);
 
 /// The longest file name kept (PH3), in bytes.
 const MAX_FILE_NAME: usize = 4096;
@@ -201,6 +201,48 @@ fn file_name(path: &Path) -> String {
     name
 }
 
+/// Why derived rows cannot be stored (GT1, SZ2).
+pub(crate) const TOO_LARGE: &str = "derived_too_large: its features document is too large to store";
+
+/// GT1 and GT6: the rows `bytes` give, as `prepare` and `reindex` store
+/// them: the features document, its summary and part digest, and for an
+/// accepted part its tokens and its stated properties, from one parse.
+/// The id is handed back with [`TOO_LARGE`] when the document is too
+/// large to store.
+pub(crate) fn derive(
+    bytes: Vec<u8>,
+    sha256: Sha256Hex,
+    input: PathBuf,
+    file_name: String,
+    id: Id,
+    explicit: bool,
+) -> Result<Prepared, (Id, &'static str)> {
+    let (read, stated) = FeaturesDocument::read_with_properties(&bytes);
+    let doc = read.to_compact_json();
+    if doc.len() > MAX_DOCUMENT_BYTES {
+        return Err((id, TOO_LARGE));
+    }
+    let summary = summarize(&read);
+    let tokens = read.part().map(|p| IndexTokens::of(&PartSignature::of(p)));
+    let part_digest = read.part_digest().and_then(|d| Sha256Hex::parse(&d).ok());
+    Ok(Prepared {
+        input,
+        file_name,
+        id,
+        explicit,
+        sha256,
+        doc,
+        status: summary.status,
+        part_digest,
+        properties: read.part().map(|_| stated),
+        tokens,
+        summary,
+        bytes,
+        replaced_blob: false,
+        placed: false,
+    })
+}
+
 /// GT5's summary of a read document.
 fn summarize(doc: &FeaturesDocument) -> Summary {
     let part = doc.part();
@@ -317,7 +359,8 @@ impl Catalog {
             let mut batch = Vec::new();
             let mut held = 0_u64;
             while let Some((file, tail)) = rest.split_first() {
-                let full = batch.len() >= BATCH_FILES || held >= budget;
+                // A batch takes one file at least, whatever the budget.
+                let full = !batch.is_empty() && (batch.len() >= BATCH_FILES || held >= budget);
                 if full || started.elapsed() > BATCH_TIME {
                     break;
                 }
@@ -404,30 +447,9 @@ impl Catalog {
             return Err(fail(None, Outcome::Conflict { reason }));
         };
         let sha256 = Sha256Hex::of(&bytes);
-        let (read, stated) = FeaturesDocument::read_with_properties(&bytes);
-        let doc = read.to_compact_json();
-        if doc.len() > MAX_DOCUMENT_BYTES {
-            let reason = "derived_too_large: its features document is too large to store".into();
-            return Err(fail(Some(id), Outcome::Refused { reason }));
-        }
-        let summary = summarize(&read);
-        let tokens = read.part().map(|p| IndexTokens::of(&PartSignature::of(p)));
-        let part_digest = read.part_digest().and_then(|d| Sha256Hex::parse(&d).ok());
-        Ok(Prepared {
-            input: path.to_owned(),
-            file_name: name,
-            id,
-            explicit,
-            sha256,
-            doc,
-            status: summary.status,
-            part_digest,
-            properties: read.part().map(|_| stated),
-            tokens,
-            summary,
-            bytes,
-            replaced_blob: false,
-            placed: false,
+        derive(bytes, sha256, path.to_owned(), name, id, explicit).map_err(|(id, reason)| {
+            let reason = reason.to_owned();
+            fail(Some(id), Outcome::Refused { reason })
         })
     }
 
@@ -633,9 +655,11 @@ fn insert(tx: &Transaction<'_>, p: &Prepared, g: i64, n: i64) -> rusqlite::Resul
     )?;
     insert_features(tx, p)?;
     if let Some(tokens) = &p.tokens {
-        insert_tokens(tx, p, tokens, key)?;
+        insert_tokens(tx, &p.sha256, tokens, key)?;
     }
-    insert_properties(tx, p)?;
+    if let Some(stated) = &p.properties {
+        insert_properties(tx, &p.sha256, stated)?;
+    }
     tx.execute(
         "INSERT INTO op (generation, n, kind, entry, sha256, fitment_version)
          VALUES (?1, ?2, 'ingest', ?3, ?4, ?5)",
@@ -686,13 +710,14 @@ pub(crate) fn insert_features(tx: &Transaction<'_>, p: &Prepared) -> rusqlite::R
 
 /// PR3: an accepted file's stated properties with their preimage hash. A
 /// row of this content and version already there is left as it is.
-pub(crate) fn insert_properties(tx: &Transaction<'_>, p: &Prepared) -> rusqlite::Result<()> {
-    let Some(stated) = &p.properties else {
-        return Ok(());
-    };
+pub(crate) fn insert_properties(
+    tx: &Transaction<'_>,
+    sha256: &Sha256Hex,
+    stated: &StatedProperties,
+) -> rusqlite::Result<()> {
     let text = stated.to_json();
     let hash = preimage::properties(
-        &p.sha256,
+        sha256,
         PROPERTIES_VERSION,
         stated.truncated,
         text.as_bytes(),
@@ -702,7 +727,7 @@ pub(crate) fn insert_properties(tx: &Transaction<'_>, p: &Prepared) -> rusqlite:
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT (sha256, properties_version) DO NOTHING",
         params![
-            p.sha256.as_str(),
+            sha256.as_str(),
             PROPERTIES_VERSION,
             stated.truncated,
             text.as_bytes(),
@@ -716,13 +741,13 @@ pub(crate) fn insert_properties(tx: &Transaction<'_>, p: &Prepared) -> rusqlite:
 /// under the blob's key.
 pub(crate) fn insert_tokens(
     tx: &Transaction<'_>,
-    p: &Prepared,
+    sha256: &Sha256Hex,
     tokens: &IndexTokens,
     key: i64,
 ) -> rusqlite::Result<()> {
     let text = tokens.to_json();
     let hash = preimage::tokens(
-        &p.sha256,
+        sha256,
         EXTRACTOR_VERSION,
         SIGNATURE_VERSION,
         text.as_bytes(),
@@ -733,7 +758,7 @@ pub(crate) fn insert_tokens(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT (sha256, extractor_version, signature_version) DO NOTHING",
         params![
-            p.sha256.as_str(),
+            sha256.as_str(),
             EXTRACTOR_VERSION,
             SIGNATURE_VERSION,
             text.as_bytes(),

@@ -90,7 +90,7 @@ fn an_ingest_survives_a_gc_of_the_orphan_it_reuses() {
         if *call == Call::Read(blob.clone()) && !once.swap(true, Ordering::SeqCst) {
             Catalog::open(&gc_root, Options::default())
                 .unwrap()
-                .gc(false)
+                .gc(false, false)
                 .unwrap();
         }
     }));

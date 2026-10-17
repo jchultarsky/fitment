@@ -960,7 +960,6 @@ M5_PR3 = {
 for rule, tests in M5_PR3.items():
     RULES[rule] = {"tests": tests}
 RULES["CC3"] = {"deferred": "M5 PR 7"}
-RULES["CR10"] = {"deferred": "M5 PR 6"}
 RULES["VF5"] = {"deferred": "M5 PR 7"}
 # PR 4 builds the catalog match.
 Q = f"{T}/query.rs"
@@ -1039,6 +1038,21 @@ M5_PR5 = {
 for rule, tests in M5_PR5.items():
     RULES[rule] = {"tests": tests}
 RULES["RX2"]["tests"].append(f"{CP}::stale_properties_never_refuse_a_match")
+# PR 6 builds `reindex` and `gc --versions`.
+R = f"{T}/reindex.rs"
+M5_PR6 = {
+    "RX4": [f"{R}::a_signature_rise_reads_no_file", f"{R}::an_extractor_rise_extracts_again",
+            f"{R}::properties_are_captured_again", f"{C}::reindex_brings_a_stale_catalog_back"],
+    "RX5": [f"{R}::a_damaged_file_stays_stale", f"{C}::reindex_brings_a_stale_catalog_back"],
+    "RX6": [f"{R}::transitions_are_reported", f"{C}::a_part_that_leaves_the_search_exits_3"],
+    "RX7": [f"{R}::a_killed_reindex_resumes", f"{R}::a_faulted_reindex_batch_is_all_or_nothing"],
+    "RX8": [f"{R}::a_newer_version_is_never_touched", f"{R}::an_extractor_rise_extracts_again"],
+    "RX9": [f"{R}::named_entries_and_their_refusals", f"{C}::reindex_brings_a_stale_catalog_back"],
+    "RX10": [f"{R}::nothing_stored_names_the_match_or_socket_rules"],
+    "CR10": [f"{R}::transitions_are_reported", f"{R}::named_entries_and_their_refusals"],
+}
+for rule, tests in M5_PR6.items():
+    RULES[rule] = {"tests": tests}
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with
