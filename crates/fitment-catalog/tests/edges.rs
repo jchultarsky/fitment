@@ -231,8 +231,9 @@ fn the_database_is_durable() {
     );
 }
 
-/// DB3: a write transaction holds at most 64 files: 70 files commit in two
-/// generations.
+/// DB3: a write transaction holds at most 64 files: 70 files commit in at
+/// least two generations, none holding more than 64. (A batch also ends
+/// after a second, so a slow machine may commit more, smaller ones.)
 #[test]
 fn a_batch_holds_at_most_64_files() {
     let dir = scratch("batches");
@@ -249,7 +250,17 @@ fn a_batch_holds_at_most_64_files() {
     let run = catalog.ingest(&[inputs], None).unwrap();
     assert_eq!(run.len(), 70);
     assert!(run.iter().all(|l| l.outcome == Outcome::Added));
-    assert_eq!(catalog.generation().unwrap(), 3);
+    let conn = Connection::open(catalog.root().join("catalog.db")).unwrap();
+    let largest: i64 = conn
+        .query_row(
+            "SELECT max(n) FROM (SELECT count(*) AS n FROM op WHERE kind = 'ingest'
+                                 GROUP BY generation)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(largest <= 64, "{largest} files in one generation");
+    assert!(catalog.generation().unwrap() >= 3);
 }
 
 /// SZ5: a database at its page quota refuses the batch whole, the run
