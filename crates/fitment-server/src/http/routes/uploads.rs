@@ -16,9 +16,8 @@ use crate::Shared;
 use crate::auth::documents::Page;
 use crate::http::blocking;
 use crate::http::error::{ApiError, ErrorCode};
-use crate::http::extract::{self, Principal, Reader};
+use crate::http::extract::{Principal, Reader};
 use crate::http::json;
-use crate::http::operations::Role as Needed;
 use crate::http::query;
 use crate::state::{Deleted, Holding, StoreError, Stored};
 use crate::uploads::{self, Received, UPLOAD_FORMAT, UPLOAD_FORMAT_VERSION, UploadDocument};
@@ -155,39 +154,6 @@ async fn store(
     Ok(response)
 }
 
-/// AU8: whose uploads a read names: the caller's, or with `?owner=` an
-/// admin's choice (another's for an admin only, `403` below; an unknown
-/// user `404`). Returns the user's key and the query's `&owner=` for a
-/// next page.
-async fn owner(
-    shared: &Arc<Shared>,
-    caller: &Principal,
-    params: &std::collections::BTreeMap<String, String>,
-) -> Result<(i64, String), ApiError> {
-    match params.get("owner") {
-        Some(id) if *id != caller.user.id => {
-            if !caller.effective.permits(Needed::Admin) {
-                return Err(extract::forbidden(Needed::Admin, caller.effective));
-            }
-            let (reading, id) = (Arc::clone(shared), id.clone());
-            let extra = format!("&owner={id}");
-            let found = blocking(move || {
-                reading
-                    .db
-                    .person_by_id(&id)
-                    .map_err(|e| crate::http::db_error(&e))
-            })
-            .await?;
-            let user = found.ok_or_else(|| {
-                ApiError::new(ErrorCode::NotFound, "no user of that id is yours to see")
-            })?;
-            Ok((user.key, extra))
-        }
-        Some(id) => Ok((caller.user.key, format!("&owner={id}"))),
-        None => Ok((caller.user.key, String::new())),
-    }
-}
-
 /// The holding of `sha256` the owner may name (UP3), or `404`.
 async fn named(shared: &Arc<Shared>, owner: i64, sha256: String) -> Result<Holding, ApiError> {
     let reading = Arc::clone(shared);
@@ -212,7 +178,7 @@ pub(super) async fn get(
 ) -> Result<Response, ApiError> {
     let sha256 = reference(&name)?;
     let params = query::params(uri.query(), &["owner"])?;
-    let (owner, _) = owner(&shared, &caller, &params).await?;
+    let (owner, _) = super::owner(&shared, &caller, &params).await?;
     let holding = named(&shared, owner, sha256).await?;
     Ok(json::document(
         UPLOAD_FORMAT,
@@ -252,7 +218,7 @@ pub(super) async fn list(
         )
         .with("parameter", "after"));
     }
-    let (owner, extra) = owner(&shared, &caller, &params).await?;
+    let (owner, extra) = super::owner(&shared, &caller, &params).await?;
     let reading = Arc::clone(&shared);
     let mut rows = blocking(move || {
         let now = reading.ids.now_ms();

@@ -49,6 +49,12 @@ pub struct Config {
     pub log: Log,
     /// `[metrics]`.
     pub metrics: Metrics,
+    /// `[test]`: OP11's seams for the built binary under `test-support`
+    /// only (VT10's aborts at hook points); a release build refuses the
+    /// section as an unknown key.
+    #[cfg(feature = "test-support")]
+    #[serde(default)]
+    pub test: TestSection,
     /// Variables of the family that named no key and were ignored, for
     /// the startup log's warning (OP2).
     #[serde(skip)]
@@ -225,6 +231,10 @@ pub struct Jobs {
     pub reindex_on_start: bool,
     pub catalog_gc_at: String,
     pub drain_seconds: u64,
+    /// JS10: event streams a user holds at once, over all their tokens.
+    pub streams_per_user: u32,
+    /// JS10: event streams at once on the server.
+    pub streams: u32,
 }
 
 impl Default for Jobs {
@@ -247,6 +257,8 @@ impl Default for Jobs {
             reindex_on_start: true,
             catalog_gc_at: String::new(),
             drain_seconds: 25,
+            streams_per_user: 8,
+            streams: 256,
         }
     }
 }
@@ -428,6 +440,20 @@ impl Default for Log {
             filter: "info".into(),
         }
     }
+}
+
+/// `[test]` (OP11, `test-support` only): what each named hook point does
+/// in the process, as `"abort"`, `"panic"` or `"delay:<ms>"`.
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TestSection {
+    /// Hook point to action.
+    pub hooks: BTreeMap<String, String>,
+    /// A lease renewed within this many milliseconds is another server's;
+    /// 0: SD6's 30 s. A test restarting a killed child sets it small.
+    pub lease_stale_ms: i64,
 }
 
 /// `[metrics]` (OP6): off when empty.
@@ -658,6 +684,32 @@ impl Config {
             return Err(value_error(
                 "fit.verifier",
                 "this build knows only \"none\" (OP9)",
+            ));
+        }
+        if [
+            self.jobs.queue_query,
+            self.jobs.queue_write,
+            self.jobs.queue_maintenance,
+            self.jobs.per_owner_running,
+            self.jobs.per_owner_queued,
+            self.jobs.streams_per_user,
+            self.jobs.streams,
+            self.jobs.match_threads,
+        ]
+        .contains(&0)
+            || self.jobs.memory_mib == 0
+            || self.jobs.deadline_extract_minutes == 0
+            || self.jobs.sweep_minutes == 0
+        {
+            return Err(value_error(
+                "jobs",
+                "every count and time must be at least 1",
+            ));
+        }
+        if !self.metrics.listen.is_empty() && self.metrics.listen.parse::<SocketAddr>().is_err() {
+            return Err(value_error(
+                "metrics.listen",
+                "an address such as 127.0.0.1:9464, or empty for none",
             ));
         }
         if self.limits.max_json_kib == 0 || self.limits.page_max == 0 {

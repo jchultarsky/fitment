@@ -1,0 +1,42 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: W/"j4.succeeded"
+fitment-format: fitment.job/1
+repr-digest: sha-256=:DoBYOH3P16E8SgdJRPxOoElZ1H71m2p8BL3p7fgJh/U=:
+x-request-id: r_00000000000000000000000006
+
+{
+  "format": "fitment.job",
+  "format_version": 1,
+  "id": "j_00000000000000000000000005",
+  "kind": "features",
+  "owner": "u_00000000000000000000000001",
+  "state": "succeeded",
+  "attempt": 1,
+  "request": {
+    "upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945"
+  },
+  "request_sha256": "adce45db212a430c782e103881dbbdb6875ec088dee943cc97f0aeeccc30e5d0",
+  "queue_position": null,
+  "progress": null,
+  "cancel_requested": false,
+  "exit_code": 0,
+  "outcome": null,
+  "result": null,
+  "document": {
+    "href": "/v1/jobs/j_00000000000000000000000005/document",
+    "format": "fitment.features",
+    "sha256": "e81492b45296559e1642d3d7a810d31a4e9b58a6e57aead472e7497079f740ca",
+    "bytes": 20881
+  },
+  "error": null,
+  "notes": [],
+  "pinned": false,
+  "times": {
+    "created": "2026-09-21T14:13:20Z",
+    "started": "2026-09-21T14:13:20Z",
+    "finished": "2026-09-21T14:13:20Z",
+    "expires": "2026-10-21T14:13:20Z"
+  }
+}

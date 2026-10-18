@@ -1,0 +1,37 @@
+202
+cache-control: no-cache
+content-type: application/json
+etag: W/"j3.cancelled"
+fitment-format: fitment.job/1
+repr-digest: sha-256=:co6Rag64Fg2XdSrobq+i4Pd5So6N+rfzbMGRfAyFRXk=:
+x-request-id: r_00000000000000000000000006
+
+{
+  "format": "fitment.job",
+  "format_version": 1,
+  "id": "j_00000000000000000000000005",
+  "kind": "features",
+  "owner": "u_00000000000000000000000001",
+  "state": "cancelled",
+  "attempt": 1,
+  "request": {
+    "upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945"
+  },
+  "request_sha256": "adce45db212a430c782e103881dbbdb6875ec088dee943cc97f0aeeccc30e5d0",
+  "queue_position": null,
+  "progress": null,
+  "cancel_requested": false,
+  "exit_code": null,
+  "outcome": null,
+  "result": null,
+  "document": null,
+  "error": null,
+  "notes": [],
+  "pinned": false,
+  "times": {
+    "created": "2026-09-21T14:13:20Z",
+    "started": null,
+    "finished": "2026-09-21T14:13:20Z",
+    "expires": "2026-10-21T14:13:20Z"
+  }
+}

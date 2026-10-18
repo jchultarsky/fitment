@@ -733,3 +733,742 @@ async fn a_file_changed_between_the_passes_fails_the_second() {
     };
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }
+
+// ---------------------------------------------------------------- jobs
+
+use std::time::Duration;
+
+use serde_json::{Value, json};
+use support::waiting;
+
+const S02: &str = "s02_cbore.stp";
+
+fn sha_of(bytes: &[u8]) -> String {
+    fitment_core::sha256_hex(bytes)
+}
+
+/// JB1, JB3, RA9, JS11, DC9: a job is `202` with `Location` once its row
+/// commits, queued at position 1 while the dispatcher holds; its request
+/// is recorded normalized (the hex lower-case, defaults filled); it then
+/// runs and ends `succeeded`, its times RFC 3339, its document linked.
+#[tokio::test]
+async fn a_job_is_queued_runs_and_ends() {
+    let server = TestServer::fresh();
+    let bytes = support::part("p01_through.stp");
+    let sha = server.upload(&bytes).await;
+    server.server().hold_jobs();
+    let body = json!({ "upload": format!("sha256:{}", sha.to_ascii_uppercase()) });
+    let reply = server
+        .send(Call::json(Method::POST, "/v1/features", &body))
+        .await;
+    assert_eq!(reply.status, 202);
+    let job = reply.json();
+    let id = job["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        reply.header("location"),
+        Some(format!("/v1/jobs/{id}").as_str())
+    );
+    assert!(fitment_server::ids::well_formed("j", &id));
+    assert_eq!(
+        (job["state"].as_str(), job["queue_position"].as_u64()),
+        (Some("queued"), Some(1))
+    );
+    assert_eq!(job["request"], json!({ "upload": format!("sha256:{sha}") }));
+    assert_eq!(job["request_sha256"].as_str().unwrap().len(), 64);
+    assert!(job["exit_code"].is_null() && job["document"].is_null() && job["outcome"].is_null());
+    server.server().resume_jobs();
+    let done = server.finished_job(&id, Duration::from_secs(30)).await;
+    assert_eq!(done["state"], "succeeded");
+    assert_eq!(done["exit_code"], 0);
+    assert!(done["queue_position"].is_null());
+    assert!(done["times"]["finished"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(done["document"]["href"], format!("/v1/jobs/{id}/document"));
+    assert_eq!(
+        server.document(&done).await.body,
+        support::cli_golden("features", "p01_through.json")
+    );
+}
+
+/// VT40, RA4, RA5, HX5: a line's id is its data's (two servers, the same
+/// bytes, the same id); extracting twice gives one line, the second
+/// `unchanged` with the same revision; `sk_X` is the current revision
+/// (`no-cache`), `sk_X@r1` exactly (`immutable`), `@r2` names nothing, and
+/// references outside ID9's grammar are `400`.
+#[tokio::test]
+async fn a_lines_id_is_its_datas_and_extracting_twice_gives_one_line() {
+    let bytes = support::assembly(S02);
+    let sha = sha_of(&bytes);
+    let mut hrefs = Vec::new();
+    for _ in 0..2 {
+        let server = TestServer::fresh();
+        server.register(&bytes, S02).await;
+        let first = server.extract(&sha, "BLOCK").await;
+        let second = server.extract(&sha, "BLOCK").await;
+        assert_eq!(first["state"], "succeeded");
+        assert!(first["outcome"].is_null());
+        assert_eq!(second["outcome"], "unchanged");
+        assert_eq!(first["result"], second["result"]);
+        let lines = server.get("/v1/sockets").await.json();
+        assert_eq!(lines["items"].as_array().unwrap().len(), 1);
+        let line = &lines["items"][0];
+        assert_eq!(line["occurrence"], "*");
+        assert_eq!(line["current"]["n"], 1);
+        assert_eq!(line["current"]["how"], "extract");
+        assert_eq!(line["current"]["verified"], true);
+        let id = line["id"].as_str().unwrap();
+        let bare = server.get(&format!("/v1/sockets/{id}")).await;
+        assert_eq!(bare.header("cache-control"), Some("no-cache"));
+        let exact = server.get(&format!("/v1/sockets/{id}@r1")).await;
+        assert_eq!(
+            exact.header("cache-control"),
+            Some("private, max-age=31536000, immutable")
+        );
+        assert_eq!(exact.body, bare.body);
+        assert_eq!(
+            exact.body,
+            support::cli_golden("socket", "s02_cbore--BLOCK.json")
+        );
+        assert_eq!(
+            server.get(&format!("/v1/sockets/{id}@r2")).await.code(),
+            "not_found"
+        );
+        for bad in ["@r0", "@r01", "@R1", "@1", "@r", "@r1x"] {
+            let reply = server.get(&format!("/v1/sockets/{id}{bad}")).await;
+            assert_eq!(reply.code(), "invalid_reference", "{bad}");
+        }
+        let history = server
+            .get(&format!("/v1/sockets/{id}/revisions"))
+            .await
+            .json();
+        assert_eq!(history["items"].as_array().unwrap().len(), 1);
+        hrefs.push(first["result"]["href"].clone());
+    }
+    assert_eq!(hrefs[0], hrefs[1], "RA4: the same data, the same id");
+}
+
+/// The line's revisions, by number.
+async fn numbers(server: &TestServer, id: &str) -> Vec<i64> {
+    server
+        .get(&format!("/v1/sockets/{id}/revisions"))
+        .await
+        .json()["items"]
+        .as_array()
+        .map(|a| a.iter().map(|r| r["n"].as_i64().unwrap()).collect())
+        .unwrap_or_default()
+}
+
+/// VT49, RA4, RA5, RA6, OB4: a deleted line is a tombstone, its revisions
+/// still readable by number until the sweep, which deletes those no job
+/// cites; extracting its triple again revives the id as a new live row,
+/// its revisions numbered on from the id's last, kept or swept, and
+/// carrying no decision of the deleted row's.
+#[tokio::test]
+async fn a_deleted_line_revives_numbered_on() {
+    let server = TestServer::fresh();
+    let bytes = support::assembly(S02);
+    let sha = sha_of(&bytes);
+    server.register(&bytes, S02).await;
+    let first = server.extract(&sha, "BLOCK").await;
+    let href = first["result"]["href"].as_str().unwrap();
+    let id = href
+        .trim_start_matches("/v1/sockets/")
+        .split('@')
+        .next()
+        .unwrap()
+        .to_owned();
+    let body = json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK", "carry": false });
+    let again = server.send(waiting("/v1/sockets", &body)).await.json();
+    assert_eq!(again["outcome"], "unchanged", "the same unreviewed bytes");
+    let delete = Call::new(Method::DELETE, &format!("/v1/sockets/{id}"));
+    assert_eq!(server.send(delete.clone()).await.status, 204);
+    assert_eq!(
+        server.get(&format!("/v1/sockets/{id}")).await.code(),
+        "not_found"
+    );
+    assert_eq!(
+        server.get(&format!("/v1/sockets/{id}@r1")).await.status,
+        200,
+        "RA6"
+    );
+    let live = server.get("/v1/sockets").await.json();
+    assert_eq!(live["items"], json!([]));
+    let revived = server.extract(&sha, "BLOCK").await;
+    assert_eq!(revived["result"]["href"], format!("/v1/sockets/{id}@r2"));
+    assert_eq!(numbers(&server, &id).await, [1, 2]);
+    assert_eq!(server.send(delete.clone()).await.status, 204);
+    let (_, revisions) = server.server().sweep_jobs().unwrap();
+    assert_eq!(revisions, 2, "no job cites them");
+    assert_eq!(
+        server.get(&format!("/v1/sockets/{id}@r1")).await.code(),
+        "not_found"
+    );
+    let third = server.extract(&sha, "BLOCK").await;
+    assert_eq!(
+        third["result"]["href"],
+        format!("/v1/sockets/{id}@r3"),
+        "numbered on"
+    );
+    let swept = server.server().sweep_store().unwrap();
+    assert!(
+        swept.unlinked.is_empty(),
+        "the live revision holds the bytes"
+    );
+}
+
+/// OB4, RA9, review S8 of PR 5: a revision an extraction carries from is
+/// cited from its submission, so a sweep while the job is queued keeps it,
+/// its line deleted; the job runs on it and succeeds.
+#[tokio::test]
+async fn a_carried_revision_stays_until_its_job_ends() {
+    let server = TestServer::fresh();
+    let bytes = support::assembly(S02);
+    let sha = sha_of(&bytes);
+    server.register(&bytes, S02).await;
+    let first = server.extract(&sha, "BLOCK").await;
+    let href = first["result"]["href"].as_str().unwrap();
+    let carried = href.trim_start_matches("/v1/sockets/").to_owned();
+    let id = carried.split('@').next().unwrap().to_owned();
+    server.server().hold_jobs();
+    let body = json!({
+        "assembly": format!("sha256:{sha}"),
+        "part": "BLOCK",
+        "carry_from": carried,
+    });
+    let queued = server
+        .send(Call::json(Method::POST, "/v1/sockets", &body))
+        .await;
+    assert_eq!(queued.status, 202);
+    let delete = Call::new(Method::DELETE, &format!("/v1/sockets/{id}"));
+    assert_eq!(server.send(delete).await.status, 204);
+    let (_, revisions) = server.server().sweep_jobs().unwrap();
+    assert_eq!(revisions, 0, "the queued job cites it");
+    assert_eq!(
+        server.get(&format!("/v1/sockets/{carried}")).await.status,
+        200
+    );
+    server.server().resume_jobs();
+    let job = server
+        .finished_job(
+            queued.json()["id"].as_str().unwrap(),
+            Duration::from_secs(30),
+        )
+        .await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+}
+
+/// VT42, JB9: a key binds the request as sent: the same body again, or
+/// with its keys reordered and its spacing changed, is the same job (`202`
+/// while it runs, `200` once it ended, and once its upload is gone, review
+/// S4 of PR 5); another body is `422`; a key whose job was cancelled is
+/// released, so it makes a new job.
+#[tokio::test]
+async fn a_key_binds_the_request_as_sent() {
+    let server = TestServer::fresh();
+    let sha = server.upload(&support::part("p01_through.stp")).await;
+    server.server().hold_jobs();
+    let keyed = |body: &str, key: &str| {
+        Call::new(Method::POST, "/v1/features")
+            .header("content-type", "application/json")
+            .header("idempotency-key", key)
+            .body(body.as_bytes())
+    };
+    let body = format!(r#"{{"upload": "sha256:{sha}"}}"#);
+    let first = server.send(keyed(&body, "k-1")).await;
+    assert_eq!(first.status, 202);
+    let spaced = format!("{{ \"upload\" :\n \"sha256:{sha}\" }}");
+    let replay = server.send(keyed(&spaced, "k-1")).await;
+    assert_eq!(replay.status, 202);
+    assert_eq!(replay.json()["id"], first.json()["id"]);
+    let other = format!(r#"{{"upload": "sha256:{}"}}"#, sha.to_ascii_uppercase());
+    assert_eq!(
+        server.send(keyed(&other, "k-1")).await.code(),
+        "idempotency_key_reused"
+    );
+    let id = first.json()["id"].as_str().unwrap().to_owned();
+    server.server().resume_jobs();
+    server.finished_job(&id, Duration::from_secs(30)).await;
+    let ended = server.send(keyed(&body, "k-1")).await;
+    assert_eq!(
+        (ended.status.as_u16(), ended.json()["id"].as_str()),
+        (200, Some(id.as_str()))
+    );
+    // Review S4 of PR 5: the replay stands once its input is gone.
+    let delete = Call::new(Method::DELETE, &format!("/v1/uploads/sha256:{sha}"));
+    assert_eq!(server.send(delete).await.status, 204);
+    let gone = server.send(keyed(&body, "k-1")).await;
+    assert_eq!(
+        (gone.status.as_u16(), gone.json()["id"].as_str()),
+        (200, Some(id.as_str())),
+        "{}",
+        String::from_utf8_lossy(&gone.body)
+    );
+    let sha = server.upload(&support::part("p01_through.stp")).await;
+    assert_eq!(body, format!(r#"{{"upload": "sha256:{sha}"}}"#));
+    server.server().hold_jobs();
+    let second = server.send(keyed(&body, "k-2")).await.json();
+    let cancel = format!("/v1/jobs/{}/cancel", second["id"].as_str().unwrap());
+    assert_eq!(
+        server.send(Call::new(Method::POST, &cancel)).await.json()["state"],
+        "cancelled"
+    );
+    let fresh = server.send(keyed(&body, "k-2")).await.json();
+    assert_ne!(
+        fresh["id"], second["id"],
+        "a cancelled job's key is released"
+    );
+    for bad in ["", &"k".repeat(129), "tab\there"] {
+        let refused = server.send(keyed(&body, bad)).await;
+        assert_eq!(refused.code(), "invalid_parameter", "{bad:?}");
+    }
+    server.server().resume_jobs();
+}
+
+/// VN5, review F6: a job's ETag is `W/"j<seq>.<state>"`, its last persisted
+/// event and its state, `.p` when pinned and `.c` when a cancel was asked
+/// (review S5 of PR 5): `If-None-Match` answers `304` until a persisted
+/// event, the state or a pin changes it; progress, which is transient,
+/// changes nothing.
+#[tokio::test]
+async fn a_jobs_etag_follows_its_persisted_events() {
+    let server = TestServer::fresh();
+    let sha = server.upload(&support::part("p01_through.stp")).await;
+    server.server().hold_jobs();
+    let job = server
+        .send(Call::json(
+            Method::POST,
+            "/v1/features",
+            &json!({ "upload": format!("sha256:{sha}") }),
+        ))
+        .await;
+    let etag = job.header("etag").unwrap().to_owned();
+    assert_eq!(etag, "W/\"j1.queued\"");
+    let id = job.json()["id"].as_str().unwrap().to_owned();
+    let path = format!("/v1/jobs/{id}");
+    let again = server
+        .send(Call::get(&path).header("if-none-match", &etag))
+        .await;
+    assert_eq!(again.status, 304);
+    server.server().resume_jobs();
+    let done = server.finished_job(&id, Duration::from_secs(30)).await;
+    assert_eq!(done["state"], "succeeded");
+    let after = server
+        .send(Call::get(&path).header("if-none-match", &etag))
+        .await;
+    assert_eq!(after.status, 200);
+    let done = after.header("etag").unwrap().to_owned();
+    assert_eq!(done, "W/\"j4.succeeded\"");
+    // Review S5 of PR 5: pinning, which writes no event, changes it too.
+    let pin = Call::json(
+        Method::POST,
+        &format!("{path}/pin"),
+        &json!({ "pinned": true }),
+    );
+    assert_eq!(server.send(pin).await.json()["pinned"], true);
+    let pinned = server
+        .send(Call::get(&path).header("if-none-match", &done))
+        .await;
+    assert_eq!(pinned.status, 200);
+    assert_eq!(pinned.header("etag"), Some("W/\"j4.succeeded.p\""));
+}
+
+/// The keys an event may carry: none states a verdict (M6-51).
+const EVENT_KEYS: [&str; 17] = [
+    "format",
+    "format_version",
+    "job",
+    "seq",
+    "type",
+    "state",
+    "attempt",
+    "exit_code",
+    "outcome",
+    "result",
+    "document",
+    "error",
+    "phase",
+    "done",
+    "total",
+    "missed",
+    "generation",
+];
+
+/// VT43, JB8, JS10, M6-51: `?after=N` replays every persisted event after
+/// N, then live ones, without loss; persisted events are numbered 1, 2, 3
+/// … without gaps and transient ones carry no `seq`; an idle stream gets a
+/// heartbeat (the seam's short interval); no event carries a verdict.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn events_replay_then_follow_without_loss() {
+    let server = TestServer::fresh();
+    let sha = server.upload(&support::part("p01_through.stp")).await;
+    server
+        .server()
+        .seams()
+        .jobs
+        .set_heartbeat(Duration::from_millis(50));
+    server.server().hold_jobs();
+    let job = server
+        .send(Call::json(
+            Method::POST,
+            "/v1/features",
+            &json!({ "upload": format!("sha256:{sha}") }),
+        ))
+        .await
+        .json();
+    let id = job["id"].as_str().unwrap().to_owned();
+    let mut stream = server
+        .open(Call::get(&format!("/v1/jobs/{id}/events")))
+        .await;
+    assert_eq!(
+        stream.headers().get("content-type").unwrap(),
+        "application/x-ndjson"
+    );
+    let body = stream.body_mut();
+    let idle = support::lines(body, Duration::from_secs(10), |e| e["type"] == "heartbeat").await;
+    assert_eq!(idle[0]["seq"], 1);
+    assert!(
+        idle.last().unwrap().get("seq").is_none(),
+        "a heartbeat has no seq"
+    );
+    server.server().resume_jobs();
+    let mut all = idle;
+    all.extend(support::lines(body, Duration::from_secs(30), |e| e["type"] == "end").await);
+    let seqs: Vec<i64> = all.iter().filter_map(|e| e["seq"].as_i64()).collect();
+    assert_eq!(
+        seqs,
+        (1..=i64::try_from(seqs.len()).unwrap()).collect::<Vec<_>>()
+    );
+    for event in &all {
+        assert_eq!(event["format"], "fitment.job.event");
+        assert_eq!(event["job"], id.as_str());
+        for key in event.as_object().unwrap().keys() {
+            assert!(
+                EVENT_KEYS.contains(&key.as_str()),
+                "M6-51: {key} in {event}"
+            );
+        }
+        if ["progress", "heartbeat", "lagged", "shutdown"]
+            .contains(&event["type"].as_str().unwrap())
+        {
+            assert!(event.get("seq").is_none(), "review F6: {event}");
+        }
+    }
+    let mut resumed = server
+        .open(Call::get(&format!("/v1/jobs/{id}/events?after=2")))
+        .await;
+    let replayed = support::lines(resumed.body_mut(), Duration::from_secs(10), |e| {
+        e["type"] == "end"
+    })
+    .await;
+    let tail: Vec<i64> = replayed.iter().filter_map(|e| e["seq"].as_i64()).collect();
+    assert_eq!(tail, seqs[2..].to_vec());
+    drop(resumed);
+    let start = std::time::Instant::now();
+    while server.server().seams().jobs.channels_open() > 0 {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "a channel stayed open"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Waits up to ten seconds for every live-event channel to be dropped.
+async fn channels_close(server: &TestServer) {
+    let start = std::time::Instant::now();
+    while server.server().seams().jobs.channels_open() > 0 {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "a channel stayed open"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// JS10, review S9 of PR 5: a stream of a job that ended, `after` at or
+/// past its `end` event, ends at once: no heartbeat, no channel left.
+#[tokio::test]
+async fn a_stream_past_a_finished_jobs_end_closes() {
+    let server = TestServer::fresh();
+    let sha = server.upload(&support::part("p01_through.stp")).await;
+    server
+        .server()
+        .seams()
+        .jobs
+        .set_heartbeat(Duration::from_millis(50));
+    let body = json!({ "upload": format!("sha256:{sha}") });
+    let job = server
+        .send(support::waiting("/v1/features", &body))
+        .await
+        .json();
+    let id = job["id"].as_str().unwrap().to_owned();
+    let mut all = server
+        .open(Call::get(&format!("/v1/jobs/{id}/events")))
+        .await;
+    let events = support::lines(all.body_mut(), Duration::from_secs(10), |e| {
+        e["type"] == "end"
+    })
+    .await;
+    let end = events.last().unwrap()["seq"].as_i64().unwrap();
+    for after in [end, end + 5] {
+        let start = std::time::Instant::now();
+        let mut stream = server
+            .open(Call::get(&format!("/v1/jobs/{id}/events?after={after}")))
+            .await;
+        let lines = support::lines(stream.body_mut(), Duration::from_secs(5), |_| false).await;
+        assert!(
+            lines.is_empty(),
+            "after={after}: {} lines, the first {:?}",
+            lines.len(),
+            lines.first()
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "after={after}: it ended"
+        );
+    }
+    channels_close(&server).await;
+}
+
+/// JS10, review S10 of PR 5: a client that leaves while its stream's
+/// replay is still being sent (more lines than its body buffers) leaves
+/// no channel open.
+#[tokio::test]
+async fn a_stream_dropped_during_its_replay_leaves_no_channel() {
+    let server = TestServer::fresh();
+    let sha = server.upload(&support::part("p01_through.stp")).await;
+    server.server().hold_jobs();
+    let queued = server
+        .send(Call::json(
+            Method::POST,
+            "/v1/features",
+            &json!({ "upload": format!("sha256:{sha}") }),
+        ))
+        .await
+        .json();
+    let id = queued["id"].as_str().unwrap().to_owned();
+    {
+        let mut conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        let key: i64 = tx
+            .query_row("SELECT key FROM job WHERE id = ?1", [&id], |r| r.get(0))
+            .unwrap();
+        let note = format!(r#"{{"text":"{}"}}"#, "n".repeat(100));
+        for seq in 2..100_i64 {
+            tx.execute(
+                "INSERT INTO job_event (job, seq, at_ms, type, data) VALUES (?1, ?2, 0, 'note', ?3)",
+                rusqlite::params![key, seq, note],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let stream = server
+        .open(Call::get(&format!("/v1/jobs/{id}/events")))
+        .await;
+    assert_eq!(stream.status(), 200);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    drop(stream);
+    channels_close(&server).await;
+    server.server().resume_jobs();
+}
+
+/// RA3, RA6, RA8: an assembly is registered once per caller: again, its
+/// name added, with no job; the list and the document show it; its bytes
+/// download re-hashed, named by their hash (HX6); a refused assembly is
+/// registered too, `refused`; one a live line names is `409
+/// assembly_in_use` to `DELETE`, and once the line is gone `204`.
+#[tokio::test]
+async fn assemblies_are_the_callers_registered_bytes() {
+    let server = TestServer::fresh();
+    let bytes = support::assembly(S02);
+    let sha = sha_of(&bytes);
+    let job = server.register(&bytes, S02).await;
+    assert_eq!(
+        job["result"]["href"],
+        format!("/v1/assemblies/sha256:{sha}")
+    );
+    let again = server
+        .send(waiting(
+            "/v1/assemblies",
+            &json!({ "upload": format!("sha256:{sha}"), "file_name": "base.stp" }),
+        ))
+        .await;
+    assert_eq!(again.json()["format"], "fitment.assembly", "no job");
+    assert_eq!(again.json()["file_names"], json!(["base.stp", S02]));
+    assert_eq!(again.json()["status"], "accepted");
+    assert_eq!(again.json()["parts"]["current"], true);
+    let step = server
+        .get(&format!("/v1/assemblies/sha256:{sha}/step"))
+        .await;
+    assert_eq!(step.body, bytes);
+    assert_eq!(
+        step.header("content-type"),
+        Some("application/octet-stream")
+    );
+    assert_eq!(
+        step.header("content-disposition"),
+        Some(format!("attachment; filename=\"{}.stp\"", &sha[..12]).as_str())
+    );
+    let refused = server.register(b"no assembly here\n", "x.stp").await;
+    assert_eq!(
+        (refused["state"].as_str(), refused["exit_code"].as_u64()),
+        (Some("refused"), Some(3))
+    );
+    let listed = server.get("/v1/assemblies").await.json();
+    assert_eq!(listed["items"].as_array().unwrap().len(), 2);
+    server.extract(&sha, "BLOCK").await;
+    let path = format!("/v1/assemblies/sha256:{sha}");
+    assert_eq!(server.get(&path).await.json()["sockets"]["count"], 1);
+    let lines = server.get(&format!("{path}/sockets")).await.json();
+    let id = lines["items"][0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        server.send(Call::new(Method::DELETE, &path)).await.code(),
+        "assembly_in_use"
+    );
+    server
+        .send(Call::new(Method::DELETE, &format!("/v1/sockets/{id}")))
+        .await;
+    assert_eq!(
+        server.send(Call::new(Method::DELETE, &path)).await.status,
+        204
+    );
+    assert_eq!(server.get(&path).await.code(), "not_found");
+}
+
+/// DC4, review of PR 5: an extraction `unchanged`, which made no
+/// revision, serves its document with the `Fitment-Digest` of the
+/// revision its `result` names, as the one that made it does.
+#[tokio::test]
+async fn an_unchanged_extraction_carries_its_revisions_digest() {
+    let server = TestServer::fresh();
+    let bytes = support::assembly(S02);
+    let sha = sha_of(&bytes);
+    server.register(&bytes, S02).await;
+    let first = server.extract(&sha, "BLOCK").await;
+    let body = json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK", "carry": false });
+    let again = server.send(waiting("/v1/sockets", &body)).await.json();
+    assert_eq!(again["outcome"], "unchanged");
+    assert_eq!(again["result"], first["result"]);
+    let golden = support::cli_golden("socket", "s02_cbore--BLOCK.json");
+    let digest: Value = serde_json::from_slice(&golden).unwrap();
+    for job in [&first, &again] {
+        let path = format!("/v1/jobs/{}/document", job["id"].as_str().unwrap());
+        let document = server.get(&path).await;
+        assert_eq!(document.body, golden);
+        assert_eq!(
+            document.header("fitment-digest"),
+            digest["digest"].as_str(),
+            "{}",
+            job["outcome"]
+        );
+    }
+}
+
+/// DC1, DC4 to DC6, VN5: a document is served with `Fitment-Format`,
+/// `Fitment-Exit-Code`, a strong `ETag` and `Repr-Digest` of the body, and
+/// for a socket `Fitment-Digest`, its own digest (two digests, two
+/// meanings: DC5); `If-None-Match` answers `304`; `Accept-Encoding: gzip`
+/// gets the same bytes gzipped, its ETag `-gz`.
+#[tokio::test]
+async fn documents_carry_their_headers_and_compress_on_request() {
+    let server = TestServer::fresh();
+    let bytes = support::assembly(S02);
+    let sha = sha_of(&bytes);
+    server.register(&bytes, S02).await;
+    let job = server.extract(&sha, "BLOCK").await;
+    let href = job["result"]["href"].as_str().unwrap().to_owned();
+    let plain = server.get(&href).await;
+    let golden = support::cli_golden("socket", "s02_cbore--BLOCK.json");
+    assert_eq!(plain.body, golden);
+    let doc: Value = serde_json::from_slice(&plain.body).unwrap();
+    assert_eq!(plain.header("fitment-format"), Some("fitment.socket/1"));
+    assert_eq!(plain.header("fitment-exit-code"), Some("0"));
+    assert_eq!(plain.header("fitment-digest"), doc["digest"].as_str());
+    assert_eq!(
+        plain.header("etag"),
+        Some(format!("\"sha256:{}\"", sha_of(&golden)).as_str())
+    );
+    assert_eq!(
+        plain.header("repr-digest"),
+        Some(fitment_server::http::json::repr_digest(&golden).as_str())
+    );
+    let cached = server
+        .send(Call::get(&href).header("if-none-match", plain.header("etag").unwrap()))
+        .await;
+    assert_eq!(cached.status, 304);
+    let zipped = server
+        .send(Call::get(&href).header("accept-encoding", "gzip"))
+        .await;
+    assert_eq!(zipped.header("content-encoding"), Some("gzip"));
+    assert_eq!(
+        zipped.header("etag"),
+        Some(format!("\"sha256:{}-gz\"", sha_of(&golden)).as_str())
+    );
+    let mut unzipped = Vec::new();
+    std::io::Read::read_to_end(
+        &mut flate2::read::GzDecoder::new(zipped.body.as_slice()),
+        &mut unzipped,
+    )
+    .unwrap();
+    assert_eq!(unzipped, golden, "DC6: transport only");
+    let refused = server
+        .send(Call::get(&href).header("accept-encoding", "gzip;q=0"))
+        .await;
+    assert!(refused.header("content-encoding").is_none());
+}
+
+/// DC2, DC8: a job's document holds nothing of the server (no job or user
+/// id, no time, no path), and the server and the CLI are one build.
+#[tokio::test]
+async fn documents_hold_nothing_of_the_server_and_one_build_writes_them() {
+    let server = TestServer::fresh();
+    let bytes = support::assembly(S02);
+    let job = server.register(&bytes, S02).await;
+    let document = server.document(&job).await;
+    let text = String::from_utf8(document.body).unwrap();
+    for needle in [
+        job["id"].as_str().unwrap(),
+        job["owner"].as_str().unwrap(),
+        "2026-",
+        "/v1/",
+    ] {
+        assert!(!text.contains(needle), "DC2: {needle}");
+    }
+    let (_, version, _) = support::cli(&server.dirs.root, &["--version"]);
+    let info = server.get("/v1/info").await.json();
+    assert_eq!(
+        String::from_utf8(version).unwrap().trim(),
+        format!("fitment {}", info["server"]["version"].as_str().unwrap())
+    );
+}
+
+/// OP6: the exposition counts requests by route template and jobs by
+/// kind and state, and gauges the lanes and permits; labels are closed
+/// sets.
+#[tokio::test]
+async fn metrics_count_requests_and_jobs() {
+    let server = TestServer::fresh();
+    let sha = server.upload(&support::part("p01_through.stp")).await;
+    let job = server
+        .send(waiting(
+            "/v1/features",
+            &json!({ "upload": format!("sha256:{sha}") }),
+        ))
+        .await;
+    assert_eq!(job.json()["state"], "succeeded");
+    let server_ref = server.server().clone();
+    let text = tokio::task::spawn_blocking(move || server_ref.metrics_text())
+        .await
+        .unwrap();
+    assert!(
+        text.contains("fitment_jobs_total{kind=\"features\",state=\"succeeded\"} 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("fitment_http_requests_total{route=\"/v1/features\",code_class=\"2xx\"} 1")
+    );
+    assert!(text.contains("fitment_jobs_running{lane=\"query\"} 0"));
+    assert!(text.contains("fitment_cpu_permits_free "));
+    assert!(text.contains("fitment_catalog_generation "));
+    assert!(!text.contains(&sha), "no raw path in a label");
+}

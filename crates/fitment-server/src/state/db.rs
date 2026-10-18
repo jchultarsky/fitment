@@ -1,15 +1,23 @@
 //! `server.db` (docs/research/m6-api.md, section 6.2, OB1): the server's
 //! own SQLite database, the catalog's kind of database. The only module
 //! that names rusqlite (SV6), with its submodules `auth` for users and
-//! tokens and `uploads` for uploads and objects; no SQL here names a
-//! catalog table.
+//! tokens, `uploads` for uploads and objects, `jobs` for jobs and their
+//! events, and `assemblies` for assemblies, socket lines and revisions; no
+//! SQL here names a catalog table.
 
+mod assemblies;
 mod auth;
+mod jobs;
 mod uploads;
 
+pub use assemblies::{AssemblyDeleted, AssemblyRow, LineRow, PartsRow, RevisionRow};
 pub use auth::{
     CreateUserError, MintError, MintFrom, NewToken, PasswordSet, Presented, SWEEP_BATCH, TokenRow,
     UpdateUserError, UserRow,
+};
+pub use jobs::{
+    AssemblyRows, Cancelled, End, EventRow, Finished, JobRow, NewJob, NewRevision, Recovered, Rows,
+    SocketRows, Stopped, Submitted,
 };
 pub use uploads::{CHARGE_MIN, CHARGE_ROW, Deleted, Holding, StoreError, Stored, Unnamed, charge};
 
@@ -220,6 +228,14 @@ pub struct Db {
     writer: Mutex<Connection>,
     readers: Mutex<Vec<Connection>>,
     path: std::path::PathBuf,
+    /// [`LEASE_STALE_MS`]; a `test-support` seam shortens it for a start
+    /// after a kill (VT10).
+    lease_stale_ms: std::sync::atomic::AtomicI64,
+    /// Callers waiting for the writer, so a long maintenance pass can step
+    /// aside between its batches ([`Db::yield_writer`]): `std`'s mutex is
+    /// not fair, and a loop that unlocks and locks again at once can keep
+    /// it from a waiting request for the whole pass.
+    writers_waiting: std::sync::atomic::AtomicUsize,
 }
 
 impl std::fmt::Debug for Db {
@@ -235,6 +251,27 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Db {
+    /// The writer, counted among [`Db::yield_writer`]'s waiters until it
+    /// is held.
+    fn writer(&self) -> MutexGuard<'_, Connection> {
+        use std::sync::atomic::Ordering;
+        self.writers_waiting.fetch_add(1, Ordering::SeqCst);
+        let guard = lock(&self.writer);
+        self.writers_waiting.fetch_sub(1, Ordering::SeqCst);
+        guard
+    }
+
+    /// Between a maintenance pass's batches (JS9's sweep, ST5): while
+    /// another caller waits for the writer, waits for it to take it, for
+    /// at most 100 ms a batch, so a request waits at most one batch.
+    pub fn yield_writer(&self) {
+        use std::sync::atomic::Ordering;
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(100);
+        while self.writers_waiting.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     /// Opens `server.db` in `dir`, creating schema 1 and the `system` user
     /// when it is new (OB1, M6-56). A foreign or newer database is refused
     /// before anything is changed in it.
@@ -313,6 +350,8 @@ impl Db {
                 writer: Mutex::new(conn),
                 readers: Mutex::new(readers),
                 path,
+                lease_stale_ms: std::sync::atomic::AtomicI64::new(LEASE_STALE_MS),
+                writers_waiting: std::sync::atomic::AtomicUsize::new(0),
             },
             found,
         ))
@@ -349,7 +388,7 @@ impl Db {
     ///
     /// [`DbError::LeaseHeld`], or SQLite's.
     pub fn take_lease(&self, holder: &str, now_ms: i64) -> Result<(), DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current: Option<(String, i64)> = tx
             .query_row(
@@ -359,7 +398,10 @@ impl Db {
             )
             .optional()?;
         if let Some((other, beat)) = current {
-            if other != holder && now_ms.saturating_sub(beat) < LEASE_STALE_MS {
+            let stale = self
+                .lease_stale_ms
+                .load(std::sync::atomic::Ordering::SeqCst);
+            if other != holder && now_ms.saturating_sub(beat) < stale {
                 return Err(DbError::LeaseHeld);
             }
         }
@@ -372,13 +414,21 @@ impl Db {
         Ok(())
     }
 
+    /// OP11: a lease renewed within `ms` is another server's, instead of
+    /// 30 s, so a test restarts a killed server at once (VT10).
+    #[cfg(feature = "test-support")]
+    pub fn set_lease_stale(&self, ms: i64) {
+        self.lease_stale_ms
+            .store(ms, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Renews the lease (SD6): false if another holder has taken it.
     ///
     /// # Errors
     ///
     /// SQLite's: the database is not writable.
     pub fn renew_lease(&self, holder: &str, now_ms: i64) -> Result<bool, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = tx.execute(
             "UPDATE lease SET heartbeat_ms = ?2 WHERE one = 1 AND holder = ?1",
@@ -395,7 +445,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn release_lease(&self, holder: &str) -> Result<(), DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM lease WHERE one = 1 AND holder = ?1", [holder])?;
         tx.commit()?;
@@ -416,6 +466,18 @@ impl Db {
             )
             .map(|n| n == 1)
         })
+    }
+
+    /// SD1's last writes: the log checkpointed (`TRUNCATE`), so a stopped
+    /// server leaves `server.db` whole in its file.
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn checkpoint(&self) -> Result<(), DbError> {
+        let conn = self.writer();
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
     }
 
     /// The `system` user's id (M6-56).

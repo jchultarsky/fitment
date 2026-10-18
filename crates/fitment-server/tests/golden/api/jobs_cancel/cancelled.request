@@ -1,0 +1,3 @@
+POST /v1/jobs/j_00000000000000000000000005/cancel
+authorization: Bearer <ada's reader token>
+

@@ -1,0 +1,24 @@
+429
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:sp//FJ69uSa3V9I1IbkTH5H0fsSMJVC0a//nL1ftoeM=:
+retry-after: 1
+x-request-id: r_00000000000000000000000007
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/too_many_streams",
+  "title": "Too many streams",
+  "status": 429,
+  "detail": "you hold the most event streams a user may: close one",
+  "code": "too_many_streams",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": true,
+  "details": {
+    "limit": "jobs.streams_per_user"
+  },
+  "request_id": "r_00000000000000000000000007"
+}

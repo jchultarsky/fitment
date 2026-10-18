@@ -17,8 +17,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub use db::{
-    CHARGE_MIN, CHARGE_ROW, CreateUserError, Db, DbError, Deleted, Holding, Kind, MintError,
-    MintFrom, NewToken, PasswordSet, Presented, StoreError, Stored, TokenRow, Unnamed,
+    AssemblyDeleted, AssemblyRow, AssemblyRows, CHARGE_MIN, CHARGE_ROW, Cancelled, CreateUserError,
+    Db, DbError, Deleted, End, EventRow, Finished, Holding, JobRow, Kind, LineRow, MintError,
+    MintFrom, NewJob, NewRevision, NewToken, PartsRow, PasswordSet, Presented, Recovered,
+    RevisionRow, Rows, SocketRows, Stopped, StoreError, Stored, Submitted, TokenRow, Unnamed,
     UpdateUserError, UserRow, charge,
 };
 pub use objects::{ObjectError, Objects, Staged, Synced};

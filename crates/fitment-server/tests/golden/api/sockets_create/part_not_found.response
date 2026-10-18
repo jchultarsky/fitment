@@ -1,0 +1,61 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: W/"j4.refused"
+fitment-format: fitment.job/1
+location: /v1/jobs/j_00000000000000000000000007
+preference-applied: wait=30
+repr-digest: sha-256=:jMElX08KKYflpsWj6S4DD9Uay3oBYBxZkJRlWqW6O+s=:
+x-request-id: r_00000000000000000000000006
+
+{
+  "format": "fitment.job",
+  "format_version": 1,
+  "id": "j_00000000000000000000000007",
+  "kind": "socket_extract",
+  "owner": "u_00000000000000000000000001",
+  "state": "refused",
+  "attempt": 1,
+  "request": {
+    "assembly": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a",
+    "carry": true,
+    "carry_from": null,
+    "occurrence": null,
+    "part": "block"
+  },
+  "request_sha256": "4dfce7dbd2565e35237f2e38d0e8637933b60d8faec2dc4a5a365b1e3d646d5e",
+  "queue_position": null,
+  "progress": null,
+  "cancel_requested": false,
+  "exit_code": 2,
+  "outcome": null,
+  "result": null,
+  "document": null,
+  "error": {
+    "code": "part_not_found",
+    "class": "usage",
+    "title": "No part has this name",
+    "detail": "the selection names no part to extract; details.candidates lists what it could mean",
+    "exit_code": 2,
+    "retryable": false,
+    "details": {
+      "candidates": [
+        {
+          "definition": "#249",
+          "first_path": "2",
+          "id": "BLOCK",
+          "name": "BLOCK",
+          "quantity": 1
+        }
+      ]
+    }
+  },
+  "notes": [],
+  "pinned": false,
+  "times": {
+    "created": "2026-09-21T14:13:20Z",
+    "started": "2026-09-21T14:13:20Z",
+    "finished": "2026-09-21T14:13:20Z",
+    "expires": "2026-10-21T14:13:20Z"
+  }
+}

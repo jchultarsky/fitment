@@ -75,6 +75,7 @@ pub enum ErrorCode {
     UploadInUse,
     OriginalNotStored,
     JobFinished,
+    JobNotFinished,
     TooManyTokens,
     UsernameTaken,
     LastAdmin,
@@ -186,7 +187,7 @@ use ErrorCode as C;
 
 /// Section 7.12, row by row, in `ErrorCode`'s order (ER1).
 #[rustfmt::skip]
-pub const SPECS: [Spec; 84] = [
+pub const SPECS: [Spec; 85] = [
     spec(C::BadRequest, "bad_request", Usage, Some(400), Some(2), false, "The request is malformed"),
     spec(C::InvalidParameter, "invalid_parameter", Usage, Some(400), Some(2), false, "A parameter is out of range"),
     spec(C::InvalidReference, "invalid_reference", Usage, Some(400), Some(2), false, "A reference is malformed"),
@@ -209,6 +210,7 @@ pub const SPECS: [Spec; 84] = [
     spec(C::UploadInUse, "upload_in_use", Usage, Some(409), None, false, "A running job names the upload"),
     spec(C::OriginalNotStored, "original_not_stored", Usage, Some(409), None, false, "The socket's assembly is not stored"),
     spec(C::JobFinished, "job_finished", Usage, Some(409), None, false, "The job has ended or cannot stop"),
+    spec(C::JobNotFinished, "job_not_finished", Usage, Some(409), None, false, "The job has not ended"),
     spec(C::TooManyTokens, "too_many_tokens", Usage, Some(409), None, false, "The user holds the most live tokens allowed"),
     spec(C::UsernameTaken, "username_taken", Usage, Some(409), None, false, "The username is another user's"),
     spec(C::LastAdmin, "last_admin", Usage, Some(409), None, false, "The last enabled admin cannot be disabled or demoted"),

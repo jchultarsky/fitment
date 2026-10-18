@@ -1,0 +1,21 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:mhk/haqJnVbjt9c/+RXvFoAW14vBTw1kqX4/QJ2AsBY=:
+x-request-id: r_00000000000000000000000009
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/job_not_finished",
+  "title": "The job has not ended",
+  "status": 409,
+  "detail": "the job has not ended: cancel it, or wait for it",
+  "code": "job_not_finished",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000009"
+}

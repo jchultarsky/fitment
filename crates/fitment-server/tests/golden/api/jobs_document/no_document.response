@@ -1,0 +1,21 @@
+404
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:siiCkBFcjuE8rfHK519qUM3BWnBpkfAppUpqK949Aak=:
+x-request-id: r_00000000000000000000000006
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/no_document",
+  "title": "The job produced no document",
+  "status": 404,
+  "detail": "the job produced no document: see its state and error",
+  "code": "no_document",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000006"
+}

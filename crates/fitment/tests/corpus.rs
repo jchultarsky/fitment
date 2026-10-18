@@ -477,7 +477,7 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
 }
 
 /// The M6 PR this tree builds: a deferral names a later one.
-const M6_PR_NOW: u32 = 4;
+const M6_PR_NOW: u32 = 5;
 
 /// The last M6 PR a rule may wait for: PR 9, M6's exit, removes the
 /// allowance (section 12; PR 10 is the release).
@@ -516,17 +516,17 @@ fn m6_list_problems(id: &str, tests: &[&str], deferred: bool) -> Vec<String> {
 #[test]
 fn m6_deferrals_and_lists_hold() {
     let m6 = vec!["UP2".to_owned()];
-    assert!(m6_deferral("UP2", "M6 PR 5", &m6));
+    assert!(m6_deferral("UP2", "M6 PR 6", &m6));
     assert!(m6_deferral("UP2", "M6 PR 9", &m6));
-    assert!(!m6_deferral("UP2", "M6 PR 4", &m6), "a deferral to this PR");
+    assert!(!m6_deferral("UP2", "M6 PR 5", &m6), "a deferral to this PR");
     assert!(
-        !m6_deferral("UP2", "M6 PR 3", &m6),
+        !m6_deferral("UP2", "M6 PR 4", &m6),
         "a deferral to an earlier PR"
     );
     for reason in ["M6 PR 1", "M6 PR 0", "M6 PR 10", "M6 PR", "M5 PR 4"] {
         assert!(!m6_deferral("UP2", reason, &m6), "{reason}");
     }
-    assert!(!m6_deferral("ST1", "M6 PR 5", &m6));
+    assert!(!m6_deferral("ST1", "M6 PR 6", &m6));
     let hostile = "crates/fitment-server/tests/hostile.rs::a_body_past_the_cap";
     let elsewhere = "crates/fitment-server/tests/api.rs::a_body_past_the_cap";
     assert_eq!(m6_list_problems("UP2", &[], false).len(), 1);

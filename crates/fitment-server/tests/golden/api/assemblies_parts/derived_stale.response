@@ -1,0 +1,24 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:t84cz2t1Pa1/OOpIRj3uW/XbmEVAoRPzHY8j55fqAy0=:
+x-request-id: r_00000000000000000000000006
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/derived_stale",
+  "title": "The derived document is of another build",
+  "status": 409,
+  "detail": "the assembly was read by another build: register it again (POST /v1/assemblies)",
+  "code": "derived_stale",
+  "class": "refused",
+  "exit_code": null,
+  "retryable": false,
+  "details": {
+    "extractor_version": 6,
+    "socket_rules_version": 7
+  },
+  "request_id": "r_00000000000000000000000006"
+}

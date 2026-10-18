@@ -17,9 +17,11 @@
 #    needs a token (AU5); a second bootstrap is refused; s01 and the
 #    committed bracket are uploaded under their SHA-256s (UP2) and found
 #    by HEAD and GET as the caller's (UP3), a wrong name keeps nothing and
-#    POST names the bytes itself; the token is in no log; and SIGTERM stops
-#    it with exit 0. PR 6 adds a socket and a match job whose document
-#    equals crates/fitment/tests/golden/match/'s.
+#    POST names the bytes itself; s01 is registered and its BRACKET's
+#    socket extracted through jobs (PR 5), each waited for, their documents
+#    the CLI's goldens' bytes (crates/fitment/tests/golden/{parts,socket}/);
+#    the token is in no log; and SIGTERM stops it with exit 0. PR 6 adds a
+#    match job whose document equals crates/fitment/tests/golden/match/'s.
 # 4. Its size is reported, under a ceiling of twice the first measured.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -142,6 +144,28 @@ location=$(curl -s -D - -o /dev/null -X POST "${auth[@]}" -H 'Content-Type: mode
   tr -d '\r' | sed -nE 's/^[Ll]ocation: //p')
 [ "$location" = "/v1/uploads/sha256:$(sha crates/fitment-core/tests/candidates/m_bracket.stp)" ] ||
   fail "POST named the bracket '$location'"
+# PR 5: an assembly_read and a socket_extract job, waited for (JB11),
+# their documents the CLI's bytes (DC1).
+api="http://127.0.0.1:$port/v1"
+s01=$(sha crates/fitment-core/tests/assemblies/s01_bolted.stp)
+job() { # path, body, out: a job made with Prefer: wait, its id
+  curl -sf -X POST "${auth[@]}" -H 'Content-Type: application/json' -H 'Prefer: wait=60' \
+    --data "$2" "$api/$1" >"$3" || fail "POST /v1/$1"
+  grep -q '"state": "succeeded"' "$3" || { cat "$3" >&2; fail "the job of /v1/$1 did not succeed"; }
+  sed -nE 's/^  "id": "(j_[0-9a-z]+)",$/\1/p' "$3"
+}
+id=$(job assemblies "{\"upload\": \"sha256:$s01\", \"file_name\": \"s01_bolted.stp\"}" "$work/assembly.json")
+curl -sf "${auth[@]}" "$api/jobs/$id/document" -o "$work/parts.json" || fail "the parts document"
+cmp -s "$work/parts.json" crates/fitment/tests/golden/parts/s01_bolted.json ||
+  fail "the assembly's fitment.parts is not the CLI's"
+id=$(job sockets "{\"assembly\": \"sha256:$s01\", \"part\": \"BRACKET\"}" "$work/socket.json")
+curl -sf "${auth[@]}" "$api/jobs/$id/document" -o "$work/socket-doc.json" || fail "the socket document"
+cmp -s "$work/socket-doc.json" "crates/fitment/tests/golden/socket/s01_bolted--BRACKET.json" ||
+  fail "the socket is not the CLI's"
+href=$(sed -nE 's/^    "href": "(\/v1\/sockets\/sk_[0-9a-f]+@r1)",$/\1/p' "$work/socket.json")
+[ -n "$href" ] || fail "the socket job names no revision"
+curl -sf "${auth[@]}" "http://127.0.0.1:$port$href" | cmp -s - "$work/socket-doc.json" ||
+  fail "the revision is not the job's document"
 docker exec "$name" fitment-server healthcheck || fail "the image's healthcheck failed"
 docker stop --time 45 "$name" >/dev/null
 code=$(docker inspect --format '{{.State.ExitCode}}' "$name")

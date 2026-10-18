@@ -17,6 +17,7 @@ use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use serde_json::{Map, Value, json};
 
+use crate::assemblies::{ASSEMBLY_FORMAT, ASSEMBLY_FORMAT_VERSION, AssemblyDocument};
 use crate::auth::documents::{
     FORMAT_VERSION as AUTH_FORMAT_VERSION, PAGE_FORMAT, Page, TOKEN_FORMAT, TokenDocument,
     USER_FORMAT, UserDocument,
@@ -28,6 +29,10 @@ use crate::http::error::{ERROR_FORMAT, ERROR_FORMAT_VERSION, ErrorCode, Problem}
 use crate::http::json::{JSON, PROBLEM_JSON};
 use crate::http::operations::{OPERATIONS, Operation, RequestBody, Role};
 use crate::info::{INFO_FORMAT, INFO_FORMAT_VERSION, Info, api_version};
+use crate::jobs::documents::{
+    EVENT_FORMAT, EventDocument, FORMAT_VERSION as JOB_FORMAT_VERSION, JOB_FORMAT, JobDocument,
+};
+use crate::jobs::request::{AssemblyRequest, FeaturesRequest, PinRequest, SocketRequest};
 use crate::uploads::{UPLOAD_FORMAT, UPLOAD_FORMAT_VERSION, UPLOAD_TYPES, UploadDocument};
 
 /// The base of every schema's `$id`: `<base><format>/<version>`.
@@ -172,6 +177,18 @@ pub fn schemas() -> Map<String, Value> {
         UPLOAD_FORMAT,
         schema_of::<UploadDocument>(UPLOAD_FORMAT, UPLOAD_FORMAT_VERSION, false),
     );
+    add(
+        JOB_FORMAT,
+        schema_of::<JobDocument>(JOB_FORMAT, JOB_FORMAT_VERSION, false),
+    );
+    add(
+        EVENT_FORMAT,
+        schema_of::<EventDocument>(EVENT_FORMAT, JOB_FORMAT_VERSION, false),
+    );
+    add(
+        ASSEMBLY_FORMAT,
+        schema_of::<AssemblyDocument>(ASSEMBLY_FORMAT, ASSEMBLY_FORMAT_VERSION, false),
+    );
     schemas
 }
 
@@ -219,15 +236,44 @@ pub fn request_schemas() -> Map<String, Value> {
             .into_root_schema_for::<UpdateUserRequest>()
             .to_value(),
     );
+    add(
+        "FeaturesRequest",
+        generator()
+            .into_root_schema_for::<FeaturesRequest>()
+            .to_value(),
+    );
+    add(
+        "AssemblyRequest",
+        generator()
+            .into_root_schema_for::<AssemblyRequest>()
+            .to_value(),
+    );
+    add(
+        "SocketRequest",
+        generator()
+            .into_root_schema_for::<SocketRequest>()
+            .to_value(),
+    );
+    add(
+        "PinRequest",
+        generator().into_root_schema_for::<PinRequest>().to_value(),
+    );
     schemas
 }
 
 /// What a query parameter means (VN3, AU8).
-fn parameter(name: &str) -> Value {
+fn parameter(op: &str, name: &str) -> Value {
     let description = match name {
+        "after" if op == "jobs_events" => {
+            "the seq of the last persisted event read: replay after it (JB8)"
+        }
         "after" => "the cursor of the page to start after: the previous page's `next` holds it",
         "limit" => "items per page: 100 by default, at most limits.page_max",
         "owner" => "an admin's: the user whose items to list (AU8)",
+        "kind" => "only jobs of this kind (JB1)",
+        "state" => "only jobs in this state (JB3)",
+        "wait" => "seconds to wait for the job to end, at most limits.wait_max_seconds (JB11)",
+        "assembly" => "only the lines of this assembly, sha256:HEX",
         _ => "",
     };
     json!({ "name": name, "in": "query", "required": false, "description": description,
@@ -243,16 +289,23 @@ fn parameters(op: &Operation) -> Vec<Value> {
         .map(|name| {
             let mut parameter = json!({ "name": name, "in": "path", "required": true,
                                         "schema": { "type": "string" } });
-            if let (Some(map), "upload") = (parameter.as_object_mut(), name) {
-                map.insert(
-                    "description".into(),
-                    "sha256: and the bytes' 64 hex digits, either case (HX5)".into(),
-                );
+            let description = match name {
+                "upload" | "assembly" => {
+                    Some("sha256: and the bytes' 64 hex digits, either case (HX5)")
+                }
+                "socket" => Some("sk_ and 20 hex digits, and @rN for one revision (RA4, RA5)"),
+                "id" if op.path.starts_with("/v1/jobs") => {
+                    Some("j_ and 26 base32 characters (M6-55)")
+                }
+                _ => None,
+            };
+            if let (Some(map), Some(description)) = (parameter.as_object_mut(), description) {
+                map.insert("description".into(), description.into());
             }
             parameter
         })
         .collect();
-    out.extend(op.query.iter().map(|name| parameter(name)));
+    out.extend(op.query.iter().map(|name| parameter(op.id, name)));
     out
 }
 

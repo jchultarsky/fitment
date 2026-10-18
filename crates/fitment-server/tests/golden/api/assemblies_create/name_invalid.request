@@ -1,0 +1,6 @@
+POST /v1/assemblies
+authorization: Bearer <ada's reader token>
+content-type: application/json
+prefer: wait=30
+
+{"upload": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", "file_name": "../s02.stp"}

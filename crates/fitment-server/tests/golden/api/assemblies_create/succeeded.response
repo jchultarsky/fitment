@@ -1,0 +1,48 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: W/"j4.succeeded"
+fitment-format: fitment.job/1
+location: /v1/jobs/j_00000000000000000000000005
+preference-applied: wait=30
+repr-digest: sha-256=:lzRN1gYZPI+FKucKwbk9hwKrqvn3sctZQXM5VNQ020k=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.job",
+  "format_version": 1,
+  "id": "j_00000000000000000000000005",
+  "kind": "assembly_read",
+  "owner": "u_00000000000000000000000001",
+  "state": "succeeded",
+  "attempt": 1,
+  "request": {
+    "file_name": "s02_cbore.stp",
+    "upload": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a"
+  },
+  "request_sha256": "d75e2177d47d229ebdcd9b66db3ba54a24611153642b00506a2e8ea3b991f51f",
+  "queue_position": null,
+  "progress": null,
+  "cancel_requested": false,
+  "exit_code": 0,
+  "outcome": null,
+  "result": {
+    "href": "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a",
+    "format": "fitment.assembly"
+  },
+  "document": {
+    "href": "/v1/jobs/j_00000000000000000000000005/document",
+    "format": "fitment.parts",
+    "sha256": "8e3acf39e340caa082c4b4631dbc8558521e74b7a051dc18fb171d5edb41e363",
+    "bytes": 5125
+  },
+  "error": null,
+  "notes": [],
+  "pinned": false,
+  "times": {
+    "created": "2026-09-21T14:13:20Z",
+    "started": "2026-09-21T14:13:20Z",
+    "finished": "2026-09-21T14:13:20Z",
+    "expires": "2026-10-21T14:13:20Z"
+  }
+}

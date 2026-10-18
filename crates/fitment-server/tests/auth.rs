@@ -63,6 +63,103 @@ struct World {
     uploads: BTreeMap<Who, String>,
     /// The other user's upload.
     other_upload: String,
+    /// Each valid principal's assemblies, line and jobs, and the other
+    /// user's, for the routes of PR 5 (seeded only where an operation
+    /// needs them).
+    owned: BTreeMap<Who, Owned>,
+    other_owned: Option<Owned>,
+}
+
+/// What a user holds for the matrix's job routes.
+#[derive(Debug, Clone)]
+struct Owned {
+    /// `s02_cbore.stp`, registered, with a socket line of `BLOCK`.
+    assembly: String,
+    /// `s03_dowels.stp`, registered, with no line: the delete's target.
+    spare: String,
+    /// The line of `BLOCK`.
+    line: String,
+    /// A finished job (the extraction).
+    job: String,
+    /// A queued job, seeded: the cancel's target.
+    queued: String,
+}
+
+/// Registers the two assemblies and extracts the line as `token`'s user.
+async fn own(server: &TestServer, token: &str, user: i64) -> Owned {
+    let mut shas = Vec::new();
+    for name in ["s02_cbore.stp", "s03_dowels.stp"] {
+        let bytes = support::assembly(name);
+        let reply = server.send(support::put_upload(&bytes).bearer(token)).await;
+        assert!(reply.status.is_success());
+        let sha = fitment_core::sha256_hex(&bytes);
+        let body = json!({ "upload": format!("sha256:{sha}"), "file_name": name });
+        let job = server
+            .send(support::waiting("/v1/assemblies", &body).bearer(token))
+            .await;
+        assert_eq!(
+            job.json()["state"],
+            "succeeded",
+            "{}",
+            String::from_utf8_lossy(&job.body)
+        );
+        shas.push(sha);
+    }
+    let body = json!({ "assembly": format!("sha256:{}", shas[0]), "part": "BLOCK" });
+    let job = server
+        .send(support::waiting("/v1/sockets", &body).bearer(token))
+        .await
+        .json();
+    assert_eq!(job["state"], "succeeded", "{job}");
+    let href = job["result"]["href"].as_str().unwrap();
+    let line = href
+        .trim_start_matches("/v1/sockets/")
+        .split('@')
+        .next()
+        .unwrap()
+        .to_owned();
+    let _ = user;
+    Owned {
+        assembly: shas[0].clone(),
+        spare: shas[1].clone(),
+        line,
+        job: job["id"].as_str().unwrap().to_owned(),
+        queued: String::new(),
+    }
+}
+
+/// Seeds what PR 5's routes need, for every valid principal and the other.
+async fn seed_owned(world: &mut World) {
+    for who in [Who::Reader, Who::Writer, Who::Admin, Who::WriterAsReader] {
+        let owned = own(&world.server, &world.tokens[&who], world.users[&who].key).await;
+        world.owned.insert(who, owned);
+    }
+    world.other_owned = Some(own(&world.server, &world.other_token, world.other.key).await);
+    // The cancel's targets, seeded queued (on each user's upload, not an
+    // assembly a delete targets) with the dispatcher held, so its
+    // reconciliation leaves them queued.
+    world.server.server().hold_jobs();
+    let users: Vec<(Who, i64)> = world.users.iter().map(|(w, u)| (*w, u.key)).collect();
+    for (who, key) in users {
+        if let Some(owned) = world.owned.get_mut(&who) {
+            owned.queued = support::seed_job_input(
+                &world.server,
+                key,
+                &world.uploads[&who],
+                "features",
+                "queued",
+            );
+        }
+    }
+    let (other, upload) = (world.other.key, world.other_upload.clone());
+    if let Some(owned) = world.other_owned.as_mut() {
+        owned.queued = support::seed_job_input(&world.server, other, &upload, "features", "queued");
+    }
+}
+
+/// True for an operation whose target is a PR 5 resource.
+fn needs_owned(op: &str) -> bool {
+    op.starts_with("assemblies_") || op.starts_with("sockets_") || op.starts_with("jobs_")
 }
 
 fn world(passwords: bool) -> World {
@@ -124,6 +221,8 @@ fn world(passwords: bool) -> World {
         other_token,
         uploads,
         other_upload,
+        owned: BTreeMap::new(),
+        other_owned: None,
     }
 }
 
@@ -190,12 +289,79 @@ fn request(op: &Operation, world: &World, who: Who, owner: bool) -> Call {
                 &op.path.replace("{upload}", &format!("sha256:{target}")),
             )
         }
+        id if needs_owned(id) || id == "features_create" => owned_request(op, world, who, owner),
         other => panic!("VT23 has no row for the operation {other} (XH14)"),
     };
     match who {
         Who::None => call.anonymous(),
         Who::Malformed => call.header("authorization", "Bearer fitment_pat_not-a-token"),
         _ => call.bearer(&world.tokens[&who]),
+    }
+}
+
+/// PR 5's rows: each targets the principal's own resource (or, for one
+/// without valid credentials, the other user's, which it never reaches).
+fn owned_request(op: &Operation, world: &World, who: Who, owner: bool) -> Call {
+    let mine = world
+        .owned
+        .get(&who)
+        .filter(|_| owner)
+        .or(world.other_owned.as_ref());
+    let path = |o: &Owned| {
+        op.path
+            .replace(
+                "{assembly}",
+                &format!(
+                    "sha256:{}",
+                    if op.id == "assemblies_delete" {
+                        &o.spare
+                    } else {
+                        &o.assembly
+                    }
+                ),
+            )
+            .replace("{socket}", &o.line)
+            .replace(
+                "{id}",
+                match op.id {
+                    "jobs_cancel" => &o.queued,
+                    _ => &o.job,
+                },
+            )
+    };
+    let upload = world
+        .uploads
+        .get(&who)
+        .unwrap_or(&world.other_upload)
+        .clone();
+    match op.id {
+        "features_create" | "assemblies_create" => Call::json(
+            Method::POST,
+            op.path,
+            &json!({ "upload": format!("sha256:{upload}") }),
+        ),
+        "sockets_create" => {
+            let o = mine.expect("seeded");
+            Call::json(
+                Method::POST,
+                op.path,
+                &json!({ "assembly": format!("sha256:{}", o.assembly), "part": "BLOCK" }),
+            )
+        }
+        "assemblies_list" | "sockets_list" | "jobs_list" => Call::get(op.path),
+        "jobs_pin" => Call::json(
+            Method::POST,
+            &path(mine.expect("seeded")),
+            &json!({ "pinned": true }),
+        ),
+        _ => {
+            let method = match op.method {
+                "DELETE" => Method::DELETE,
+                "POST" => Method::POST,
+                _ => Method::GET,
+            };
+            Call::new(method, &path(mine.expect("seeded")))
+        }
     }
 }
 
@@ -220,7 +386,10 @@ fn effective(who: Who) -> Option<Role> {
 async fn every_operation_answers_each_principal_as_its_role_says() {
     let mut failures = Vec::new();
     for op in &OPERATIONS {
-        let world = world(matches!(op.id, "password" | "login"));
+        let mut world = world(matches!(op.id, "password" | "login"));
+        if needs_owned(op.id) {
+            seed_owned(&mut world).await;
+        }
         if op.id == "login" {
             let seams = world.server.server().seams();
             let phc = fitment_server::auth::password::hash(PASSWORD, seams.auth.pepper()).unwrap();

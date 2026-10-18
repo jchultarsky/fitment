@@ -64,6 +64,7 @@ CREATE TABLE assembly_parts (               -- derived, insert-only, by version 
   extractor_version INTEGER NOT NULL, socket_rules_version INTEGER NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('accepted','refused')),
   document_sha256 TEXT NOT NULL REFERENCES object(sha256),                 -- fitment.parts bytes
+  root TEXT,                                                               -- fitment.assembly's root, as JSON (PR 5)
   job INTEGER,                                                             -- JS13; no FK: the job record expires first
   PRIMARY KEY (assembly, extractor_version, socket_rules_version)) STRICT;
 
@@ -73,9 +74,11 @@ CREATE TABLE socket_line (                  -- RA4
   id TEXT NOT NULL CHECK (length(id) = 23 AND id GLOB 'sk_*'),
   assembly_sha256 TEXT NOT NULL CHECK (length(assembly_sha256) = 64),     -- no FK: an import may name
   definition TEXT NOT NULL, occurrence TEXT NOT NULL,                      -- an assembly not stored
-  created_ms INTEGER NOT NULL, deleted_ms INTEGER) STRICT;
+  last_n INTEGER NOT NULL DEFAULT 0,                                       -- RA4: its highest revision, kept when
+  created_ms INTEGER NOT NULL, deleted_ms INTEGER) STRICT;                 -- its revisions are swept (PR 5)
 CREATE UNIQUE INDEX socket_line_live ON socket_line(owner, id) WHERE deleted_ms IS NULL;   -- RA4: one live row,
 CREATE INDEX socket_line_rows ON socket_line(owner, id);                                    -- tombstones beside it
+CREATE INDEX socket_line_assembly ON socket_line(owner, assembly_sha256);                   -- RA6, the lists (PR 5)
 CREATE TABLE socket_revision (              -- RA5, OB5: insert-only
   key INTEGER PRIMARY KEY AUTOINCREMENT,
   line INTEGER NOT NULL REFERENCES socket_line(key),
@@ -111,6 +114,7 @@ CREATE TABLE job (
   exit INTEGER CHECK (exit IS NULL OR exit IN (0,1,2,3,4,5)),              -- the CLI's code (JB4)
   outcome TEXT, error_code TEXT, error_details TEXT,                       -- ER3: built from codes and values
   result_sha256 TEXT REFERENCES object(sha256), result_format TEXT,        -- the document's bytes
+  result TEXT,                                                             -- what it made: fitment.job's result.href
   index_sha256 TEXT REFERENCES object(sha256),                             -- DC12: a match's candidates index
   catalog_generation INTEGER, catalog_counts TEXT,                         -- M6-25; a write job's at dispatch (JB6)
   notes TEXT NOT NULL DEFAULT '[]',                                        -- JB10
@@ -118,6 +122,8 @@ CREATE TABLE job (
   UNIQUE (owner, idempotency_key)) STRICT;
 CREATE INDEX job_queue ON job(lane, state, key) WHERE state = 'queued';
 CREATE INDEX job_list ON job(owner, created_ms, id);
+CREATE INDEX job_expiry ON job(expires_ms) WHERE expires_ms IS NOT NULL;      -- JS9's retention (PR 5)
+CREATE INDEX job_live ON job(state) WHERE state IN ('running', 'cancelling'); -- SD4's recovery (PR 5)
 
 CREATE TABLE job_input (job INTEGER NOT NULL REFERENCES job(key) ON DELETE CASCADE,
   n INTEGER NOT NULL, sha256 TEXT NOT NULL REFERENCES object(sha256),
@@ -143,6 +149,10 @@ CREATE INDEX socket_revision_object ON socket_revision(document_sha256);
 CREATE INDEX job_input_object ON job_input(sha256);
 CREATE INDEX job_result ON job(result_sha256);
 CREATE INDEX job_index ON job(index_sha256);
+-- JS13 (PR 5): a re-run after a crash looks for a row naming its job.
+CREATE INDEX assembly_parts_job ON assembly_parts(job);
+CREATE INDEX socket_revision_job ON socket_revision(job);
+CREATE INDEX socket_revision_parent ON socket_revision(parent);
 CREATE TABLE object_candidate (sha256 TEXT PRIMARY KEY) STRICT;            -- OB4: the sweep's to look at
 CREATE TRIGGER upload_gone AFTER DELETE ON upload
 BEGIN INSERT OR IGNORE INTO object_candidate VALUES (OLD.sha256); END;

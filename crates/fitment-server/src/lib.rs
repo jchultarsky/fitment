@@ -6,19 +6,23 @@
 //! listener until its shutdown future ends. `main.rs` alone reads the
 //! process's arguments, installs the log subscriber and exits.
 //!
-//! This is M6's PR 4: PR 2's skeleton (configuration, the four server
+//! This is M6's PR 5: PR 2's skeleton (configuration, the four server
 //! routes `/v1/health`, `/v1/ready`, `/v1/info` and `/v1/openapi.json`,
 //! the hardening layers, the error registry, `server.db` with its lease,
 //! the OpenAPI document), PR 3's authentication (users and bearer tokens,
 //! roles on every route, `/v1/auth/*` and the offline admin commands,
-//! [`admin`]), and uploads: `/v1/uploads`, streamed, hashed and capped,
-//! per user, into the content-addressed object store ([`uploads`],
-//! [`state::objects`]). Jobs and the catalog's routes come in the PRs of
-//! the design's section 12.
+//! [`admin`]), PR 4's uploads into the content-addressed object store
+//! ([`uploads`], [`state::objects`]), and jobs ([`jobs`]): lanes, permits
+//! and fairness, events, idempotency, waits, cancellation, deadlines,
+//! retention, shutdown and recovery, with `features`, `assembly_read` and
+//! `socket_extract` as their first kinds, assemblies and socket lines
+//! ([`assemblies`]), and metrics ([`metrics`]). Matching and the catalog's
+//! routes come in the PRs of the design's section 12.
 #![forbid(unsafe_code)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
 pub mod admin;
+pub mod assemblies;
 pub mod auth;
 pub mod catalog;
 pub mod config;
@@ -27,7 +31,9 @@ pub mod hooks;
 pub mod http;
 pub mod ids;
 pub mod info;
+pub mod jobs;
 pub mod matching;
+pub mod metrics;
 mod net;
 #[cfg(feature = "schema")]
 pub mod openapi;
@@ -138,6 +144,10 @@ pub(crate) struct Shared {
     pub(crate) objects: state::Objects,
     /// Uploads' slots and staged bytes (UP4).
     pub(crate) uploads: Arc<uploads::Uploads>,
+    /// The job system (JS1 to JS13).
+    pub(crate) jobs: Arc<jobs::Jobs>,
+    /// The counters (OP6).
+    pub(crate) metrics: metrics::Metrics,
     /// Set when the server drains (SD1): readiness answers 503.
     pub(crate) draining: AtomicBool,
     /// When the warning of an untrusted `X-Forwarded-For` was last logged.
@@ -172,6 +182,33 @@ impl Shared {
                 .saturating_mul(60),
         );
         state::sweep::sweep(&self.db, &self.objects, self.ids.now_ms(), life)
+    }
+
+    /// The jobs' part of JS9's sweep (JB12, OB4): terminal jobs past their
+    /// retention and not pinned deleted, their events and inputs with them;
+    /// revisions of deleted lines no job cites deleted. Blocking. Returns
+    /// the jobs and the revisions deleted.
+    pub(crate) fn sweep_jobs(&self) -> Result<(usize, usize), state::DbError> {
+        let now = self.ids.now_ms();
+        let mut jobs = 0;
+        loop {
+            let deleted = self.db.expire_jobs(now, state::sweep::EXPIRE_BATCH)?;
+            jobs += deleted;
+            self.db.yield_writer();
+            if deleted < usize::try_from(state::sweep::EXPIRE_BATCH).unwrap_or(usize::MAX) {
+                break;
+            }
+        }
+        let mut revisions = 0;
+        loop {
+            let deleted = self.db.sweep_revisions(state::sweep::EXPIRE_BATCH)?;
+            revisions += deleted;
+            self.db.yield_writer();
+            if deleted == 0 {
+                break;
+            }
+        }
+        Ok((jobs, revisions))
     }
 
     /// How often the lease is renewed.
@@ -258,6 +295,10 @@ impl Server {
         let ids = ids::Ids::default();
         let (db, _) = state::open(&config.paths.state, &ids.id("u"), ids.now_ms())?;
         let holder = ids.id("l");
+        #[cfg(feature = "test-support")]
+        if config.test.lease_stale_ms > 0 {
+            db.set_lease_stale(config.test.lease_stale_ms);
+        }
         db.take_lease(&holder, ids.now_ms())
             .map_err(|e| StartError::State(e.into()))?;
         let catalog = catalog::CatalogDir::new(&config.paths.catalog, &config.catalog);
@@ -281,8 +322,9 @@ impl Server {
             Err(error) => tracing::warn!(kind = ?error.kind(), "state:tmp could not be emptied"),
         }
         let uploads = Arc::new(uploads::Uploads::new(&config.limits));
+        let jobs = Arc::new(jobs::Jobs::new(&config));
         tracing::info!("the state directory and the catalog are open");
-        Ok(Self {
+        let server = Self {
             shared: Arc::new(Shared {
                 config,
                 db,
@@ -294,6 +336,8 @@ impl Server {
                 verifier,
                 objects,
                 uploads,
+                jobs,
+                metrics: metrics::Metrics::default(),
                 draining: AtomicBool::new(false),
                 forwarded_warned_ms: std::sync::atomic::AtomicI64::new(0),
                 lease_ok: AtomicBool::new(true),
@@ -305,7 +349,15 @@ impl Server {
                 #[cfg(feature = "test-support")]
                 hooks: hooks::Hooks::default(),
             }),
-        })
+        };
+        #[cfg(feature = "test-support")]
+        server
+            .shared
+            .hooks
+            .configure(&server.shared.config.test.hooks);
+        // SD3 (6), SD4: recovery, before any request is answered.
+        jobs::recover(&server.shared).map_err(|e| StartError::State(e.into()))?;
+        Ok(server)
     }
 
     /// The routes, with every layer (section 4.12), for `oneshot` tests
@@ -314,9 +366,10 @@ impl Server {
         http::router(Arc::clone(&self.shared))
     }
 
-    /// Serves `listener` until `shutdown` ends (HX1), then drains: no new
-    /// connection, in-flight requests given up to 10 s, the lease released
-    /// (SD1's first and last steps; the jobs' drain comes with PR 5).
+    /// Serves `listener` until `shutdown` ends (HX1), then drains (SD1): no
+    /// new connection or job, streams told, in-flight requests given up to
+    /// 10 s and running jobs `jobs.drain_seconds`, then the last writes and
+    /// the lease released.
     ///
     /// # Errors
     ///
@@ -349,6 +402,7 @@ impl Server {
             db: &self.shared.db,
             objects: &self.shared.objects,
             uploads: &self.shared.uploads,
+            jobs: &self.shared.jobs,
         }
     }
 
@@ -372,6 +426,35 @@ impl Server {
     /// SQLite's.
     pub fn sweep_store(&self) -> Result<state::sweep::Swept, state::DbError> {
         self.shared.sweep_store()
+    }
+
+    /// The jobs' part of JS9's sweep (JB12, OB4): expired job records and
+    /// uncited revisions of deleted lines. Blocking. Returns how many of
+    /// each were deleted.
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn sweep_jobs(&self) -> Result<(usize, usize), state::DbError> {
+        self.shared.sweep_jobs()
+    }
+
+    /// OP6's exposition, as the metrics listener serves it. Blocking.
+    pub fn metrics_text(&self) -> String {
+        metrics::render(&self.shared)
+    }
+
+    /// OP11: holds the dispatcher, so submitted jobs stay queued.
+    #[cfg(feature = "test-support")]
+    pub fn hold_jobs(&self) {
+        self.shared.jobs.hold(true);
+    }
+
+    /// OP11: lets a held dispatcher go on, starting what may run.
+    #[cfg(feature = "test-support")]
+    pub fn resume_jobs(&self) {
+        self.shared.jobs.hold(false);
+        self.shared.jobs.kick(&self.shared);
     }
 
     /// OP11: renews the lease every `interval` instead of 10 s, so a test
@@ -406,4 +489,6 @@ pub struct Seams<'a> {
     pub objects: &'a state::Objects,
     /// Uploads' slots and staged bytes (UP4).
     pub uploads: &'a uploads::Uploads,
+    /// The job system: its deadline and heartbeat seams, its counts.
+    pub jobs: &'a jobs::Jobs,
 }

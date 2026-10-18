@@ -1,0 +1,10 @@
+200
+cache-control: no-store
+content-type: application/x-ndjson
+fitment-format: fitment.job.event/1
+x-request-id: r_00000000000000000000000006
+
+{"format":"fitment.job.event","format_version":1,"job":"j_00000000000000000000000005","seq":1,"type":"state","state":"queued","attempt":1}
+{"format":"fitment.job.event","format_version":1,"job":"j_00000000000000000000000005","seq":2,"type":"state","state":"running","attempt":1}
+{"format":"fitment.job.event","format_version":1,"job":"j_00000000000000000000000005","seq":3,"type":"state","state":"succeeded","attempt":1}
+{"format":"fitment.job.event","format_version":1,"job":"j_00000000000000000000000005","seq":4,"type":"end","state":"succeeded","exit_code":0,"outcome":null,"result":null,"document":{"href":"/v1/jobs/j_00000000000000000000000005/document","format":"fitment.features","sha256":"e81492b45296559e1642d3d7a810d31a4e9b58a6e57aead472e7497079f740ca","bytes":20881},"error":null}

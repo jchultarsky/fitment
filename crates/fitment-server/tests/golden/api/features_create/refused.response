@@ -1,0 +1,44 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: W/"j4.refused"
+fitment-format: fitment.job/1
+location: /v1/jobs/j_00000000000000000000000005
+preference-applied: wait=30
+repr-digest: sha-256=:8m4v2cTYihq1GohUtWXayGRHdmE4DgxjWjXB+R5S2GE=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.job",
+  "format_version": 1,
+  "id": "j_00000000000000000000000005",
+  "kind": "features",
+  "owner": "u_00000000000000000000000001",
+  "state": "refused",
+  "attempt": 1,
+  "request": {
+    "upload": "sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff"
+  },
+  "request_sha256": "83962276cd1fd82de79f3bf667e0f77c47a9922bf917abf301011ff4e2cc927c",
+  "queue_position": null,
+  "progress": null,
+  "cancel_requested": false,
+  "exit_code": 3,
+  "outcome": null,
+  "result": null,
+  "document": {
+    "href": "/v1/jobs/j_00000000000000000000000005/document",
+    "format": "fitment.features",
+    "sha256": "02295f4f8e911e9735fd9ff0268ae998ed951efc7dba8f871dd0fe0077528b43",
+    "bytes": 595
+  },
+  "error": null,
+  "notes": [],
+  "pinned": false,
+  "times": {
+    "created": "2026-09-21T14:13:20Z",
+    "started": "2026-09-21T14:13:20Z",
+    "finished": "2026-09-21T14:13:20Z",
+    "expires": "2026-10-21T14:13:20Z"
+  }
+}

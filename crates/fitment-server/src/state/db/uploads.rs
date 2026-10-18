@@ -8,7 +8,7 @@
 
 use rusqlite::{Connection, OptionalExtension as _, Row, TransactionBehavior, params};
 
-use super::{Db, DbError, lock};
+use super::{Db, DbError};
 
 /// What an object is to one user (UP3, section 7.11's `fitment.upload`):
 /// what holds it among the user's rows.
@@ -62,6 +62,8 @@ pub struct Unnamed {
     pub failed: Vec<String>,
     /// Candidates looked at.
     pub looked: usize,
+    /// The batch ended at its time budget with candidates left unlooked.
+    pub cut: bool,
 }
 
 /// How a delete ended (RA6, UP5).
@@ -186,7 +188,7 @@ impl Db {
         place: impl FnOnce() -> std::io::Result<()>,
     ) -> Result<Stored, StoreError> {
         let size = i64::try_from(bytes).unwrap_or(i64::MAX);
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let prior: Option<i64> = tx
             .query_row(
@@ -338,7 +340,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn delete_upload(&self, owner: i64, sha256: &str, now_ms: i64) -> Result<Deleted, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let live: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM upload WHERE owner = ?1 AND sha256 = ?2
@@ -375,7 +377,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn expire_uploads(&self, now_ms: i64, batch: u32) -> Result<usize, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let deleted = tx.execute(
             "DELETE FROM upload WHERE key IN (
@@ -391,7 +393,10 @@ impl Db {
     /// IMMEDIATE`: one no row names is unlinked by `unlink` and its row
     /// deleted (ST5); one a row names is no candidate any more. Returns
     /// those unlinked, those whose unlink failed (left, a candidate still,
-    /// for the next sweep) and how many candidates were looked at.
+    /// for the next sweep) and how many candidates were looked at. The
+    /// batch also ends once `budget` has passed, so a slow file system
+    /// (about 3 ms an unlink on CI's Windows runner) keeps it short too:
+    /// a request waits for the writer at most one such batch (ST5).
     ///
     /// # Errors
     ///
@@ -399,9 +404,11 @@ impl Db {
     pub fn unlink_unnamed(
         &self,
         batch: u32,
+        budget: std::time::Duration,
         mut unlink: impl FnMut(&str) -> std::io::Result<()>,
     ) -> Result<Unnamed, DbError> {
-        let mut conn = lock(&self.writer);
+        let until = std::time::Instant::now() + budget;
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let candidates: Vec<String> = {
             let mut statement =
@@ -410,12 +417,14 @@ impl Db {
                 .query_map([batch], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
-        let mut out = Unnamed {
-            looked: candidates.len(),
-            ..Unnamed::default()
-        };
+        let mut out = Unnamed::default();
         let named_sql = format!("SELECT {NAMED}");
         for sha in candidates {
+            if out.looked > 0 && std::time::Instant::now() >= until {
+                out.cut = true;
+                break;
+            }
+            out.looked += 1;
             let row: bool = tx.query_row(
                 "SELECT EXISTS (SELECT 1 FROM object WHERE sha256 = ?1)",
                 [&sha],
@@ -449,7 +458,7 @@ impl Db {
         names: &[String],
         mut unlink: impl FnMut(&str) -> std::io::Result<()>,
     ) -> Result<usize, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut unlinked = 0;
         for name in names {
@@ -465,6 +474,37 @@ impl Db {
         // Nothing was written: the transaction held the lock only.
         tx.rollback()?;
         Ok(unlinked)
+    }
+
+    /// The length of the object `sha256`, if it has a row (OB3's read).
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn object_bytes(&self, sha256: &str) -> Result<Option<u64>, DbError> {
+        self.read(|conn| {
+            conn.query_row(
+                "SELECT bytes FROM object WHERE sha256 = ?1",
+                [sha256],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|b| b.map(|b| u64::try_from(b).unwrap_or(0)))
+        })
+    }
+
+    /// The bytes of every object, summed (OP6's `fitment_state_object_bytes`).
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn object_total(&self) -> Result<u64, DbError> {
+        self.read(|conn| {
+            conn.query_row("SELECT coalesce(sum(bytes), 0) FROM object", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|b| u64::try_from(b).unwrap_or(0))
+        })
     }
 
     /// Every object row, with its length: for the tests' and the sweep's

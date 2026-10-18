@@ -1,0 +1,3 @@
+DELETE /v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a
+authorization: Bearer <ada's reader token>
+

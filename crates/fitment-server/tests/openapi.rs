@@ -256,6 +256,8 @@ fn every_document_validates_against_its_schema() {
         "fitment.catalog",
         "fitment.upload",
         "fitment.page",
+        "fitment.job",
+        "fitment.assembly",
     ] {
         assert!(
             checked.get(format).copied().unwrap_or(0) > 0,

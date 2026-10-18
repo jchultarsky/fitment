@@ -9,7 +9,7 @@
 
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
-doc-valid-idents = ["OpenAPI", "SQLite", "..", "JSON"]
+doc-valid-idents = ["OpenAPI", "SQLite", "..", "JSON", "ETag", "ETags"]
 
 disallowed-methods = [
   { path = "std::env::var", reason = "SV7: only config.rs reads the environment" },

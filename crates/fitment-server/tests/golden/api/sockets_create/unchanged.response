@@ -1,0 +1,51 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: W/"j4.succeeded"
+fitment-format: fitment.job/1
+location: /v1/jobs/j_00000000000000000000000009
+preference-applied: wait=30
+repr-digest: sha-256=:bWJ6J5W9CESJbTh4uCprIG/HkALe6kcqXGy9msCUPT4=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.job",
+  "format_version": 1,
+  "id": "j_00000000000000000000000009",
+  "kind": "socket_extract",
+  "owner": "u_00000000000000000000000001",
+  "state": "succeeded",
+  "attempt": 1,
+  "request": {
+    "assembly": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a",
+    "carry": true,
+    "carry_from": null,
+    "occurrence": null,
+    "part": "BLOCK"
+  },
+  "request_sha256": "ff9ed5e2d9397e22f5971829d1c56332cf671dabda786a3d1e37052f12822944",
+  "queue_position": null,
+  "progress": null,
+  "cancel_requested": false,
+  "exit_code": 0,
+  "outcome": "unchanged",
+  "result": {
+    "href": "/v1/sockets/sk_4c08cde1bddb3df26f3b@r1",
+    "format": "fitment.socket"
+  },
+  "document": {
+    "href": "/v1/jobs/j_00000000000000000000000009/document",
+    "format": "fitment.socket",
+    "sha256": "3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d",
+    "bytes": 18885
+  },
+  "error": null,
+  "notes": [],
+  "pinned": false,
+  "times": {
+    "created": "2026-09-21T14:13:20Z",
+    "started": "2026-09-21T14:13:20Z",
+    "finished": "2026-09-21T14:13:20Z",
+    "expires": "2026-10-21T14:13:20Z"
+  }
+}

@@ -58,6 +58,15 @@ pub(crate) async fn serve(
     let (lost_tx, mut lost) = tokio::sync::oneshot::channel::<()>();
     let lease = tokio::spawn(renew(Arc::clone(&shared), lost_tx));
     let sweep = tokio::spawn(sweep(Arc::clone(&shared)));
+    // SD3 (9): the dispatcher starts on the jobs recovery queued again.
+    shared.jobs.kick(&shared);
+    let metrics = match metrics_listener(&shared).await {
+        Ok(task) => task,
+        Err(error) => {
+            tracing::error!(error = %error, "the metrics listener could not bind");
+            None
+        }
+    };
     let mut lease_lost = false;
     tokio::pin!(shutdown);
     loop {
@@ -85,18 +94,35 @@ pub(crate) async fn serve(
         };
         connection(&shared, &router, &graceful, stream, peer, permit);
     }
+    // SD1: (1) drain; (2) the dispatcher stops, and (4) streams and waits
+    // are told; (3) running jobs get `jobs.drain_seconds` while in-flight
+    // requests get 10 s; (5) the last writes.
     server.drain();
     drop(listener);
-    if tokio::time::timeout(DRAIN_REQUESTS, graceful.shutdown())
-        .await
-        .is_err()
-    {
-        tracing::warn!("in-flight requests outlived the drain");
-    }
+    shared.jobs.stop_dispatch();
+    let drain = Duration::from_secs(shared.config.jobs.drain_seconds);
+    let requests = async {
+        if tokio::time::timeout(DRAIN_REQUESTS, graceful.shutdown())
+            .await
+            .is_err()
+        {
+            tracing::warn!("in-flight requests outlived the drain");
+        }
+    };
+    tokio::join!(requests, shared.jobs.drain(drain));
     lease.abort();
     sweep.abort();
+    if let Some(metrics) = metrics {
+        metrics.abort();
+    }
     let released = Arc::clone(&shared);
-    let _ = tokio::task::spawn_blocking(move || released.release()).await;
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Err(error) = released.db.checkpoint() {
+            tracing::warn!(error = %error, "server.db could not be checkpointed");
+        }
+        released.release();
+    })
+    .await;
     if lease_lost {
         tracing::error!("stopped: the state directory's lease was lost");
         return Err(io::Error::other("the state directory's lease was lost"));
@@ -273,11 +299,12 @@ async fn renew(shared: Arc<Shared>, lost: tokio::sync::oneshot::Sender<()>) {
     let _ = lost.send(());
 }
 
-/// JS9's sweep as far as PR 4 has it, every `jobs.sweep_minutes`: the
-/// auth part (AU6, audit flaw 4: the batched `last_used_ms` written,
-/// tokens dead for 30 days deleted), then the store's (UP5, OB4: expired
-/// uploads, then objects and files no row names). PR 5's sweep adds the
-/// jobs; a graceful stop writes the batch a last time (SD1).
+/// JS9's sweep, every `jobs.sweep_minutes`: the auth part (AU6, audit
+/// flaw 4: the batched `last_used_ms` written, tokens dead for 30 days
+/// deleted), then the jobs' (JB12, OB4: records past retention, revisions
+/// of deleted lines no job cites), then the store's (UP5, OB4: expired
+/// uploads, then objects and files no row names); a graceful stop writes
+/// the batch a last time (SD1).
 async fn sweep(shared: Arc<Shared>) {
     let every = Duration::from_secs(shared.config.jobs.sweep_minutes.max(1).saturating_mul(60));
     let mut tick = tokio::time::interval(every);
@@ -289,6 +316,12 @@ async fn sweep(shared: Arc<Shared>) {
             Ok(Ok(deleted)) => tracing::info!(deleted, "swept the tokens"),
             Ok(Err(error)) => tracing::warn!(error = %error, "the tokens could not be swept"),
             Err(_) => tracing::warn!("the tokens' sweep failed"),
+        }
+        let sweeping = Arc::clone(&shared);
+        match tokio::task::spawn_blocking(move || sweeping.sweep_jobs()).await {
+            Ok(Ok((jobs, revisions))) => tracing::info!(jobs, revisions, "swept the jobs"),
+            Ok(Err(error)) => tracing::warn!(error = %error, "the jobs could not be swept"),
+            Err(_) => tracing::warn!("the jobs' sweep failed"),
         }
         let sweeping = Arc::clone(&shared);
         match tokio::task::spawn_blocking(move || sweeping.sweep_store()).await {
@@ -304,4 +337,83 @@ async fn sweep(shared: Arc<Shared>) {
             Err(_) => tracing::warn!("the store's sweep failed"),
         }
     }
+}
+
+/// OP6: the metrics listener's connections at once; one more is closed
+/// at accept (review S11 of PR 5).
+const METRICS_CONNECTIONS: usize = 16;
+
+/// OP6: the metrics listener on `metrics.listen`, if set: `GET /metrics`
+/// answers Prometheus text, without authentication, on its own port.
+async fn metrics_listener(shared: &Arc<Shared>) -> io::Result<Option<tokio::task::JoinHandle<()>>> {
+    let address = shared.config.metrics.listen.clone();
+    if address.is_empty() {
+        return Ok(None);
+    }
+    let listener = TcpListener::bind(address.as_str()).await?;
+    tracing::info!(address = %listener.local_addr()?, "metrics listening");
+    let shared = Arc::clone(shared);
+    let slots = Arc::new(tokio::sync::Semaphore::new(METRICS_CONNECTIONS));
+    Ok(Some(tokio::spawn(async move {
+        loop {
+            // Review S11 of PR 5: an error such as EMFILE repeats at once,
+            // so the loop waits before it accepts again.
+            let Ok((stream, _)) = listener.accept().await else {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            };
+            let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+                drop(stream);
+                continue;
+            };
+            let service = metrics_service(&shared);
+            tokio::spawn(async move {
+                let _slot = slot;
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .timer(TokioTimer::new())
+                    .header_read_timeout(Duration::from_secs(10))
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await;
+            });
+        }
+    })))
+}
+
+/// OP6: `GET /metrics`'s text, `404` at any other path.
+fn metrics_service(
+    shared: &Arc<Shared>,
+) -> impl hyper::service::Service<
+    hyper::Request<Incoming>,
+    Response = hyper::Response<Body>,
+    Error = std::convert::Infallible,
+    Future = impl Future<Output = Result<hyper::Response<Body>, std::convert::Infallible>> + Send,
+> + Clone
++ Send
++ 'static {
+    let serving = Arc::clone(shared);
+    hyper::service::service_fn(move |request: hyper::Request<Incoming>| {
+        let rendering = Arc::clone(&serving);
+        async move {
+            let found = request.uri().path() == "/metrics";
+            let text = if found {
+                tokio::task::spawn_blocking(move || crate::metrics::render(&rendering))
+                    .await
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let mut response = hyper::Response::new(Body::from(text));
+            if found {
+                response.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    hyper::header::HeaderValue::from_static(
+                        "text/plain; version=0.0.4; charset=utf-8",
+                    ),
+                );
+            } else {
+                *response.status_mut() = hyper::StatusCode::NOT_FOUND;
+            }
+            Ok::<_, std::convert::Infallible>(response)
+        }
+    })
 }

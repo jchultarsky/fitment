@@ -178,7 +178,26 @@ fn only_main_reads_arguments_and_exits() {
 /// `matching.rs` the only one naming a `Matcher` or a `MatchDocument`.
 #[test]
 fn only_catalog_rs_names_the_catalog_crate() {
-    assert_eq!(naming("fitment_catalog"), set(&["catalog.rs"]));
+    // As tools/check-core.sh's `\bfitment_catalog\b`: a metric named
+    // `fitment_catalog_generation` names no crate.
+    let crate_named: BTreeSet<String> = sources()
+        .into_iter()
+        .filter(|(_, text)| {
+            text.lines()
+                .map(str::trim_start)
+                .filter(|l| !l.starts_with("//"))
+                .any(|l| {
+                    l.match_indices("fitment_catalog").any(|(at, n)| {
+                        !l[at + n.len()..]
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                    })
+                })
+        })
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(crate_named, set(&["catalog.rs"]));
     for name in naming("Matcher").into_iter().chain(naming("MatchDocument")) {
         assert!(
             name == "matching.rs" || name == "openapi.rs",
