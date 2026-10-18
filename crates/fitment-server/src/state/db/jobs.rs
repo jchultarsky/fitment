@@ -10,7 +10,7 @@
 
 use rusqlite::{Connection, OptionalExtension as _, Row, Transaction, TransactionBehavior, params};
 
-use super::{Db, DbError, StoreError, lock};
+use super::{Db, DbError, StoreError};
 use crate::jobs::model::{Kind, State};
 
 /// A job's row, as the documents need it.
@@ -391,7 +391,7 @@ impl Db {
     ///
     /// SQLite's; nothing is committed.
     pub fn submit_job(&self, new: &NewJob<'_>) -> Result<Submitted, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some((key, sha)) = new.idempotency {
             let found: Option<(i64, Option<String>)> = tx
@@ -600,7 +600,7 @@ impl Db {
         now_ms: i64,
         deadline_ms: Option<i64>,
     ) -> Result<Option<(JobRow, EventRow)>, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let row = by_key(&tx, key)?;
         if row.state != State::Queued {
@@ -631,7 +631,7 @@ impl Db {
         retention_ms: i64,
         end: &dyn Fn(&JobRow) -> String,
     ) -> Result<Cancelled, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let row = by_key(&tx, key)?;
         match row.state {
@@ -671,7 +671,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn deadline_job(&self, key: i64, now_ms: i64) -> Result<Option<EventRow>, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let row = by_key(&tx, key)?;
         if row.state != State::Running {
@@ -698,7 +698,7 @@ impl Db {
         retention_ms: i64,
         end: &dyn Fn(&JobRow) -> String,
     ) -> Result<Finished, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let row = by_key(&tx, key)?;
         let ending = match row.state {
@@ -746,7 +746,7 @@ impl Db {
         retention_ms: i64,
         end: &dyn Fn(&JobRow) -> String,
     ) -> Result<Finished, StoreError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let row = by_key(&tx, key)?;
         let ending = match row.state {
@@ -801,7 +801,7 @@ impl Db {
         retention_ms: i64,
         end: &dyn Fn(&JobRow) -> String,
     ) -> Result<Vec<Recovered>, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let keys: Vec<i64> = {
             let mut statement = tx.prepare(
@@ -868,7 +868,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn pin_job(&self, key: i64, pinned: bool) -> Result<(), DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
             "UPDATE job SET pinned = ?2 WHERE key = ?1",
@@ -885,7 +885,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn delete_job(&self, key: i64) -> Result<bool, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let row = by_key(&tx, key)?;
         if !row.state.terminal() {
@@ -903,7 +903,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn expire_jobs(&self, now_ms: i64, batch: u32) -> Result<usize, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let deleted = tx.execute(
             "DELETE FROM job WHERE key IN (

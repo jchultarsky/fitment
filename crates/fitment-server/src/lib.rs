@@ -194,6 +194,7 @@ impl Shared {
         loop {
             let deleted = self.db.expire_jobs(now, state::sweep::EXPIRE_BATCH)?;
             jobs += deleted;
+            self.db.yield_writer();
             if deleted < usize::try_from(state::sweep::EXPIRE_BATCH).unwrap_or(usize::MAX) {
                 break;
             }
@@ -202,6 +203,7 @@ impl Shared {
         loop {
             let deleted = self.db.sweep_revisions(state::sweep::EXPIRE_BATCH)?;
             revisions += deleted;
+            self.db.yield_writer();
             if deleted == 0 {
                 break;
             }

@@ -9,7 +9,7 @@
 use rusqlite::{Connection, OptionalExtension as _, Row, Transaction, TransactionBehavior, params};
 
 use super::jobs::{AssemblyRows, SocketRows};
-use super::{Db, DbError, lock};
+use super::{Db, DbError};
 
 /// A `fitment.parts` row of an assembly (RA3).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -455,7 +455,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn name_assembly(&self, owner: i64, sha256: &str, name: &str) -> Result<bool, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let Some(key) = live_assembly(&tx, owner, sha256)? else {
             return Ok(false);
@@ -476,7 +476,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn delete_assembly(&self, owner: i64, sha256: &str) -> Result<AssemblyDeleted, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let Some(key) = live_assembly(&tx, owner, sha256)? else {
             return Ok(AssemblyDeleted::NotFound);
@@ -601,7 +601,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn delete_line(&self, owner: i64, id: &str, now_ms: i64) -> Result<bool, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = tx.execute(
             "UPDATE socket_line SET deleted_ms = ?3,
@@ -621,7 +621,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn sweep_revisions(&self, batch: u32) -> Result<usize, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let deleted = tx.execute(
             "DELETE FROM socket_revision WHERE key IN (

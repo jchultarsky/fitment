@@ -231,6 +231,11 @@ pub struct Db {
     /// [`LEASE_STALE_MS`]; a `test-support` seam shortens it for a start
     /// after a kill (VT10).
     lease_stale_ms: std::sync::atomic::AtomicI64,
+    /// Callers waiting for the writer, so a long maintenance pass can step
+    /// aside between its batches ([`Db::yield_writer`]): `std`'s mutex is
+    /// not fair, and a loop that unlocks and locks again at once can keep
+    /// it from a waiting request for the whole pass.
+    writers_waiting: std::sync::atomic::AtomicUsize,
 }
 
 impl std::fmt::Debug for Db {
@@ -246,6 +251,27 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Db {
+    /// The writer, counted among [`Db::yield_writer`]'s waiters until it
+    /// is held.
+    fn writer(&self) -> MutexGuard<'_, Connection> {
+        use std::sync::atomic::Ordering;
+        self.writers_waiting.fetch_add(1, Ordering::SeqCst);
+        let guard = lock(&self.writer);
+        self.writers_waiting.fetch_sub(1, Ordering::SeqCst);
+        guard
+    }
+
+    /// Between a maintenance pass's batches (JS9's sweep, ST5): while
+    /// another caller waits for the writer, waits for it to take it, for
+    /// at most 100 ms a batch, so a request waits at most one batch.
+    pub fn yield_writer(&self) {
+        use std::sync::atomic::Ordering;
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(100);
+        while self.writers_waiting.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     /// Opens `server.db` in `dir`, creating schema 1 and the `system` user
     /// when it is new (OB1, M6-56). A foreign or newer database is refused
     /// before anything is changed in it.
@@ -325,6 +351,7 @@ impl Db {
                 readers: Mutex::new(readers),
                 path,
                 lease_stale_ms: std::sync::atomic::AtomicI64::new(LEASE_STALE_MS),
+                writers_waiting: std::sync::atomic::AtomicUsize::new(0),
             },
             found,
         ))
@@ -361,7 +388,7 @@ impl Db {
     ///
     /// [`DbError::LeaseHeld`], or SQLite's.
     pub fn take_lease(&self, holder: &str, now_ms: i64) -> Result<(), DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current: Option<(String, i64)> = tx
             .query_row(
@@ -401,7 +428,7 @@ impl Db {
     ///
     /// SQLite's: the database is not writable.
     pub fn renew_lease(&self, holder: &str, now_ms: i64) -> Result<bool, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = tx.execute(
             "UPDATE lease SET heartbeat_ms = ?2 WHERE one = 1 AND holder = ?1",
@@ -418,7 +445,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn release_lease(&self, holder: &str) -> Result<(), DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM lease WHERE one = 1 AND holder = ?1", [holder])?;
         tx.commit()?;
@@ -448,7 +475,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn checkpoint(&self) -> Result<(), DbError> {
-        let conn = lock(&self.writer);
+        let conn = self.writer();
         conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
     }

@@ -8,7 +8,7 @@
 
 use rusqlite::{Connection, OptionalExtension as _, Row, TransactionBehavior, params};
 
-use super::{Db, DbError, lock};
+use super::{Db, DbError};
 
 /// What an object is to one user (UP3, section 7.11's `fitment.upload`):
 /// what holds it among the user's rows.
@@ -186,7 +186,7 @@ impl Db {
         place: impl FnOnce() -> std::io::Result<()>,
     ) -> Result<Stored, StoreError> {
         let size = i64::try_from(bytes).unwrap_or(i64::MAX);
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let prior: Option<i64> = tx
             .query_row(
@@ -338,7 +338,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn delete_upload(&self, owner: i64, sha256: &str, now_ms: i64) -> Result<Deleted, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let live: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM upload WHERE owner = ?1 AND sha256 = ?2
@@ -375,7 +375,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn expire_uploads(&self, now_ms: i64, batch: u32) -> Result<usize, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let deleted = tx.execute(
             "DELETE FROM upload WHERE key IN (
@@ -401,7 +401,7 @@ impl Db {
         batch: u32,
         mut unlink: impl FnMut(&str) -> std::io::Result<()>,
     ) -> Result<Unnamed, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let candidates: Vec<String> = {
             let mut statement =
@@ -449,7 +449,7 @@ impl Db {
         names: &[String],
         mut unlink: impl FnMut(&str) -> std::io::Result<()>,
     ) -> Result<usize, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut unlinked = 0;
         for name in names {
