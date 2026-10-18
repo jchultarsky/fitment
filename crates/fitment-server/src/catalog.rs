@@ -84,7 +84,7 @@ pub struct CatalogState {
     pub reindex: Option<String>,
     /// The WAL barrier is up (CX6; PR 7).
     pub wal_barrier: bool,
-    /// A job lane's queue is full (JS5; PR 5).
+    /// A job lane's queue is full (JS5).
     pub queues_full: bool,
 }
 

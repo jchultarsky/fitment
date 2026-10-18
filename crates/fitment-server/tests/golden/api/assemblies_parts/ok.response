@@ -1,0 +1,10 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: "sha256:8e3acf39e340caa082c4b4631dbc8558521e74b7a051dc18fb171d5edb41e363"
+fitment-exit-code: 0
+fitment-format: fitment.parts/1
+repr-digest: sha-256=:jjrPOeNAyqCCxLRjHbyFWFIedLegUdwY+xcdXttB42M=:
+x-request-id: r_00000000000000000000000006
+
+<the bytes of crates/fitment/tests/golden/parts/s02_cbore.json>

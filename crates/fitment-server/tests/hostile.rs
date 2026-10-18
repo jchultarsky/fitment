@@ -1150,3 +1150,293 @@ async fn upload_names_are_strict() {
     );
     assert_eq!(server.object_files(), [sha256]);
 }
+
+// ---------------------------------------------------------------- jobs
+
+use fitment_server::hooks::Gate;
+
+/// A server of `config`, with ada and bob, readers, each holding an upload
+/// of the unit part `p01_through.stp`: their tokens and its SHA-256.
+fn jobs_world(
+    config: impl FnOnce(&mut fitment_server::Config),
+) -> (TestServer, Vec<String>, String) {
+    let dirs = Dirs::new();
+    let mut c = dirs.config();
+    config(&mut c);
+    let server = TestServer::in_process(dirs, c);
+    let bytes = support::part("p01_through.stp");
+    let mut tokens = Vec::new();
+    for name in ["ada", "bob", "cyd"] {
+        let user = seed_user(server.server(), name, Role::Reader, None);
+        tokens.push(seed_token(server.server(), &user, Role::Reader, 60).1);
+        support::seed_upload(server.server(), user.key, &bytes);
+    }
+    (server, tokens, fitment_core::sha256_hex(&bytes))
+}
+
+fn submission(sha: &str, token: &str) -> Call {
+    post(
+        "/v1/features",
+        token,
+        &json!({ "upload": format!("sha256:{sha}") }),
+    )
+}
+
+fn job_rows(server: &TestServer) -> i64 {
+    let conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    conn.query_row("SELECT count(*) FROM job", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// JS5, JS4, VT21: past its owner's cap of queued jobs a submission is
+/// `429 too_many_jobs`, past its lane's `503 queue_full`, each retryable
+/// with `Retry-After`, and neither writes a row; `fitment.info` says a
+/// queue is full (DC11).
+#[tokio::test]
+async fn queues_and_owners_are_capped_before_any_row() {
+    let (server, tokens, sha) = jobs_world(|c| {
+        c.jobs.queue_query = 3;
+        c.jobs.per_owner_queued = 2;
+    });
+    server.server().hold_jobs();
+    for _ in 0..2 {
+        assert_eq!(server.send(submission(&sha, &tokens[0])).await.status, 202);
+    }
+    let owner = server.send(submission(&sha, &tokens[0])).await;
+    assert_eq!(
+        (owner.status.as_u16(), owner.code()),
+        (429, "too_many_jobs".into())
+    );
+    assert!(owner.header("retry-after").is_some());
+    assert_eq!(owner.json()["retryable"], true);
+    assert_eq!(server.send(submission(&sha, &tokens[1])).await.status, 202);
+    let lane = server.send(submission(&sha, &tokens[2])).await;
+    assert_eq!(
+        (lane.status.as_u16(), lane.code()),
+        (503, "queue_full".into())
+    );
+    assert!(lane.header("retry-after").is_some());
+    assert_eq!(job_rows(&server), 3, "a refusal leaves nothing behind");
+    let info = server.get("/v1/info").await.json();
+    assert_eq!(info["catalog"]["state"]["queues_full"], true);
+    server.server().resume_jobs();
+    let listed = server
+        .send(Call::get("/v1/jobs?wait=0").bearer(&tokens[0]))
+        .await;
+    assert_eq!(listed.status, 400, "the list takes no wait");
+}
+
+/// JS10, VT24's stream case: at most `jobs.streams_per_user` event streams
+/// a user over all their tokens, and `jobs.streams` in all: past either,
+/// `429 too_many_streams`; a stream closed gives its slot back.
+#[tokio::test]
+async fn event_streams_are_capped_per_user_and_in_all() {
+    let (server, tokens, sha) = jobs_world(|c| {
+        c.jobs.streams_per_user = 2;
+        c.jobs.streams = 3;
+    });
+    server.server().hold_jobs();
+    let mut ids = Vec::new();
+    for token in &tokens {
+        ids.push(
+            server.send(submission(&sha, token)).await.json()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let stream = |i: usize| Call::get(&format!("/v1/jobs/{}/events", ids[i])).bearer(&tokens[i]);
+    let first = server.open(stream(0)).await;
+    let second = server.open(stream(0)).await;
+    assert_eq!(
+        (first.status().as_u16(), second.status().as_u16()),
+        (200, 200)
+    );
+    let refused = server.send(stream(0)).await;
+    assert_eq!(refused.code(), "too_many_streams", "per user");
+    let bob = server.open(stream(1)).await;
+    assert_eq!(bob.status(), 200);
+    assert_eq!(
+        server.send(stream(2)).await.code(),
+        "too_many_streams",
+        "in all"
+    );
+    drop(first);
+    // The slot is given back once the stream's task sees its client gone.
+    let start = Instant::now();
+    loop {
+        let reply = server.open(stream(2)).await;
+        if reply.status() == 200 {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the slot never came back"
+        );
+        tokio::task::yield_now().await;
+    }
+    drop((second, bob));
+}
+
+/// JB7, JS8, SN7, VT41's deadline case: a job past its deadline is made
+/// `cancelling`, then, when its call returns, `failed`,
+/// `deadline_exceeded`, with no document and no verdict.
+#[tokio::test]
+async fn a_job_past_its_deadline_fails_with_no_document() {
+    let (server, tokens, sha) = jobs_world(|_| {});
+    let seams = server.server().seams();
+    seams.jobs.set_deadline(Duration::from_millis(200));
+    let gate = Gate::new();
+    seams.hooks.set("job.read", Action::Pause(gate.clone()));
+    let job = server.send(submission(&sha, &tokens[0])).await.json();
+    let id = job["id"].as_str().unwrap().to_owned();
+    assert!(gate.arrived(1, Duration::from_secs(30)).await);
+    let events = Call::get(&format!("/v1/jobs/{id}/events")).bearer(&tokens[0]);
+    let mut body = server.open(events).await.into_body();
+    let seen = support::lines(&mut body, Duration::from_secs(30), |e| {
+        e["state"] == "cancelling"
+    })
+    .await;
+    assert_eq!(seen.last().unwrap()["state"], "cancelling");
+    gate.open();
+    let ended = support::lines(&mut body, Duration::from_secs(30), |e| e["type"] == "end").await;
+    let end = ended.last().unwrap();
+    assert_eq!(end["state"], "failed");
+    assert_eq!(end["error"]["code"], "deadline_exceeded");
+    assert!(end["document"].is_null() && end["outcome"].is_null());
+    let job = server
+        .send(Call::get(&format!("/v1/jobs/{id}")).bearer(&tokens[0]))
+        .await
+        .json();
+    assert_eq!(job["state"], "failed");
+    assert_eq!(
+        job["exit_code"],
+        serde_json::Value::Null,
+        "no CLI run passes a deadline"
+    );
+}
+
+/// JB11, M6-53: `Prefer: wait=N` past `limits.wait_max_seconds` is applied
+/// as the cap and `Preference-Applied` says so; a wait outlives the
+/// handler's own time; it answers `200` when the job ends within it and
+/// `202` with the job as it stands when it does not; `?wait=N` long-polls
+/// the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn waits_are_capped_and_outlive_the_handler() {
+    let (server, tokens, sha) = jobs_world(|c| {
+        c.server.handler_timeout_seconds = 1;
+        c.limits.wait_max_seconds = 2;
+    });
+    let server = std::sync::Arc::new(server);
+    let gate = Gate::new();
+    server
+        .server()
+        .seams()
+        .hooks
+        .set("job.read", Action::Pause(gate.clone()));
+    let call = submission(&sha, &tokens[0]).header("prefer", "wait=999");
+    let start = Instant::now();
+    let reply = server.send(call).await;
+    assert_eq!(
+        reply.status,
+        202,
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
+    assert!(
+        start.elapsed() >= Duration::from_secs(2),
+        "it waited past the handler's 1 s"
+    );
+    assert_eq!(reply.header("preference-applied"), Some("wait=2"));
+    assert_eq!(reply.json()["state"], "running");
+    let id = reply.json()["id"].as_str().unwrap().to_owned();
+    let polling = std::sync::Arc::clone(&server);
+    let (path, token) = (format!("/v1/jobs/{id}?wait=60"), tokens[0].clone());
+    let poll = tokio::spawn(async move { polling.send(Call::get(&path).bearer(&token)).await });
+    gate.open();
+    let polled = poll.await.unwrap();
+    assert_eq!(polled.json()["state"], "succeeded");
+    server.server().seams().hooks.clear("job.read");
+    let waited = server
+        .send(submission(&sha, &tokens[0]).header("prefer", "wait=2"))
+        .await;
+    assert_eq!(waited.status, 200);
+    assert_eq!(waited.json()["state"], "succeeded");
+}
+
+/// VT21, JB12, JS9, VN3: 10,000 finished jobs list once each across pages
+/// of at most `limits.page_max`, each page bounded in bytes; past their
+/// retention (the test-support clock) the sweep deletes all but a pinned
+/// one, whose record stays.
+#[tokio::test]
+async fn ten_thousand_jobs_list_expire_and_one_stays_pinned() {
+    let (server, tokens, sha) = jobs_world(|_| {});
+    let job = server
+        .send(submission(&sha, &tokens[0]).header("prefer", "wait=30"))
+        .await
+        .json();
+    assert_eq!(job["state"], "succeeded");
+    let conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    let owner: i64 = conn
+        .query_row(
+            "SELECT owner FROM job WHERE id = ?1",
+            [job["id"].as_str().unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    for n in 0..9_999 {
+        tx.execute(
+            "INSERT INTO job (id, owner, kind, lane, state, request, request_sha256, request_id,
+                              created_ms, finished_ms, exit, expires_ms)
+             VALUES (?1, ?2, 'features', 'query', 'succeeded', x'7b7d', ?3, 'r_seeded', ?4, ?4, 0, ?5)",
+            rusqlite::params![
+                format!("j_{n:026}"),
+                owner,
+                "0".repeat(64),
+                1_790_000_000_000_i64 - 1 - i64::from(n),
+                1_790_000_000_000_i64 + 30 * 86_400_000
+            ],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut next = Some("/v1/jobs?limit=1000".to_owned());
+    let mut pages = 0;
+    while let Some(path) = next {
+        let page = server.send(Call::get(&path).bearer(&tokens[0])).await;
+        assert!(page.body.len() < 4 << 20, "a page is bounded");
+        let page = page.json();
+        for item in page["items"].as_array().unwrap() {
+            assert!(
+                seen.insert(item["id"].as_str().unwrap().to_owned()),
+                "listed once"
+            );
+        }
+        next = page["next"].as_str().map(str::to_owned);
+        pages += 1;
+    }
+    assert_eq!((seen.len(), pages), (10_000, 10));
+    let admin = seed_user(server.server(), "root", Role::Admin, None);
+    let (_, root) = seed_token(server.server(), &admin, Role::Admin, 400);
+    let pin = post(
+        &format!("/v1/jobs/{}/pin", job["id"].as_str().unwrap()),
+        &root,
+        &json!({ "pinned": true }),
+    );
+    assert_eq!(server.send(pin).await.json()["pinned"], true);
+    server
+        .server()
+        .seams()
+        .ids
+        .fix_time(1_790_000_000_000 + 31 * 86_400_000);
+    let (jobs, _) = server.server().sweep_jobs().unwrap();
+    assert_eq!(jobs, 9_999);
+    let left = server
+        .send(Call::get("/v1/jobs").bearer(&tokens[0]))
+        .await
+        .json();
+    assert_eq!(left["items"].as_array().unwrap().len(), 1);
+    assert_eq!(left["items"][0]["id"], job["id"]);
+}

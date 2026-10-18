@@ -33,6 +33,21 @@ pub struct Json<T>(pub T);
 impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Json<T> {
     type Rejection = ApiError;
 
+    async fn from_request(request: Request, state: &S) -> Result<Self, ApiError> {
+        Sent::<T>::from_request(request, state)
+            .await
+            .map(|sent| Self(sent.0))
+    }
+}
+
+/// A JSON request body read as [`Json`] reads it, with the bytes as sent:
+/// what an `Idempotency-Key` is bound to (JB9).
+#[derive(Debug, Clone)]
+pub struct Sent<T>(pub T, pub Bytes);
+
+impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Sent<T> {
+    type Rejection = ApiError;
+
     async fn from_request(request: Request, _: &S) -> Result<Self, ApiError> {
         check_content_type(request.headers())?;
         let cap = request
@@ -50,7 +65,8 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Json<T> {
                 ApiError::new(ErrorCode::BadRequest, "the body could not be read")
             }
         })?;
-        decode(&bytes.to_bytes()).map(Json)
+        let bytes = bytes.to_bytes();
+        decode(&bytes).map(|value| Self(value, bytes))
     }
 }
 

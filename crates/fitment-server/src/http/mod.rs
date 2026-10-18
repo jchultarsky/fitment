@@ -8,6 +8,7 @@
 //! so a usage error is answered before anything is read (ER5). The routes
 //! come from `OPERATIONS` alone (XH14).
 
+pub(crate) mod cache;
 pub mod error;
 pub mod extract;
 pub mod json;
@@ -87,7 +88,8 @@ pub(crate) fn router(shared: Arc<Shared>) -> Router {
                 request_id = id,
                 method = %request.method(),
                 route,
-                user = tracing::field::Empty
+                user = tracing::field::Empty,
+                job = tracing::field::Empty
             )
         })
         .on_response(
@@ -164,7 +166,16 @@ fn per_route(
     // HX3: a handler's time; an upload's is the whole upload's, which the
     // upload checks itself, so the layer stands behind it by a minute.
     let upload = op.body == RequestBody::Upload;
-    let timeout = if upload {
+    // JB11, M6-53: a wait is not handler work; the handler times its own
+    // part, and the layer stands behind the longest wait.
+    let waits = op.mode == operations::Mode::Job || op.id == "jobs_get";
+    let timeout = if waits {
+        Duration::from_secs(
+            u64::from(shared.config.server.handler_timeout_seconds)
+                + u64::from(shared.config.limits.wait_max_seconds)
+                + 10,
+        )
+    } else if upload {
         Duration::from_secs(
             shared
                 .config
@@ -463,7 +474,18 @@ async fn finish(State(shared): State<Arc<Shared>>, mut request: Request, next: N
         request.headers_mut().insert(&REQUEST_ID, value);
     }
     request.extensions_mut().insert(RequestId(id.clone()));
+    // SD4: jobs recovery queued again run from the first request, for a
+    // server that has not served yet (in-process tests).
+    shared.jobs.kick_once(&shared);
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or_else(|| "(none)".to_owned(), |p| p.as_str().to_owned());
+    let started = std::time::Instant::now();
     let mut response = next.run(request).await;
+    shared
+        .metrics
+        .request(&route, response.status().as_u16(), started.elapsed());
     if let Some(error) = response.extensions_mut().remove::<ApiError>() {
         let problem = error.document(&method, &id);
         let body = json::bytes(

@@ -1,0 +1,3 @@
+GET /v1/sockets/sk_4c08cde1bddb3df26f3b/revisions
+authorization: Bearer <ada's reader token>
+

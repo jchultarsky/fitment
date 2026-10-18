@@ -1,0 +1,10 @@
+200
+cache-control: private, max-age=31536000, immutable
+content-type: application/json
+etag: "sha256:e81492b45296559e1642d3d7a810d31a4e9b58a6e57aead472e7497079f740ca"
+fitment-exit-code: 0
+fitment-format: fitment.features/1
+repr-digest: sha-256=:6BSStFKWVZ4WQtPXqBDTGk6bWKbleurUcudJcHn3QMo=:
+x-request-id: r_00000000000000000000000006
+
+<the bytes of crates/fitment/tests/golden/features/p01_through.json>

@@ -1,0 +1,21 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:TMMTGYygE7JPyc3Xb9A7bQyDHhSHE4Co+E60EANB2N0=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/assembly_in_use",
+  "title": "A socket line names the assembly",
+  "status": 409,
+  "detail": "a socket line of yours names the assembly: delete the line first",
+  "code": "assembly_in_use",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000008"
+}

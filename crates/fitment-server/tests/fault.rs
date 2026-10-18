@@ -514,3 +514,584 @@ async fn whatever_stands_at_an_objects_name_is_replaced() {
     );
     assert_eq!(server.temporaries(), Vec::<std::path::PathBuf>::new());
 }
+
+// ---------------------------------------------------------------- jobs
+
+use fitment_server::hooks::{Action, Gate};
+use serde_json::{Value, json};
+use support::waiting;
+
+/// The unit part the job tests read, and the CLI's features of it.
+fn p01() -> (Vec<u8>, Vec<u8>) {
+    (
+        support::part("p01_through.stp"),
+        support::cli_golden("features", "p01_through.json"),
+    )
+}
+
+/// XH12's third invariant for a job that did not succeed: no verdict.
+fn no_verdict(job: &Value) {
+    if job["state"] != "succeeded" {
+        assert!(job["outcome"].is_null(), "XH12: {job}");
+    }
+}
+
+/// The body of a features job of `sha`.
+fn features(sha: &str) -> Value {
+    json!({ "upload": format!("sha256:{sha}") })
+}
+
+/// VT9, JS6, SN7: a job that panics at each named point (its input read,
+/// its call returned, its document stored, just before its finishing
+/// transaction) ends `failed`, `internal`, with no document and no
+/// verdict; the panic's text is in the log under the job's id and in no
+/// response (the harness's scan); the server keeps serving, and the job
+/// after it ends with the CLI's bytes. A panic after the commit leaves the
+/// job's end as it committed (XH12's first invariant).
+#[tokio::test]
+async fn a_job_that_panics_fails_internal_and_the_server_goes_on() {
+    let server = TestServer::fresh();
+    let (bytes, golden) = p01();
+    let sha = server.upload(&bytes).await;
+    let hooks = &server.server().seams().hooks;
+    for point in ["job.read", "job.ran", "job.stored", "job.committing"] {
+        hooks.set(point, Action::Panic(format!("a planted panic at {point}")));
+        let job = server
+            .send(waiting("/v1/features", &features(&sha)))
+            .await
+            .json();
+        assert_eq!(job["state"], "failed", "{point}: {job}");
+        assert_eq!(job["error"]["code"], "internal", "{point}");
+        assert!(job["document"].is_null(), "{point}");
+        no_verdict(&job);
+        let id = job["id"].as_str().unwrap();
+        let log = support::logs::text();
+        assert!(
+            log.lines()
+                .any(|l| l.contains(id) && l.contains(&format!("a planted panic at {point}"))),
+            "{point}: the panic is logged under the job's id"
+        );
+        hooks.clear(point);
+        let next = server
+            .send(waiting("/v1/features", &features(&sha)))
+            .await
+            .json();
+        assert_eq!(next["state"], "succeeded", "{point}");
+        assert_eq!(server.document(&next).await.body, golden, "{point}");
+    }
+    hooks.set(
+        "job.committed",
+        Action::Panic("a planted panic after the commit".into()),
+    );
+    let job = server
+        .send(waiting("/v1/features", &features(&sha)))
+        .await
+        .json();
+    hooks.clear("job.committed");
+    assert_eq!(job["state"], "succeeded", "{job}");
+    assert_eq!(server.document(&job).await.body, golden);
+}
+
+/// VT11, OB2, OB5, UP7: a features job on a seam that fails each file call
+/// of its run in turn (its input's read, its document's temporary file,
+/// chunk, sync, rename, flag and directory sync), as a full disk and as
+/// any other error: the job never succeeds with a short document (it
+/// fails, with no document, `storage_full`, `io_error` or `blob_damaged`),
+/// nothing half-stored is visible, a sweep clears what is left, and the
+/// same job then succeeds with the CLI's bytes.
+#[tokio::test]
+async fn every_file_call_of_a_jobs_document_fails_in_turn() {
+    let (bytes, golden) = p01();
+    let run = |seam: CountingFs| {
+        let bytes = bytes.clone();
+        async move {
+            let dirs = Dirs::new();
+            let config = dirs.config();
+            let server = TestServer::in_process_with_fs(dirs, config, Arc::new(seam));
+            // Uploaded as the harness's user, the same calls each time; an
+            // upload the seam fails is VT11's upload half, not this one.
+            let reply = server.send(put_upload(&bytes)).await;
+            let sha = reply
+                .status
+                .is_success()
+                .then(|| fitment_core::sha256_hex(&bytes));
+            (server, sha)
+        }
+    };
+    let probe = CountingFs::new();
+    let (server, sha) = run(probe.clone()).await;
+    let sha = sha.unwrap();
+    let before = probe.calls().len();
+    let job = server
+        .send(waiting("/v1/features", &features(&sha)))
+        .await
+        .json();
+    assert_eq!(job["state"], "succeeded");
+    let calls = probe.calls()[before..].to_vec();
+    assert!(calls.iter().any(|c| matches!(c, FsCall::WriteChunk(..))));
+    drop(server);
+    for k in before..before + calls.len() {
+        for kind in [io::ErrorKind::StorageFull, io::ErrorKind::Other] {
+            let what = format!("{:?} failed as {kind:?}", calls[k - before]);
+            let (server, sha) = run(CountingFs::failing_at(k, kind)).await;
+            let Some(sha) = sha else { continue };
+            let job = server
+                .send(waiting("/v1/features", &features(&sha)))
+                .await
+                .json();
+            if job["state"] == "succeeded" {
+                assert_eq!(
+                    server.document(&job).await.body,
+                    golden,
+                    "{what}: a whole document"
+                );
+            } else {
+                assert_eq!(job["state"], "failed", "{what}: {job}");
+                assert!(job["document"].is_null(), "{what}");
+                let code = job["error"]["code"].as_str().unwrap().to_owned();
+                assert!(
+                    ["storage_full", "io_error", "blob_damaged", "internal"]
+                        .contains(&code.as_str()),
+                    "{what}: {code}"
+                );
+                no_verdict(&job);
+            }
+            assert!(server.store_problems().is_empty(), "{what}");
+            server.server().sweep_store().unwrap();
+            assert!(server.temporaries().is_empty(), "{what}");
+            let again = server
+                .send(waiting("/v1/features", &features(&sha)))
+                .await
+                .json();
+            assert_eq!(again["state"], "succeeded", "{what}: the rerun");
+            assert_eq!(server.document(&again).await.body, golden, "{what}");
+        }
+    }
+}
+
+/// A fresh server with `s02_cbore.stp` registered: its SHA-256.
+async fn registered() -> (TestServer, String) {
+    let server = TestServer::fresh();
+    let job = server
+        .register(&support::assembly("s02_cbore.stp"), "s02_cbore.stp")
+        .await;
+    assert_eq!(job["state"], "succeeded");
+    let sha = fitment_core::sha256_hex(&support::assembly("s02_cbore.stp"));
+    (server, sha)
+}
+
+/// The extraction of `BLOCK` from `sha`, submitted without a wait: its id.
+async fn submit_extraction(server: &TestServer, sha: &str) -> String {
+    let body = json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK" });
+    let reply = server
+        .send(Call::json(Method::POST, "/v1/sockets", &body))
+        .await;
+    assert_eq!(
+        reply.status,
+        202,
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
+    reply.json()["id"].as_str().unwrap().to_owned()
+}
+
+/// The caller's socket lines.
+async fn lines(server: &TestServer) -> Vec<Value> {
+    server.get("/v1/sockets").await.json()["items"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+/// VT41, JB5, JS8 for these kinds: a cancel at each point a running
+/// extraction may be stopped at (its input read, its call returned, its
+/// document stored, just before its finishing transaction) makes it
+/// `cancelling` until its call returns, then `cancelled`, with no
+/// document and no revision; one after its commit is `409 job_finished`,
+/// the job as it ended; a queued job is `cancelled` at once.
+#[tokio::test]
+async fn a_cancel_stops_a_job_where_it_may_stop() {
+    for point in [
+        "job.read",
+        "job.ran",
+        "job.stored",
+        "job.committing",
+        "job.committed",
+    ] {
+        let (server, sha) = registered().await;
+        let gate = Gate::new();
+        server
+            .server()
+            .seams()
+            .hooks
+            .set(point, Action::Pause(gate.clone()));
+        let id = submit_extraction(&server, &sha).await;
+        assert!(gate.arrived(1, Duration::from_secs(30)).await, "{point}");
+        let cancel = server
+            .send(Call::new(Method::POST, &format!("/v1/jobs/{id}/cancel")))
+            .await;
+        gate.open();
+        let job = server.finished_job(&id, Duration::from_secs(60)).await;
+        if point == "job.committed" {
+            assert_eq!(cancel.code(), "job_finished", "{point}");
+            assert_eq!(job["state"], "succeeded");
+            assert_eq!(lines(&server).await.len(), 1);
+            continue;
+        }
+        assert_eq!(cancel.status, 202, "{point}");
+        assert_eq!(cancel.json()["state"], "cancelling", "{point}");
+        assert_eq!(cancel.json()["cancel_requested"], true);
+        assert_eq!(job["state"], "cancelled", "{point}: {job}");
+        assert!(
+            job["document"].is_null() && job["result"].is_null(),
+            "{point}"
+        );
+        no_verdict(&job);
+        assert!(lines(&server).await.is_empty(), "{point}: no revision");
+        assert!(server.temporaries().is_empty(), "{point}");
+    }
+    let (server, sha) = registered().await;
+    server.server().hold_jobs();
+    let id = submit_extraction(&server, &sha).await;
+    let cancel = server
+        .send(Call::new(Method::POST, &format!("/v1/jobs/{id}/cancel")))
+        .await;
+    assert_eq!(cancel.json()["state"], "cancelled");
+    server.server().resume_jobs();
+    let job = server.finished_job(&id, Duration::from_secs(30)).await;
+    assert_eq!(job["state"], "cancelled");
+}
+
+/// VT49, OB4, JS11, UP5: a job's inputs are held from the commit that
+/// creates it (its `job_input` rows exist at `job.submitted`, before it is
+/// queued, and its upload's `DELETE` is `409 upload_in_use`) until it
+/// ends (the rows gone, the `DELETE` `204`); an upload a queued job names
+/// outlives its lifetime: the sweep keeps its object and the job runs on
+/// it.
+#[tokio::test]
+async fn a_job_holds_its_inputs_from_submission_to_its_end() {
+    let server = Arc::new(TestServer::fresh());
+    let (bytes, golden) = p01();
+    let sha = server.upload(&bytes).await;
+    let gate = Gate::new();
+    server
+        .server()
+        .seams()
+        .hooks
+        .set("job.submitted", Action::Pause(gate.clone()));
+    let submitting = Arc::clone(&server);
+    let body = features(&sha);
+    let task = tokio::spawn(async move {
+        submitting
+            .send(Call::json(Method::POST, "/v1/features", &body))
+            .await
+    });
+    assert!(gate.arrived(1, Duration::from_secs(30)).await);
+    let conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    let inputs = |conn: &rusqlite::Connection| -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM job_input WHERE sha256 = ?1",
+            [&sha],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(inputs(&conn), 1, "held from its commit");
+    let delete = Call::new(Method::DELETE, &format!("/v1/uploads/sha256:{sha}"));
+    assert_eq!(server.send(delete.clone()).await.code(), "upload_in_use");
+    gate.open();
+    let reply = task.await.unwrap();
+    assert_eq!(reply.status, 202);
+    let id = reply.json()["id"].as_str().unwrap().to_owned();
+    let job = server.finished_job(&id, Duration::from_secs(30)).await;
+    assert_eq!(job["state"], "succeeded");
+    assert_eq!(inputs(&conn), 0, "released at its end");
+    assert_eq!(server.send(delete).await.status, 204);
+    // A queued job keeps its expired upload's object.
+    let sha = server.upload(&bytes).await;
+    server.server().hold_jobs();
+    let queued = server
+        .send(Call::json(Method::POST, "/v1/features", &features(&sha)))
+        .await
+        .json();
+    let seams = server.server().seams();
+    seams.ids.fix_time(1_790_000_000_000 + 2 * 86_400_000);
+    let swept = server.server().sweep_store().unwrap();
+    assert!(swept.expired >= 1 && swept.unlinked.is_empty(), "{swept:?}");
+    server.server().resume_jobs();
+    let job = server
+        .finished_job(queued["id"].as_str().unwrap(), Duration::from_secs(30))
+        .await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    assert_eq!(server.document(&job).await.body, golden);
+}
+
+/// SD4, JB6, SD5, JS13: a start settles what the last process left, from
+/// `server.db` alone: a running pure job is queued again with its next
+/// attempt and runs; one on its second attempt is `interrupted`,
+/// retryable, its key released; a cancelled one is `cancelled`; one past
+/// its deadline `failed`, `deadline_exceeded`; an extraction whose
+/// revision committed ends with it and is not run again (one revision);
+/// queued jobs run in their order. XH12: each ends once, and stays so.
+#[tokio::test]
+async fn a_start_settles_what_the_last_process_left() {
+    let (server, sha) = registered().await;
+    let socket = server.extract(&sha, "BLOCK").await;
+    assert_eq!(socket["state"], "succeeded");
+    let (bytes, golden) = p01();
+    let part = server.upload(&bytes).await;
+    server.server().hold_jobs();
+    let mut ids = Vec::new();
+    for n in 0..5 {
+        let call = Call::json(Method::POST, "/v1/features", &features(&part))
+            .header("idempotency-key", &format!("key-{n}"));
+        ids.push(
+            server.send(call).await.json()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let config = server.dirs.config();
+    let conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    let set = |id: &str, sql: &str| {
+        conn.execute(&format!("UPDATE job SET {sql} WHERE id = ?1"), [id])
+            .unwrap();
+    };
+    set(&ids[0], "state = 'running', attempt = 1");
+    set(&ids[1], "state = 'running', attempt = 2");
+    set(&ids[2], "state = 'cancelling', cancel_requested = 1");
+    set(&ids[3], "state = 'cancelling', cancel_requested = 0");
+    set(
+        socket["id"].as_str().unwrap(),
+        "state = 'running', exit = NULL",
+    );
+    drop(conn);
+    let server = server.restart(config);
+    let ended = |id: &str| {
+        let id = id.to_owned();
+        let server = &server;
+        async move { server.finished_job(&id, Duration::from_secs(60)).await }
+    };
+    let first = ended(&ids[0]).await;
+    assert_eq!(
+        (first["state"].as_str(), first["attempt"].as_i64()),
+        (Some("succeeded"), Some(2))
+    );
+    assert_eq!(server.document(&first).await.body, golden);
+    let second = ended(&ids[1]).await;
+    assert_eq!(second["state"], "interrupted");
+    assert_eq!(second["error"]["code"], "job_interrupted");
+    assert_eq!(second["error"]["retryable"], true);
+    no_verdict(&second);
+    let again = Call::json(Method::POST, "/v1/features", &features(&part))
+        .header("idempotency-key", "key-1");
+    let resubmitted = server.send(again).await.json();
+    assert_ne!(resubmitted["id"], second["id"], "JB9: the key was released");
+    assert_eq!(ended(&ids[2]).await["state"], "cancelled");
+    let deadline = ended(&ids[3]).await;
+    assert_eq!(deadline["error"]["code"], "deadline_exceeded");
+    no_verdict(&deadline);
+    assert_eq!(ended(&ids[4]).await["state"], "succeeded");
+    let extraction = ended(socket["id"].as_str().unwrap()).await;
+    assert_eq!(extraction["state"], "succeeded");
+    assert_eq!(extraction["result"], socket["result"]);
+    let line = &lines(&server).await[0];
+    assert_eq!(line["current"]["n"], 1, "JS13: not run again");
+}
+
+/// VT10, JB6, JS11, JS13, SD2, SD4, SD5: the built binary aborted at each
+/// named point of a job's life, then started again on the same
+/// directories: the job ends once, as JB6 says; a pure job run again ends
+/// with the CLI's bytes, on its second attempt if the first had started;
+/// one whose result committed is not run again (one revision, its
+/// attempt 1); one killed on both attempts is `interrupted`; a request
+/// whose answer the abort lost is found again by its `Idempotency-Key`.
+/// On Unix and Windows alike (`abort()` at the hook).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_abort_at_every_hook_point_leaves_each_job_ending_once() {
+    const RESTART: &str = "[test]\nlease_stale_ms = 1\n";
+    let golden = support::cli_golden("socket", "s02_cbore--BLOCK.json");
+    let points = [
+        "job.submitted",
+        "job.dispatched",
+        "job.read",
+        "job.ran",
+        "job.stored",
+        "job.committing",
+        "job.committed",
+    ];
+    for point in points {
+        for kind in ["socket", "assembly"] {
+            let mut server = TestServer::process(Dirs::new(), RESTART);
+            let bytes = support::assembly("s02_cbore.stp");
+            let sha = server.upload(&bytes).await;
+            let register = support::waiting(
+                "/v1/assemblies",
+                &json!({ "upload": format!("sha256:{sha}"), "file_name": "s02_cbore.stp" }),
+            );
+            if kind == "socket" {
+                assert_eq!(
+                    server.send(register.clone()).await.json()["state"],
+                    "succeeded"
+                );
+            }
+            let hooks = format!("{RESTART}hooks = {{ \"{point}\" = \"abort\" }}\n");
+            server.restart_process(&hooks);
+            let call = if kind == "socket" {
+                support::waiting(
+                    "/v1/sockets",
+                    &json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK" }),
+                )
+            } else {
+                register.clone()
+            }
+            .header("idempotency-key", "the-one");
+            let answered = server.try_send(call.clone()).await;
+            assert!(answered.is_none(), "{point} {kind}: the abort answered");
+            server.restart_process(RESTART);
+            let what = format!("{point} {kind}");
+            let job = server.send(call).await.json();
+            let id = job["id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{what}: {job}"))
+                .to_owned();
+            let job = server.finished_job(&id, Duration::from_secs(60)).await;
+            assert_eq!(job["state"], "succeeded", "{what}: {job}");
+            assert!(
+                server.temporaries().is_empty(),
+                "{what}: SD2, SD4: no temporary left"
+            );
+            let started = !matches!(point, "job.submitted" | "job.committed");
+            assert_eq!(job["attempt"], if started { 2 } else { 1 }, "{what}");
+            if kind == "socket" {
+                assert_eq!(server.document(&job).await.body, golden, "{what}");
+                let lines = server.get("/v1/sockets").await.json();
+                assert_eq!(lines["items"][0]["current"]["n"], 1, "{what}: one revision");
+            } else {
+                let parts = server
+                    .get(&format!("/v1/assemblies/sha256:{sha}/parts"))
+                    .await;
+                assert_eq!(
+                    parts.body,
+                    support::cli_golden("parts", "s02_cbore.json"),
+                    "{what}"
+                );
+            }
+            let all = server.get("/v1/jobs?kind=socket_extract").await.json();
+            if kind == "socket" {
+                assert_eq!(all["items"].as_array().unwrap().len(), 1, "{what}: one job");
+            }
+        }
+    }
+    // Killed on both attempts: interrupted.
+    let mut server = TestServer::process(Dirs::new(), RESTART);
+    let sha = server.upload(&support::assembly("s02_cbore.stp")).await;
+    let hooks = format!("{RESTART}hooks = {{ \"job.read\" = \"abort\" }}\n");
+    server.restart_process(&hooks);
+    let register = support::waiting(
+        "/v1/assemblies",
+        &json!({ "upload": format!("sha256:{sha}") }),
+    )
+    .header("idempotency-key", "twice");
+    assert!(server.try_send(register.clone()).await.is_none());
+    server.restart_process(&hooks);
+    // The re-queued job is dispatched at the start, and aborts again.
+    let mut tries = 0;
+    while server.try_send(Call::get("/v1/health")).await.is_some() {
+        tries += 1;
+        assert!(tries < 600, "the second attempt never aborted");
+        let _ = server.try_send(Call::get("/v1/jobs?wait=1")).await;
+    }
+    server.restart_process(RESTART);
+    let listed = server.get("/v1/jobs?kind=assembly_read").await.json();
+    let job = &listed["items"][0];
+    assert_eq!(job["state"], "interrupted", "{job}");
+    assert_eq!(job["attempt"], 2);
+    assert_eq!(job["error"]["code"], "job_interrupted");
+    no_verdict(job);
+    // JB9: the key was released with it, so it submits anew.
+    let again = server.send(register).await.json();
+    assert_ne!(again["id"], job["id"]);
+}
+
+/// SD1, JB6, JB8: a graceful stop (stdin's end of file, the portable
+/// trigger) with a job running: streams get `shutdown`; the job, still
+/// running when `jobs.drain_seconds` end, is queued again as its call
+/// returns, its attempt unchanged; the process exits 0; the next start
+/// runs it to the CLI's bytes on attempt 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_graceful_stop_queues_a_running_job_again() {
+    let config = "[jobs]\ndrain_seconds = 1\n[test]\nhooks = { \"job.read\" = \"delay:3000\" }\n";
+    let mut server = TestServer::process(Dirs::new(), config);
+    let (bytes, golden) = p01();
+    let sha = server.upload(&bytes).await;
+    let job = server
+        .send(Call::json(Method::POST, "/v1/features", &features(&sha)))
+        .await
+        .json();
+    let id = job["id"].as_str().unwrap().to_owned();
+    let token = server.token().to_owned();
+    let mut stream = support::wire_open(
+        server.addr(),
+        &Call::get(&format!("/v1/jobs/{id}/events")).bearer(&token),
+    )
+    .await
+    .into_body();
+    let seen = support::lines(&mut stream, Duration::from_secs(30), |e| {
+        e["state"] == "running"
+    })
+    .await;
+    assert_eq!(seen.last().unwrap()["state"], "running");
+    let child = server.child.take().unwrap();
+    let rest = tokio::spawn(async move {
+        support::lines(&mut stream, Duration::from_secs(30), |e| {
+            e["type"] == "shutdown"
+        })
+        .await
+    });
+    let (code, _, stderr) = tokio::task::spawn_blocking(move || child.stop())
+        .await
+        .unwrap();
+    assert_eq!(code, Some(0), "{stderr}");
+    let rest = rest.await.unwrap();
+    assert!(rest.iter().any(|e| e["type"] == "shutdown"), "{rest:?}");
+    assert!(
+        rest.iter().all(|e| e["type"] != "end"),
+        "no end: it was stopped"
+    );
+    server.restart_process("");
+    let job = server.finished_job(&id, Duration::from_secs(60)).await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    assert_eq!(job["attempt"], 1, "SD1: a drain consumes no attempt");
+    assert_eq!(server.document(&job).await.body, golden);
+}
+
+/// UP7, OB3, SD4: a job reads each input checked against its name: an
+/// input whose stored bytes changed under it fails the job `failed`,
+/// `blob_damaged`, with no document and no verdict.
+#[tokio::test]
+async fn a_damaged_input_fails_its_job() {
+    let server = TestServer::fresh();
+    let (bytes, _) = p01();
+    let sha = server.upload(&bytes).await;
+    let path = server
+        .dirs
+        .state
+        .join(format!("objects/sha256/{}/{sha}", &sha[..2]));
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&path, perms).unwrap();
+    let mut damaged = bytes.clone();
+    damaged[10] ^= 1;
+    std::fs::write(&path, damaged).unwrap();
+    let job = server
+        .send(waiting("/v1/features", &features(&sha)))
+        .await
+        .json();
+    assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(job["error"]["code"], "blob_damaged");
+    assert!(job["document"].is_null());
+    no_verdict(&job);
+}

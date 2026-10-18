@@ -1,0 +1,24 @@
+429
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:RXg6JgM4DdohiWPAQLpnWO1RFjVkF62UZT40YI6gHjM=:
+retry-after: 5
+x-request-id: r_00000000000000000000000006
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/too_many_jobs",
+  "title": "Too many jobs of this owner",
+  "status": 429,
+  "detail": "you have the most jobs queued a user may: try again when one ends",
+  "code": "too_many_jobs",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": true,
+  "details": {
+    "lane": "query"
+  },
+  "request_id": "r_00000000000000000000000006"
+}

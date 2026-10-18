@@ -85,6 +85,34 @@ enum Setup {
     DiskFull,
     /// Its third (the first chunk's write) fails otherwise: `io_error`.
     BrokenDisk,
+    /// `ada` holds an upload of the unit part `p01_through.stp`.
+    Part,
+    /// `ada` holds an upload of `s02_cbore.stp`.
+    Assembly,
+    /// `ada` registered `s02_cbore.stp`.
+    Registered,
+    /// As `Registered`, its parts row of an older extractor: `derived_stale`.
+    Stale,
+    /// As `Registered`, its stored bytes changed on disk: `blob_damaged`.
+    Damaged,
+    /// As `Registered`, and `BLOCK`'s socket extracted.
+    Extracted,
+    /// As `Part`, and a `features` job of it finished.
+    Ran,
+    /// As `Part`, the dispatcher held: jobs stay queued.
+    Held,
+    /// As `Held`, one job queued.
+    Queued,
+    /// As `Queued`, one job queued a user at most: `too_many_jobs`.
+    OwnerFull,
+    /// As `Queued`, one job queued in the lane at most: `queue_full`.
+    LaneFull,
+    /// As `Part`, a `features` job made under `Idempotency-Key: golden-key`.
+    Keyed,
+    /// As `Part`, a job panics once it has read its input.
+    JobPanic,
+    /// As `Queued`, one stream a user at most, and one open.
+    Streaming,
 }
 
 /// The bytes of the upload goldens; their SHA-256s are in the paths.
@@ -152,6 +180,17 @@ const OVER_QUOTA: &[(&str, &str)] = &[
     ("content-length", "1610612736"),
 ];
 const HTML: &[(&str, &str)] = &[("accept", "text/html")];
+const WAIT: &[(&str, &str)] = &[("content-type", "application/json"), ("prefer", "wait=30")];
+const KEYED: &[(&str, &str)] = &[
+    ("content-type", "application/json"),
+    ("prefer", "wait=30"),
+    ("idempotency-key", "golden-key"),
+];
+const SAME_STEP: &[(&str, &str)] = &[(
+    "if-none-match",
+    "\"sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a\"",
+)];
+const SAME_JOB: &[(&str, &str)] = &[("if-none-match", "W/\"j4.succeeded\"")];
 const TEXT: &[(&str, &str)] = &[("content-type", "text/plain")];
 
 use Principal as P;
@@ -160,7 +199,7 @@ use Setup as S;
 /// Every scenario: at least one per operation of `OPERATIONS` (XH14), and
 /// one per error code a request can reach in this build.
 #[rustfmt::skip]
-const SCENARIOS: [Scenario; 56] = [
+const SCENARIOS: [Scenario; 100] = [
     scenario("health", "ok", S::None, P::None, Method::GET, "/v1/health", &[], b""),
     scenario("ready", "ok", S::None, P::None, Method::GET, "/v1/ready", &[], b""),
     scenario("ready", "catalog_unavailable", S::NoCatalog, P::None, Method::GET, "/v1/ready", &[], b""),
@@ -251,39 +290,113 @@ const SCENARIOS: [Scenario; 56] = [
         "/v1/auth/users/u_7zzzzzzzzzzzzzzzzzzzzzzzzz", JSON, br#"{"disabled": true}"#),
     scenario("users_update", "unauthenticated", S::None, P::None, Method::PATCH,
         "/v1/auth/users/u_00000000000000000000000001", JSON, br#"{"disabled": true}"#),
+    scenario("features_create", "succeeded", S::Part, P::Reader, Method::POST, "/v1/features", WAIT,
+        br#"{"upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945"}"#),
+    scenario("features_create", "refused", S::Uploaded, P::Reader, Method::POST, "/v1/features", WAIT,
+        br#"{"upload": "sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff"}"#),
+    scenario("features_create", "failed", S::JobPanic, P::Reader, Method::POST, "/v1/features", WAIT,
+        br#"{"upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945"}"#),
+    scenario("features_create", "queued", S::Held, P::Reader, Method::POST, "/v1/features", JSON,
+        br#"{"upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945"}"#),
+    scenario("features_create", "replayed", S::Keyed, P::Reader, Method::POST, "/v1/features", KEYED,
+        br#"{ "upload" : "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945" }"#),
+    scenario("features_create", "idempotency_key_reused", S::Keyed, P::Reader, Method::POST,
+        "/v1/features", KEYED,
+        br#"{"upload": "sha256:E0382A9DD3495268BD9E66FC09851FC1C91EE91B2186E0A1F70D4F584A6B9945"}"#),
+    scenario("features_create", "upload_not_found", S::None, P::Reader, Method::POST, "/v1/features", WAIT,
+        br#"{"upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945"}"#),
+    scenario("features_create", "too_many_jobs", S::OwnerFull, P::Reader, Method::POST, "/v1/features", JSON,
+        br#"{"upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945"}"#),
+    scenario("features_create", "queue_full", S::LaneFull, P::Reader, Method::POST, "/v1/features", JSON,
+        br#"{"upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945"}"#),
+    scenario("assemblies_create", "succeeded", S::Assembly, P::Reader, Method::POST, "/v1/assemblies", WAIT,
+        br#"{"upload": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", "file_name": "s02_cbore.stp"}"#),
+    scenario("assemblies_create", "registered", S::Registered, P::Reader, Method::POST, "/v1/assemblies", WAIT,
+        br#"{"upload": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", "file_name": "base.stp"}"#),
+    scenario("assemblies_create", "name_invalid", S::Assembly, P::Reader, Method::POST, "/v1/assemblies", WAIT,
+        br#"{"upload": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", "file_name": "../s02.stp"}"#),
+    scenario("assemblies_list", "ok", S::Registered, P::Reader, Method::GET, "/v1/assemblies", &[], b""),
+    scenario("assemblies_get", "ok", S::Extracted, P::Reader, Method::GET,
+        "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", &[], b""),
+    scenario("assemblies_get", "not_found", S::None, P::Reader, Method::GET,
+        "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", &[], b""),
+    scenario("assemblies_parts", "ok", S::Registered, P::Reader, Method::GET,
+        "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a/parts", &[], b""),
+    scenario("assemblies_parts", "derived_stale", S::Stale, P::Reader, Method::GET,
+        "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a/parts", &[], b""),
+    scenario("assemblies_step", "not_modified", S::Registered, P::Reader, Method::GET,
+        "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a/step", SAME_STEP, b""),
+    scenario("assemblies_step", "blob_damaged", S::Damaged, P::Reader, Method::GET,
+        "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a/step", &[], b""),
+    scenario("assemblies_sockets", "ok", S::Extracted, P::Reader, Method::GET,
+        "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a/sockets", &[], b""),
+    scenario("assemblies_delete", "deleted", S::Registered, P::Reader, Method::DELETE,
+        "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", &[], b""),
+    scenario("assemblies_delete", "assembly_in_use", S::Extracted, P::Reader, Method::DELETE,
+        "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", &[], b""),
+    scenario("sockets_create", "succeeded", S::Registered, P::Reader, Method::POST, "/v1/sockets", WAIT,
+        br#"{"assembly": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", "part": "BLOCK"}"#),
+    scenario("sockets_create", "unchanged", S::Extracted, P::Reader, Method::POST, "/v1/sockets", WAIT,
+        br#"{"assembly": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", "part": "BLOCK"}"#),
+    scenario("sockets_create", "part_not_found", S::Registered, P::Reader, Method::POST, "/v1/sockets", WAIT,
+        br#"{"assembly": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", "part": "block"}"#),
+    scenario("sockets_create", "not_found", S::Assembly, P::Reader, Method::POST, "/v1/sockets", WAIT,
+        br#"{"assembly": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", "part": "BLOCK"}"#),
+    scenario("sockets_list", "ok", S::Extracted, P::Reader, Method::GET, "/v1/sockets", &[], b""),
+    scenario("sockets_get", "ok", S::Extracted, P::Reader, Method::GET, "/v1/sockets/sk_4c08cde1bddb3df26f3b@r1", &[], b""),
+    scenario("sockets_get", "invalid_reference", S::Extracted, P::Reader, Method::GET,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b@r01", &[], b""),
+    scenario("sockets_revisions", "ok", S::Extracted, P::Reader, Method::GET,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b/revisions", &[], b""),
+    scenario("sockets_delete", "deleted", S::Extracted, P::Reader, Method::DELETE,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b", &[], b""),
+    scenario("jobs_list", "ok", S::Ran, P::Reader, Method::GET, "/v1/jobs", &[], b""),
+    scenario("jobs_get", "ok", S::Ran, P::Reader, Method::GET, "/v1/jobs/{job}", &[], b""),
+    scenario("jobs_get", "not_modified", S::Ran, P::Reader, Method::GET, "/v1/jobs/{job}",
+        SAME_JOB, b""),
+    scenario("jobs_get", "not_found", S::None, P::Reader, Method::GET, "/v1/jobs/{job}",
+        &[], b""),
+    scenario("jobs_events", "ok", S::Ran, P::Reader, Method::GET, "/v1/jobs/{job}/events",
+        &[], b""),
+    scenario("jobs_events", "too_many_streams", S::Streaming, P::Reader, Method::GET,
+        "/v1/jobs/{job}/events", &[], b""),
+    scenario("jobs_document", "ok", S::Ran, P::Reader, Method::GET,
+        "/v1/jobs/{job}/document", &[], b""),
+    scenario("jobs_document", "no_document", S::Queued, P::Reader, Method::GET,
+        "/v1/jobs/{job}/document", &[], b""),
+    scenario("jobs_cancel", "cancelled", S::Queued, P::Reader, Method::POST,
+        "/v1/jobs/{job}/cancel", &[], b""),
+    scenario("jobs_cancel", "job_finished", S::Ran, P::Reader, Method::POST,
+        "/v1/jobs/{job}/cancel", &[], b""),
+    scenario("jobs_pin", "ok", S::Ran, P::Admin, Method::POST, "/v1/jobs/{job}/pin", JSON,
+        br#"{"pinned": true}"#),
+    scenario("jobs_delete", "deleted", S::Ran, P::Admin, Method::DELETE,
+        "/v1/jobs/{job}", &[], b""),
+    scenario("jobs_delete", "job_not_finished", S::Queued, P::Admin, Method::DELETE,
+        "/v1/jobs/{job}", &[], b""),
 ];
 
 /// The codes whose routes come in a later PR of section 12, with that PR:
 /// each must be produced by a golden by then. `catalog_busy` and
 /// `catalog_damaged` are reachable by `/v1/info` today, but only through a
 /// fault no golden stages without the seams of PR 7 (a busy holder, a
-/// damaged row); `too_many_streams` by two uploads at once, which PR 5's
-/// event streams' golden shows; `blob_damaged` by a read of a stored
-/// object, which no route of PR 4 makes (PR 5's assembly bytes do). Section 7.12's job-only codes (HTTP "—")
+/// damaged row). Section 7.12's job-only codes (HTTP "—")
 /// are not listed: no request answers one; the job goldens show them.
-const PENDING: [(&str, u32); 38] = [
+const PENDING: [(&str, u32); 27] = [
     ("not_an_id", 7),
-    ("name_invalid", 5),
     ("label_reserved", 6),
     ("no_candidates", 6),
     ("options_conflict", 6),
-    ("upload_not_found", 5),
     ("entry_not_found", 7),
-    ("no_document", 5),
     ("reference_ambiguous", 7),
     ("revision_not_current", 6),
     ("entry_deleted", 7),
-    ("assembly_in_use", 5),
     ("original_not_stored", 6),
-    ("job_finished", 5),
     ("bytes_not_kept", 7),
     ("derived_rows_gone", 7),
     ("precondition_failed", 7),
-    ("idempotency_key_reused", 5),
     ("carry_from_foreign", 6),
     ("revision_required", 6),
-    ("too_many_jobs", 5),
-    ("too_many_streams", 5),
     ("review_unknown_requirement", 6),
     ("review_unknown_socket", 6),
     ("review_differs_between_sockets", 6),
@@ -295,16 +408,13 @@ const PENDING: [(&str, u32); 38] = [
     ("socket_stale", 6),
     ("socket_unreviewed", 6),
     ("entry_stale", 7),
-    ("derived_stale", 5),
     ("catalog_busy", 7),
-    ("queue_full", 5),
-    ("blob_damaged", 5),
     ("catalog_damaged", 7),
 ];
 
 /// The PR this tree builds (section 12): a pending code waits for a later
 /// one, at most the exit.
-const PR_NOW: u32 = 4;
+const PR_NOW: u32 = 5;
 
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/api")
@@ -356,7 +466,7 @@ fn seed(
 }
 
 /// Runs `scenario` on a fresh in-process server.
-async fn run(scenario: &Scenario) -> Reply {
+async fn run(scenario: &Scenario) -> (Reply, String) {
     let dirs = Dirs::new();
     let mut config = dirs.config();
     match scenario.setup {
@@ -368,6 +478,9 @@ async fn run(scenario: &Scenario) -> Reply {
             config.limits.max_upload_mib = 4096;
             config.limits.user_quota_gib = 1;
         }
+        S::OwnerFull => config.jobs.per_owner_queued = 1,
+        S::LaneFull => config.jobs.queue_query = 1,
+        S::Streaming => config.jobs.streams_per_user = 1,
         _ => {}
     }
     let fs: std::sync::Arc<dyn fitment_catalog::Fs> = match scenario.setup {
@@ -411,6 +524,7 @@ async fn run(scenario: &Scenario) -> Reply {
             support::seed_job_input(&server, ada.key, &sha256, "match", "queued");
         }
     }
+    let (job, _kept) = jobs_setup(&server, scenario.setup, token.as_deref()).await;
     if scenario.setup == S::LoginOnce {
         let login = br#"{"username": "ada", "password": "correct horse battery staple"}"#;
         let first = Call::new(Method::POST, "/v1/auth/login")
@@ -419,7 +533,8 @@ async fn run(scenario: &Scenario) -> Reply {
             .anonymous();
         assert_eq!(server.send(first).await.status, 201);
     }
-    let mut call = Call::new(scenario.method.clone(), scenario.path)
+    let path = scenario.path.replace("{job}", &job);
+    let mut call = Call::new(scenario.method.clone(), &path)
         .body(scenario.body)
         .anonymous();
     for (name, value) in scenario.headers {
@@ -428,11 +543,139 @@ async fn run(scenario: &Scenario) -> Reply {
     if let Some(token) = token {
         call = call.bearer(&token);
     }
-    server.send(call).await
+    (server.send(call).await, path)
 }
 
-fn render_request(scenario: &Scenario) -> String {
-    let mut text = format!("{} {}\n", scenario.method, scenario.path);
+/// The bytes of the unit part the job scenarios read.
+fn p01() -> Vec<u8> {
+    support::part("p01_through.stp")
+}
+
+/// The assembly setups of [`jobs_setup`]: `s02_cbore.stp` uploaded, and
+/// registered, staled, damaged or extracted as `setup` says.
+async fn assembly_setup(server: &TestServer, setup: Setup, ada_token: &str, ada: i64) {
+    use S::{Assembly, Damaged, Extracted, Stale};
+    let as_ada = |call: Call| call.bearer(ada_token);
+    let bytes = support::assembly("s02_cbore.stp");
+    let sha = support::seed_upload(server.server(), ada, &bytes);
+    if setup != Assembly {
+        let body =
+            serde_json::json!({ "upload": format!("sha256:{sha}"), "file_name": "s02_cbore.stp" });
+        let reply = server
+            .send(as_ada(support::waiting("/v1/assemblies", &body)))
+            .await;
+        assert_eq!(reply.json()["state"], "succeeded");
+    }
+    if setup == Extracted {
+        let body = serde_json::json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK" });
+        let reply = server
+            .send(as_ada(support::waiting("/v1/sockets", &body)))
+            .await;
+        assert_eq!(reply.json()["state"], "succeeded");
+    }
+    let db = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    if setup == Stale {
+        db.execute(
+            "UPDATE assembly_parts SET extractor_version = extractor_version - 1",
+            [],
+        )
+        .unwrap();
+    }
+    if setup == Damaged {
+        let path = server
+            .dirs
+            .state
+            .join(format!("objects/sha256/{}/{sha}", &sha[..2]));
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
+        let mut damaged = bytes.clone();
+        damaged[100] ^= 1;
+        std::fs::write(&path, damaged).unwrap();
+    }
+}
+
+/// PR 5's setups, as `ada` (made with a token here unless she presents
+/// one): the job the scenario's `{job}` names, and what must stay open.
+async fn jobs_setup(
+    server: &TestServer,
+    setup: Setup,
+    token: Option<&str>,
+) -> (String, Option<axum::response::Response>) {
+    use S::{
+        Assembly, Damaged, Extracted, Held, JobPanic, Keyed, LaneFull, OwnerFull, Part, Queued,
+        Ran, Registered, Stale, Streaming,
+    };
+    if !matches!(
+        setup,
+        Part | Assembly
+            | Registered
+            | Stale
+            | Damaged
+            | Extracted
+            | Ran
+            | Held
+            | Queued
+            | OwnerFull
+            | LaneFull
+            | Keyed
+            | JobPanic
+            | Streaming
+    ) {
+        return (String::new(), None);
+    }
+    let seams = server.server().seams();
+    let ada_token = match seams.db.user_by_fold("ada").unwrap() {
+        Some(_) => token.unwrap().to_owned(),
+        None => seed(server.server(), "ada", Role::Reader, Some(ADA), true).unwrap(),
+    };
+    let ada = seams.db.user_by_fold("ada").unwrap().unwrap();
+    let as_ada = |call: Call| call.bearer(&ada_token);
+    let mut job = String::new();
+    if matches!(setup, Assembly | Registered | Stale | Damaged | Extracted) {
+        assembly_setup(server, setup, &ada_token, ada.key).await;
+        return (job, None);
+    }
+    let sha = support::seed_upload(server.server(), ada.key, &p01());
+    let body = serde_json::json!({ "upload": format!("sha256:{sha}") });
+    if setup == JobPanic {
+        seams.hooks.set(
+            "job.read",
+            Action::Panic("a golden's planted job panic".into()),
+        );
+    }
+    if setup == Ran {
+        let reply = server
+            .send(as_ada(support::waiting("/v1/features", &body)))
+            .await;
+        reply.json()["id"].as_str().unwrap().clone_into(&mut job);
+    }
+    if setup == Keyed {
+        let call = support::waiting("/v1/features", &body).header("idempotency-key", "golden-key");
+        let reply = server.send(as_ada(call)).await;
+        reply.json()["id"].as_str().unwrap().clone_into(&mut job);
+    }
+    if matches!(setup, Held | Queued | OwnerFull | LaneFull | Streaming) {
+        server.server().hold_jobs();
+    }
+    if matches!(setup, Queued | OwnerFull | LaneFull | Streaming) {
+        let call = Call::json(Method::POST, "/v1/features", &body);
+        let reply = server.send(as_ada(call)).await;
+        assert_eq!(reply.status, 202);
+        reply.json()["id"].as_str().unwrap().clone_into(&mut job);
+    }
+    let kept = if setup == Streaming {
+        let call = as_ada(Call::get(&format!("/v1/jobs/{job}/events")));
+        Some(server.open(call).await)
+    } else {
+        None
+    };
+    (job, kept)
+}
+
+fn render_request(scenario: &Scenario, path: &str) -> String {
+    let mut text = format!("{} {}\n", scenario.method, path);
     match scenario.principal {
         P::Admin => text.push_str("authorization: Bearer <root's admin token>\n"),
         P::Reader => text.push_str("authorization: Bearer <ada's reader token>\n"),
@@ -461,6 +704,10 @@ fn render_response(scenario: &Scenario, reply: &Reply) -> String {
             "the served OpenAPI document"
         );
         text.push_str(openapi_marker());
+    } else if let Some(name) = core_document(&reply.body) {
+        // VT6: core documents are not duplicated; the CLI's golden holds
+        // these bytes.
+        let _ = writeln!(text, "<the bytes of crates/fitment/tests/golden/{name}>");
     } else {
         let body = String::from_utf8_lossy(&reply.body).into_owned();
         let secret = serde_json::from_str::<serde_json::Value>(&body)
@@ -472,6 +719,23 @@ fn render_response(scenario: &Scenario, reply: &Reply) -> String {
         }
     }
     text
+}
+
+/// The CLI's golden whose bytes `body` is, as `<kind>/<file>` (VT6).
+fn core_document(body: &[u8]) -> Option<String> {
+    if body.is_empty() {
+        return None;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment/tests/golden");
+    for kind in ["features", "parts", "socket", "match"] {
+        for entry in std::fs::read_dir(root.join(kind)).ok()? {
+            let path = entry.ok()?.path();
+            if std::fs::read(&path).ok().as_deref() == Some(body) {
+                return Some(format!("{kind}/{}", path.file_name()?.to_string_lossy()));
+            }
+        }
+    }
+    None
 }
 
 /// The versions a golden records: its `fitment-format` and, for the
@@ -532,7 +796,7 @@ async fn the_apis_documents_are_their_goldens() {
     let mut produced = BTreeSet::new();
     let mut operations = BTreeSet::new();
     for scenario in &SCENARIOS {
-        let reply = run(scenario).await;
+        let (reply, path) = run(scenario).await;
         // A HEAD's answer has no body: its code is not read from it.
         if reply.header("content-type") == Some("application/problem+json")
             && scenario.method != Method::HEAD
@@ -543,7 +807,7 @@ async fn the_apis_documents_are_their_goldens() {
         let base = golden_dir().join(scenario.operation).join(scenario.name);
         compare(
             &base.with_extension("request"),
-            &render_request(scenario),
+            &render_request(scenario, &path),
             &mut failures,
         );
         compare(
@@ -597,7 +861,7 @@ async fn writes_the_api_outputs() {
         .join("../..")
         .join(out);
     for scenario in &SCENARIOS {
-        let reply = run(scenario).await;
+        let (reply, _) = run(scenario).await;
         let path = out
             .join(scenario.operation)
             .join(format!("{}.response", scenario.name));

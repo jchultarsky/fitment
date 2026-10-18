@@ -1303,6 +1303,83 @@ for rule, tests in M6_PR4.items():
     assert RULES[rule] == {"deferred": "M6 PR 4"}, rule
     RULES[rule] = {"tests": tests}
 assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 4"}], "a PR 4 rule is still deferred"
+# PR 5 builds the job system (JS1 to JS6, JS9 to JS11, JS13): lanes, permits, fairness, one blocking function per
+# kind, sweeps, event channels, durable submission and ends committed with their results; jobs as a client sees them
+# (JB1, JB3 to JB9, JB11, JB12); shutdown and recovery (SD1, SD2, SD4, SD5); the hold window (OB4, UP5) and checked
+# inputs (UP7); features, assembly_read and socket_extract with assemblies, socket lines and revisions (RA3 to RA5, OB5);
+# the document rules for these kinds (DC1, DC2, DC4 to DC6, DC8, VN5's stored, derived and job ETags; the catalog's
+# wait for CA8 in PR 7) and metrics (OP6). JS8 and XH12 are checked for these kinds and complete with PR 7's.
+S_PAR = f"{SERVER}/tests/parity.rs"
+S_JOBS = f"{SERVER}/src/jobs"
+M6_PR5 = {
+    "JB1": [f"{S_API}::a_job_is_queued_runs_and_ends", f"{S_GOLD}::the_apis_documents_are_their_goldens",
+            f"{S_AUTH}::every_operation_answers_each_principal_as_its_role_says"],
+    "JB3": [f"{S_JOBS}/model.rs::the_transitions_are_jb3s", f"{S_API}::a_job_is_queued_runs_and_ends",
+            f"{S_FAULT}::a_start_settles_what_the_last_process_left", f"{S_PAR}::sockets_are_the_clis"],
+    "JB4": [f"{S_PAR}::features_are_the_clis", f"{S_PAR}::parts_are_the_clis", f"{S_PAR}::sockets_are_the_clis",
+            f"{S_PAR}::every_corpus_source_is_the_clis_through_jobs"],
+    "JB5": [f"{S_FAULT}::a_cancel_stops_a_job_where_it_may_stop"],
+    "JB6": [f"{S_FAULT}::a_start_settles_what_the_last_process_left",
+            f"{S_FAULT}::an_abort_at_every_hook_point_leaves_each_job_ending_once",
+            f"{S_FAULT}::a_graceful_stop_queues_a_running_job_again"],
+    "JB7": [f"{S_HOST}::a_job_past_its_deadline_fails_with_no_document"],
+    "JB8": [f"{S_API}::events_replay_then_follow_without_loss", f"{S_JOBS}/documents.rs::event_lines_are_one_compact_object",
+            f"{S_JOBS}/events.rs::a_lagging_reader_is_told_and_goes_on"],
+    "JB9": [f"{S_API}::a_key_binds_the_request_as_sent", f"{S_JOBS}/request.rs::the_fingerprint_is_syntax_normalized",
+            f"{S_FAULT}::an_abort_at_every_hook_point_leaves_each_job_ending_once"],
+    "JB11": [f"{S_HOST}::waits_are_capped_and_outlive_the_handler"],
+    "JB12": [f"{S_HOST}::ten_thousand_jobs_list_expire_and_one_stays_pinned", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "JS1": [f"{S_CONC}::many_clients_extract_the_same_sockets", f"{S_JOBS}/model.rs::the_transitions_are_jb3s"],
+    "JS2": [f"{S_JOBS}/mod.rs::a_jobs_permits_are_its_estimate", f"{S_CONC}::many_clients_extract_the_same_sockets"],
+    "JS3": [f"{S_JOBS}/mod.rs::a_jobs_permits_are_its_estimate"],
+    "JS4": [f"{S_JOBS}/scheduler.rs::owners_take_turns", f"{S_CONC}::many_clients_extract_the_same_sockets"],
+    "JS5": [f"{S_HOST}::queues_and_owners_are_capped_before_any_row", f"{S_JOBS}/scheduler.rs::caps_refuse_before_rows"],
+    "JS6": [f"{S_FAULT}::a_job_that_panics_fails_internal_and_the_server_goes_on", f"{S_PAR}::features_are_the_clis",
+            f"{S_PAR}::parts_are_the_clis", f"{S_PAR}::sockets_are_the_clis"],
+    "JS9": [f"{S_HOST}::ten_thousand_jobs_list_expire_and_one_stays_pinned", f"{S_API}::a_deleted_line_revives_numbered_on"],
+    "JS10": [f"{S_HOST}::event_streams_are_capped_per_user_and_in_all", f"{S_API}::events_replay_then_follow_without_loss",
+             f"{S_JOBS}/events.rs::a_lagging_reader_is_told_and_goes_on",
+             f"{S_WIRE}::a_client_gone_mid_download_or_mid_stream_changes_nothing"],
+    "JS11": [f"{S_FAULT}::a_job_holds_its_inputs_from_submission_to_its_end",
+             f"{S_FAULT}::an_abort_at_every_hook_point_leaves_each_job_ending_once"],
+    "JS13": [f"{S_FAULT}::an_abort_at_every_hook_point_leaves_each_job_ending_once",
+             f"{S_FAULT}::a_start_settles_what_the_last_process_left"],
+    "SD1": [f"{S_FAULT}::a_graceful_stop_queues_a_running_job_again"],
+    "SD2": [f"{S_FAULT}::an_abort_at_every_hook_point_leaves_each_job_ending_once"],
+    "SD4": [f"{S_FAULT}::a_start_settles_what_the_last_process_left",
+            f"{S_FAULT}::an_abort_at_every_hook_point_leaves_each_job_ending_once", f"{S_FAULT}::a_damaged_input_fails_its_job"],
+    "SD5": [f"{S_FAULT}::an_abort_at_every_hook_point_leaves_each_job_ending_once",
+            f"{S_FAULT}::a_start_settles_what_the_last_process_left"],
+    "DC1": [f"{S_PAR}::features_are_the_clis", f"{S_PAR}::parts_are_the_clis", f"{S_PAR}::sockets_are_the_clis",
+            f"{S_PAR}::carrying_is_the_clis", f"{S_PAR}::every_corpus_source_is_the_clis_through_jobs"],
+    "DC2": [f"{S_API}::documents_hold_nothing_of_the_server_and_one_build_writes_them"],
+    "DC4": [f"{S_API}::documents_carry_their_headers_and_compress_on_request", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "DC5": [f"{S_API}::documents_carry_their_headers_and_compress_on_request"],
+    "DC6": [f"{S_API}::documents_carry_their_headers_and_compress_on_request"],
+    "DC8": [f"{S_API}::documents_hold_nothing_of_the_server_and_one_build_writes_them"],
+    "RA3": [f"{S_API}::assemblies_are_the_callers_registered_bytes", f"{S_PAR}::parts_are_the_clis",
+            f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "RA4": [f"{S_API}::a_lines_id_is_its_datas_and_extracting_twice_gives_one_line",
+            f"{S_API}::a_deleted_line_revives_numbered_on", f"{S_JOBS}/request.rs::a_line_id_is_its_triples"],
+    "RA5": [f"{S_API}::a_lines_id_is_its_datas_and_extracting_twice_gives_one_line",
+            f"{S_API}::a_deleted_line_revives_numbered_on", f"{S_PAR}::carrying_is_the_clis",
+            f"{S_JOBS}/request.rs::socket_references_are_strict"],
+    "VN5": [f"{S_API}::a_jobs_etag_follows_its_persisted_events",
+            f"{S_API}::documents_carry_their_headers_and_compress_on_request", f"{S_PAR}::parts_are_the_clis"],
+    "OP6": [f"{S_API}::metrics_count_requests_and_jobs", f"{S_WIRE}::metrics_are_served_on_their_own_listener",
+            f"{SERVER}/src/metrics.rs::buckets_are_cumulative"],
+    "UP5": [f"{S_FAULT}::a_job_holds_its_inputs_from_submission_to_its_end", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "UP7": [f"{S_FAULT}::a_damaged_input_fails_its_job", f"{S_FAULT}::every_file_call_of_a_jobs_document_fails_in_turn"],
+    "OB4": [f"{S_FAULT}::a_job_holds_its_inputs_from_submission_to_its_end",
+            f"{S_FAULT}::a_jobs_inputs_hold_its_uploads_from_submission"],
+    "OB5": [f"{S_FAULT}::every_file_call_of_a_jobs_document_fails_in_turn",
+            f"{S_FAULT}::an_abort_at_every_hook_point_leaves_each_job_ending_once",
+            f"{S_STATE}::the_schema_guards_itself"],
+}
+for rule, tests in M6_PR5.items():
+    assert RULES[rule] == {"deferred": "M6 PR 5"}, rule
+    RULES[rule] = {"tests": tests}
+assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 5"}], "a PR 5 rule is still deferred"
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],

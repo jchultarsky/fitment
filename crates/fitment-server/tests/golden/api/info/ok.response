@@ -2,7 +2,7 @@
 cache-control: no-store
 content-type: application/json
 fitment-format: fitment.info/1
-repr-digest: sha-256=:qDwfKhnia2NcIYUcYUGpVMUMtXARQOjcrRO0nwIBqiA=:
+repr-digest: sha-256=:l5ydvYMBBsApVn9kGTo6lvgDn1igvp/9cNYkMr7LXIY=:
 x-request-id: r_00000000000000000000000004
 
 {
@@ -14,7 +14,7 @@ x-request-id: r_00000000000000000000000004
   },
   "api": {
     "major": 1,
-    "minor": 2
+    "minor": 3
   },
   "versions": {
     "extractor_version": 6,
@@ -26,6 +26,10 @@ x-request-id: r_00000000000000000000000004
     "server_db_schema": 1
   },
   "formats": [
+    {
+      "format": "fitment.assembly",
+      "format_version": 1
+    },
     {
       "format": "fitment.catalog",
       "format_version": 1
@@ -40,6 +44,14 @@ x-request-id: r_00000000000000000000000004
     },
     {
       "format": "fitment.info",
+      "format_version": 1
+    },
+    {
+      "format": "fitment.job",
+      "format_version": 1
+    },
+    {
+      "format": "fitment.job.event",
       "format_version": 1
     },
     {

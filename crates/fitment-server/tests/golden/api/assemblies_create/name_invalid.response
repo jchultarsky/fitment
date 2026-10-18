@@ -1,0 +1,23 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:pQiwHF20sHkD1XAvfn1Y4+qyh7yJeimSISD6i4JlF9o=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/name_invalid",
+  "title": "A name or label is not allowed",
+  "status": 400,
+  "detail": "file_name is a final name of at most 255 bytes: no /, \\ or NUL, not . or ..",
+  "code": "name_invalid",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {
+    "field": "file_name"
+  },
+  "request_id": "r_00000000000000000000000004"
+}

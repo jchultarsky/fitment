@@ -1,0 +1,36 @@
+200
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.assembly/1
+repr-digest: sha-256=:D4drJ/ClG6si2aHe2A5Xi7KMy0EmOrzSYWQyyuKrhKk=:
+x-request-id: r_00000000000000000000000006
+
+{
+  "format": "fitment.assembly",
+  "format_version": 1,
+  "sha256": "2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a",
+  "bytes": 25494,
+  "file_names": [
+    "base.stp",
+    "s02_cbore.stp"
+  ],
+  "status": "accepted",
+  "root": {
+    "instance": 5,
+    "product": {
+      "id": "s02_cbore",
+      "instance": 7,
+      "name": "s02_cbore"
+    }
+  },
+  "parts": {
+    "href": "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a/parts",
+    "extractor_version": 6,
+    "socket_rules_version": 7,
+    "current": true
+  },
+  "sockets": {
+    "href": "/v1/assemblies/sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a/sockets",
+    "count": 0
+  }
+}

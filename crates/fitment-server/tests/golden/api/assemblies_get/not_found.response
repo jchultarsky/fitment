@@ -1,0 +1,23 @@
+404
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:nIJ4ENL9NJSsAg6evXF9c1ife1fzbbL8LUrPJYEUKHc=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/not_found",
+  "title": "Nothing is here",
+  "status": 404,
+  "detail": "no assembly of these bytes is yours",
+  "code": "not_found",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {
+    "resource": "assembly"
+  },
+  "request_id": "r_00000000000000000000000004"
+}

@@ -1,6 +1,31 @@
 {
   "components": {
     "schemas": {
+      "AssemblyRequest": {
+        "$id": "https://fitment.dev/schemas/requests/AssemblyRequest",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`POST /v1/assemblies` (section 7.5).",
+        "properties": {
+          "file_name": {
+            "default": null,
+            "description": "The name it is registered under (RA8): display text, never a path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "upload": {
+            "description": "The assembly's upload, `sha256:HEX` (UP1).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload"
+        ],
+        "title": "AssemblyRequest",
+        "type": "object"
+      },
       "CreateUserRequest": {
         "$defs": {
           "Role": {
@@ -51,6 +76,23 @@
           "role"
         ],
         "title": "CreateUserRequest",
+        "type": "object"
+      },
+      "FeaturesRequest": {
+        "$id": "https://fitment.dev/schemas/requests/FeaturesRequest",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`POST /v1/features` (section 7.7).",
+        "properties": {
+          "upload": {
+            "description": "The part's upload, `sha256:HEX` (UP1).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload"
+        ],
+        "title": "FeaturesRequest",
         "type": "object"
       },
       "LoginRequest": {
@@ -176,6 +218,100 @@
         "title": "PasswordRequest",
         "type": "object"
       },
+      "PinRequest": {
+        "$id": "https://fitment.dev/schemas/requests/PinRequest",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`POST /v1/jobs/{id}/pin` (JB12).",
+        "properties": {
+          "pinned": {
+            "description": "Keep the record past retention, or not.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pinned"
+        ],
+        "title": "PinRequest",
+        "type": "object"
+      },
+      "SocketRequest": {
+        "$defs": {
+          "CarryFrom": {
+            "anyOf": [
+              {
+                "description": "A revision of the caller's lines.",
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An uploaded socket document.",
+                "properties": {
+                  "upload": {
+                    "description": "`sha256:HEX`.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "upload"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "`carry_from`: `\"sk_…@rN\"`, or `{\"upload\": \"sha256:…\"}`."
+          }
+        },
+        "$id": "https://fitment.dev/schemas/requests/SocketRequest",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`POST /v1/sockets` (section 7.6).",
+        "properties": {
+          "assembly": {
+            "description": "The caller's registered assembly, `sha256:HEX` (RA3).",
+            "type": "string"
+          },
+          "carry": {
+            "default": null,
+            "description": "Carry the decisions of the line's current revision (default true),\nas `fitment socket -o OUT` carries OUT's.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "carry_from": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CarryFrom"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Or carry from this: another revision of the caller's lines, or an\nuploaded document of any version (MF11)."
+          },
+          "occurrence": {
+            "default": null,
+            "description": "As `--occurrence`: usage ids or `#<n>` joined by `/`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "part": {
+            "default": null,
+            "description": "As `--part`: `PRODUCT.id`, a name or `#<n>`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "assembly"
+        ],
+        "title": "SocketRequest",
+        "type": "object"
+      },
       "UpdateUserRequest": {
         "$defs": {
           "Role": {
@@ -226,6 +362,130 @@
           }
         },
         "title": "UpdateUserRequest",
+        "type": "object"
+      },
+      "fitment.assembly": {
+        "$defs": {
+          "PartsLink": {
+            "description": "`fitment.assembly`'s `parts` (RA3).",
+            "properties": {
+              "current": {
+                "description": "A reading of this build exists: else `…/parts` is `409\nderived_stale` until the assembly is registered again.",
+                "type": "boolean"
+              },
+              "extractor_version": {
+                "description": "The versions its latest reading was made with.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "href": {
+                "description": "`/v1/assemblies/sha256:{hex}/parts`.",
+                "type": "string"
+              },
+              "socket_rules_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "href",
+              "extractor_version",
+              "socket_rules_version",
+              "current"
+            ],
+            "type": "object"
+          },
+          "SocketsLink": {
+            "description": "`fitment.assembly`'s `sockets`.",
+            "properties": {
+              "count": {
+                "description": "The caller's live socket lines of it.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "href": {
+                "description": "`/v1/assemblies/sha256:{hex}/sockets`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "href",
+              "count"
+            ],
+            "type": "object"
+          }
+        },
+        "$id": "https://fitment.dev/schemas/fitment.assembly/1",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`fitment.assembly` v1 (section 7.11).",
+        "properties": {
+          "bytes": {
+            "description": "Their length.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "file_names": {
+            "description": "The names it was registered under (RA8), sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "format": {
+            "description": "`fitment.assembly`.",
+            "type": "string"
+          },
+          "format_version": {
+            "description": "1.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "parts": {
+            "$ref": "#/$defs/PartsLink",
+            "description": "Its `fitment.parts`."
+          },
+          "root": {
+            "description": "Its root definition, as `fitment.parts` states it."
+          },
+          "sha256": {
+            "description": "Its bytes' SHA-256.",
+            "type": "string"
+          },
+          "sockets": {
+            "$ref": "#/$defs/SocketsLink",
+            "description": "Its socket lines."
+          },
+          "status": {
+            "description": "Its reading's status: `accepted` or `refused` (RA3).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "format",
+          "format_version",
+          "sha256",
+          "bytes",
+          "file_names",
+          "status",
+          "root",
+          "parts",
+          "sockets"
+        ],
+        "title": "AssemblyDocument",
         "type": "object"
       },
       "fitment.catalog": {
@@ -3245,7 +3505,7 @@
             "description": "`fitment.info`'s catalog flags (DC11).",
             "properties": {
               "queues_full": {
-                "description": "A job lane's queue is full (JS5; PR 5).",
+                "description": "A job lane's queue is full (JS5).",
                 "type": "boolean"
               },
               "reindex": {
@@ -3523,6 +3783,484 @@
           "limits"
         ],
         "title": "Info",
+        "type": "object"
+      },
+      "fitment.job": {
+        "$defs": {
+          "Class": {
+            "description": "An error's class (ER2): three of them the CLI's.",
+            "oneOf": [
+              {
+                "const": "usage",
+                "description": "The request is wrong (the CLI's exit 2).",
+                "type": "string"
+              },
+              {
+                "const": "refused",
+                "description": "The input or the catalog's state is refused (exit 3).",
+                "type": "string"
+              },
+              {
+                "const": "error",
+                "description": "The server could not do it, or fitment has a bug (exit 1).",
+                "type": "string"
+              },
+              {
+                "const": "auth",
+                "description": "Credentials or permissions (no CLI counterpart).",
+                "type": "string"
+              }
+            ]
+          },
+          "DocumentLink": {
+            "description": "A link to a job's document: its exact bytes (DC1, DC5).",
+            "properties": {
+              "bytes": {
+                "description": "Their length.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "format": {
+                "description": "Its format.",
+                "type": "string"
+              },
+              "href": {
+                "description": "`/v1/jobs/{id}/document`.",
+                "type": "string"
+              },
+              "sha256": {
+                "description": "The SHA-256 of its bytes.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "href",
+              "format",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "JobError": {
+            "description": "A job's error: section 7.12's object without the HTTP framing (ER7).",
+            "properties": {
+              "class": {
+                "$ref": "#/$defs/Class",
+                "description": "Its class (ER2)."
+              },
+              "code": {
+                "description": "The stable code (ER1).",
+                "type": "string"
+              },
+              "detail": {
+                "description": "A sentence built from the code and values, never a path (ER3).",
+                "type": "string"
+              },
+              "details": {
+                "additionalProperties": true,
+                "description": "Values: ids, counts, versions; never a path (ER3).",
+                "type": "object"
+              },
+              "exit_code": {
+                "description": "The CLI's exit code in the same situation, or null.",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "retryable": {
+                "description": "Whether the same request may succeed later (ER6).",
+                "type": "boolean"
+              },
+              "title": {
+                "description": "The code's title.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "class",
+              "title",
+              "detail",
+              "exit_code",
+              "retryable",
+              "details"
+            ],
+            "type": "object"
+          },
+          "Kind": {
+            "description": "A job's kind (JB1). PR 5 runs `features`, `assembly_read` and\n`socket_extract`; the others are named so `server.db`'s rows and the\nlanes are complete, and come with PRs 6 and 7.",
+            "oneOf": [
+              {
+                "enum": [
+                  "catalog_replace",
+                  "catalog_reindex",
+                  "catalog_verify",
+                  "catalog_gc",
+                  "catalog_prune"
+                ],
+                "type": "string"
+              },
+              {
+                "const": "features",
+                "description": "`POST /v1/features`: `fitment features FILE`.",
+                "type": "string"
+              },
+              {
+                "const": "assembly_read",
+                "description": "`POST /v1/assemblies`: `fitment parts FILE`.",
+                "type": "string"
+              },
+              {
+                "const": "socket_extract",
+                "description": "`POST /v1/sockets`: `fitment socket FILE --part X`.",
+                "type": "string"
+              },
+              {
+                "const": "socket_import",
+                "description": "`POST /v1/sockets/import` (PR 6).",
+                "type": "string"
+              },
+              {
+                "const": "match",
+                "description": "`POST /v1/matches` (PR 6).",
+                "type": "string"
+              },
+              {
+                "const": "catalog_ingest",
+                "description": "The catalog's writes and maintenance (PR 7).",
+                "type": "string"
+              }
+            ]
+          },
+          "Link": {
+            "description": "A link to a resource and its format.",
+            "properties": {
+              "format": {
+                "description": "Its format.",
+                "type": "string"
+              },
+              "href": {
+                "description": "The resource's URL.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "href",
+              "format"
+            ],
+            "type": "object"
+          },
+          "Progress": {
+            "description": "A job's progress (JB8): counts only, never a verdict (M6-51).",
+            "properties": {
+              "done": {
+                "description": "Done so far.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "phase": {
+                "description": "`reading`, `level_one`, `loading`, `judging` or `batch`.",
+                "type": "string"
+              },
+              "total": {
+                "description": "In all, if known.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "phase",
+              "done",
+              "total"
+            ],
+            "type": "object"
+          },
+          "State": {
+            "description": "A job's state (JB3).",
+            "oneOf": [
+              {
+                "const": "queued",
+                "description": "Waiting for its lane and permits.",
+                "type": "string"
+              },
+              {
+                "const": "running",
+                "description": "Running.",
+                "type": "string"
+              },
+              {
+                "const": "cancelling",
+                "description": "Asked to stop (a cancel or its deadline); running until its call\nreturns (JS8).",
+                "type": "string"
+              },
+              {
+                "const": "succeeded",
+                "description": "Ran to its end: its document is the complete answer (exit 0, 4, 5).",
+                "type": "string"
+              },
+              {
+                "const": "refused",
+                "description": "The CLI would exit 2 or 3, or a stated tightening refused it.",
+                "type": "string"
+              },
+              {
+                "const": "failed",
+                "description": "The CLI would exit 1, or the job could not answer.",
+                "type": "string"
+              },
+              {
+                "const": "cancelled",
+                "description": "Stopped at its owner's or an admin's request.",
+                "type": "string"
+              },
+              {
+                "const": "interrupted",
+                "description": "A write job running when the process stopped.",
+                "type": "string"
+              }
+            ]
+          },
+          "Times": {
+            "description": "`fitment.job`'s times (M6-11), RFC 3339 UTC.",
+            "properties": {
+              "created": {
+                "description": "When it was submitted.",
+                "type": "string"
+              },
+              "expires": {
+                "description": "When its record expires, unless pinned (JB12).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "finished": {
+                "description": "When it ended.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "started": {
+                "description": "When it last started.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "created",
+              "started",
+              "finished",
+              "expires"
+            ],
+            "type": "object"
+          }
+        },
+        "$id": "https://fitment.dev/schemas/fitment.job/1",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`fitment.job` v1 (section 7.11).",
+        "properties": {
+          "attempt": {
+            "description": "Its attempt, 1 or 2 (SD5).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "cancel_requested": {
+            "description": "Its owner or an admin asked it to stop (JB5).",
+            "type": "boolean"
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DocumentLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The document it produced, as bytes elsewhere (DC1)."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/JobError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it did not succeed."
+          },
+          "exit_code": {
+            "description": "The CLI's exit code (JB4), once it ended.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "format": {
+            "description": "`fitment.job`.",
+            "type": "string"
+          },
+          "format_version": {
+            "description": "1.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "`j_…`.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind",
+            "description": "Its kind (JB1)."
+          },
+          "notes": {
+            "description": "The CLI's stderr lines as notes (JB10)."
+          },
+          "outcome": {
+            "description": "Set only for a job that succeeded (JB3, M6-59).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "owner": {
+            "description": "Its owner, `u_…`.",
+            "type": "string"
+          },
+          "pinned": {
+            "description": "Kept past retention (JB12).",
+            "type": "boolean"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Progress"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its progress while it runs (JB8)."
+          },
+          "queue_position": {
+            "description": "Its place in its lane's queue, from 1, while queued.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "request": {
+            "description": "The normalized request (RA9)."
+          },
+          "request_sha256": {
+            "description": "The SHA-256 of the canonical request (JB9).",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Link"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What it made."
+          },
+          "state": {
+            "$ref": "#/$defs/State",
+            "description": "Its state (JB3)."
+          },
+          "times": {
+            "$ref": "#/$defs/Times",
+            "description": "Its times (M6-11)."
+          }
+        },
+        "required": [
+          "format",
+          "format_version",
+          "id",
+          "kind",
+          "owner",
+          "state",
+          "attempt",
+          "request",
+          "request_sha256",
+          "queue_position",
+          "progress",
+          "cancel_requested",
+          "exit_code",
+          "outcome",
+          "result",
+          "document",
+          "error",
+          "notes",
+          "pinned",
+          "times"
+        ],
+        "title": "JobDocument",
+        "type": "object"
+      },
+      "fitment.job.event": {
+        "$id": "https://fitment.dev/schemas/fitment.job.event/1",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The documented shape of `fitment.job.event` (JB8), for the OpenAPI\ndocument: every line has these first; a type's own fields follow.",
+        "properties": {
+          "format": {
+            "description": "`fitment.job.event`.",
+            "type": "string"
+          },
+          "format_version": {
+            "description": "1.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "job": {
+            "description": "The job's id.",
+            "type": "string"
+          },
+          "seq": {
+            "description": "Persisted events only: 1, 2, 3 … (review F6).",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": {
+            "description": "`state`, `batch`, `change`, `note`, `end`; transient `progress`,\n`heartbeat`, `lagged`, `shutdown`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "format_version",
+          "job",
+          "seq",
+          "type"
+        ],
+        "title": "EventDocument",
         "type": "object"
       },
       "fitment.match": {
@@ -9257,7 +9995,7 @@
     },
     "summary": "fitment's REST API: jobs over the catalog and the matcher",
     "title": "fitment-server",
-    "version": "1.2",
+    "version": "1.3",
     "x-fitment-error-codes": [
       "bad_request",
       "invalid_parameter",
@@ -9281,6 +10019,7 @@
       "upload_in_use",
       "original_not_stored",
       "job_finished",
+      "job_not_finished",
       "too_many_tokens",
       "username_taken",
       "last_admin",
@@ -9347,6 +10086,1243 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/assemblies": {
+      "get": {
+        "operationId": "assemblies_list",
+        "parameters": [
+          {
+            "description": "the cursor of the page to start after: the previous page's `next` holds it",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "items per page: 100 by default, at most limits.page_max",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "an admin's: the user whose items to list (AU8)",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.page"
+                }
+              }
+            },
+            "description": "fitment.page of fitment.assembly"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A page of the caller's assemblies, by SHA-256 (VN3)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": [
+          {
+            "field": "owner",
+            "role": "admin"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "assemblies_create",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssemblyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "fitment.job, finished (Prefer: wait, a key's replay); or fitment.assembly, no job, when the caller registered it already at this build"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job: the job, queued or running"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference, name_invalid",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference",
+              "name_invalid"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found, upload_not_found",
+            "x-fitment-codes": [
+              "not_found",
+              "upload_not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large, too_large",
+            "x-fitment-codes": [
+              "body_too_large",
+              "too_large"
+            ]
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unsupported_media_type",
+            "x-fitment-codes": [
+              "unsupported_media_type"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "idempotency_key_reused",
+            "x-fitment-codes": [
+              "idempotency_key_reused"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited, too_many_jobs",
+            "x-fitment-codes": [
+              "rate_limited",
+              "too_many_jobs"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout, queue_full, shutting_down",
+            "x-fitment-codes": [
+              "request_timeout",
+              "queue_full",
+              "shutting_down"
+            ]
+          },
+          "507": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "quota_exceeded",
+            "x-fitment-codes": [
+              "quota_exceeded"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Registers an uploaded assembly: the job assembly_read, fitment parts FILE (RA3)",
+        "x-fitment-mode": "job",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
+    "/v1/assemblies/{assembly}": {
+      "delete": {
+        "operationId": "assemblies_delete",
+        "parameters": [
+          {
+            "description": "sha256: and the bytes' 64 hex digits, either case (HX5)",
+            "in": "path",
+            "name": "assembly",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "deleted"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "assembly_in_use",
+            "x-fitment-codes": [
+              "assembly_in_use"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Deletes the caller's assembly; 409 while a live socket line names it (RA6)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      },
+      "get": {
+        "operationId": "assemblies_get",
+        "parameters": [
+          {
+            "description": "sha256: and the bytes' 64 hex digits, either case (HX5)",
+            "in": "path",
+            "name": "assembly",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "an admin's: the user whose items to list (AU8)",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.assembly"
+                }
+              }
+            },
+            "description": "fitment.assembly"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The caller's fitment.assembly (RA3)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": [
+          {
+            "field": "owner",
+            "role": "admin"
+          }
+        ]
+      }
+    },
+    "/v1/assemblies/{assembly}/parts": {
+      "get": {
+        "operationId": "assemblies_parts",
+        "parameters": [
+          {
+            "description": "sha256: and the bytes' 64 hex digits, either case (HX5)",
+            "in": "path",
+            "name": "assembly",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "an admin's: the user whose items to list (AU8)",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.parts"
+                }
+              }
+            },
+            "description": "fitment.parts, exact bytes, with Fitment-Exit-Code"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "derived_stale",
+            "x-fitment-codes": [
+              "derived_stale"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "blob_damaged, io_error, internal",
+            "x-fitment-codes": [
+              "blob_damaged",
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The assembly's fitment.parts bytes of this build, no-cache; 409 derived_stale for another build's (RA3, VN5)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": [
+          {
+            "field": "owner",
+            "role": "admin"
+          }
+        ]
+      }
+    },
+    "/v1/assemblies/{assembly}/sockets": {
+      "get": {
+        "operationId": "assemblies_sockets",
+        "parameters": [
+          {
+            "description": "sha256: and the bytes' 64 hex digits, either case (HX5)",
+            "in": "path",
+            "name": "assembly",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the cursor of the page to start after: the previous page's `next` holds it",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "items per page: 100 by default, at most limits.page_max",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "an admin's: the user whose items to list (AU8)",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.page"
+                }
+              }
+            },
+            "description": "fitment.page of socket lines"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A page of the caller's socket lines of the assembly, by id (VN3)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": [
+          {
+            "field": "owner",
+            "role": "admin"
+          }
+        ]
+      }
+    },
+    "/v1/assemblies/{assembly}/step": {
+      "get": {
+        "operationId": "assemblies_step",
+        "parameters": [
+          {
+            "description": "sha256: and the bytes' 64 hex digits, either case (HX5)",
+            "in": "path",
+            "name": "assembly",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "an admin's: the user whose items to list (AU8)",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {}
+              }
+            },
+            "description": "the STEP bytes"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "derived_stale",
+            "x-fitment-codes": [
+              "derived_stale"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "blob_damaged, io_error, internal",
+            "x-fitment-codes": [
+              "blob_damaged",
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The assembly's stored bytes, re-hashed first (OB3)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": [
+          {
+            "field": "owner",
+            "role": "admin"
+          }
+        ]
+      }
+    },
     "/v1/auth/login": {
       "post": {
         "operationId": "login",
@@ -10705,6 +12681,205 @@
         "x-fitment-role-fields": []
       }
     },
+    "/v1/features": {
+      "post": {
+        "operationId": "features_create",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeaturesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job: the finished job, after Prefer: wait or for a key's replay"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job: the job, queued or running"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference, name_invalid",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference",
+              "name_invalid"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found, upload_not_found",
+            "x-fitment-codes": [
+              "not_found",
+              "upload_not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large, too_large",
+            "x-fitment-codes": [
+              "body_too_large",
+              "too_large"
+            ]
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unsupported_media_type",
+            "x-fitment-codes": [
+              "unsupported_media_type"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "idempotency_key_reused",
+            "x-fitment-codes": [
+              "idempotency_key_reused"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited, too_many_jobs",
+            "x-fitment-codes": [
+              "rate_limited",
+              "too_many_jobs"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout, queue_full, shutting_down",
+            "x-fitment-codes": [
+              "request_timeout",
+              "queue_full",
+              "shutting_down"
+            ]
+          },
+          "507": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "quota_exceeded",
+            "x-fitment-codes": [
+              "quota_exceeded"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Reads one uploaded part: the job features, fitment features FILE (JB1)",
+        "x-fitment-mode": "job",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
     "/v1/health": {
       "get": {
         "operationId": "health",
@@ -10895,6 +13070,1144 @@
         "x-fitment-role-fields": []
       }
     },
+    "/v1/jobs": {
+      "get": {
+        "operationId": "jobs_list",
+        "parameters": [
+          {
+            "description": "only jobs of this kind (JB1)",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "only jobs in this state (JB3)",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the cursor of the page to start after: the previous page's `next` holds it",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "items per page: 100 by default, at most limits.page_max",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "an admin's: the user whose items to list (AU8)",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.page"
+                }
+              }
+            },
+            "description": "fitment.page of fitment.job"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A page of the caller's jobs, by (creation time, id) (VN3, M6-55)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": [
+          {
+            "field": "owner",
+            "role": "admin"
+          }
+        ]
+      }
+    },
+    "/v1/jobs/{id}": {
+      "delete": {
+        "operationId": "jobs_delete",
+        "parameters": [
+          {
+            "description": "j_ and 26 base32 characters (M6-55)",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "deleted"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request",
+            "x-fitment-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "job_not_finished",
+            "x-fitment-codes": [
+              "job_not_finished"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Deletes a finished job's record; what it made durable stays (JB12)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "admin",
+        "x-fitment-role-fields": []
+      },
+      "get": {
+        "operationId": "jobs_get",
+        "parameters": [
+          {
+            "description": "j_ and 26 base32 characters (M6-55)",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "seconds to wait for the job to end, at most limits.wait_max_seconds (JB11)",
+            "in": "query",
+            "name": "wait",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The job; ?wait=N long-polls until it ends (JB11); If-None-Match answers 304 (VN5)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
+    "/v1/jobs/{id}/cancel": {
+      "post": {
+        "operationId": "jobs_cancel",
+        "parameters": [
+          {
+            "description": "j_ and 26 base32 characters (M6-55)",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job, cancel_requested"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request",
+            "x-fitment-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "job_finished",
+            "x-fitment-codes": [
+              "job_finished"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Asks the job to stop: a queued job cancelled at once, a running one cancelling (JB5)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
+    "/v1/jobs/{id}/document": {
+      "get": {
+        "operationId": "jobs_document",
+        "parameters": [
+          {
+            "description": "j_ and 26 base32 characters (M6-55)",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "the job's document (features.v1, fitment.parts, fitment.socket, …), exact bytes"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request",
+            "x-fitment-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found, no_document",
+            "x-fitment-codes": [
+              "not_found",
+              "no_document"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "blob_damaged, io_error, internal",
+            "x-fitment-codes": [
+              "blob_damaged",
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The document the job produced, exact bytes, with Fitment-Exit-Code (DC1, DC4)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
+    "/v1/jobs/{id}/events": {
+      "get": {
+        "operationId": "jobs_events",
+        "parameters": [
+          {
+            "description": "j_ and 26 base32 characters (M6-55)",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the seq of the last persisted event read: replay after it (JB8)",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job.event"
+                }
+              }
+            },
+            "description": "fitment.job.event, one per line"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited, too_many_streams",
+            "x-fitment-codes": [
+              "rate_limited",
+              "too_many_streams"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "NDJSON: the persisted events after ?after=SEQ, then live ones, until the end event (JB8, JS10)",
+        "x-fitment-mode": "stream",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
+    "/v1/jobs/{id}/pin": {
+      "post": {
+        "operationId": "jobs_pin",
+        "parameters": [
+          {
+            "description": "j_ and 26 base32 characters (M6-55)",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PinRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request",
+            "x-fitment-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unsupported_media_type",
+            "x-fitment-codes": [
+              "unsupported_media_type"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Keeps a job's record past retention, or not (JB12)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "admin",
+        "x-fitment-role-fields": []
+      }
+    },
     "/v1/openapi.json": {
       "get": {
         "operationId": "openapi",
@@ -11049,6 +14362,887 @@
         "x-fitment-mode": "sync",
         "x-fitment-role": "none",
         "x-fitment-role-fields": []
+      }
+    },
+    "/v1/sockets": {
+      "get": {
+        "operationId": "sockets_list",
+        "parameters": [
+          {
+            "description": "only the lines of this assembly, sha256:HEX",
+            "in": "query",
+            "name": "assembly",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the cursor of the page to start after: the previous page's `next` holds it",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "items per page: 100 by default, at most limits.page_max",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "an admin's: the user whose items to list (AU8)",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.page"
+                }
+              }
+            },
+            "description": "fitment.page of socket lines"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A page of the caller's socket lines, by id, of one assembly if given (VN3)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": [
+          {
+            "field": "owner",
+            "role": "admin"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "sockets_create",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SocketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job: the finished job, after Prefer: wait or for a key's replay"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job: the job, queued or running"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference, name_invalid",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference",
+              "name_invalid"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found, upload_not_found",
+            "x-fitment-codes": [
+              "not_found",
+              "upload_not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large, too_large",
+            "x-fitment-codes": [
+              "body_too_large",
+              "too_large"
+            ]
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unsupported_media_type",
+            "x-fitment-codes": [
+              "unsupported_media_type"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "idempotency_key_reused",
+            "x-fitment-codes": [
+              "idempotency_key_reused"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited, too_many_jobs",
+            "x-fitment-codes": [
+              "rate_limited",
+              "too_many_jobs"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout, queue_full, shutting_down",
+            "x-fitment-codes": [
+              "request_timeout",
+              "queue_full",
+              "shutting_down"
+            ]
+          },
+          "507": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "quota_exceeded",
+            "x-fitment-codes": [
+              "quota_exceeded"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Extracts a socket from the caller's assembly: the job socket_extract, fitment socket FILE --part X (RA4, RA5)",
+        "x-fitment-mode": "job",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
+    "/v1/sockets/{socket}": {
+      "delete": {
+        "operationId": "sockets_delete",
+        "parameters": [
+          {
+            "description": "sk_ and 20 hex digits, and @rN for one revision (RA4, RA5)",
+            "in": "path",
+            "name": "socket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "a tombstone"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Deletes a socket line: a tombstone; extracting its triple again revives it (RA4, RA6)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      },
+      "get": {
+        "operationId": "sockets_get",
+        "parameters": [
+          {
+            "description": "sk_ and 20 hex digits, and @rN for one revision (RA4, RA5)",
+            "in": "path",
+            "name": "socket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "an admin's: the user whose items to list (AU8)",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.socket"
+                }
+              }
+            },
+            "description": "fitment.socket, exact bytes, with Fitment-Digest"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "derived_stale",
+            "x-fitment-codes": [
+              "derived_stale"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "blob_damaged, io_error, internal",
+            "x-fitment-codes": [
+              "blob_damaged",
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A socket revision's fitment.socket bytes; a bare id the current one (RA5, VN5)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": [
+          {
+            "field": "owner",
+            "role": "admin"
+          }
+        ]
+      }
+    },
+    "/v1/sockets/{socket}/revisions": {
+      "get": {
+        "operationId": "sockets_revisions",
+        "parameters": [
+          {
+            "description": "sk_ and 20 hex digits, and @rN for one revision (RA4, RA5)",
+            "in": "path",
+            "name": "socket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the cursor of the page to start after: the previous page's `next` holds it",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "items per page: 100 by default, at most limits.page_max",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "an admin's: the user whose items to list (AU8)",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.page"
+                }
+              }
+            },
+            "description": "fitment.page of socket revisions"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A page of a line's revisions, by number (RA5, VN3)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": [
+          {
+            "field": "owner",
+            "role": "admin"
+          }
+        ]
       }
     },
     "/v1/uploads": {

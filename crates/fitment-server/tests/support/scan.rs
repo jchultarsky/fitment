@@ -132,8 +132,9 @@ fn documents(reply: &Reply) -> Vec<String> {
     let json = reply
         .header("content-type")
         .is_some_and(|c| c.starts_with("application/json"));
-    // A HEAD's answer carries the headers of a body it does not send.
-    if !json || reply.body.is_empty() {
+    // A HEAD's answer carries the headers of a body it does not send; a
+    // gzipped one is checked by the test that unzips it (DC6).
+    if !json || reply.body.is_empty() || reply.header("content-encoding").is_some() {
         return Vec::new();
     }
     let Ok(text) = std::str::from_utf8(&reply.body) else {
@@ -151,6 +152,10 @@ fn documents(reply: &Reply) -> Vec<String> {
         Some("fitment.features") => fitment_core::FeaturesDocument::from_json(text)
             .err()
             .map(|e| vec![format!("features.v1: {e}")])
+            .unwrap_or_default(),
+        Some("fitment.parts") => fitment_core::PartsDocument::from_json(text)
+            .err()
+            .map(|e| vec![format!("fitment.parts: {e}")])
             .unwrap_or_default(),
         _ => Vec::new(),
     }

@@ -91,7 +91,21 @@ impl Dirs {
 
 impl Drop for Dirs {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        if !self.root.as_os_str().is_empty() {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+}
+
+impl Dirs {
+    /// What a server's `Dirs` becomes when a restart takes them: nothing to
+    /// remove.
+    fn moved() -> Self {
+        Self {
+            root: PathBuf::new(),
+            catalog: PathBuf::new(),
+            state: PathBuf::new(),
+        }
     }
 }
 
@@ -398,6 +412,57 @@ impl TestServer {
         self.send(Call::get(path)).await
     }
 
+    /// `call` as the harness's admin, over the wire, to a server that may
+    /// have died (VT10): `None` then.
+    pub async fn try_send(&self, call: Call) -> Option<Reply> {
+        let call = if call.names_credentials() {
+            call
+        } else {
+            let token = self.token().to_owned();
+            call.bearer(&token)
+        };
+        try_wire(self.addr(), &call).await
+    }
+
+    /// A process server started again on the same directories with
+    /// `config_toml`, its old child gone (VT10).
+    pub fn restart_process(&mut self, config_toml: &str) {
+        if let Some(old) = self.child.take() {
+            // Stopped gracefully if it still runs; an aborted one is gone.
+            let _ = old.stop();
+        }
+        let child = Process::start(&self.dirs, config_toml, &[]).expect("the server starts again");
+        self.transport = Transport::Wire(child.addr);
+        self.child = Some(child);
+    }
+
+    /// The in-process server dropped and built again on the same
+    /// directories with `config` (SD4): ids and time fixed as before.
+    pub fn restart(mut self, config: Config) -> Self {
+        let dirs = std::mem::replace(&mut self.dirs, Dirs::moved());
+        let token = self.token.take();
+        self.server = None;
+        self.transport = Transport::Wire(SocketAddr::from(([127, 0, 0, 1], 0)));
+        drop(self);
+        // Random ids from here: the fixed ones would meet the rows the
+        // first server made.
+        let built = Server::build(config).expect("the server builds again");
+        let router = built.router();
+        let server = Self {
+            dirs,
+            server: Some(built),
+            token: std::sync::OnceLock::new(),
+            transport: Transport::InProcess(router),
+            stop: None,
+            task: None,
+            child: None,
+        };
+        if let Some(token) = token {
+            let _ = server.token.set(token);
+        }
+        server
+    }
+
     /// Stops a bound server and waits for its loop to end.
     /// Waits up to `limit` for a bound server's loop to end by itself:
     /// its result, or `None` if it still runs.
@@ -416,6 +481,29 @@ impl TestServer {
             task.await.unwrap().unwrap();
         }
     }
+}
+
+/// One request over the wire that may meet a server that died: `None`
+/// then (VT10's aborts).
+pub async fn try_wire(addr: SocketAddr, call: &Call) -> Option<Reply> {
+    let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build_http::<Body>();
+    let response = client.request(call.request(Some(addr))).await.ok()?;
+    let (parts, body) = response.into_parts();
+    let body = body.collect().await.ok()?.to_bytes().to_vec();
+    Some(Reply {
+        status: parts.status,
+        headers: parts.headers,
+        body,
+    })
+}
+
+/// A request over the wire whose body is left open: a stream (JB8).
+pub async fn wire_open(addr: SocketAddr, call: &Call) -> axum::response::Response {
+    let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build_http::<Body>();
+    let response = client.request(call.request(Some(addr))).await.unwrap();
+    response.map(Body::new)
 }
 
 /// One request over `hyper-util`'s client (M6-40).
@@ -946,4 +1034,190 @@ pub fn set_job_state(server: &TestServer, id: &str, state: &str) {
         rusqlite::params![id, state],
     )
     .unwrap();
+}
+
+/// A committed unit assembly's bytes (`crates/fitment-core/tests/assemblies`).
+pub fn assembly(name: &str) -> Vec<u8> {
+    std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fitment-core/tests/assemblies")
+            .join(name),
+    )
+    .unwrap()
+}
+
+/// A committed unit part's bytes (`crates/fitment-core/tests/data`).
+pub fn part(name: &str) -> Vec<u8> {
+    std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fitment-core/tests/data")
+            .join(name),
+    )
+    .unwrap()
+}
+
+/// The CLI's golden of `kind` and `name` (`crates/fitment/tests/golden`).
+pub fn cli_golden(kind: &str, name: &str) -> Vec<u8> {
+    std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fitment/tests/golden")
+            .join(kind)
+            .join(name),
+    )
+    .unwrap()
+}
+
+/// `POST path` with a JSON body and `Prefer: wait=30` (JB11).
+pub fn waiting(path: &str, body: &serde_json::Value) -> Call {
+    Call::json(Method::POST, path, body).header("prefer", "wait=30")
+}
+
+impl TestServer {
+    /// Uploads `bytes` as the harness's admin; their SHA-256.
+    pub async fn upload(&self, bytes: &[u8]) -> String {
+        let reply = self.send(put_upload(bytes)).await;
+        assert!(
+            reply.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&reply.body)
+        );
+        fitment_core::sha256_hex(bytes)
+    }
+
+    /// Uploads and registers an assembly, waiting for its job: the job.
+    pub async fn register(&self, bytes: &[u8], file_name: &str) -> serde_json::Value {
+        let sha = self.upload(bytes).await;
+        let body = serde_json::json!({ "upload": format!("sha256:{sha}"), "file_name": file_name });
+        self.send(waiting("/v1/assemblies", &body)).await.json()
+    }
+
+    /// Extracts a socket of a registered assembly, waiting: the job.
+    pub async fn extract(&self, sha: &str, part: &str) -> serde_json::Value {
+        let body = serde_json::json!({ "assembly": format!("sha256:{sha}"), "part": part });
+        let reply = self.send(waiting("/v1/sockets", &body)).await;
+        reply.json()
+    }
+
+    /// The document of a job, as bytes.
+    pub async fn document(&self, job: &serde_json::Value) -> Reply {
+        let id = job["id"].as_str().unwrap();
+        self.get(&format!("/v1/jobs/{id}/document")).await
+    }
+
+    /// Waits for job `id` to end, polling with `?wait=` (JB11), at most
+    /// `limit`: the job.
+    pub async fn finished_job(&self, id: &str, limit: Duration) -> serde_json::Value {
+        let start = Instant::now();
+        loop {
+            let job = self.get(&format!("/v1/jobs/{id}?wait=5")).await.json();
+            let state = job["state"].as_str().unwrap_or("").to_owned();
+            if !["queued", "running", "cancelling"].contains(&state.as_str()) {
+                return job;
+            }
+            assert!(start.elapsed() < limit, "job {id} still {state}");
+        }
+    }
+
+    /// Opens `call` in process and returns the response with its body not
+    /// read: a stream (JB8).
+    pub async fn open(&self, call: Call) -> axum::response::Response {
+        let call = if call.names_credentials() {
+            call
+        } else {
+            let token = self.token().to_owned();
+            call.bearer(&token)
+        };
+        let Transport::InProcess(router) = &self.transport else {
+            panic!("open is in process only");
+        };
+        router.clone().oneshot(call.request(None)).await.unwrap()
+    }
+}
+
+/// Reads NDJSON lines from `body` until `until` holds for one, or it ends;
+/// at most `limit`. Every line parses as one object (JB8).
+pub async fn lines(
+    body: &mut axum::body::Body,
+    limit: Duration,
+    until: impl Fn(&serde_json::Value) -> bool,
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    let mut pending = Vec::new();
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        let frame = tokio::time::timeout_at(deadline, body.frame()).await;
+        let Ok(Some(Ok(frame))) = frame else {
+            return out;
+        };
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        pending.extend_from_slice(&data);
+        while let Some(at) = pending.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = pending.drain(..=at).collect();
+            let value: serde_json::Value = serde_json::from_slice(&line).unwrap_or_else(|e| {
+                panic!(
+                    "not one JSON line ({e}): {}",
+                    String::from_utf8_lossy(&line)
+                )
+            });
+            let done = until(&value);
+            out.push(value);
+            if done {
+                return out;
+            }
+        }
+    }
+}
+
+/// The CLI (`fitment`), built beside this test binary, built first if it
+/// is not (`CARGO_BIN_EXE_fitment` is another package's).
+pub fn cli_binary() -> PathBuf {
+    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let exe = std::env::current_exe().unwrap();
+            let profile_dir = exe.parent().unwrap().parent().unwrap().to_owned();
+            let name = if cfg!(windows) {
+                "fitment.exe"
+            } else {
+                "fitment"
+            };
+            let path = profile_dir.join(name);
+            let release = profile_dir.file_name().is_some_and(|n| n == "release");
+            let target = profile_dir.parent().unwrap();
+            let mut build = Command::new(env!("CARGO"));
+            build.args([
+                "build",
+                "--quiet",
+                "-p",
+                "fitment",
+                "--bin",
+                "fitment",
+                "--target-dir",
+            ]);
+            build.arg(target);
+            if release {
+                build.arg("--release");
+            }
+            let status = build.status().expect("cargo builds the CLI");
+            assert!(status.success(), "the CLI did not build");
+            path
+        })
+        .clone()
+}
+
+/// Runs the CLI with `args` in `dir`: its exit code, stdout and stderr.
+pub fn cli(dir: &Path, args: &[&str]) -> (Option<i32>, Vec<u8>, String) {
+    let output = Command::new(cli_binary())
+        .current_dir(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    (
+        output.status.code(),
+        output.stdout,
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
 }

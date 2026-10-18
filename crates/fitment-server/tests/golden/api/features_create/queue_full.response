@@ -1,0 +1,24 @@
+503
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:X5V+RmsFaFAH96OinGVHwmaVYQWmLPer+kAQTam/9kE=:
+retry-after: 5
+x-request-id: r_00000000000000000000000006
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/queue_full",
+  "title": "The job queue is full",
+  "status": 503,
+  "detail": "the job queue is full: try again later",
+  "code": "queue_full",
+  "class": "error",
+  "exit_code": null,
+  "retryable": true,
+  "details": {
+    "lane": "query"
+  },
+  "request_id": "r_00000000000000000000000006"
+}

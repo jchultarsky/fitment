@@ -1,0 +1,47 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: W/"j4.failed"
+fitment-format: fitment.job/1
+location: /v1/jobs/j_00000000000000000000000005
+preference-applied: wait=30
+repr-digest: sha-256=:qZNp9NvrOOjQS7TXUkMP+OOc0Uf94CUfNCpdWrCgwlM=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.job",
+  "format_version": 1,
+  "id": "j_00000000000000000000000005",
+  "kind": "features",
+  "owner": "u_00000000000000000000000001",
+  "state": "failed",
+  "attempt": 1,
+  "request": {
+    "upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945"
+  },
+  "request_sha256": "adce45db212a430c782e103881dbbdb6875ec088dee943cc97f0aeeccc30e5d0",
+  "queue_position": null,
+  "progress": null,
+  "cancel_requested": false,
+  "exit_code": 1,
+  "outcome": null,
+  "result": null,
+  "document": null,
+  "error": {
+    "code": "internal",
+    "class": "error",
+    "title": "An internal error",
+    "detail": "an internal error; the server's log holds it under the job's id",
+    "exit_code": 1,
+    "retryable": false,
+    "details": {}
+  },
+  "notes": [],
+  "pinned": false,
+  "times": {
+    "created": "2026-09-21T14:13:20Z",
+    "started": "2026-09-21T14:13:20Z",
+    "finished": "2026-09-21T14:13:20Z",
+    "expires": "2026-10-21T14:13:20Z"
+  }
+}

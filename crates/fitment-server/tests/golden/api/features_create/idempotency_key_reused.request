@@ -1,0 +1,7 @@
+POST /v1/features
+authorization: Bearer <ada's reader token>
+content-type: application/json
+prefer: wait=30
+idempotency-key: golden-key
+
+{"upload": "sha256:E0382A9DD3495268BD9E66FC09851FC1C91EE91B2186E0A1F70D4F584A6B9945"}

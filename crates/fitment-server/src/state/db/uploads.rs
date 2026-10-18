@@ -467,6 +467,37 @@ impl Db {
         Ok(unlinked)
     }
 
+    /// The length of the object `sha256`, if it has a row (OB3's read).
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn object_bytes(&self, sha256: &str) -> Result<Option<u64>, DbError> {
+        self.read(|conn| {
+            conn.query_row(
+                "SELECT bytes FROM object WHERE sha256 = ?1",
+                [sha256],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|b| b.map(|b| u64::try_from(b).unwrap_or(0)))
+        })
+    }
+
+    /// The bytes of every object, summed (OP6's `fitment_state_object_bytes`).
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn object_total(&self) -> Result<u64, DbError> {
+        self.read(|conn| {
+            conn.query_row("SELECT coalesce(sum(bytes), 0) FROM object", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|b| u64::try_from(b).unwrap_or(0))
+        })
+    }
+
     /// Every object row, with its length: for the tests' and the sweep's
     /// checks that each row's file stands (OB2).
     ///

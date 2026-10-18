@@ -98,6 +98,12 @@ jobs:
       - run: cargo test --release -p fitment-server --test api --locked every_corpus_file_uploads_with_its_sha256
         env:
           FITMENT_REQUIRE_CORPUS: "1"
+      # Every corpus assembly's fitment.parts and socket through jobs are
+      # the CLI's bytes (docs/research/m6-api.md, PR 5's "done when"; DC1,
+      # JB4).
+      - run: cargo test --release -p fitment-server --test parity --locked every_corpus_source_is_the_clis_through_jobs
+        env:
+          FITMENT_REQUIRE_CORPUS: "1"
       - uses: actions/upload-artifact@v7
         with:
           name: corpus

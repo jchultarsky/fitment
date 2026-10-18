@@ -1,0 +1,36 @@
+200
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.page/1
+repr-digest: sha-256=:P64NB8QDVrubHa9zKkULX9ooGBVGDpBdU3tWPFjWZtc=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.page",
+  "format_version": 1,
+  "kind": "socket_line",
+  "items": [
+    {
+      "id": "sk_4c08cde1bddb3df26f3b",
+      "assembly": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a",
+      "target": "#249",
+      "occurrence": "*",
+      "current": {
+        "ref": "sk_4c08cde1bddb3df26f3b@r1",
+        "n": 1,
+        "how": "extract",
+        "verified": true,
+        "parent": null,
+        "sha256": "3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d",
+        "digest": "sha256:abc9400418756a7d1bb7425ab13b2275b792566731948fb023941e017b52c489",
+        "extractor_version": 6,
+        "socket_rules_version": 7,
+        "unreviewed": 4,
+        "carried": 0,
+        "stale": 0
+      }
+    }
+  ],
+  "next": null,
+  "generation": null
+}

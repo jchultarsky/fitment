@@ -99,6 +99,34 @@ Until 1.0, minor versions may contain breaking changes.
   10,000 uploads, a user's concurrent uploads share one quota and a `PUT`
   of held bytes is not charged again. `fitment-catalog`'s `Fs` also gains
   `remove_dir` and `FsRead::rewind`.
+- **M6, PR 5 (jobs, with features, assemblies and socket extraction as
+  their first kinds):** work that parses STEP bytes runs as a job in
+  `fitment-server`. `POST /v1/features`, `POST /v1/assemblies` and `POST
+  /v1/sockets` answer `202` with a `fitment.job` once the job and its
+  inputs commit, or with `Prefer: wait=N` (at most 60 s) the finished job;
+  an `Idempotency-Key` names the job a request already made. Jobs run in
+  lanes over one fair CPU budget and a memory budget, owners in turn,
+  within per-owner and per-lane caps (`429 too_many_jobs`, `503
+  queue_full`), each in one blocking task that a cancel (`POST
+  /v1/jobs/{id}/cancel`), its deadline or a drain stops where it may. A
+  job's document is exactly what `fitment features`, `fitment parts` or
+  `fitment socket` prints for the same bytes (every corpus assembly and
+  socket compared), served with `Fitment-Exit-Code`, its state following
+  the CLI's exit code; no job that did not succeed states an outcome.
+  Assemblies are registered per user (`/v1/assemblies`, their `…/parts`,
+  `…/step` and `…/sockets`), sockets are lines `sk_…` derived from their
+  data with insert-only revisions `@r1`, `@r2` (`/v1/sockets`, a line's
+  history, a tombstone that a later extraction revives, numbered on);
+  decisions carry as `fitment socket -o OUT` carries them. `GET /v1/jobs`,
+  `/v1/jobs/{id}` (`?wait=N`, ETags), `…/events` (NDJSON, resumable with
+  `?after=SEQ`), `…/document`, an admin's `…/pin` and `DELETE`; records
+  kept 30 days. A restart settles what a killed process left (a pure job
+  runs again once, then is `interrupted`; a result that committed is
+  kept); a graceful stop queues running jobs again. Documents gzip on
+  request. Prometheus metrics on `metrics.listen`. New documents
+  `fitment.job`, `fitment.job.event` and `fitment.assembly`, the error code
+  `job_not_finished`, and the configuration keys `jobs.streams_per_user`
+  and `jobs.streams`. No output of `fitment` changes.
 
 ## [0.2.0] - 2026-10-17
 

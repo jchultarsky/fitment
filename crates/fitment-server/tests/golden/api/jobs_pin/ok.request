@@ -1,0 +1,5 @@
+POST /v1/jobs/j_00000000000000000000000008/pin
+authorization: Bearer <root's admin token>
+content-type: application/json
+
+{"pinned": true}

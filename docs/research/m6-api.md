@@ -726,6 +726,7 @@ The dependencies, each resolved and built with `cargo +1.85 build --release` in 
 | argon2 | 0.6.0 | 1.85 | MIT OR Apache-2.0 | default | password hashing; 0.5.3 (MSRV 1.65) is the fallback, with another API (no `SaltString` in 0.6) |
 | getrandom | 0.4 | 1.85 | MIT OR Apache-2.0 | — | token, id and salt bytes; argon2 0.6 already brings it |
 | tracing, tracing-subscriber | 0.1.44, 0.3.23 | 1.65 | MIT | subscriber: `default-features = false`, `fmt`, `env-filter`, `json`, `ansi`, `std` | logs |
+| flate2 | 1.1 (PR 5) | 1.67 | MIT OR Apache-2.0 | `default-features = false`, `rust_backend` (`miniz_oxide`) | DC6's `Content-Encoding: gzip` |
 | toml | 1.1 | (built) | MIT OR Apache-2.0 | `default-features = false`, `parse`, `serde`, `std` | the configuration file; 0.9.12 also builds |
 | clap | workspace (4.6) | 1.85 | MIT OR Apache-2.0 | adds `env` at the member | flags |
 | rusqlite | workspace (0.40, bundled) | — | MIT | — | `server.db` (M6-32) |
@@ -763,7 +764,7 @@ Rejected: `sha2` 0.11 (MSRV 1.88); chrono, uuid and rand (times are `i64` Unix m
              per_owner_running = 2; per_owner_queued = 16
              deadline_extract_minutes = 10; deadline_match_minutes = 60; deadline_verify_minutes = 60
              retention_days = 30; sweep_minutes = 60; reindex_on_start = true; catalog_gc_at = ""
-             drain_seconds = 25
+             drain_seconds = 25; streams_per_user = 8; streams = 256
   [catalog]  write_busy_ms = 60000; delete_busy_ms = 10000; read_busy_ms = 5000; wal_barrier_mib = 256
              barrier_max_seconds = 60; max_db_pages = 0
   [match]    require_reviewed_floor = false
@@ -966,6 +967,7 @@ CREATE TABLE assembly_parts (               -- derived, insert-only, by version 
   extractor_version INTEGER NOT NULL, socket_rules_version INTEGER NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('accepted','refused')),
   document_sha256 TEXT NOT NULL REFERENCES object(sha256),                 -- fitment.parts bytes
+  root TEXT,                                                               -- fitment.assembly's root, as JSON (PR 5)
   job INTEGER,                                                             -- JS13; no FK: the job record expires first
   PRIMARY KEY (assembly, extractor_version, socket_rules_version)) STRICT;
 
@@ -975,9 +977,11 @@ CREATE TABLE socket_line (                  -- RA4
   id TEXT NOT NULL CHECK (length(id) = 23 AND id GLOB 'sk_*'),
   assembly_sha256 TEXT NOT NULL CHECK (length(assembly_sha256) = 64),     -- no FK: an import may name
   definition TEXT NOT NULL, occurrence TEXT NOT NULL,                      -- an assembly not stored
-  created_ms INTEGER NOT NULL, deleted_ms INTEGER) STRICT;
+  last_n INTEGER NOT NULL DEFAULT 0,                                       -- RA4: its highest revision, kept when
+  created_ms INTEGER NOT NULL, deleted_ms INTEGER) STRICT;                 -- its revisions are swept (PR 5)
 CREATE UNIQUE INDEX socket_line_live ON socket_line(owner, id) WHERE deleted_ms IS NULL;   -- RA4: one live row,
 CREATE INDEX socket_line_rows ON socket_line(owner, id);                                    -- tombstones beside it
+CREATE INDEX socket_line_assembly ON socket_line(owner, assembly_sha256);                   -- RA6, the lists (PR 5)
 CREATE TABLE socket_revision (              -- RA5, OB5: insert-only
   key INTEGER PRIMARY KEY AUTOINCREMENT,
   line INTEGER NOT NULL REFERENCES socket_line(key),
@@ -1013,6 +1017,7 @@ CREATE TABLE job (
   exit INTEGER CHECK (exit IS NULL OR exit IN (0,1,2,3,4,5)),              -- the CLI's code (JB4)
   outcome TEXT, error_code TEXT, error_details TEXT,                       -- ER3: built from codes and values
   result_sha256 TEXT REFERENCES object(sha256), result_format TEXT,        -- the document's bytes
+  result TEXT,                                                             -- what it made: fitment.job's result.href
   index_sha256 TEXT REFERENCES object(sha256),                             -- DC12: a match's candidates index
   catalog_generation INTEGER, catalog_counts TEXT,                         -- M6-25; a write job's at dispatch (JB6)
   notes TEXT NOT NULL DEFAULT '[]',                                        -- JB10
@@ -1020,6 +1025,8 @@ CREATE TABLE job (
   UNIQUE (owner, idempotency_key)) STRICT;
 CREATE INDEX job_queue ON job(lane, state, key) WHERE state = 'queued';
 CREATE INDEX job_list ON job(owner, created_ms, id);
+CREATE INDEX job_expiry ON job(expires_ms) WHERE expires_ms IS NOT NULL;      -- JS9's retention (PR 5)
+CREATE INDEX job_live ON job(state) WHERE state IN ('running', 'cancelling'); -- SD4's recovery (PR 5)
 
 CREATE TABLE job_input (job INTEGER NOT NULL REFERENCES job(key) ON DELETE CASCADE,
   n INTEGER NOT NULL, sha256 TEXT NOT NULL REFERENCES object(sha256),
@@ -1044,6 +1051,10 @@ CREATE INDEX socket_revision_object ON socket_revision(document_sha256);
 CREATE INDEX job_input_object ON job_input(sha256);
 CREATE INDEX job_result ON job(result_sha256);
 CREATE INDEX job_index ON job(index_sha256);
+-- JS13 (PR 5): a re-run after a crash looks for a row naming its job.
+CREATE INDEX assembly_parts_job ON assembly_parts(job);
+CREATE INDEX socket_revision_job ON socket_revision(job);
+CREATE INDEX socket_revision_parent ON socket_revision(parent);
 CREATE TABLE object_candidate (sha256 TEXT PRIMARY KEY) STRICT;            -- OB4: the sweep's to look at
 CREATE TRIGGER upload_gone AFTER DELETE ON upload
 BEGIN INSERT OR IGNORE INTO object_candidate VALUES (OLD.sha256); END;
@@ -1374,6 +1385,7 @@ The `type` URI's host is a placeholder for the project's documentation site (que
 | `upload_in_use` | usage | 409 | — | RA6, UP5 |
 | `original_not_stored` | usage | 409 | — | `original: true` without the socket's assembly stored by the caller (SN9) |
 | `job_finished` | usage | 409 | — | a cancel after the end, or of a job that cannot stop (JB5) |
+| `job_not_finished` | usage | 409 | — | `DELETE /v1/jobs/{id}` of a job that has not ended (JB12; added in PR 5) |
 | `too_many_tokens` | usage | 409 | — | AU10: the user holds `auth.max_live_tokens` live tokens |
 | `username_taken` | usage | 409 | — | `POST /v1/auth/users` (and AU9's `user add`) with a username another user holds, compared folded (added in PR 3) |
 | `last_admin` | usage | 409 | — | `PATCH /v1/auth/users/{id}` disabling or demoting the last enabled admin (added in PR 3's review); AU9's offline `user set`, the recovery path, may |
@@ -1980,7 +1992,22 @@ Each PR comes with its tests and two adversarial reviews, as in M4 and M5, and n
    - **Contents:** the job store, scheduler, lanes, permits and fairness (JS1 to JS6, JS9 to JS11, JS13; JS8 for these kinds, completed in PR 7); states, stops, restart, deadlines, events, idempotency, waiting and retention (JB1, JB3 to JB9, JB11, JB12); shutdown and recovery (SD1, SD2, SD4, SD5); the hold window (OB4, UP5); `features`, `assembly_read` and `socket_extract` with their routes, socket lines, revivals and revisions (RA3 to RA5, OB5, UP7); the document rules for these kinds (DC1, DC2, DC4 to DC6, DC8, VN5); metrics (OP6).
    - **Tests:** VT9; VT10 at every hook point, JS13's included (the soak waits for PR 8); VT11 for the job store; VT13's download half; VT14 on socket jobs; VT21; VT33's shutdown with jobs in flight; VT6's job goldens; VT7's `features`, `parts` and `socket` rows; VT40's id and revision cases; VT41 for these kinds; VT42's waiting, idempotency and job ETags; VT43; VT49's holds and revival; XH12 checked for these kinds (completed in PR 7).
    - **Done when** an abort at every named point leaves XH12 holding on three OSes, and every corpus source's `fitment.parts` and socket, extracted through jobs, equal `fitment parts`'s and `fitment socket`'s bytes.
-   - **As built:** (left for the PR.)
+   - **As built.** Done as planned, every rule section 11.1 defers to PR 5 built and cited in `RULES` (`M6_PR_NOW` is 5): JB1, JB3 to JB9, JB11, JB12, JS1 to JS6, JS9 to JS11, JS13, SD1, SD2, SD4, SD5, DC1, DC2, DC4 to DC6, DC8, RA3 to RA5, VN5, OP6, UP5, UP7, OB4 and OB5; JB5, JB6, JS11, JS13, OB4, OB5 and SD1 to SD5 have their tests in `fault.rs` and `concurrency.rs` (`M6_FAULT`), JS5, JS10, JB7 and JB11 in `hostile.rs` (`M6_LIMITS`), DC1 and JB4 in `parity.rs` (`M6_PARITY`). JS8 and XH12 are checked for these kinds (VT41, VT44's checks in every fault test) and stay deferred to PR 7, as the registry says; CA8 too, since no catalog view is served yet (VN5's catalog ETags come with it). `crates/fitment-server` gains `jobs/` (`model.rs`: kinds, lanes, states and JB3's transitions; `scheduler.rs`: per-lane FIFOs per owner, owners in turn, the slots and caps; `mod.rs`: the dispatcher, the fair CPU and memory semaphores, the stop flags, deadlines, waits, the drain and recovery; `run.rs` and `socket.rs`: one function per kind; `events.rs`: the broadcast, the replay-then-follow stream, the caps; `documents.rs`: `fitment.job` and `fitment.job.event`; `request.rs`: the bodies, references, names, keys, fingerprints and `Prefer`), `assemblies.rs` (`fitment.assembly` and the lines' and revisions' items), `metrics.rs` (OP6), `http/cache.rs` (stored bytes out: OB3, DC4 to DC6, VN5), `http/routes/{jobs,features,assemblies,sockets}.rs`, and `state/db/{jobs,assemblies}.rs` (their SQL). `OPERATIONS` holds 39 operations and the API's minor is 3. Every corpus assembly (220, the 217 assembly cases and three sources of match cases) registered through `assembly_read`, and every socket the cases name (80: the match cases' 33 and the assemblies' own), extracted through `socket_extract`, are `fitment parts --format json`'s and `fitment socket --part P --format json`'s bytes and exit codes, 0 differences, in 13 s in release on the Mac (`parity.rs::every_corpus_source_is_the_clis_through_jobs`, run by CI's `corpus` job); the committed unit parts, assemblies and sockets are compared on every OS (`parity.rs`), the CLI built beside the tests by the harness (`support::cli_binary`), since `CARGO_BIN_EXE_fitment` is another package's. An abort (`std::process::abort()` at a hook, so Windows too) at each of seven points of a job's life, for extractions and assembly readings, then a restart, leaves each job ending once (`fault.rs::an_abort_at_every_hook_point_leaves_each_job_ending_once`). Where the build departs from the design:
+     - **Schema 1 changes in place** (unreleased): `job.result` (the href of what a job made, `fitment.job`'s `result`), `assembly_parts.root` (`fitment.assembly`'s root, as JSON), `socket_line.last_n` (a tombstoned row's highest revision, so RA4's numbering survives the sweep of its revisions), and indexes for recovery, retention, JS13's look-up, the lines of an assembly and a revision's children (section 6.2).
+     - **A code added:** `job_not_finished` (usage, `409`), for `DELETE /v1/jobs/{id}` of a job that has not ended: no code of section 7.12 said it (85 codes).
+     - **Two limits are keys** beyond OP3's list, now in it: `jobs.streams_per_user` (8) and `jobs.streams` (256), JS10's caps, so tests set them small. Under `test-support` only, a `[test]` section takes `hooks` (a point's action: `abort`, `panic` or `delay:<ms>`, for the built binary, VT10) and `lease_stale_ms` (SD6's 30 s, shortened so a killed child restarts at once); a release build refuses the section as an unknown key. Further seams: `Server::hold_jobs` and `resume_jobs` (jobs stay queued without a drain), `Jobs::set_deadline` and `set_heartbeat`, and a hook action `Pause(Gate)` a test opens, which counts arrivals, so tests wait for a point, never for a time.
+     - **Caps per owner are per lane** (JS4): `jobs.per_owner_running` and `jobs.per_owner_queued` count an owner's jobs in each lane, so a long ingest never takes a user's query slot.
+     - **`fitment.job`:** `queue_position` is the job's rank, from 1, among its lane's queued jobs in submission order (the round-robin may start it sooner); `progress` is shown while the job runs only, so a finished job's document is the same after a restart; `notes` is `[]` until JB10 (PR 6). A job whose document states its refusal (exit 3) has `error: null`, since the document is the answer (ER4); one whose reading refused the input as a fitment bug (an internal refusal, the CLI's exit 1) is `failed`, `internal`, its refusals in `details`, its document kept. The `end` event's fields follow JB8's order.
+     - **Sockets:** a line's occurrence is `*`, or for an `occurrence` selection the chosen occurrences' usage `#id` paths; `carry` defaults to true (section 7.6's "extracting onto an existing line carries"), the one boolean that does not default false (VN6), and `carry_from` wins over it. `carry_from` is checked at the request (a revision of the caller's, a bare `sk_X` resolved to its current revision as RA9 says, or an upload held, within `limits.max_socket_mib`) and read in the job, leniently through `SocketDocument::prior`: one that is not a socket document or is another file's or target's ends the job `refused`, exit 2, `carry_from_foreign`, as the CLI refuses that OUT, since the parse semaphore is PR 6's. The job holds the carried document's object too (OB4). A finishing transaction commits a revision only over the current revision the job carried from; one made meanwhile has the job carry again (at most eight times, then `internal`). Revisions of a deleted line no job cites and no revision names as its parent are deleted by the sweep (OB4); the line's tombstone keeps its highest number.
+     - **Assemblies:** the row is made with the job's end (JS13), so a failed reading registers nothing; `POST /v1/assemblies` of an assembly the caller holds at this build adds the name and answers `200` `fitment.assembly`, but a key's replay (JB9) answers the job it named first; `DELETE` deletes the rows (no tombstone: nothing cites an assembly before PR 6's originals), their objects then the sweep's.
+     - **Pages of lines and revisions** have `kind` `socket_line` and `socket_revision`: their items are not documents of their own.
+     - **Stored bytes:** a job's document is `immutable` (it never changes for its job), a bare socket reference `no-cache`, an exact one `immutable`; DC6's gzip is `flate2` 1.1 with its pure-Rust backend (`miniz_oxide`; MIT, Apache-2.0 or Zlib, `cargo deny` unchanged), applied to bytes within the one-buffer cap only; a streamed object is sent as it is. Section 4.13's table gains `flate2`.
+     - **A wait** also ends at a drain, answering `202` with the job as it stands, so `GracefulShutdown` never waits for it (SD1).
+     - **SD1:** streams are told and dispatch stops first; the requests' 10 s and the jobs' `drain_seconds` then run together; a pure job stopped by the drain goes back to `queued` with no event. A panic after a job's commit leaves its end, and its events are sent again (streams and waits take them by `seq`).
+     - **JS13's check at a restart** stays, though a job's rows and its end commit in one transaction, so a running job never holds a committed result; the abort tests show both sides of that transaction.
+     - **OP6's listener** answers `GET /metrics` alone, without authentication, with a header timeout; the catalog's gauges are read at each scrape.
+     - **XH14's goldens:** every operation has one (100 scenarios); the core documents a job or a route serves are written as a marker naming the CLI's golden they equal, not duplicated (VT6).
+     - **VT14** runs 32 clients over the bound socket, each its own user, on every committed socket: about 130 refusals for load (upload slots) per run, all declared and retried; the per-owner cap and the turns are the scheduler's unit tests.
 6. **Review, import and matching through the API, and the exit's file half.**
    - **Contents:** reviews and imports, the import a `socket_import` job that verifies or marks (OB5, UP6, RA6, RA7, RA10, M6-14, M6-62); the parse semaphore (HX8's first half); match jobs over uploads and components, originals, policies and options, the gate checked again at dispatch (JB2, JS7, DC3, DC7, SN1 to SN9, SN11, RA8, RA9); CO2, CO3 and CO5, with the CLI on CO2 (CU3's match half); notes (JB10); `fitment.run` (DC10), a null `outcome` for every job that did not succeed (M6-59), and the sliced candidates view (DC12); a retained match's inputs (M6-64); ownership complete (AU8).
    - **Tests:** VT1 (all of it but the catalog: XH1 parts 1 to 4, XH3 to XH7, XH9 to XH11); VT3; VT7's `review`, MF11, `match` and `--original` rows; VT22; VT25 in full; VT31; VT32's socket half and its dispatch re-check; VT37's CO2 and CO3; VT40; VT41 for matches; VT44; VT45's parse half; VT46; VT47; VT49's re-run of a retained match; VT50; the `server-corpus` job.

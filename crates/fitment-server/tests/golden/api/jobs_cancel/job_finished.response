@@ -1,0 +1,21 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:Bt6C2R/aLdwQl60YxSkkBFk0wmUIz4DI+ZAepqcd74g=:
+x-request-id: r_00000000000000000000000006
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/job_finished",
+  "title": "The job has ended or cannot stop",
+  "status": 409,
+  "detail": "the job has ended: there is nothing to cancel",
+  "code": "job_finished",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000006"
+}
