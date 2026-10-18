@@ -1,14 +1,17 @@
 //! `server.db` (docs/research/m6-api.md, section 6.2, OB1): the server's
 //! own SQLite database, the catalog's kind of database. The only module
-//! that names rusqlite (SV6), with its submodule `auth` for users and
-//! tokens; no SQL here names a catalog table.
+//! that names rusqlite (SV6), with its submodules `auth` for users and
+//! tokens and `uploads` for uploads and objects; no SQL here names a
+//! catalog table.
 
 mod auth;
+mod uploads;
 
 pub use auth::{
     CreateUserError, MintError, MintFrom, NewToken, PasswordSet, Presented, SWEEP_BATCH, TokenRow,
     UpdateUserError, UserRow,
 };
+pub use uploads::{CHARGE_MIN, CHARGE_ROW, Deleted, Holding, StoreError, Stored, Unnamed, charge};
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};

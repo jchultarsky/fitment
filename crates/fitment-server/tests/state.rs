@@ -23,6 +23,14 @@ fn the_first_start_makes_the_state() {
         "fitment.server 1\n"
     );
     assert!(dirs.state.join("objects/sha256").is_dir());
+    // OB2, UP8: every fan-out directory, made with the state.
+    for fan in 0..=255_u8 {
+        assert!(
+            dirs.state
+                .join(format!("objects/sha256/{fan:02x}"))
+                .is_dir()
+        );
+    }
     assert!(dirs.state.join("tmp").is_dir());
     let db = open(&dirs);
     let id: i64 = db
@@ -56,6 +64,7 @@ fn the_first_start_makes_the_state() {
             "lease",
             "meta",
             "object",
+            "object_candidate",
             "socket_line",
             "socket_revision",
             "token",

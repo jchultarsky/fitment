@@ -26,6 +26,12 @@ pub const FORMAT: &str = fitment_catalog::document::CATALOG_FORMAT;
 /// never refused by ingest for size.
 pub const DEFAULT_MAX_BYTES: u64 = fitment_catalog::DEFAULT_MAX_BYTES;
 
+/// The catalog crate's file system seam, which the server's object store
+/// is written against (OB2, CA7): named here, the one module naming
+/// `fitment_catalog` (SV4), so a `CountingFs` fails every file call of an
+/// upload, a stored document and an object read in turn (VT11).
+pub use fitment_catalog::fs::{Content, Fs, FsRead, FsWrite, StdFs};
+
 /// The catalog the server was configured with.
 #[derive(Debug, Clone)]
 pub struct CatalogDir {

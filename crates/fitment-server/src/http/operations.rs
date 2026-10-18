@@ -65,6 +65,9 @@ pub enum RequestBody {
         /// The component's name.
         schema: &'static str,
     },
+    /// Raw bytes, streamed under `limits.max_upload_mib` and never
+    /// buffered whole (UP2, HX2): the upload routes only (UP1).
+    Upload,
 }
 
 /// One successful response.
@@ -111,7 +114,7 @@ pub struct Operation {
 use ErrorCode as E;
 
 /// Every operation, in the order of section 7 (VN7, XH14).
-pub const OPERATIONS: [Operation; 13] = [
+pub const OPERATIONS: [Operation; 19] = [
     Operation {
         id: "info",
         method: "GET",
@@ -214,6 +217,12 @@ pub const OPERATIONS: [Operation; 13] = [
             E::Internal,
         ],
     },
+    UPLOADS[0],
+    UPLOADS[1],
+    UPLOADS[2],
+    UPLOADS[3],
+    UPLOADS[4],
+    UPLOADS[5],
     AUTH[0],
     AUTH[1],
     AUTH[2],
@@ -238,6 +247,162 @@ const fn answer(status: u16, format: Option<&'static str>, description: &'static
 }
 
 use crate::auth::documents::{PAGE_FORMAT, TOKEN_FORMAT, USER_FORMAT};
+use crate::uploads::UPLOAD_FORMAT;
+
+/// What every upload that streams bytes can answer (UP2 to UP4, HX3).
+const STREAMED: &[ErrorCode] = &[
+    E::BadRequest,
+    E::InvalidReference,
+    E::NotAcceptable,
+    E::UploadTooSlow,
+    E::UploadDigestMismatch,
+    E::UnsupportedMediaType,
+    E::RateLimited,
+    E::TooManyStreams,
+    E::TooLarge,
+    E::RequestTimeout,
+    E::ShuttingDown,
+    E::StorageFull,
+    E::QuotaExceeded,
+    E::IoError,
+    E::Internal,
+    E::Unauthenticated,
+];
+
+/// What a read of the caller's uploads can answer (UP3, AU8).
+const READ: &[ErrorCode] = &[
+    E::BadRequest,
+    E::InvalidParameter,
+    E::InvalidReference,
+    E::NotFound,
+    E::NotAcceptable,
+    E::BodyTooLarge,
+    E::RateLimited,
+    E::RequestTimeout,
+    E::IoError,
+    E::Internal,
+    E::Unauthenticated,
+    E::Forbidden,
+];
+
+/// Section 7.3's routes (UP1 to UP4, UP8, AU8, VN3).
+const UPLOADS: [Operation; 6] = [
+    Operation {
+        id: "uploads_put",
+        method: "PUT",
+        path: "/v1/uploads/{upload}",
+        summary: "Uploads bytes under their SHA-256, kept only if they hash to it; 201, or 200 for the caller's own again (UP2, UP3, UP8)",
+        role: Role::Reader,
+        role_fields: &[],
+        mode: Mode::Sync,
+        body: RequestBody::Upload,
+        query: &[],
+        answers: &[
+            answer(
+                201,
+                Some(UPLOAD_FORMAT),
+                "fitment.upload: the caller held no upload of these bytes",
+            ),
+            answer(
+                200,
+                Some(UPLOAD_FORMAT),
+                "fitment.upload: the caller's own bytes again, their lifetime extended",
+            ),
+        ],
+        codes: STREAMED,
+    },
+    Operation {
+        id: "uploads_post",
+        method: "POST",
+        path: "/v1/uploads",
+        summary: "Uploads bytes named by the SHA-256 the server computes, with Location (UP2)",
+        role: Role::Reader,
+        role_fields: &[],
+        mode: Mode::Sync,
+        body: RequestBody::Upload,
+        query: &[],
+        answers: &[
+            answer(
+                201,
+                Some(UPLOAD_FORMAT),
+                "fitment.upload: the caller held no upload of these bytes",
+            ),
+            answer(
+                200,
+                Some(UPLOAD_FORMAT),
+                "fitment.upload: the caller's own bytes again, their lifetime extended",
+            ),
+        ],
+        codes: STREAMED,
+    },
+    Operation {
+        id: "uploads_head",
+        method: "HEAD",
+        path: "/v1/uploads/{upload}",
+        summary: "200 if the caller may name these bytes, else 404: never another user's (UP3)",
+        role: Role::Reader,
+        role_fields: &[("owner", Role::Admin)],
+        mode: Mode::Sync,
+        body: RequestBody::None,
+        query: &["owner"],
+        answers: &[answer(200, None, "the caller may name the bytes")],
+        codes: READ,
+    },
+    Operation {
+        id: "uploads_get",
+        method: "GET",
+        path: "/v1/uploads/{upload}",
+        summary: "The caller's fitment.upload: metadata, never the bytes (UP3)",
+        role: Role::Reader,
+        role_fields: &[("owner", Role::Admin)],
+        mode: Mode::Sync,
+        body: RequestBody::None,
+        query: &["owner"],
+        answers: &[answer(200, Some(UPLOAD_FORMAT), "fitment.upload")],
+        codes: READ,
+    },
+    Operation {
+        id: "uploads_list",
+        method: "GET",
+        path: "/v1/uploads",
+        summary: "A page of the caller's uploads, by SHA-256 (VN3)",
+        role: Role::Reader,
+        role_fields: &[("owner", Role::Admin)],
+        mode: Mode::Sync,
+        body: RequestBody::None,
+        query: &["after", "limit", "owner"],
+        answers: &[answer(
+            200,
+            Some(PAGE_FORMAT),
+            "fitment.page of fitment.upload",
+        )],
+        codes: READ,
+    },
+    Operation {
+        id: "uploads_delete",
+        method: "DELETE",
+        path: "/v1/uploads/{upload}",
+        summary: "Deletes the caller's upload; 409 while a job that has not ended names it (RA6, UP5)",
+        role: Role::Reader,
+        role_fields: &[],
+        mode: Mode::Sync,
+        body: RequestBody::None,
+        query: &[],
+        answers: &[answer(204, None, "deleted")],
+        codes: &[
+            E::BadRequest,
+            E::InvalidReference,
+            E::NotFound,
+            E::UploadInUse,
+            E::BodyTooLarge,
+            E::RateLimited,
+            E::RequestTimeout,
+            E::IoError,
+            E::Internal,
+            E::Unauthenticated,
+        ],
+    },
+];
 
 /// Section 7.10's routes (AU1 to AU10).
 const AUTH: [Operation; 9] = [

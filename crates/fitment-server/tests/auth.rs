@@ -59,12 +59,17 @@ struct World {
     /// A user no principal is: the non-owner's target.
     other: UserRow,
     other_token: String,
+    /// Each user's upload, by its SHA-256 (UP3).
+    uploads: BTreeMap<Who, String>,
+    /// The other user's upload.
+    other_upload: String,
 }
 
 fn world(passwords: bool) -> World {
     let server = TestServer::fresh();
     let password = passwords.then_some(PASSWORD);
     let (mut users, mut tokens, mut spare) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+    let mut uploads = BTreeMap::new();
     for who in WHO
         .into_iter()
         .filter(|w| *w != Who::None && *w != Who::Malformed)
@@ -98,6 +103,10 @@ fn world(passwords: bool) -> World {
             _ => {}
         }
         let _ = spare_row;
+        uploads.insert(
+            who,
+            support::seed_upload(server.server(), user.key, name.as_bytes()),
+        );
         users.insert(who, user);
         tokens.insert(who, token);
         spare.insert(who, spare_token);
@@ -105,6 +114,7 @@ fn world(passwords: bool) -> World {
     let other = seed_user(server.server(), "other", Role::Reader, None);
     let (other_row, other_token) = seed_token(server.server(), &other, Role::Reader, 30);
     let _ = other_row;
+    let other_upload = support::seed_upload(server.server(), other.key, b"the other's bytes");
     World {
         server,
         users,
@@ -112,6 +122,8 @@ fn world(passwords: bool) -> World {
         spare,
         other,
         other_token,
+        uploads,
+        other_upload,
     }
 }
 
@@ -158,6 +170,26 @@ fn request(op: &Operation, world: &World, who: Who, owner: bool) -> Call {
             &op.path.replace("{id}", &world.other.id),
             &json!({ "disabled": false }),
         ),
+        "uploads_put" => support::put_upload(format!("matrix {username}").as_bytes()),
+        "uploads_post" => Call::new(Method::POST, op.path)
+            .header("content-type", "model/step")
+            .body(format!("matrix {username}").as_bytes()),
+        "uploads_list" => Call::get(op.path),
+        "uploads_head" | "uploads_get" | "uploads_delete" => {
+            let target = match world.uploads.get(&who) {
+                Some(sha256) if owner => sha256.clone(),
+                _ => world.other_upload.clone(),
+            };
+            let method = match op.method {
+                "HEAD" => Method::HEAD,
+                "DELETE" => Method::DELETE,
+                _ => Method::GET,
+            };
+            Call::new(
+                method,
+                &op.path.replace("{upload}", &format!("sha256:{target}")),
+            )
+        }
         other => panic!("VT23 has no row for the operation {other} (XH14)"),
     };
     match who {
@@ -206,10 +238,23 @@ async fn every_operation_answers_each_principal_as_its_role_says() {
                 (needed, Some(role)) if !role.permits(needed) => Some((403, "forbidden")),
                 _ => None,
             };
+            // A HEAD's answer has no body (axum strips it): its status
+            // alone is compared.
+            let code = |reply: &support::Reply| {
+                if op.method == "HEAD" {
+                    String::new()
+                } else {
+                    reply.code()
+                }
+            };
             match expected {
-                Some((want, code)) => {
-                    if status != want || reply.code() != code {
-                        failures.push(format!("{} {who:?}: {status}, not {want} {code}", op.id));
+                Some((want, code_wanted)) => {
+                    let code_wanted = if op.method == "HEAD" { "" } else { code_wanted };
+                    if status != want || code(&reply) != code_wanted {
+                        failures.push(format!(
+                            "{} {who:?}: {status}, not {want} {code_wanted}",
+                            op.id
+                        ));
                     } else if want == 401 && reply.header("www-authenticate") != Some("Bearer") {
                         failures.push(format!("{} {who:?}: 401 without WWW-Authenticate", op.id));
                     }
@@ -218,7 +263,7 @@ async fn every_operation_answers_each_principal_as_its_role_says() {
                     failures.push(format!("{} {who:?}: {status} at or above its role", op.id));
                 }
                 None if status >= 400 => {
-                    failures.push(format!("{} {who:?}: {status} {}", op.id, reply.code()));
+                    failures.push(format!("{} {who:?}: {status} {}", op.id, code(&reply)));
                 }
                 None => {}
             }

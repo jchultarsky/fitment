@@ -1,0 +1,26 @@
+200
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.page/1
+repr-digest: sha-256=:ABjNatwP1AGH5xsGBP5ALJVdoHmQrlqRCQlB3ATO+OU=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.page",
+  "format_version": 1,
+  "kind": "fitment.upload",
+  "items": [
+    {
+      "format": "fitment.upload",
+      "format_version": 1,
+      "sha256": "00405bfcd89d7207e00ee4a384a6c584e71613b32eacab525a366a7bd11ebc71",
+      "bytes": 22,
+      "held_by": [
+        "upload"
+      ],
+      "pinned_by_jobs": 0
+    }
+  ],
+  "next": "/v1/uploads?after=MDA0MDViZmNkODlkNzIwN2UwMGVlNGEzODRhNmM1ODRlNzE2MTNiMzJlYWNhYjUyNWEzNjZhN2JkMTFlYmM3MQ&limit=1",
+  "generation": null
+}

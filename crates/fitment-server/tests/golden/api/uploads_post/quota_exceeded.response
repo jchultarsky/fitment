@@ -1,0 +1,23 @@
+507
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:WK5gsDxSzVTYvunnJFGaiqpjuq3VjG/gsP5+jEyp+Js=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/quota_exceeded",
+  "title": "The quota is exceeded",
+  "status": 507,
+  "detail": "this user's stored bytes are at their quota: delete some first",
+  "code": "quota_exceeded",
+  "class": "error",
+  "exit_code": null,
+  "retryable": false,
+  "details": {
+    "limit": "user_quota_gib"
+  },
+  "request_id": "r_00000000000000000000000004"
+}

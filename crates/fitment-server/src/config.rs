@@ -119,6 +119,8 @@ pub struct Limits {
     pub max_candidates: u64,
     pub max_catalog_candidates: u64,
     pub upload_concurrency: u32,
+    /// UP4: a user's uploads at once, over all their tokens.
+    pub upload_concurrency_per_user: u32,
     pub read_concurrency: u32,
     pub parse_concurrency: u32,
     pub list_all_concurrency: u32,
@@ -127,6 +129,15 @@ pub struct Limits {
     pub upload_ttl_hours: u64,
     pub upload_minutes: u64,
     pub upload_min_kib_s: u64,
+    /// HX3: the longest wait for an upload's next chunk.
+    pub upload_chunk_seconds: u64,
+    /// HX3: the window `upload_min_kib_s` is averaged over; before it
+    /// passes, the minimum applies pro rata.
+    pub upload_window_seconds: u64,
+    /// HX3 (PR 4's review): the time an upload's first bytes have.
+    pub upload_first_byte_seconds: u64,
+    /// UP4 (PR 4's review): a user's live uploads at most.
+    pub user_max_uploads: u64,
     pub page_max: u32,
     pub wait_max_seconds: u32,
 }
@@ -140,6 +151,7 @@ impl Default for Limits {
             max_candidates: 10_000,
             max_catalog_candidates: 100_000,
             upload_concurrency: 8,
+            upload_concurrency_per_user: 2,
             read_concurrency: 16,
             parse_concurrency: 4,
             list_all_concurrency: 2,
@@ -148,9 +160,44 @@ impl Default for Limits {
             upload_ttl_hours: 24,
             upload_minutes: 30,
             upload_min_kib_s: 64,
+            upload_chunk_seconds: 30,
+            upload_window_seconds: 30,
+            upload_first_byte_seconds: 5,
+            user_max_uploads: 10_000,
             page_max: 1000,
             wait_max_seconds: 60,
         }
+    }
+}
+
+impl Limits {
+    /// The upload keys' checks (UP2, UP4, HX3): each at least 1, so no
+    /// upload is refused or cut by a zero.
+    ///
+    /// # Errors
+    ///
+    /// The first value that fails.
+    pub fn validate_uploads(&self) -> Result<(), ConfigError> {
+        let counts = [self.upload_concurrency, self.upload_concurrency_per_user];
+        let sizes = [
+            self.max_upload_mib,
+            self.staging_gib,
+            self.user_quota_gib,
+            self.upload_ttl_hours,
+            self.upload_minutes,
+            self.upload_min_kib_s,
+            self.upload_chunk_seconds,
+            self.upload_window_seconds,
+            self.upload_first_byte_seconds,
+            self.user_max_uploads,
+        ];
+        if counts.contains(&0) || sizes.contains(&0) {
+            return Err(value_error(
+                "limits",
+                "every upload limit must be at least 1",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -616,6 +663,7 @@ impl Config {
         if self.limits.max_json_kib == 0 || self.limits.page_max == 0 {
             return Err(value_error("limits", "sizes must be at least 1"));
         }
+        self.limits.validate_uploads()?;
         self.auth.validate()
     }
 

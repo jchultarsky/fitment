@@ -254,6 +254,8 @@ fn every_document_validates_against_its_schema() {
         "fitment.socket",
         "fitment.match",
         "fitment.catalog",
+        "fitment.upload",
+        "fitment.page",
     ] {
         assert!(
             checked.get(format).copied().unwrap_or(0) > 0,

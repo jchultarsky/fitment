@@ -1,0 +1,18 @@
+201
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.upload/1
+location: /v1/uploads/sha256:00405bfcd89d7207e00ee4a384a6c584e71613b32eacab525a366a7bd11ebc71
+repr-digest: sha-256=:pIxT3QgUErPQ1hVJYIVac9ccqXjdo4YzdnKRhduyM90=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.upload",
+  "format_version": 1,
+  "sha256": "00405bfcd89d7207e00ee4a384a6c584e71613b32eacab525a366a7bd11ebc71",
+  "bytes": 22,
+  "held_by": [
+    "upload"
+  ],
+  "pinned_by_jobs": 0
+}

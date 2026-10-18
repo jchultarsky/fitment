@@ -1,0 +1,6 @@
+POST /v1/uploads
+authorization: Bearer <ada's reader token>
+content-type: application/octet-stream
+content-length: 1610612736
+
+a second part's bytes

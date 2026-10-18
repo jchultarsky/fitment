@@ -57,7 +57,7 @@ pub(crate) async fn serve(
     ));
     let (lost_tx, mut lost) = tokio::sync::oneshot::channel::<()>();
     let lease = tokio::spawn(renew(Arc::clone(&shared), lost_tx));
-    let sweep = tokio::spawn(sweep_auth(Arc::clone(&shared)));
+    let sweep = tokio::spawn(sweep(Arc::clone(&shared)));
     let mut lease_lost = false;
     tokio::pin!(shutdown);
     loop {
@@ -273,11 +273,12 @@ async fn renew(shared: Arc<Shared>, lost: tokio::sync::oneshot::Sender<()>) {
     let _ = lost.send(());
 }
 
-/// The auth part of JS9's sweep, every `jobs.sweep_minutes` (AU6, audit
-/// flaw 4): the batched `last_used_ms` written, tokens dead for 30 days
-/// deleted. PR 5's sweep takes it over; a graceful stop writes the batch
-/// a last time (SD1).
-async fn sweep_auth(shared: Arc<Shared>) {
+/// JS9's sweep as far as PR 4 has it, every `jobs.sweep_minutes`: the
+/// auth part (AU6, audit flaw 4: the batched `last_used_ms` written,
+/// tokens dead for 30 days deleted), then the store's (UP5, OB4: expired
+/// uploads, then objects and files no row names). PR 5's sweep adds the
+/// jobs; a graceful stop writes the batch a last time (SD1).
+async fn sweep(shared: Arc<Shared>) {
     let every = Duration::from_secs(shared.config.jobs.sweep_minutes.max(1).saturating_mul(60));
     let mut tick = tokio::time::interval(every);
     tick.tick().await;
@@ -288,6 +289,19 @@ async fn sweep_auth(shared: Arc<Shared>) {
             Ok(Ok(deleted)) => tracing::info!(deleted, "swept the tokens"),
             Ok(Err(error)) => tracing::warn!(error = %error, "the tokens could not be swept"),
             Err(_) => tracing::warn!("the tokens' sweep failed"),
+        }
+        let sweeping = Arc::clone(&shared);
+        match tokio::task::spawn_blocking(move || sweeping.sweep_store()).await {
+            Ok(Ok(swept)) => tracing::info!(
+                expired = swept.expired,
+                unlinked = swept.unlinked.len(),
+                failed = swept.failed.len(),
+                orphans = swept.orphans,
+                temporaries = swept.temporaries,
+                "swept the store"
+            ),
+            Ok(Err(error)) => tracing::warn!(error = %error, "the store could not be swept"),
+            Err(_) => tracing::warn!("the store's sweep failed"),
         }
     }
 }

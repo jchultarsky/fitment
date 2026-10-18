@@ -18,10 +18,12 @@ mod support;
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::http::Method;
+use fitment_catalog::fs::CountingFs;
 use fitment_server::Server;
 use fitment_server::auth::Role;
 use fitment_server::hooks::Action;
@@ -66,7 +68,28 @@ enum Setup {
     LoginOnce,
     /// One live token a user at most: a mint is `too_many_tokens`.
     OneToken,
+    /// `ada` holds an upload of [`BRACKET`].
+    Uploaded,
+    /// `ada` holds uploads of [`BRACKET`] and [`SECOND`].
+    TwoUploads,
+    /// As `Uploaded`, and a queued job of hers names the upload (OB4).
+    InUse,
+    /// A 1 s throughput window and a 1.2 s wait before each chunk is read:
+    /// `upload_too_slow`.
+    SlowUpload,
+    /// A 4 GiB upload cap over a 1 GiB quota: a declared 1.5 GiB is
+    /// `quota_exceeded`.
+    SmallQuota,
+    /// The store's second file call (an upload's temporary file, after the
+    /// start's look at `tmp/`) fails as a full disk: `storage_full`.
+    DiskFull,
+    /// Its third (the first chunk's write) fails otherwise: `io_error`.
+    BrokenDisk,
 }
+
+/// The bytes of the upload goldens; their SHA-256s are in the paths.
+const BRACKET: &[u8] = b"a bracket's bytes\n";
+const SECOND: &[u8] = b"a second part's bytes\n";
 
 /// Whose token a scenario presents (AU5): seeded with the fixed ids, so
 /// every id in the golden is exact.
@@ -118,6 +141,16 @@ const fn scenario(
 }
 
 const JSON: &[(&str, &str)] = &[("content-type", "application/json")];
+const OCTETS: &[(&str, &str)] = &[("content-type", "application/octet-stream")];
+const STEP: &[(&str, &str)] = &[("content-type", "model/step")];
+const HUGE: &[(&str, &str)] = &[
+    ("content-type", "application/octet-stream"),
+    ("content-length", "200000000"),
+];
+const OVER_QUOTA: &[(&str, &str)] = &[
+    ("content-type", "application/octet-stream"),
+    ("content-length", "1610612736"),
+];
 const HTML: &[(&str, &str)] = &[("accept", "text/html")];
 const TEXT: &[(&str, &str)] = &[("content-type", "text/plain")];
 
@@ -127,7 +160,7 @@ use Setup as S;
 /// Every scenario: at least one per operation of `OPERATIONS` (XH14), and
 /// one per error code a request can reach in this build.
 #[rustfmt::skip]
-const SCENARIOS: [Scenario; 38] = [
+const SCENARIOS: [Scenario; 56] = [
     scenario("health", "ok", S::None, P::None, Method::GET, "/v1/health", &[], b""),
     scenario("ready", "ok", S::None, P::None, Method::GET, "/v1/ready", &[], b""),
     scenario("ready", "catalog_unavailable", S::NoCatalog, P::None, Method::GET, "/v1/ready", &[], b""),
@@ -143,6 +176,40 @@ const SCENARIOS: [Scenario; 38] = [
     scenario("info", "invalid_parameter", S::None, P::Admin, Method::GET, "/v1/info?owner=u_x", &[], b""),
     scenario("openapi", "ok", S::None, P::None, Method::GET, "/v1/openapi.json", &[], b""),
     scenario("unrouted", "not_found", S::None, P::None, Method::GET, "/v1/nope", &[], b""),
+    scenario("uploads_put", "created", S::None, P::Reader, Method::PUT,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", OCTETS, BRACKET),
+    scenario("uploads_put", "ok", S::Uploaded, P::Reader, Method::PUT,
+        "/v1/uploads/sha256:62048CE1D1D48E0786D0A9E001AB0C72354BB9FAA408A4984F9CEB2B9F73CCFF", OCTETS, BRACKET),
+    scenario("uploads_put", "upload_digest_mismatch", S::None, P::Reader, Method::PUT,
+        "/v1/uploads/sha256:953c8fe2df5fddd23a7174397482e83630d540574340fbcb5ffac147e2ee1cf8", OCTETS, BRACKET),
+    scenario("uploads_put", "invalid_reference", S::None, P::Reader, Method::PUT,
+        "/v1/uploads/sha256:62048ce1", OCTETS, BRACKET),
+    scenario("uploads_put", "too_large", S::None, P::Reader, Method::PUT,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", HUGE, BRACKET),
+    scenario("uploads_put", "upload_too_slow", S::SlowUpload, P::Reader, Method::PUT,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", OCTETS, BRACKET),
+    scenario("uploads_put", "storage_full", S::DiskFull, P::Reader, Method::PUT,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", OCTETS, BRACKET),
+    scenario("uploads_put", "io_error", S::BrokenDisk, P::Reader, Method::PUT,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", OCTETS, BRACKET),
+    scenario("uploads_post", "created", S::None, P::Reader, Method::POST, "/v1/uploads", STEP, SECOND),
+    scenario("uploads_post", "quota_exceeded", S::SmallQuota, P::Reader, Method::POST, "/v1/uploads",
+        OVER_QUOTA, SECOND),
+    scenario("uploads_head", "ok", S::Uploaded, P::Reader, Method::HEAD,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", &[], b""),
+    scenario("uploads_head", "not_found", S::None, P::Reader, Method::HEAD,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", &[], b""),
+    scenario("uploads_get", "ok", S::Uploaded, P::Reader, Method::GET,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", &[], b""),
+    scenario("uploads_get", "not_found", S::Uploaded, P::Admin, Method::GET,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", &[], b""),
+    scenario("uploads_list", "ok", S::TwoUploads, P::Reader, Method::GET, "/v1/uploads?limit=1", &[], b""),
+    scenario("uploads_delete", "deleted", S::Uploaded, P::Reader, Method::DELETE,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", &[], b""),
+    scenario("uploads_delete", "upload_in_use", S::InUse, P::Reader, Method::DELETE,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", &[], b""),
+    scenario("uploads_delete", "not_found", S::None, P::Reader, Method::DELETE,
+        "/v1/uploads/sha256:62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff", &[], b""),
     scenario("login", "created", S::Ada, P::None, Method::POST, "/v1/auth/login", JSON,
         br#"{"username": "Ada", "password": "correct horse battery staple", "token_name": "laptop", "days": 30}"#),
     scenario("login", "invalid_credentials", S::Ada, P::None, Method::POST, "/v1/auth/login", JSON,
@@ -187,13 +254,14 @@ const SCENARIOS: [Scenario; 38] = [
 ];
 
 /// The codes whose routes come in a later PR of section 12, with that PR:
-/// each must be produced by a golden by then. `catalog_busy`,
-/// `catalog_damaged` and `io_error` are reachable by `/v1/info` today, but
-/// only through a fault no golden stages without the seams of the PR named
-/// (a busy holder, `CountingFs`). Section 7.12's job-only codes (HTTP "—")
+/// each must be produced by a golden by then. `catalog_busy` and
+/// `catalog_damaged` are reachable by `/v1/info` today, but only through a
+/// fault no golden stages without the seams of PR 7 (a busy holder, a
+/// damaged row); `too_many_streams` by two uploads at once, which PR 5's
+/// event streams' golden shows; `blob_damaged` by a read of a stored
+/// object, which no route of PR 4 makes (PR 5's assembly bytes do). Section 7.12's job-only codes (HTTP "—")
 /// are not listed: no request answers one; the job goldens show them.
-const PENDING: [(&str, u32); 46] = [
-    ("invalid_reference", 4),
+const PENDING: [(&str, u32); 38] = [
     ("not_an_id", 7),
     ("name_invalid", 5),
     ("label_reserved", 6),
@@ -202,18 +270,15 @@ const PENDING: [(&str, u32); 46] = [
     ("upload_not_found", 5),
     ("entry_not_found", 7),
     ("no_document", 5),
-    ("upload_too_slow", 4),
     ("reference_ambiguous", 7),
     ("revision_not_current", 6),
     ("entry_deleted", 7),
     ("assembly_in_use", 5),
-    ("upload_in_use", 5),
     ("original_not_stored", 6),
     ("job_finished", 5),
     ("bytes_not_kept", 7),
     ("derived_rows_gone", 7),
     ("precondition_failed", 7),
-    ("upload_digest_mismatch", 4),
     ("idempotency_key_reused", 5),
     ("carry_from_foreign", 6),
     ("revision_required", 6),
@@ -231,19 +296,15 @@ const PENDING: [(&str, u32); 46] = [
     ("socket_unreviewed", 6),
     ("entry_stale", 7),
     ("derived_stale", 5),
-    ("too_large", 4),
     ("catalog_busy", 7),
     ("queue_full", 5),
-    ("storage_full", 4),
-    ("quota_exceeded", 4),
-    ("blob_damaged", 4),
+    ("blob_damaged", 5),
     ("catalog_damaged", 7),
-    ("io_error", 4),
 ];
 
 /// The PR this tree builds (section 12): a pending code waits for a later
 /// one, at most the exit.
-const PR_NOW: u32 = 3;
+const PR_NOW: u32 = 4;
 
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/api")
@@ -302,9 +363,19 @@ async fn run(scenario: &Scenario) -> Reply {
         S::SlowHandler => config.server.handler_timeout_seconds = 1,
         S::LoginOnce => config.auth.login_per_minute = 1,
         S::OneToken => config.auth.max_live_tokens = 1,
+        S::SlowUpload => config.limits.upload_window_seconds = 1,
+        S::SmallQuota => {
+            config.limits.max_upload_mib = 4096;
+            config.limits.user_quota_gib = 1;
+        }
         _ => {}
     }
-    let server = TestServer::in_process(dirs, config);
+    let fs: std::sync::Arc<dyn fitment_catalog::Fs> = match scenario.setup {
+        S::DiskFull => std::sync::Arc::new(CountingFs::failing_at(1, io::ErrorKind::StorageFull)),
+        S::BrokenDisk => std::sync::Arc::new(CountingFs::failing_at(2, io::ErrorKind::Other)),
+        _ => std::sync::Arc::new(fitment_catalog::StdFs),
+    };
+    let server = TestServer::in_process_with_fs(dirs, config, fs);
     let hooks = &server.server().seams().hooks;
     match scenario.setup {
         S::NoCatalog => {
@@ -313,6 +384,7 @@ async fn run(scenario: &Scenario) -> Reply {
         S::Draining => server.server().drain(),
         S::SlowHandler => hooks.set("info", Action::Delay(Duration::from_millis(1500))),
         S::Panic => hooks.set("info", Action::Panic("a golden's planted panic".into())),
+        S::SlowUpload => hooks.set("upload.chunk", Action::Delay(Duration::from_millis(1200))),
         _ => {}
     }
     support::password(ADA);
@@ -323,6 +395,21 @@ async fn run(scenario: &Scenario) -> Reply {
     };
     if matches!(scenario.setup, S::Ada | S::LoginOnce) {
         seed(server.server(), "ada", Role::Reader, Some(ADA), false);
+    }
+    if matches!(scenario.setup, S::Uploaded | S::TwoUploads | S::InUse) {
+        let seams = server.server().seams();
+        if seams.db.user_by_fold("ada").unwrap().is_none() {
+            seed(server.server(), "ada", Role::Reader, Some(ADA), false);
+        }
+        let ada = seams.db.user_by_fold("ada").unwrap().unwrap();
+        support::seed_upload(server.server(), ada.key, BRACKET);
+        if scenario.setup == S::TwoUploads {
+            support::seed_upload(server.server(), ada.key, SECOND);
+        }
+        if scenario.setup == S::InUse {
+            let sha256 = fitment_core::sha256_hex(BRACKET);
+            support::seed_job_input(&server, ada.key, &sha256, "match", "queued");
+        }
     }
     if scenario.setup == S::LoginOnce {
         let login = br#"{"username": "ada", "password": "correct horse battery staple"}"#;
@@ -446,7 +533,10 @@ async fn the_apis_documents_are_their_goldens() {
     let mut operations = BTreeSet::new();
     for scenario in &SCENARIOS {
         let reply = run(scenario).await;
-        if reply.header("content-type") == Some("application/problem+json") {
+        // A HEAD's answer has no body: its code is not read from it.
+        if reply.header("content-type") == Some("application/problem+json")
+            && scenario.method != Method::HEAD
+        {
             produced.insert(reply.code());
         }
         operations.insert(scenario.operation);

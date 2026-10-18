@@ -2,10 +2,11 @@
 //!
 //! From the outside in: sensitive headers marked (OP1); the request id,
 //! the error body and the response headers (HX7, ER, HX6); the trace span
-//! (OP1); CORS, only with an allowlist (HX4); panics caught (JS6); the
-//! handler timeout (HX3); then, per route, the body limit (HX2) and
-//! `Accept` (VN8), so a usage error is answered before anything is read
-//! (ER5). The routes come from `OPERATIONS` alone (XH14).
+//! (OP1); CORS, only with an allowlist (HX4); panics caught (JS6); then,
+//! per route, the handler timeout (HX3: an upload's is the whole upload's,
+//! `limits.upload_minutes`), the body limit (HX2, UP2) and `Accept` (VN8),
+//! so a usage error is answered before anything is read (ER5). The routes
+//! come from `OPERATIONS` alone (XH14).
 
 pub mod error;
 pub mod extract;
@@ -59,16 +60,10 @@ pub(crate) fn router(shared: Arc<Shared>) -> Router {
     for (path, route) in paths {
         router = router.route(path, route);
     }
-    let timeout = Duration::from_secs(u64::from(shared.config.server.handler_timeout_seconds));
     let router = router
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::disable())
-        .layer(
-            ServiceBuilder::new()
-                .layer(HandleErrorLayer::new(timed_out))
-                .timeout(timeout),
-        )
         .layer(CatchPanicLayer::custom(panicked));
     let router = match cors(&shared.config.server.cors_origins) {
         Some(layer) => router.layer(layer),
@@ -140,7 +135,7 @@ fn per_route(
         })),
         None => route,
     };
-    match op.body {
+    let route: MethodRouter<Arc<Shared>> = match op.body {
         RequestBody::None => route.layer(middleware::from_fn(no_body)),
         RequestBody::Json { .. } => {
             let cap = usize::try_from(shared.config.limits.max_json_kib)
@@ -153,7 +148,43 @@ fn per_route(
                 },
             ))
         }
-    }
+        RequestBody::Upload => {
+            let limits = shared.config.limits.clone();
+            route.layer(middleware::from_fn(move |request: Request, next: Next| {
+                let refused = crate::uploads::check_declared(request.headers(), &limits).err();
+                async move {
+                    match refused {
+                        Some(error) => error.into_response(),
+                        None => next.run(request).await,
+                    }
+                }
+            }))
+        }
+    };
+    // HX3: a handler's time; an upload's is the whole upload's, which the
+    // upload checks itself, so the layer stands behind it by a minute.
+    let upload = op.body == RequestBody::Upload;
+    let timeout = if upload {
+        Duration::from_secs(
+            shared
+                .config
+                .limits
+                .upload_minutes
+                .saturating_add(1)
+                .saturating_mul(60),
+        )
+    } else {
+        Duration::from_secs(u64::from(shared.config.server.handler_timeout_seconds))
+    };
+    route.layer(
+        ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(
+                move |method: Method, error: tower::BoxError| {
+                    std::future::ready(timed_out(&method, &error, upload))
+                },
+            ))
+            .timeout(timeout),
+    )
 }
 
 /// HX2: a JSON body whose declared length passes its cap is `413
@@ -220,6 +251,15 @@ pub(crate) async fn blocking<T: Send + 'static>(
     }
 }
 
+/// `500 io_error` for a `server.db` failure, logged, never sent (ER3).
+pub(crate) fn db_error(error: &crate::state::DbError) -> ApiError {
+    tracing::error!(error = %error, "server.db failed");
+    ApiError::new(
+        ErrorCode::IoError,
+        "the server's state could not be read or written",
+    )
+}
+
 /// The method filter of an operation's method.
 pub(crate) fn method_filter(method: &str) -> MethodFilter {
     match method {
@@ -271,17 +311,22 @@ async fn method_not_allowed(request: Request) -> ApiError {
         .extensions()
         .get::<MatchedPath>()
         .map(|p| p.as_str().to_owned());
-    let allowed: Vec<&str> = OPERATIONS
+    let mut allowed: Vec<&str> = Vec::new();
+    for op in OPERATIONS
         .iter()
         .filter(|op| Some(op.path) == path.as_deref())
-        .flat_map(|op| {
-            if op.method == "GET" {
-                vec!["GET", "HEAD"]
-            } else {
-                vec![op.method]
+    {
+        let methods: &[&str] = if op.method == "GET" {
+            &["GET", "HEAD"]
+        } else {
+            std::slice::from_ref(&op.method)
+        };
+        for method in methods {
+            if !allowed.contains(method) {
+                allowed.push(method);
             }
-        })
-        .collect();
+        }
+    }
     ApiError::new(
         ErrorCode::MethodNotAllowed,
         "this method is not allowed on this route",
@@ -291,10 +336,10 @@ async fn method_not_allowed(request: Request) -> ApiError {
 }
 
 /// HX3: a handler past its time is `503 request_timeout`, retryable on
-/// `GET` and `HEAD` only (ER6).
-async fn timed_out(method: Method, error: tower::BoxError) -> ApiError {
+/// `GET`, `HEAD` and an upload's `PUT` only (ER6).
+fn timed_out(method: &Method, error: &tower::BoxError, upload: bool) -> ApiError {
     if error.is::<tower::timeout::error::Elapsed>() {
-        let retryable = ErrorCode::RequestTimeout.retryable_on(&method, false);
+        let retryable = ErrorCode::RequestTimeout.retryable_on(method, upload);
         let error = ApiError::new(ErrorCode::RequestTimeout, "the request took too long")
             .retryable(retryable);
         if retryable {

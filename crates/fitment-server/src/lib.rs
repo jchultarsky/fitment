@@ -6,12 +6,14 @@
 //! listener until its shutdown future ends. `main.rs` alone reads the
 //! process's arguments, installs the log subscriber and exits.
 //!
-//! This is M6's PR 3: PR 2's skeleton (configuration, the four server
+//! This is M6's PR 4: PR 2's skeleton (configuration, the four server
 //! routes `/v1/health`, `/v1/ready`, `/v1/info` and `/v1/openapi.json`,
 //! the hardening layers, the error registry, `server.db` with its lease,
-//! the OpenAPI document), and authentication: users and bearer tokens,
-//! roles on every route, `/v1/auth/*` and the offline admin commands
-//! ([`admin`]). Uploads, jobs and the catalog's routes come in the PRs of
+//! the OpenAPI document), PR 3's authentication (users and bearer tokens,
+//! roles on every route, `/v1/auth/*` and the offline admin commands,
+//! [`admin`]), and uploads: `/v1/uploads`, streamed, hashed and capped,
+//! per user, into the content-addressed object store ([`uploads`],
+//! [`state::objects`]). Jobs and the catalog's routes come in the PRs of
 //! the design's section 12.
 #![forbid(unsafe_code)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
@@ -30,6 +32,7 @@ mod net;
 #[cfg(feature = "schema")]
 pub mod openapi;
 pub mod state;
+pub mod uploads;
 
 use std::future::Future;
 use std::net::IpAddr;
@@ -131,6 +134,10 @@ pub(crate) struct Shared {
     pub(crate) auth: Arc<auth::Auth>,
     pub(crate) trusted_proxies: Vec<IpAddr>,
     pub(crate) verifier: matching::Verifier,
+    /// The object store (OB2, OB3).
+    pub(crate) objects: state::Objects,
+    /// Uploads' slots and staged bytes (UP4).
+    pub(crate) uploads: Arc<uploads::Uploads>,
     /// Set when the server drains (SD1): readiness answers 503.
     pub(crate) draining: AtomicBool,
     /// When the warning of an untrusted `X-Forwarded-For` was last logged.
@@ -153,6 +160,18 @@ impl Shared {
     /// The auth part of JS9's sweep (AU6): blocking.
     pub(crate) fn sweep_auth(&self) -> Result<usize, state::DbError> {
         self.auth.sweep(&self.db, self.ids.now_ms())
+    }
+
+    /// The store's part of JS9's sweep (UP5, OB2, OB4): blocking.
+    pub(crate) fn sweep_store(&self) -> Result<state::sweep::Swept, state::DbError> {
+        let life = std::time::Duration::from_secs(
+            self.config
+                .limits
+                .upload_minutes
+                .saturating_add(1)
+                .saturating_mul(60),
+        );
+        state::sweep::sweep(&self.db, &self.objects, self.ids.now_ms(), life)
     }
 
     /// How often the lease is renewed.
@@ -208,6 +227,21 @@ impl Server {
     ///
     /// A [`StartError`], each with its exit code.
     pub fn build(config: Config) -> Result<Self, StartError> {
+        Self::build_on(config, Arc::new(catalog::StdFs))
+    }
+
+    /// OP11: [`Server::build`] with the object store on `fs`, a
+    /// `CountingFs` that records or fails each of its file calls (VT11).
+    ///
+    /// # Errors
+    ///
+    /// As [`Server::build`].
+    #[cfg(feature = "test-support")]
+    pub fn build_with_fs(config: Config, fs: Arc<dyn catalog::Fs>) -> Result<Self, StartError> {
+        Self::build_on(config, fs)
+    }
+
+    fn build_on(config: Config, fs: Arc<dyn catalog::Fs>) -> Result<Self, StartError> {
         config.validate()?;
         let nested = state::nested(&config.paths.catalog, &config.paths.state)
             .map_err(|e| StartError::Io { kind: e.kind() })?;
@@ -238,6 +272,15 @@ impl Server {
             .map(|a| a.to_canonical())
             .collect();
         let verifier = matching::verifier(&config.fit);
+        let objects = state::Objects::new(&config.paths.state, fs);
+        // SD2: no upload survives its connection, so a start finds only
+        // abandoned temporary files.
+        match objects.clear_tmp(None) {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(removed, "state:tmp emptied"),
+            Err(error) => tracing::warn!(kind = ?error.kind(), "state:tmp could not be emptied"),
+        }
+        let uploads = Arc::new(uploads::Uploads::new(&config.limits));
         tracing::info!("the state directory and the catalog are open");
         Ok(Self {
             shared: Arc::new(Shared {
@@ -249,6 +292,8 @@ impl Server {
                 auth,
                 trusted_proxies,
                 verifier,
+                objects,
+                uploads,
                 draining: AtomicBool::new(false),
                 forwarded_warned_ms: std::sync::atomic::AtomicI64::new(0),
                 lease_ok: AtomicBool::new(true),
@@ -302,6 +347,8 @@ impl Server {
             hooks: &self.shared.hooks,
             auth: &self.shared.auth,
             db: &self.shared.db,
+            objects: &self.shared.objects,
+            uploads: &self.shared.uploads,
         }
     }
 
@@ -314,6 +361,17 @@ impl Server {
     /// SQLite's.
     pub fn sweep_auth(&self) -> Result<usize, state::DbError> {
         self.shared.sweep_auth()
+    }
+
+    /// Deletes expired uploads, then unlinks the objects and files no row
+    /// names and abandoned temporary files (the store's part of JS9's
+    /// sweep; UP5, OB2, OB4). Blocking.
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn sweep_store(&self) -> Result<state::sweep::Swept, state::DbError> {
+        self.shared.sweep_store()
     }
 
     /// OP11: renews the lease every `interval` instead of 10 s, so a test
@@ -344,4 +402,8 @@ pub struct Seams<'a> {
     pub auth: &'a auth::Auth,
     /// `server.db`, for seeding users and tokens with the fixed ids.
     pub db: &'a state::Db,
+    /// The object store (OB2, OB3).
+    pub objects: &'a state::Objects,
+    /// Uploads' slots and staged bytes (UP4).
+    pub uploads: &'a uploads::Uploads,
 }

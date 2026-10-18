@@ -1,0 +1,5 @@
+POST /v1/uploads
+authorization: Bearer <ada's reader token>
+content-type: model/step
+
+a second part's bytes

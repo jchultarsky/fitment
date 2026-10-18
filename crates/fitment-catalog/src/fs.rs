@@ -1,7 +1,10 @@
 //! The file system seam (`docs/research/m5-catalog.md`, ST3, CT6, CT13):
 //! every file operation the catalog makes goes through [`Fs`], so the
 //! tests can count them, fail any one of them, and see the order of
-//! renames, directory syncs and commits.
+//! renames, directory syncs and commits. CA7 (`docs/research/m6-api.md`)
+//! adds a streaming writer and reader, [`FsWrite`] and [`FsRead`], whose
+//! every chunk, sync and read is a call of the seam too, for the server's
+//! object store; the catalog's own blobs keep [`Fs::write_new`].
 
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Read as _, Write as _};
@@ -25,6 +28,45 @@ pub enum Content {
     NotRegular,
     /// Larger than the cap: nothing kept.
     TooLarge,
+}
+
+/// A file being written chunk by chunk ([`Fs::create_new_stream`], CA7):
+/// each chunk and the sync is one call of the seam.
+pub trait FsWrite: Send {
+    /// Appends `bytes`, all of them.
+    ///
+    /// # Errors
+    ///
+    /// The file system's: `StorageFull` for a full disk.
+    fn write_chunk(&mut self, bytes: &[u8]) -> io::Result<()>;
+
+    /// Syncs the file's data and metadata to the disk (ST3).
+    ///
+    /// # Errors
+    ///
+    /// The file system's.
+    fn sync(&mut self) -> io::Result<()>;
+}
+
+/// A file being read chunk by chunk ([`Fs::open_stream`], CA7): each read
+/// is one call of the seam.
+pub trait FsRead: Send {
+    /// Reads into `buf` and answers how many bytes it filled, 0 at the end;
+    /// never more than the stream's cap in all.
+    ///
+    /// # Errors
+    ///
+    /// The file system's; `InvalidData` once the file holds more than the
+    /// cap (it grew after it was opened).
+    fn read_chunk(&mut self, buf: &mut [u8]) -> io::Result<usize>;
+
+    /// Goes back to the file's first byte, on the same open file, so a
+    /// second pass reads the bytes the first one did (OB3).
+    ///
+    /// # Errors
+    ///
+    /// The file system's.
+    fn rewind(&mut self) -> io::Result<()>;
 }
 
 /// Every file operation the catalog makes.
@@ -88,6 +130,14 @@ pub trait Fs: Send + Sync {
     /// The file system's.
     fn remove_file(&self, path: &Path) -> io::Result<()>;
 
+    /// Removes an empty directory (CA7: one standing at a name a file is
+    /// renamed to).
+    ///
+    /// # Errors
+    ///
+    /// The file system's.
+    fn remove_dir(&self, path: &Path) -> io::Result<()>;
+
     /// Syncs a directory, so the names in it are durable (ST3). Windows
     /// cannot open a directory to sync it; there it does nothing (R7).
     ///
@@ -95,6 +145,24 @@ pub trait Fs: Send + Sync {
     ///
     /// The file system's.
     fn sync_dir(&self, path: &Path) -> io::Result<()>;
+
+    /// Creates a new file (never an existing one) for writing in chunks,
+    /// with mode 0600 on Unix: the owner's alone while it is written (CA7).
+    ///
+    /// # Errors
+    ///
+    /// The file system's; `AlreadyExists` if `path` does.
+    fn create_new_stream(&self, path: &Path) -> io::Result<Box<dyn FsWrite>>;
+
+    /// Opens a regular file for reading in chunks, at most `cap` bytes:
+    /// its type checked before it is opened (a FIFO is never opened) and
+    /// again on the open handle, its length before (CA7).
+    ///
+    /// # Errors
+    ///
+    /// The file system's; `InvalidInput` for a file that is not regular,
+    /// `InvalidData` for one longer than `cap`.
+    fn open_stream(&self, path: &Path, cap: u64) -> io::Result<Box<dyn FsRead>>;
 
     /// Told of each point of a write transaction; the tests' hook.
     ///
@@ -160,6 +228,56 @@ fn open_nonblocking(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+/// [`StdFs`]'s streaming writer: a file.
+struct StdWrite(File);
+
+impl FsWrite for StdWrite {
+    fn write_chunk(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.0.write_all(bytes)
+    }
+
+    fn sync(&mut self) -> io::Result<()> {
+        self.0.sync_all()
+    }
+}
+
+/// [`StdFs`]'s streaming reader: a file, its cap, and what it may still
+/// give.
+struct StdRead {
+    file: File,
+    cap: u64,
+    left: u64,
+}
+
+impl FsRead for StdRead {
+    fn read_chunk(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.left == 0 {
+            // One byte more than the cap is a file that grew: refused, so a
+            // reader never takes it for the whole file.
+            let mut probe = [0_u8; 1];
+            return match self.file.read(&mut probe)? {
+                0 => Ok(0),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the file is longer than its cap",
+                )),
+            };
+        }
+        let room = usize::try_from(self.left)
+            .unwrap_or(usize::MAX)
+            .min(buf.len());
+        let n = self.file.read(&mut buf[..room])?;
+        self.left -= u64::try_from(n).unwrap_or(self.left);
+        Ok(n)
+    }
+
+    fn rewind(&mut self) -> io::Result<()> {
+        io::Seek::rewind(&mut self.file)?;
+        self.left = self.cap;
+        Ok(())
+    }
+}
+
 impl Fs for StdFs {
     fn symlink_metadata(&self, path: &Path) -> io::Result<Metadata> {
         std::fs::symlink_metadata(path)
@@ -217,11 +335,54 @@ impl Fs for StdFs {
         std::fs::remove_file(path)
     }
 
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        std::fs::remove_dir(path)
+    }
+
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
         if cfg!(windows) {
             return Ok(());
         }
         File::open(path)?.sync_all()
+    }
+
+    fn create_new_stream(&self, path: &Path) -> io::Result<Box<dyn FsWrite>> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        Ok(Box::new(StdWrite(options.open(path)?)))
+    }
+
+    fn open_stream(&self, path: &Path, cap: u64) -> io::Result<Box<dyn FsRead>> {
+        let meta = std::fs::metadata(path)?;
+        if !meta.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
+        if meta.len() > cap {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the file is longer than its cap",
+            ));
+        }
+        let file = open_nonblocking(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
+        Ok(Box::new(StdRead {
+            file,
+            cap,
+            left: cap,
+        }))
     }
 }
 
@@ -233,9 +394,9 @@ mod support {
     use std::fs::Metadata;
     use std::io;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
-    use super::{Content, Fs, Point, StdFs};
+    use super::{Content, Fs, FsRead, FsWrite, Point, StdFs};
 
     /// One call the seam saw.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,47 +422,33 @@ mod support {
         SyncDir(PathBuf),
         /// `point`.
         Point(Point),
+        /// `create_new_stream` (CA7).
+        CreateStream(PathBuf),
+        /// A stream's `write_chunk`, with the chunk's length.
+        WriteChunk(PathBuf, usize),
+        /// A stream's `sync`.
+        SyncStream(PathBuf),
+        /// `open_stream` (CA7).
+        OpenStream(PathBuf),
+        /// A stream's `read_chunk`, with the room it was given.
+        ReadChunk(PathBuf, usize),
+        /// A stream's `rewind`.
+        Rewind(PathBuf),
+        /// `remove_dir`.
+        RemoveDir(PathBuf),
     }
 
     type Hook = Box<dyn Fn(&Call) + Send + Sync>;
 
-    /// The real file system, counting and recording every call, failing
-    /// the call numbered `k` (from 0) with a chosen error, and running a
-    /// hook after each call that did not fail (CT13).
+    /// What a [`CountingFs`] and its streams share.
     #[derive(Default)]
-    pub struct CountingFs {
+    struct Inner {
         calls: Mutex<Vec<Call>>,
         fail_at: Option<(usize, io::ErrorKind)>,
         hook: Option<Hook>,
     }
 
-    impl CountingFs {
-        /// Counting only.
-        pub fn new() -> Self {
-            Self::default()
-        }
-
-        /// Failing call `k` with `kind`.
-        pub fn failing_at(k: usize, kind: io::ErrorKind) -> Self {
-            Self {
-                fail_at: Some((k, kind)),
-                ..Self::default()
-            }
-        }
-
-        /// Running `hook` after each call.
-        pub fn with_hook(hook: impl Fn(&Call) + Send + Sync + 'static) -> Self {
-            Self {
-                hook: Some(Box::new(hook)),
-                ..Self::default()
-            }
-        }
-
-        /// The calls so far.
-        pub fn calls(&self) -> Vec<Call> {
-            self.calls.lock().map(|c| c.clone()).unwrap_or_default()
-        }
-
+    impl Inner {
         /// Records `call`, fails it if it is the one, else runs it and then
         /// the hook.
         fn run<T>(&self, call: &Call, op: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
@@ -322,6 +469,97 @@ mod support {
                 hook(call);
             }
             out
+        }
+    }
+
+    /// The real file system, counting and recording every call, failing
+    /// the call numbered `k` (from 0) with a chosen error, and running a
+    /// hook after each call that did not fail (CT13). A clone shares the
+    /// count, and so does every stream it opens (CA7).
+    #[derive(Default, Clone)]
+    pub struct CountingFs {
+        inner: Arc<Inner>,
+    }
+
+    impl CountingFs {
+        /// Counting only.
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Failing call `k` with `kind`.
+        pub fn failing_at(k: usize, kind: io::ErrorKind) -> Self {
+            Self {
+                inner: Arc::new(Inner {
+                    fail_at: Some((k, kind)),
+                    ..Inner::default()
+                }),
+            }
+        }
+
+        /// Running `hook` after each call.
+        pub fn with_hook(hook: impl Fn(&Call) + Send + Sync + 'static) -> Self {
+            Self {
+                inner: Arc::new(Inner {
+                    hook: Some(Box::new(hook)),
+                    ..Inner::default()
+                }),
+            }
+        }
+
+        /// The calls so far.
+        pub fn calls(&self) -> Vec<Call> {
+            self.inner
+                .calls
+                .lock()
+                .map(|c| c.clone())
+                .unwrap_or_default()
+        }
+
+        fn run<T>(&self, call: &Call, op: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+            self.inner.run(call, op)
+        }
+    }
+
+    /// A [`CountingFs`] stream's writer: each chunk and the sync a call.
+    struct CountedWrite {
+        inner: Arc<Inner>,
+        path: PathBuf,
+        file: Box<dyn FsWrite>,
+    }
+
+    impl FsWrite for CountedWrite {
+        fn write_chunk(&mut self, bytes: &[u8]) -> io::Result<()> {
+            let call = Call::WriteChunk(self.path.clone(), bytes.len());
+            let file = &mut self.file;
+            self.inner.run(&call, || file.write_chunk(bytes))
+        }
+
+        fn sync(&mut self) -> io::Result<()> {
+            let call = Call::SyncStream(self.path.clone());
+            let file = &mut self.file;
+            self.inner.run(&call, || file.sync())
+        }
+    }
+
+    /// A [`CountingFs`] stream's reader: each read a call.
+    struct CountedRead {
+        inner: Arc<Inner>,
+        path: PathBuf,
+        file: Box<dyn FsRead>,
+    }
+
+    impl FsRead for CountedRead {
+        fn read_chunk(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let call = Call::ReadChunk(self.path.clone(), buf.len());
+            let file = &mut self.file;
+            self.inner.run(&call, || file.read_chunk(buf))
+        }
+
+        fn rewind(&mut self) -> io::Result<()> {
+            let call = Call::Rewind(self.path.clone());
+            let file = &mut self.file;
+            self.inner.run(&call, || file.rewind())
         }
     }
 
@@ -370,12 +608,38 @@ mod support {
             self.run(&Call::Remove(path.to_owned()), || StdFs.remove_file(path))
         }
 
+        fn remove_dir(&self, path: &Path) -> io::Result<()> {
+            self.run(&Call::RemoveDir(path.to_owned()), || StdFs.remove_dir(path))
+        }
+
         fn sync_dir(&self, path: &Path) -> io::Result<()> {
             self.run(&Call::SyncDir(path.to_owned()), || StdFs.sync_dir(path))
         }
 
         fn point(&self, at: Point) -> io::Result<()> {
             self.run(&Call::Point(at), || Ok(()))
+        }
+
+        fn create_new_stream(&self, path: &Path) -> io::Result<Box<dyn FsWrite>> {
+            let file = self.run(&Call::CreateStream(path.to_owned()), || {
+                StdFs.create_new_stream(path)
+            })?;
+            Ok(Box::new(CountedWrite {
+                inner: Arc::clone(&self.inner),
+                path: path.to_owned(),
+                file,
+            }))
+        }
+
+        fn open_stream(&self, path: &Path, cap: u64) -> io::Result<Box<dyn FsRead>> {
+            let file = self.run(&Call::OpenStream(path.to_owned()), || {
+                StdFs.open_stream(path, cap)
+            })?;
+            Ok(Box::new(CountedRead {
+                inner: Arc::clone(&self.inner),
+                path: path.to_owned(),
+                file,
+            }))
         }
     }
 }

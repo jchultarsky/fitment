@@ -5,19 +5,23 @@
 //! <state>/
 //!   FITMENT-SERVER-STATE      marker, "fitment.server 1\n", written last by the first start
 //!   server.db                 SQLite, WAL (+ -wal, -shm)
-//!   objects/sha256/           uploads, assemblies and stored documents (PR 4)
+//!   objects/sha256/00..ff/    uploads, assemblies and stored documents (OB2)
 //!   tmp/                      uploads and documents in flight
 //! ```
 
 pub mod db;
+pub mod objects;
+pub mod sweep;
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 pub use db::{
-    CreateUserError, Db, DbError, Kind, MintError, MintFrom, NewToken, PasswordSet, Presented,
-    TokenRow, UpdateUserError, UserRow,
+    CHARGE_MIN, CHARGE_ROW, CreateUserError, Db, DbError, Deleted, Holding, Kind, MintError,
+    MintFrom, NewToken, PasswordSet, Presented, StoreError, Stored, TokenRow, Unnamed,
+    UpdateUserError, UserRow, charge,
 };
+pub use objects::{ObjectError, Objects, Staged, Synced};
 
 /// The marker's name.
 pub const MARKER: &str = "FITMENT-SERVER-STATE";
@@ -154,6 +158,16 @@ fn open_as(
     make_dir(dir, dir)?;
     for sub in [dir.join("objects").join("sha256"), dir.join("tmp")] {
         make_dir(dir, &sub)?;
+    }
+    // OB2, UP8 (PR 4's review): every fan-out directory made with the
+    // state, so no upload makes one and its two branches do the same work.
+    for fan in 0..=255_u8 {
+        make_dir(
+            dir,
+            &dir.join("objects")
+                .join("sha256")
+                .join(format!("{fan:02x}")),
+        )?;
     }
     let opened = if offline {
         Db::open_offline(dir, system_id, now_ms)?

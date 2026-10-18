@@ -1,0 +1,25 @@
+408
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:ULjn0Cb6s+GAeCf/0VExM1BgnDrid4BOdgQGcAB51Ow=:
+retry-after: 1
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/upload_too_slow",
+  "title": "The upload was too slow",
+  "status": 408,
+  "detail": "an upload sends at least 64 KiB/s for every second it runs and over any 1 s, and a chunk within 30 s; 18 bytes came",
+  "code": "upload_too_slow",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": true,
+  "details": {
+    "limit": "upload_min_kib_s",
+    "received": 18
+  },
+  "request_id": "r_00000000000000000000000004"
+}

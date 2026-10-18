@@ -1,11 +1,14 @@
 //! The server's own routes in process (docs/research/m6-api.md, section
 //! 7.2): health, readiness, `fitment.info` and the OpenAPI document; the
-//! fallbacks, negotiation, response headers and CORS (HX4 to HX6, VN8).
+//! fallbacks, negotiation, response headers and CORS (HX4 to HX6, VN8);
+//! and uploads (section 7.3, UP1 to UP3) and the store's checked reads
+//! (OB3).
 
 mod support;
 
 use axum::http::Method;
-use support::{Call, Dirs, TestServer};
+use fitment_server::http::operations::{OPERATIONS, RequestBody};
+use support::{Call, Dirs, TestServer, put_upload};
 
 /// OP5: `204` while the process runs, without authentication, touching no
 /// database: it answers while the catalog cannot be opened, and HEAD too.
@@ -104,7 +107,10 @@ async fn info_states_the_build_the_catalog_and_the_limits() {
     assert_eq!(reply.header("content-type"), Some("application/json"));
     let doc = reply.json();
     assert_eq!(doc["server"]["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(doc["api"], serde_json::json!({ "major": 1, "minor": 1 }));
+    assert_eq!(
+        doc["api"],
+        serde_json::json!({ "major": 1, "minor": fitment_server::info::API_MINOR })
+    );
     let versions = &doc["versions"];
     assert_eq!(
         versions["extractor_version"],
@@ -162,6 +168,7 @@ async fn info_states_the_build_the_catalog_and_the_limits() {
         ("fitment.catalog", 1),
         ("fitment.info", 1),
         ("fitment.error", 1),
+        ("fitment.upload", 1),
     ] {
         assert!(
             formats.contains(&(format.to_owned(), u64::from(version))),
@@ -386,4 +393,343 @@ async fn cors_only_with_an_allowlist() {
     let mut wildcard = Dirs::new().config();
     wildcard.server.cors_origins = vec!["*".into()];
     assert!(wildcard.validate().is_err());
+}
+
+/// UP1: bytes enter only through the upload routes: they alone take a
+/// body of raw bytes; every other body is JSON of a closed request type,
+/// and no parameter, path or query, names a file or takes bytes.
+#[tokio::test]
+async fn bytes_enter_only_through_uploads() {
+    for op in &OPERATIONS {
+        let upload = op.body == RequestBody::Upload;
+        assert_eq!(
+            upload,
+            matches!(op.id, "uploads_put" | "uploads_post"),
+            "{}",
+            op.id
+        );
+        let mut names: Vec<&str> = op.query.to_vec();
+        names.extend(
+            op.path
+                .split('/')
+                .filter_map(|s| s.strip_prefix('{')?.strip_suffix('}')),
+        );
+        for name in names {
+            assert!(
+                !["path", "file", "dir", "bytes", "content", "data"].contains(&name),
+                "{} takes {name}",
+                op.id
+            );
+        }
+    }
+    // A JSON body on an upload route is bytes like any other: kept as
+    // given, never read as a request.
+    let server = TestServer::fresh();
+    let body = br#"{"path": "/etc/passwd"}"#;
+    let reply = server
+        .send(put_upload(body).header("content-type", "application/json"))
+        .await;
+    assert_eq!(reply.status, 201);
+    assert_eq!(reply.json()["bytes"], body.len());
+}
+
+/// UP2, UP3: `PUT` keeps the bytes only under their own SHA-256 (`422
+/// upload_digest_mismatch` otherwise, nothing kept); either case of hex
+/// names them, written lower-case; the caller's own bytes again are `200`
+/// with the lifetime extended; `POST` names them and says where;
+/// `fitment.upload` states the caller's holdings; a wrong type or any
+/// `Content-Encoding` is `415`; `DELETE` removes the row, and the sweep
+/// the object nothing else holds.
+#[tokio::test]
+async fn an_upload_is_named_by_its_sha256_and_kept_once() {
+    let server = TestServer::fresh();
+    let bytes = b"ISO-10303-21; a part\n";
+    let sha256 = fitment_core::sha256_hex(bytes);
+    let wrong = fitment_core::sha256_hex(b"other bytes");
+    let mismatch = Call::new(Method::PUT, &format!("/v1/uploads/sha256:{wrong}"))
+        .header("content-type", "model/step")
+        .body(bytes);
+    let reply = server.send(mismatch).await;
+    assert_eq!(
+        (reply.status.as_u16(), reply.code()),
+        (422, "upload_digest_mismatch".into())
+    );
+    assert_eq!(reply.json()["details"]["sha256"], sha256.as_str());
+    assert!(server.object_files().is_empty() && server.temporaries().is_empty());
+    let upper = format!("/v1/uploads/sha256:{}", sha256.to_ascii_uppercase());
+    let first = server
+        .send(
+            Call::new(Method::PUT, &upper)
+                .header("content-type", "model/step")
+                .body(bytes),
+        )
+        .await;
+    assert_eq!(first.status, 201);
+    let doc = first.json();
+    assert_eq!(doc["format"], "fitment.upload");
+    assert_eq!(doc["sha256"], sha256.as_str());
+    assert_eq!(doc["bytes"], bytes.len());
+    assert_eq!(doc["held_by"], serde_json::json!(["upload"]));
+    assert_eq!(doc["pinned_by_jobs"], 0);
+    let location = format!("/v1/uploads/sha256:{sha256}");
+    assert_eq!(first.header("location"), Some(location.as_str()));
+    assert_eq!(server.object_files(), std::slice::from_ref(&sha256));
+    let seams = server.server().seams();
+    let expires = |server: &TestServer| -> i64 {
+        let conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+        conn.query_row("SELECT expires_ms FROM upload", [], |r| r.get(0))
+            .unwrap()
+    };
+    let before = expires(&server);
+    seams.ids.fix_time(1_790_000_000_000 + 3_600_000);
+    let again = server.send(put_upload(bytes)).await;
+    assert_eq!(again.status, 200, "the caller's own bytes again");
+    assert_eq!(
+        expires(&server),
+        before + 3_600_000,
+        "the lifetime extended"
+    );
+    let posted = server
+        .send(
+            Call::new(Method::POST, "/v1/uploads")
+                .header("content-type", "application/octet-stream")
+                .body(bytes),
+        )
+        .await;
+    assert_eq!(posted.status, 200);
+    assert_eq!(posted.header("location"), Some(location.as_str()));
+    assert_eq!(server.get(&location).await.json(), again.json());
+    for (name, value) in [("content-type", "text/plain"), ("content-encoding", "gzip")] {
+        let mut call = put_upload(bytes);
+        call.headers.retain(|(n, _)| n != "content-type");
+        let call = match name {
+            "content-type" => call.header(name, value),
+            _ => call
+                .header("content-type", "model/step")
+                .header(name, value),
+        };
+        assert_eq!(
+            server.send(call).await.code(),
+            "unsupported_media_type",
+            "{name}"
+        );
+    }
+    let missing = Call::new(Method::PUT, &location).body(bytes);
+    assert_eq!(server.send(missing).await.code(), "unsupported_media_type");
+    let deleted = server.send(Call::new(Method::DELETE, &location)).await;
+    assert_eq!(deleted.status, 204);
+    assert_eq!(server.object_files().len(), 1, "the sweep's to unlink");
+    server.server().sweep_store().unwrap();
+    assert!(
+        server.object_files().is_empty(),
+        "the object went with its last row"
+    );
+    assert_eq!(server.get(&location).await.code(), "not_found");
+    let gone = server.send(Call::new(Method::DELETE, &location)).await;
+    assert_eq!(gone.code(), "not_found");
+    assert_eq!(server.store_problems(), Vec::<String>::new());
+}
+
+/// UP2 (section 12's "done when"): every corpus file uploads with the
+/// SHA-256 this test computes, by `PUT` and by `POST`. Release only, as
+/// the corpus suites are.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_corpus_file_uploads_with_its_sha256() {
+    let Some(corpus) = fitment_corpus::Corpus::locate_release_only() else {
+        return;
+    };
+    // Two requests a file, faster than AU7's 50 a second allow one user.
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.auth.rate_per_second = 100_000;
+    config.auth.rate_burst = 100_000;
+    let server = TestServer::in_process(dirs, config);
+    let started = std::time::Instant::now();
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(corpus.dir())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "stp"))
+        .collect();
+    files.sort();
+    assert!(files.len() > 400, "{} files", files.len());
+    for file in &files {
+        let bytes = std::fs::read(file).unwrap();
+        let sha256 = fitment_core::sha256_hex(&bytes);
+        let reply = server.send(put_upload(&bytes)).await;
+        assert_eq!(reply.status, 201, "{}", file.display());
+        assert_eq!(reply.json()["sha256"], sha256.as_str());
+        assert_eq!(reply.json()["bytes"], bytes.len());
+        let posted = Call::new(Method::POST, "/v1/uploads")
+            .header("content-type", "model/step")
+            .body(&bytes);
+        let posted = server.send(posted).await;
+        assert_eq!(posted.status, 200, "{}", file.display());
+        let location = format!("/v1/uploads/sha256:{sha256}");
+        assert_eq!(posted.header("location"), Some(location.as_str()));
+        let path = server
+            .dirs
+            .state
+            .join("objects/sha256")
+            .join(&sha256[..2])
+            .join(&sha256);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    assert_eq!(server.temporaries(), Vec::<std::path::PathBuf>::new());
+    eprintln!(
+        "{} files uploaded twice in {:?}",
+        files.len(),
+        started.elapsed()
+    );
+}
+
+/// OB3: an object leaves the store only checked: read into one buffer and
+/// hashed against its name; a byte flipped is damaged and a removed file
+/// missing; above the one-buffer cap `read` refuses it
+/// (`TooLargeForBuffer`), and it is hashed in one pass of the streaming
+/// reader and rewound on the same open file for the second, so damage
+/// stops it before its first byte; both passes go through the seam (CA7).
+#[tokio::test]
+async fn objects_leave_the_store_only_checked() {
+    let dirs = Dirs::new();
+    let config = dirs.config();
+    let seam = fitment_catalog::fs::CountingFs::new();
+    let server = TestServer::in_process_with_fs(dirs, config, std::sync::Arc::new(seam.clone()));
+    let bytes: Vec<u8> = (0..10_000_u32)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    let ada = support::seed_user(
+        server.server(),
+        "ada",
+        fitment_server::auth::Role::Reader,
+        None,
+    );
+    let sha256 = support::seed_upload(server.server(), ada.key, &bytes);
+    let objects = server.server().seams().objects;
+    let n = u64::try_from(bytes.len()).unwrap();
+    assert_eq!(objects.read(&sha256, n).unwrap(), bytes);
+    let read_whole = |stream: &mut Box<dyn fitment_catalog::FsRead>| {
+        let mut out = Vec::new();
+        let mut buf = [0_u8; 4096];
+        loop {
+            let got = stream.read_chunk(&mut buf).unwrap();
+            if got == 0 {
+                return out;
+            }
+            out.extend_from_slice(&buf[..got]);
+        }
+    };
+    objects.set_one_buffer_max(1000);
+    assert!(
+        matches!(
+            objects.read(&sha256, n),
+            Err(fitment_server::state::ObjectError::TooLargeForBuffer)
+        ),
+        "above the cap, never one buffer"
+    );
+    let calls = seam.calls().len();
+    let mut stream = objects.open_checked(&sha256, n).unwrap();
+    assert_eq!(read_whole(&mut stream), bytes);
+    let after = &seam.calls()[calls..];
+    let count =
+        |want: fn(&fitment_catalog::fs::Call) -> bool| after.iter().filter(|c| want(c)).count();
+    let opens = count(|c| matches!(c, fitment_catalog::fs::Call::OpenStream(_)));
+    let rewinds = count(|c| matches!(c, fitment_catalog::fs::Call::Rewind(_)));
+    assert_eq!(
+        (opens, rewinds),
+        (1, 1),
+        "one open file, rewound for the second pass"
+    );
+    let path = server
+        .dirs
+        .state
+        .join("objects/sha256")
+        .join(&sha256[..2])
+        .join(&sha256);
+    let mut damaged = bytes.clone();
+    damaged[5000] ^= 1;
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    std::fs::write(&path, &damaged).unwrap();
+    assert!(matches!(
+        objects.open_checked(&sha256, n),
+        Err(fitment_server::state::ObjectError::Damaged)
+    ));
+    objects.set_one_buffer_max(fitment_server::state::objects::ONE_BUFFER_MAX);
+    assert!(matches!(
+        objects.read(&sha256, n),
+        Err(fitment_server::state::ObjectError::Damaged)
+    ));
+    std::fs::write(&path, &bytes[..9000]).unwrap();
+    assert!(matches!(
+        objects.read(&sha256, n),
+        Err(fitment_server::state::ObjectError::Damaged)
+    ));
+    std::fs::remove_file(&path).unwrap();
+    assert!(matches!(
+        objects.read(&sha256, n),
+        Err(fitment_server::state::ObjectError::Missing)
+    ));
+    assert_eq!(
+        server.store_problems().len(),
+        1,
+        "the row's file is missing"
+    );
+}
+
+/// OB3 (L3 of PR 4's review): the second pass of a streamed object is
+/// hashed again as it is read, so a file changed in place between the
+/// passes fails the read that meets its end, and its sender aborts rather
+/// than finish sending other bytes as the object.
+#[tokio::test]
+async fn a_file_changed_between_the_passes_fails_the_second() {
+    let dirs = Dirs::new();
+    let config = dirs.config();
+    let object = std::sync::Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+    let seam = {
+        let object = std::sync::Arc::clone(&object);
+        fitment_catalog::fs::CountingFs::with_hook(move |call| {
+            if matches!(call, fitment_catalog::fs::Call::Rewind(_)) {
+                if let Some(path) = object.lock().unwrap().clone() {
+                    use std::io::{Seek as _, Write as _};
+                    let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+                    file.seek(std::io::SeekFrom::Start(10)).unwrap();
+                    file.write_all(b"X").unwrap();
+                }
+            }
+        })
+    };
+    let server = TestServer::in_process_with_fs(dirs, config, std::sync::Arc::new(seam));
+    let ada = support::seed_user(
+        server.server(),
+        "ada",
+        fitment_server::auth::Role::Reader,
+        None,
+    );
+    let bytes = vec![b'b'; 5000];
+    let sha256 = support::seed_upload(server.server(), ada.key, &bytes);
+    let path = server
+        .dirs
+        .state
+        .join("objects/sha256")
+        .join(&sha256[..2])
+        .join(&sha256);
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    *object.lock().unwrap() = Some(path);
+    let objects = server.server().seams().objects;
+    objects.set_one_buffer_max(100);
+    let mut stream = objects.open_checked(&sha256, 5000).unwrap();
+    let mut buf = [0_u8; 1024];
+    let error = loop {
+        match stream.read_chunk(&mut buf) {
+            Ok(0) => panic!("the changed file was sent whole"),
+            Ok(_) => {}
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }

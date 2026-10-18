@@ -1,0 +1,21 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:mlV72EJ5Qf+BXMiK62GPBm2citiiom9eE80tldYLkrg=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/invalid_reference",
+  "title": "A reference is malformed",
+  "status": 400,
+  "detail": "an upload is named sha256: and its 64 hex digits",
+  "code": "invalid_reference",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

@@ -72,7 +72,7 @@ pub use properties::{
     Field, MAX_STATED, MAX_STATED_BYTES, Mapped, Meaning, NOT_MAPPED, PROPERTIES_VERSION,
     PropertyMap, StatedProperties, StatedProperty,
 };
-pub use sha256::{sha256, sha256_hex};
+pub use sha256::{Sha256, sha256, sha256_hex};
 pub use socket::{
     Basis, BoreSpan, CarryOver, Cause, CauseFaces, Depth, Envelope, Extracted, Fit, Flag, LeftOut,
     LeftOutReason, Open, PlacedRef, PriorReview, Requirement, Requires, ReviewEntry, ReviewError,

@@ -1256,6 +1256,53 @@ for rule, tests in M6_PR3.items():
     assert RULES[rule] == {"deferred": "M6 PR 3"}, rule
     RULES[rule] = {"tests": tests}
 assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 3"}], "a PR 3 rule is still deferred"
+# PR 4 builds uploads and the object store (section 12, item 4): bytes only through uploads (UP1), streamed, hashed
+# and capped (UP2), per user (UP3), within quotas and slots (UP4), the same work in both branches (UP8); the store's
+# protocol (OB2) and its checked reads (OB3); keyset pages (VN3); core's incremental SHA-256 (CO1) and the catalog's
+# streaming Fs calls (CA7). UP5, UP6, UP7, OB4 and OB5 wait for the jobs and documents of PRs 5 and 6.
+S_FAULT, S_ISO = f"{SERVER}/tests/fault.rs", f"{SERVER}/tests/isolation.rs"
+M6_PR4 = {
+    "UP1": [f"{S_API}::bytes_enter_only_through_uploads"],
+    "UP2": [f"{S_HOST}::an_upload_past_the_cap_is_refused_before_or_as_it_streams",
+            f"{S_SLOW}::an_upload_below_the_minimum_throughput_is_cut",
+            f"{S_SLOW}::a_stalled_upload_is_cut_at_the_chunk_wait", f"{S_SLOW}::a_client_gone_mid_upload_leaves_nothing",
+            f"{S_API}::an_upload_is_named_by_its_sha256_and_kept_once",
+            f"{S_API}::every_corpus_file_uploads_with_its_sha256", f"{S_FAULT}::every_file_call_of_an_upload_fails_in_turn",
+            f"{S_HOST}::an_upload_owes_its_first_bytes_and_then_its_rate",
+            f"{S_HOST}::tiny_frames_keep_the_samples_bounded"],
+    "UP3": [f"{S_ISO}::uploads_resolve_among_the_callers_own",
+            f"{S_ISO}::an_admin_reads_another_users_uploads_on_reads_only",
+            f"{S_API}::an_upload_is_named_by_its_sha256_and_kept_once",
+            f"{S_FAULT}::a_sweep_unlinks_only_what_no_row_names", f"{S_HOST}::upload_names_are_strict",
+            f"{S_FAULT}::a_jobs_inputs_hold_its_uploads_from_submission"],
+    "UP4": [f"{S_HOST}::uploads_at_once_are_capped_per_user_and_per_server",
+            f"{S_HOST}::quotas_are_checked_before_bytes_and_as_they_stream",
+            f"{S_FAULT}::every_file_call_of_an_upload_fails_in_turn",
+            f"{S_FAULT}::a_jobs_inputs_hold_its_uploads_from_submission",
+            f"{S_HOST}::the_staging_quota_counts_open_temporary_files",
+            f"{S_HOST}::uploads_at_once_share_their_users_quota", f"{S_HOST}::a_user_holds_a_bounded_number_of_uploads"],
+    "UP8": [f"{S_ISO}::both_upload_branches_do_the_same_work", f"{S_FAULT}::a_sweep_racing_an_upload_keeps_its_object",
+            f"{S_FAULT}::whatever_stands_at_an_objects_name_is_replaced"],
+    "OB2": [f"{S_FAULT}::every_file_call_of_an_upload_fails_in_turn",
+            f"{S_FAULT}::objects_are_named_by_hash_read_only_and_synced_before_their_row",
+            f"{S_FAULT}::a_sweep_unlinks_only_what_no_row_names", f"{S_FAULT}::a_sweep_racing_an_upload_keeps_its_object",
+            f"{S_ISO}::both_upload_branches_do_the_same_work", f"{S_FAULT}::a_jobs_inputs_hold_its_uploads_from_submission",
+            f"{S_FAULT}::the_sweep_follows_its_candidates_not_the_store",
+            f"{S_FAULT}::whatever_stands_at_an_objects_name_is_replaced"],
+    "OB3": [f"{S_API}::objects_leave_the_store_only_checked", f"{S_API}::a_file_changed_between_the_passes_fails_the_second"],
+    "VN3": [f"{S_HOST}::upload_pages_are_keyset_and_bounded", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "CO1": ["crates/fitment-core/src/sha256.rs::every_split_is_the_one_shot_digest",
+            "crates/fitment-core/src/sha256.rs::pieces_of_any_size_give_the_standard_digests",
+            f"{S_API}::every_corpus_file_uploads_with_its_sha256"],
+    "CA7": ["crates/fitment-catalog/tests/fs.rs::streams_go_through_the_seam",
+            "crates/fitment-catalog/tests/fs.rs::streams_are_new_private_regular_and_capped",
+            "crates/fitment-catalog/tests/fs.rs::a_stream_rewinds_and_a_directory_is_removed_through_the_seam",
+            f"{S_FAULT}::every_file_call_of_an_upload_fails_in_turn", f"{S_API}::objects_leave_the_store_only_checked"],
+}
+for rule, tests in M6_PR4.items():
+    assert RULES[rule] == {"deferred": "M6 PR 4"}, rule
+    RULES[rule] = {"tests": tests}
+assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 4"}], "a PR 4 rule is still deferred"
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],

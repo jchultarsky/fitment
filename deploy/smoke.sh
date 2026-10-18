@@ -14,9 +14,11 @@
 #    host and through the image's own `healthcheck`), the first admin is
 #    made with `admin bootstrap` beside the running server (AU9) and its
 #    token, printed once, reads `fitment.info`, which names the version and
-#    needs a token (AU5); a second bootstrap is refused; the token is in no
-#    log; and SIGTERM stops it with exit 0. PR 6 adds an upload of s01 and
-#    the committed bracket, and a socket and a match job whose document
+#    needs a token (AU5); a second bootstrap is refused; s01 and the
+#    committed bracket are uploaded under their SHA-256s (UP2) and found
+#    by HEAD and GET as the caller's (UP3), a wrong name keeps nothing and
+#    POST names the bytes itself; the token is in no log; and SIGTERM stops
+#    it with exit 0. PR 6 adds a socket and a match job whose document
 #    equals crates/fitment/tests/golden/match/'s.
 # 4. Its size is reported, under a ceiling of twice the first measured.
 set -euo pipefail
@@ -114,6 +116,32 @@ curl -sf "${auth[@]}" "http://127.0.0.1:$port/v1/info" | grep -q "\"version\": \
   fail "fitment.info does not name $version"
 curl -sf "${auth[@]}" "http://127.0.0.1:$port/v1/auth/me" | grep -q '"role": "admin"' ||
   fail "the bootstrap token is not an admin's"
+# UP2, UP3: uploads under their SHA-256s, found as the caller's own.
+sha() {
+  if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1
+}
+uploads="http://127.0.0.1:$port/v1/uploads"
+for file in crates/fitment-core/tests/assemblies/s01_bolted.stp crates/fitment-core/tests/candidates/m_bracket.stp; do
+  hash=$(sha "$file")
+  status=$(curl -s -o "$work/upload.json" -w '%{http_code}' -X PUT "${auth[@]}" \
+    -H 'Content-Type: model/step' --data-binary "@$file" "$uploads/sha256:$hash")
+  [ "$status" = 201 ] || { cat "$work/upload.json" >&2; fail "uploading $file answered $status"; }
+  grep -q "\"sha256\": \"$hash\"" "$work/upload.json" || fail "the upload of $file is not named $hash"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -I "${auth[@]}" "$uploads/sha256:$hash")" = 200 ] ||
+    fail "HEAD does not find $file"
+  curl -sf "${auth[@]}" "$uploads/sha256:$hash" | grep -q '"held_by": \[' || fail "GET of $file"
+done
+wrong=$(sha crates/fitment-core/tests/assemblies/s02_cbore.stp)
+status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "${auth[@]}" -H 'Content-Type: model/step' \
+  --data-binary @crates/fitment-core/tests/assemblies/s01_bolted.stp "$uploads/sha256:$wrong")
+[ "$status" = 422 ] || fail "a wrong name answered $status"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -I "${auth[@]}" "$uploads/sha256:$wrong")" = 404 ] ||
+  fail "a wrong name kept something"
+location=$(curl -s -D - -o /dev/null -X POST "${auth[@]}" -H 'Content-Type: model/step' \
+  --data-binary @crates/fitment-core/tests/candidates/m_bracket.stp "$uploads" |
+  tr -d '\r' | sed -nE 's/^[Ll]ocation: //p')
+[ "$location" = "/v1/uploads/sha256:$(sha crates/fitment-core/tests/candidates/m_bracket.stp)" ] ||
+  fail "POST named the bracket '$location'"
 docker exec "$name" fitment-server healthcheck || fail "the image's healthcheck failed"
 docker stop --time 45 "$name" >/dev/null
 code=$(docker inspect --format '{{.State.ExitCode}}' "$name")

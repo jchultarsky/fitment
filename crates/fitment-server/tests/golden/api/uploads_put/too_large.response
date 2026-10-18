@@ -1,0 +1,24 @@
+413
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:Gl6GWi0l9MScvy8qLDChhWeKufhSQtA1Fw1XJ4dKLF8=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/too_large",
+  "title": "The input is too large",
+  "status": 413,
+  "detail": "an upload is at most 128 MiB",
+  "code": "too_large",
+  "class": "refused",
+  "exit_code": 3,
+  "retryable": false,
+  "details": {
+    "limit": "max_upload_mib",
+    "max_bytes": 134217728
+  },
+  "request_id": "r_00000000000000000000000004"
+}

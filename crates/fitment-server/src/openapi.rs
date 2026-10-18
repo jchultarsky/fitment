@@ -28,6 +28,7 @@ use crate::http::error::{ERROR_FORMAT, ERROR_FORMAT_VERSION, ErrorCode, Problem}
 use crate::http::json::{JSON, PROBLEM_JSON};
 use crate::http::operations::{OPERATIONS, Operation, RequestBody, Role};
 use crate::info::{INFO_FORMAT, INFO_FORMAT_VERSION, Info, api_version};
+use crate::uploads::{UPLOAD_FORMAT, UPLOAD_FORMAT_VERSION, UPLOAD_TYPES, UploadDocument};
 
 /// The base of every schema's `$id`: `<base><format>/<version>`.
 pub const SCHEMA_BASE: &str = "https://fitment.dev/schemas/";
@@ -167,6 +168,10 @@ pub fn schemas() -> Map<String, Value> {
         PAGE_FORMAT,
         schema_of::<Page<Value>>(PAGE_FORMAT, AUTH_FORMAT_VERSION, false),
     );
+    add(
+        UPLOAD_FORMAT,
+        schema_of::<UploadDocument>(UPLOAD_FORMAT, UPLOAD_FORMAT_VERSION, false),
+    );
     schemas
 }
 
@@ -236,8 +241,15 @@ fn parameters(op: &Operation) -> Vec<Value> {
         .split('/')
         .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
         .map(|name| {
-            json!({ "name": name, "in": "path", "required": true,
-                    "schema": { "type": "string" } })
+            let mut parameter = json!({ "name": name, "in": "path", "required": true,
+                                        "schema": { "type": "string" } });
+            if let (Some(map), "upload") = (parameter.as_object_mut(), name) {
+                map.insert(
+                    "description".into(),
+                    "sha256: and the bytes' 64 hex digits, either case (HX5)".into(),
+                );
+            }
+            parameter
         })
         .collect();
     out.extend(op.query.iter().map(|name| parameter(name)));
@@ -298,11 +310,21 @@ fn operation(op: &Operation) -> Value {
         "security": if op.role == Role::None { json!([]) } else { json!([{ "bearer": [] }]) },
         "responses": responses,
     });
-    if let (RequestBody::Json { schema }, Some(map)) = (op.body, object.as_object_mut()) {
-        map.insert(
-            "requestBody".into(),
-            json!({ "required": true, "content": { JSON: { "schema": reference(schema) } } }),
-        );
+    let body = match op.body {
+        RequestBody::None => None,
+        RequestBody::Json { schema } => Some(json!({
+            "required": true, "content": { JSON: { "schema": reference(schema) } } })),
+        // UP2: raw bytes of any content, streamed; OpenAPI 3.1 states a
+        // binary body by its media types alone.
+        RequestBody::Upload => Some(json!({
+            "required": true,
+            "description": "the bytes, at most limits.max_upload_mib, streamed (UP2)",
+            "content": UPLOAD_TYPES.iter().map(|t| ((*t).to_owned(), json!({})))
+                .collect::<Map<String, Value>>(),
+        })),
+    };
+    if let (Some(body), Some(map)) = (body, object.as_object_mut()) {
+        map.insert("requestBody".into(), body);
     }
     object
 }

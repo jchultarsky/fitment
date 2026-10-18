@@ -69,6 +69,36 @@ Until 1.0, minor versions may contain breaking changes.
   minting is limited to 10 a minute, disabling a user revokes their tokens,
   the last enabled admin cannot be disabled or demoted (`last_admin`), and
   the token sweep runs in short batches.
+- **M6, PR 4 (uploads and the object store):** bytes reach
+  `fitment-server` only as uploads. `PUT /v1/uploads/sha256:{hex}` keeps a
+  body only if it hashes to the name given (`POST /v1/uploads` names it
+  itself); the body is streamed, hashed as it comes and written to a
+  temporary file, capped at `limits.max_upload_mib` (128), within a
+  per-user quota and a staging quota, at most 2 uploads at once per user
+  and 8 per server, and cut when it is slower than 64 KiB/s over 30 s or
+  stalls for 30 s. Objects live once, by SHA-256, read-only, in the state
+  directory's content-addressed store, and each user reaches only their
+  own uploads: another user's bytes are `404` to `HEAD` and `GET`, and
+  uploading them does the same work and gets the same answer as new
+  bytes. `HEAD`, `GET`, a paged list and `DELETE` of the caller's uploads,
+  the document `fitment.upload`, expired uploads and unnamed objects
+  swept. `fitment-core` gains `Sha256`, an incremental SHA-256 over the
+  same compression function (`sha256` and `sha256_hex` unchanged).
+  `fitment-catalog`'s `Fs` gains a streaming writer and reader
+  (`create_new_stream`, `open_stream`, the traits `FsWrite` and `FsRead`):
+  a breaking change for an implementor of `Fs`, which must add the two
+  methods; `CountingFs` records and fails their calls and is now `Clone`.
+  No output of `fitment` changes. After review: an upload's throughput
+  samples are coalesced (tiny frames no longer grow its memory), its first
+  bytes must come within 5 s and the minimum applies pro rata before the
+  window; every column naming an object is indexed and the sweep looks
+  only at objects whose naming row went; `DELETE` never unlinks (only the
+  sweep does), and both of an upload's branches rename over the final name
+  in fan-out directories made with the state; an object is charged at
+  least 4 KiB plus 512 bytes against the quota, a user holds at most
+  10,000 uploads, a user's concurrent uploads share one quota and a `PUT`
+  of held bytes is not charged again. `fitment-catalog`'s `Fs` also gains
+  `remove_dir` and `FsRead::rewind`.
 
 ## [0.2.0] - 2026-10-17
 
