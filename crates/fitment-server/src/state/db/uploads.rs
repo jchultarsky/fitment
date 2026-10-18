@@ -62,6 +62,8 @@ pub struct Unnamed {
     pub failed: Vec<String>,
     /// Candidates looked at.
     pub looked: usize,
+    /// The batch ended at its time budget with candidates left unlooked.
+    pub cut: bool,
 }
 
 /// How a delete ended (RA6, UP5).
@@ -391,7 +393,10 @@ impl Db {
     /// IMMEDIATE`: one no row names is unlinked by `unlink` and its row
     /// deleted (ST5); one a row names is no candidate any more. Returns
     /// those unlinked, those whose unlink failed (left, a candidate still,
-    /// for the next sweep) and how many candidates were looked at.
+    /// for the next sweep) and how many candidates were looked at. The
+    /// batch also ends once `budget` has passed, so a slow file system
+    /// (about 3 ms an unlink on CI's Windows runner) keeps it short too:
+    /// a request waits for the writer at most one such batch (ST5).
     ///
     /// # Errors
     ///
@@ -399,8 +404,10 @@ impl Db {
     pub fn unlink_unnamed(
         &self,
         batch: u32,
+        budget: std::time::Duration,
         mut unlink: impl FnMut(&str) -> std::io::Result<()>,
     ) -> Result<Unnamed, DbError> {
+        let until = std::time::Instant::now() + budget;
         let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let candidates: Vec<String> = {
@@ -410,12 +417,14 @@ impl Db {
                 .query_map([batch], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
-        let mut out = Unnamed {
-            looked: candidates.len(),
-            ..Unnamed::default()
-        };
+        let mut out = Unnamed::default();
         let named_sql = format!("SELECT {NAMED}");
         for sha in candidates {
+            if out.looked > 0 && std::time::Instant::now() >= until {
+                out.cut = true;
+                break;
+            }
+            out.looked += 1;
             let row: bool = tx.query_row(
                 "SELECT EXISTS (SELECT 1 FROM object WHERE sha256 = ?1)",
                 [&sha],
