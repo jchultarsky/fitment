@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 
 use fitment_catalog::preimage::{self, Status};
 use fitment_catalog::{Catalog, Options, Sha256Hex};
-use fitment_core::{EXTRACTOR_VERSION, FeaturesDocument, IndexTokens, SIGNATURE_VERSION, Sense};
+use fitment_core::{
+    EXTRACTOR_VERSION, FeaturesDocument, IndexTokens, PROPERTIES_VERSION, SIGNATURE_VERSION, Sense,
+};
 use rusqlite::Connection;
 use std::io;
 use std::sync::Arc;
@@ -89,6 +91,7 @@ pub fn invariants(root: &Path) -> Vec<String> {
     blobs_hold(root, &conn, &mut problems);
     features_hold(&conn, &mut problems);
     tokens_hold(&conn, &mut problems);
+    properties_hold(&conn, &mut problems);
     // IN8.
     let generation: i64 = conn
         .query_row("SELECT generation FROM clock", [], |r| r.get(0))
@@ -112,6 +115,7 @@ pub fn invariants(root: &Path) -> Vec<String> {
         &conn,
         "SELECT sha256 FROM features WHERE sha256 NOT IN (SELECT sha256 FROM live)
          UNION SELECT sha256 FROM tokens WHERE sha256 NOT IN (SELECT sha256 FROM live)
+         UNION SELECT sha256 FROM properties WHERE sha256 NOT IN (SELECT sha256 FROM live)
          UNION SELECT b.sha256 FROM posting p JOIN blob b ON b.key = p.content
            WHERE b.sha256 NOT IN (SELECT sha256 FROM live)",
     );
@@ -210,6 +214,41 @@ fn features_hold(conn: &Connection, problems: &mut Vec<String>) {
         {
             problems.push(format!("IN5: {sha}'s document and columns disagree"));
         }
+    }
+}
+
+/// PR3: every properties row's hash over its preimage, and one current
+/// row for each accepted current features row, none for a refused one.
+fn properties_hold(conn: &Connection, problems: &mut Vec<String>) {
+    let all: Vec<(String, u32, bool, Vec<u8>, String)> = conn
+        .prepare(
+            "SELECT sha256, properties_version, truncated, stated, stated_sha256 FROM properties",
+        )
+        .unwrap()
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for (sha, version, truncated, stated, hash) in all {
+        let sha = Sha256Hex::parse(&sha).unwrap();
+        if preimage::properties(&sha, version, truncated, &stated).as_str() != hash {
+            problems.push(format!("PR3: {sha}'s properties hash"));
+        }
+    }
+    let unmatched: Vec<String> = rows(
+        conn,
+        &format!(
+            "SELECT f.sha256 FROM features f WHERE f.extractor_version = {EXTRACTOR_VERSION}
+               AND (f.status = 'accepted') != EXISTS (SELECT 1 FROM properties p
+                    WHERE p.sha256 = f.sha256 AND p.properties_version = {PROPERTIES_VERSION})"
+        ),
+    );
+    if !unmatched.is_empty() {
+        problems.push(format!(
+            "PR3: properties rows do not follow status for {unmatched:?}"
+        ));
     }
 }
 

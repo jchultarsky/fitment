@@ -383,3 +383,72 @@ fn tokens_match_the_goldens() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
+
+/// RX11's properties golden: the stated properties of every committed
+/// candidate, and of the bracket with properties of every captured kind
+/// added, in `tests/golden/properties/candidates.json`. A change to the
+/// capture fails it until `PROPERTIES_VERSION` rises.
+#[test]
+fn properties_match_the_golden() {
+    use fitment_core::{PROPERTIES_VERSION, StatedProperties};
+    let bless = std::env::var_os("FITMENT_BLESS").is_some_and(|v| v == "1");
+    assert!(
+        !(bless && std::env::var_os("CI").is_some()),
+        "goldens are blessed locally, never in CI"
+    );
+    let candidates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests/candidates");
+    let mut parts = serde_json::Map::new();
+    let read = |bytes: &[u8]| -> serde_json::Value {
+        serde_json::from_str(&StatedProperties::read(bytes).to_json()).unwrap()
+    };
+    for (stem, path) in by_stem(&candidates, "stp") {
+        parts.insert(stem, read(&fs::read(&path).unwrap()));
+    }
+    let text = fs::read_to_string(candidates.join("m_bracket.stp")).unwrap();
+    let end = text.rfind("ENDSEC;").unwrap();
+    let extra = "\
+#90000=PROPERTY_DEFINITION('MaterialMissingAssignments','user defined attribute',#5);
+#90001=PROPERTY_DEFINITION_REPRESENTATION(#90000,#90002);
+#90002=REPRESENTATION('',(#90003,#90004),#2);
+#90003=DESCRIPTIVE_REPRESENTATION_ITEM('MaterialMissingAssignments','TRUE');
+#90004=DESCRIPTIVE_REPRESENTATION_ITEM('Second','x');
+#90010=PROPERTY_DEFINITION('','user defined attribute',#4);
+#90011=PROPERTY_DEFINITION_REPRESENTATION(#90010,#90012);
+#90012=REPRESENTATION('',(#90013),#2);
+#90013=MEASURE_REPRESENTATION_ITEM('Density',POSITIVE_RATIO_MEASURE(1000.0),#9);
+#90020=GENERAL_PROPERTY('','Part Number',$);
+#90021=GENERAL_PROPERTY_ASSOCIATION('',$,#90020,#90022);
+#90022=PROPERTY_DEFINITION('Part Number',$,#5);
+#90023=PROPERTY_DEFINITION_REPRESENTATION(#90022,#90024);
+#90024=REPRESENTATION('',(#90025),#2);
+#90025=DESCRIPTIVE_REPRESENTATION_ITEM('Part Number','\\X2\\00E9\\X0\\t\\X2\\00E9\\X0\\');
+#90030=MATERIAL_DESIGNATION('Steel 304',(#4));
+";
+    let stated = format!("{}{extra}{}", &text[..end], &text[end..]);
+    let generated = read(stated.as_bytes());
+    assert_eq!(
+        generated["stated"].as_array().unwrap().len(),
+        5,
+        "{generated}"
+    );
+    parts.insert("generated".to_owned(), generated);
+    let document = serde_json::json!({
+        "properties_version": PROPERTIES_VERSION,
+        "parts": parts,
+    });
+    let actual = serde_json::to_string_pretty(&document).unwrap() + "\n";
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/properties");
+    if bless {
+        fs::create_dir_all(&golden).unwrap();
+    }
+    let mut failures = Vec::new();
+    compare(
+        "properties",
+        &golden.join("candidates.json"),
+        &actual,
+        &["properties_version"],
+        bless,
+        &mut failures,
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}

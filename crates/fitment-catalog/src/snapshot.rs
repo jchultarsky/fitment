@@ -3,7 +3,10 @@
 //! A [`Snapshot`] holds no way to reach a blob (QR11): the bytes of a part
 //! are read only through [`Catalog::read_blob`].
 
-use fitment_core::{EXTRACTOR_VERSION, FeaturesDocument, RefusalCode, SIGNATURE_VERSION};
+use fitment_core::{
+    EXTRACTOR_VERSION, FeaturesDocument, PROPERTIES_VERSION, RefusalCode, SIGNATURE_VERSION,
+    StatedProperties,
+};
 use rusqlite::{OptionalExtension as _, Transaction, params};
 
 use crate::hex::Sha256Hex;
@@ -26,6 +29,10 @@ pub enum EntryStatus {
     /// Accepted, but its tokens are of another signature version (the
     /// newest stored, 0 for none).
     StaleSignature(u32),
+    /// Indexed and searched, but its stated properties are of another
+    /// version (the newest stored, 0 for none): `reindex` captures them
+    /// again, and a match never refuses for it (M5-26).
+    StaleProperties(u32),
 }
 
 impl EntryStatus {
@@ -34,7 +41,7 @@ impl EntryStatus {
         match self {
             Self::Indexed => "indexed",
             Self::Quarantined => "quarantined",
-            Self::StaleExtractor(_) | Self::StaleSignature(_) => "stale",
+            Self::StaleExtractor(_) | Self::StaleSignature(_) | Self::StaleProperties(_) => "stale",
         }
     }
 }
@@ -71,8 +78,8 @@ pub struct Listed {
     pub status: Option<EntryStatus>,
     /// PRODUCT.id and name.
     pub product: (Option<String>, Option<String>),
-    /// The extractor and signature versions of the rows read.
-    pub versions: (Option<u32>, Option<u32>),
+    /// The extractor, signature and properties versions of the rows read.
+    pub versions: (Option<u32>, Option<u32>, Option<u32>),
     /// The feature counts, if accepted.
     pub counts: Option<Counts>,
     /// Whether every face was read, if accepted.
@@ -320,7 +327,7 @@ impl Snapshot<'_> {
             file_name,
             status: None,
             product: (None, None),
-            versions: (None, None),
+            versions: (None, None, None),
             counts: None,
             complete: None,
             refusals: Vec::new(),
@@ -400,9 +407,24 @@ impl Snapshot<'_> {
                 )
                 .optional()?;
             out.versions.1 = sv;
-            match sv {
-                Some(v) if v == SIGNATURE_VERSION => EntryStatus::Indexed,
-                other => EntryStatus::StaleSignature(other.unwrap_or_default()),
+            let pv: Option<u32> = self
+                .tx
+                .query_row(
+                    "SELECT properties_version FROM properties WHERE sha256 = ?1
+                     ORDER BY properties_version = ?2 DESC, properties_version DESC LIMIT 1",
+                    params![sha, PROPERTIES_VERSION],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            out.versions.2 = pv;
+            match (sv, pv) {
+                (Some(s), Some(p)) if s == SIGNATURE_VERSION && p == PROPERTIES_VERSION => {
+                    EntryStatus::Indexed
+                }
+                (Some(s), p) if s == SIGNATURE_VERSION => {
+                    EntryStatus::StaleProperties(p.unwrap_or_default())
+                }
+                (other, _) => EntryStatus::StaleSignature(other.unwrap_or_default()),
             }
         });
         Ok(())
@@ -512,6 +534,39 @@ impl Snapshot<'_> {
             }
         }
         Ok(out)
+    }
+
+    /// PR3 and PR7: the stated properties of `sha256` at this build's
+    /// version, checked against their preimage hash; `None` if none were
+    /// captured at it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Corrupt`] for a row whose hash or read-back fails; the
+    /// database's otherwise.
+    pub fn properties(&self, sha256: &Sha256Hex) -> Result<Option<StatedProperties>, Error> {
+        let row: Option<(bool, Vec<u8>, String)> = self
+            .tx
+            .query_row(
+                "SELECT truncated, stated, stated_sha256 FROM properties
+                 WHERE sha256 = ?1 AND properties_version = ?2",
+                params![sha256.as_str(), PROPERTIES_VERSION],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((truncated, stated, hash)) = row else {
+            return Ok(None);
+        };
+        let damaged = || Error::Corrupt("a properties row");
+        if preimage::properties(sha256, PROPERTIES_VERSION, truncated, &stated).as_str() != hash {
+            return Err(damaged());
+        }
+        let read = std::str::from_utf8(&stated)
+            .ok()
+            .and_then(|t| StatedProperties::from_json(t).ok())
+            .filter(|r| r.truncated == truncated)
+            .ok_or_else(damaged)?;
+        Ok(Some(read))
     }
 
     /// QR4: the current features row of `sha256`, checked: its preimage

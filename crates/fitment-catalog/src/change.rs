@@ -12,7 +12,9 @@ use crate::blobs::Placed;
 use crate::fs::{Fs, Point};
 use crate::hex::Sha256Hex;
 use crate::ids::{Id, Reference};
-use crate::ingest::{Ingested, Outcome, Prepared, Summary, insert_features, insert_tokens};
+use crate::ingest::{
+    Ingested, Outcome, Prepared, Summary, insert_features, insert_properties, insert_tokens,
+};
 use crate::layout::Layout;
 use crate::preimage::Status;
 use crate::snapshot::{BadName, Named, Reader};
@@ -154,6 +156,7 @@ pub(crate) fn settle(
                 [sha],
             )?;
             tx.execute("DELETE FROM features WHERE sha256 = ?1", [sha])?;
+            tx.execute("DELETE FROM properties WHERE sha256 = ?1", [sha])?;
         }
         let held: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM revision r JOIN entry e ON e.key = r.entry
@@ -358,6 +361,7 @@ impl Catalog {
             )?;
             insert_tokens(&tx, p, tokens, key)?;
         }
+        insert_properties(&tx, p)?;
         op(&tx, g, 0, "replace", entry, p.sha256.as_str())?;
         // CR3 and IN9: the old content's derived rows go; its blob row is
         // held by the revision just superseded, which is kept.
