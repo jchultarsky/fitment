@@ -1,10 +1,17 @@
 //! The committed candidates (`docs/research/m4-match.md`, KC15): 13 parts
 //! against the committed s01, s02 and s03, judged through the library
 //! (KH1) and held to the strict gate (KH2, KH3) under both policies M4
-//! offers. CI regenerates the set and diffs it against this copy.
+//! offers. CI regenerates the set and diffs it against this copy. The gate
+//! is the corpus scorer's, included by path (`docs/research/m6-api.md`,
+//! SC6): fitment-core has no dev-dependencies.
 
-#[path = "support/gate.rs"]
+#[path = "../../fitment-corpus/src/gate.rs"]
+#[allow(dead_code)] // the scorer's own uses of it are elsewhere
 mod gate;
+
+#[path = "../../fitment-corpus/src/outcome.rs"]
+#[allow(dead_code)] // the scorer's own uses of it are elsewhere
+mod outcome;
 
 use fitment_core::{
     Clearance, Grip, MatchOptions, MatchPolicy, Matcher, SocketDocument, TolerancePolicy,
@@ -110,7 +117,8 @@ fn every_committed_candidate_meets_its_construction() {
             )
             .unwrap();
             let result = matcher.judge_step(bytes);
-            problems.extend(gate::gate(case, name, sockets, &result));
+            let outcome = outcome::Outcome::of_result(&result, matcher.policy());
+            problems.extend(gate::gate(case, name, sockets, &outcome));
             if !case["defect"].as_array().is_none_or(Vec::is_empty) {
                 let part = fitment_core::read_part(bytes).unwrap();
                 let at = gate::placement(case).unwrap();

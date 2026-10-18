@@ -48,6 +48,29 @@ $packaged
 EOF"
 done
 
+# SC3 (docs/research/m6-api.md): fitment-corpus, the corpus's scorer, is
+# never published and never reaches a published crate's normal graph; it is
+# a dev-dependency without a version, which `cargo publish` strips, so the
+# package lists above are unchanged by it.
+check "fitment-corpus does not say publish = false" \
+  sh -c "! grep -qx 'publish = false' crates/fitment-corpus/Cargo.toml"
+# Each published crate's manifest as `cargo package` writes it must not name
+# the scorer: the versionless dev-dependency is stripped there.
+target=$(cargo metadata --format-version 1 --no-deps --locked |
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+# The workspace at once, as CI's package job does: fitment's manifest names
+# fitment-catalog, which only the workspace's local overlay holds.
+cargo package --workspace --exclude fitment-corpus --no-verify --locked --allow-dirty --quiet
+for package in fitment-core fitment fitment-catalog; do
+  tree=$(cargo tree -p "$package" -e normal,build --all-features --locked --prefix none)
+  check "fitment-corpus is in $package's normal graph" \
+    grep -q '^fitment-corpus ' <<<"$tree"
+  manifest=$(tar -xzOf "$target/package/$package-$version.crate" "$package-$version/Cargo.toml")
+  check "the packaged $package names fitment-corpus" \
+    grep -q 'fitment-corpus' <<<"$manifest"
+done
+
 cargo deny --manifest-path crates/fitment-core/Cargo.toml --config deny/core.toml check bans
 python3 tools/core-deps.py
 

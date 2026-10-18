@@ -96,6 +96,14 @@ jobs:
           path: corpus/out
           retention-days: 7
           if-no-files-found: error
+      # The library's report (KH6), which the API's must equal from M6's
+      # PR 6 on (docs/research/m6-api.md, XH6, VT3).
+      - uses: actions/upload-artifact@v7
+        with:
+          name: corpus-report
+          path: target/fitment-corpus/report.json
+          retention-days: 7
+          if-no-files-found: error
 
   unit-set:
     name: unit set matches the generator
@@ -195,7 +203,9 @@ jobs:
       # Both crates packaged as crates.io would take them, and each built from
       # its .crate: fitment against fitment-core's through Cargo's local
       # registry overlay (docs/research/m4-match.md, section 22.1).
-      - run: cargo package --workspace --locked
+      # fitment-corpus is never published (docs/research/m6-api.md, SC3),
+      # and `cargo package` does not skip it by itself.
+      - run: cargo package --workspace --exclude fitment-corpus --locked
 
   deny:
     name: cargo-deny

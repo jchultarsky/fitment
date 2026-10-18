@@ -23,7 +23,7 @@ use fitment_catalog::{Catalog, NotRun, Options, Selection};
 use fitment_core::{
     MatchDocument, MatchOptions, MatchPolicy, Matcher, NoFitVerifier, SocketDocument, VerdictKind,
 };
-use serde_json::Value;
+use fitment_corpus::Corpus;
 
 /// Threads per run, as the design's ceiling is stated.
 const JOBS: usize = 16;
@@ -34,29 +34,22 @@ fn ceiling(parts: usize) -> Duration {
     Duration::from_secs(10 * u64::try_from(parts.div_ceil(10_000)).unwrap_or(1))
 }
 
+/// The corpus's directory (`docs/research/m6-api.md`, SC7): a scale run
+/// needs its sockets.
 fn corpus() -> PathBuf {
-    std::env::var_os("FITMENT_CORPUS").map_or_else(
-        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/out"),
-        PathBuf::from,
-    )
+    Corpus::at(&Corpus::default_dir(), true)
+        .expect("a required corpus")
+        .dir()
+        .to_path_buf()
 }
 
 /// The corpus's match sockets, by case and part.
 fn sockets(corpus: &Path) -> BTreeSet<(String, String)> {
-    let manifest: Value =
-        serde_json::from_str(&fs::read_to_string(corpus.join("manifest.json")).unwrap()).unwrap();
-    manifest["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|c| c["kind"] == "match")
-        .map(|c| {
-            let s = &c["socket"];
-            (
-                s["case"].as_str().unwrap().to_owned(),
-                s["part"].as_str().unwrap().to_owned(),
-            )
-        })
+    let corpus = Corpus::at(corpus, true).expect("a required corpus");
+    corpus
+        .socket_groups()
+        .into_keys()
+        .map(|k| (k.source, k.part))
         .collect()
 }
 

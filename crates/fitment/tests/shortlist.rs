@@ -16,18 +16,9 @@ use fitment_core::{
 };
 use serde_json::Value;
 
+/// The corpus directory, or `None` with a note (SC7).
 fn corpus() -> Option<PathBuf> {
-    let dir = std::env::var_os("FITMENT_CORPUS").map_or_else(
-        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/out"),
-        PathBuf::from,
-    );
-    let required = std::env::var_os("FITMENT_REQUIRE_CORPUS").is_some_and(|v| v == "1");
-    if dir.join("manifest.json").is_file() {
-        return Some(dir);
-    }
-    assert!(!required, "FITMENT_REQUIRE_CORPUS=1 but there is no corpus");
-    eprintln!("skipped: no corpus; run tools/gen-corpus.py corpus/out");
-    None
+    fitment_corpus::Corpus::locate().map(|c| c.dir().to_path_buf())
 }
 
 fn cases(dir: &Path) -> Vec<Value> {

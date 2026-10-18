@@ -147,6 +147,7 @@ Exits 1 on any disagreement, after listing every one.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -1214,10 +1215,11 @@ def match_physics(directory, case):
     physics must agree with the truth: `fits` and `fn_rule` fit, `does_not_fit` and `fits_functional` do not
     (strict), `collides` departs by common volume alone, outside every region of M3's expected sockets. `edge`
     hits a stated limit exactly, so physics cannot side with either label, `refused` inputs have no physics,
-    component candidates are the original, and the classes of UNJUDGED wait for M7."""
+    component candidates are the original, and the classes of UNJUDGED wait for M7. `waived` (M6-38) is the
+    user's acceptance of a defect a review removed, never physics' answer."""
     name, truth = case["id"], case["truth"]
     socket = case["socket"]
-    if truth in ("edge", "refused") or "file" not in case["candidate"]:
+    if truth in ("edge", "refused", "waived") or "file" not in case["candidate"]:
         return []
     if truth == "fn_rule" and case["class"] in UNJUDGED:
         print(f"skip {name}: {UNJUDGED[case['class']]}")
@@ -1642,8 +1644,10 @@ def match_main(argv):
     source's socket, under both policies M4 offers, each document then checked by Open CASCADE: every pass fits
     physically at the placement fitment states, at every occurrence (KO3); every failure is re-measured (KO4); its
     placement is rigid with each passed check's feature on the requirement (KO5); and each mutation of a document
-    meets a disagreement somewhere (KO6). With --expect, the fixtures: AS1's parts across its exports (KC12), each
-    export's component written alone, with the tallies pinned under `match_oracle` (KO8).
+    meets a disagreement somewhere (KO6). A reviewed case's group (M6-38) is judged against its socket reviewed by
+    `fitment review`, and a waived pass gets every check but KO3's physics. With --expect, the fixtures: AS1's
+    parts across its exports (KC12), each export's component written alone, with the tallies pinned under
+    `match_oracle` (KO8).
 
     What it cannot check (KO7): threads and press fits beyond their geometry; materials and other properties; what
     a review means; the shortlist (the Rust harness cross-checks it, KH9); whether any placement exists where
@@ -1670,16 +1674,19 @@ def match_main(argv):
             for case in cases:
                 if case.get("kind") != "match" or "file" not in case["candidate"] or case["truth"] == "refused":
                     continue
-                groups.setdefault((case["socket"]["case"], case["socket"]["part"]), []).append(case)
+                # By socket as judged: a reviewed case's against its review (M6-38).
+                review = json.dumps(case["socket"].get("review") or [], sort_keys=True)
+                groups.setdefault((case["socket"]["case"], case["socket"]["part"], review), []).append(case)
             runs = [(f"{source}.stp", part, sorted({c["candidate"]["file"] for c in group}), group)
-                    for (source, part), group in sorted(groups.items())]
+                    for (source, part, _), group in sorted(groups.items())]
         else:
             runs = list(fixture_groups(directory, None, Path(scratch)))
         for source, part, files, group in runs:
             before = len(problems)
             match_group(binary, directory, source, part, [str(f) for f in files], group, Path(scratch), tally,
                         problems, met)
-            print(f"{'ok  ' if len(problems) == before else 'FAIL'} {source} {part}")
+            reviewed = " reviewed" if group and group[0].get("socket", {}).get("review") else ""
+            print(f"{'ok  ' if len(problems) == before else 'FAIL'} {source} {part}{reviewed}")
     if args.expect is None:
         unmet = [name for name, _ in MATCH_MUTATIONS if name not in met]
         if unmet:
@@ -1701,13 +1708,20 @@ def match_main(argv):
 def match_group(binary, directory, source, part, files, group, scratch, tally, problems, met):
     """One socket: written by fitment, its candidates judged under both policies, each document checked, and
     each mutation of it tried (KO6), each bad case's defect isolated (KO2)."""
-    socket_path = scratch / f"{Path(source).stem}--{part}.json"
+    review = (group[0].get("socket", {}).get("review") or []) if group else []
+    tag = hashlib.sha256(json.dumps(review, sort_keys=True).encode()).hexdigest()[:12]
+    socket_path = scratch / f"{Path(source).stem}--{part}--{tag}.json"
     socket, problem = run_fitment(binary, ["socket", str(directory / source), "--part", part, "--format", "json"],
                                   (0,))
     if problem:
         problems.append(f"{source} {part}: {problem}")
         return
     socket_path.write_text(json.dumps(socket), encoding="utf-8")
+    if review:
+        socket, problem = reviewed_socket(binary, socket, socket_path, review)
+        if problem:
+            problems.append(f"{source} {part}: {problem}")
+            return
     leaves, face_id = xcaf_leaves(directory / source, bind=True)
     for _, _, shape in leaves:
         LEAF_FACE_IDS[id(shape)] = face_id
@@ -1733,6 +1747,25 @@ def match_group(binary, directory, source, part, files, group, scratch, tally, p
             if mutated is not None and document_problems(directory, mutated, socket, leaves, group, clearance,
                                                          dict(tally)):
                 met.add(name)
+
+
+def reviewed_socket(binary, socket, path, review):
+    """`socket`, written at `path`, with a case's review applied by `fitment review` (M6-38): each entry's
+    requirement located (KC5) in every socket that has it. The document read back, or the problem."""
+    for entry in review:
+        found = locate(socket, entry)
+        if not found:
+            return None, f"the review's {entry} names no requirement"
+        flag = {"removed": "--remove", "kept": "--keep", "unreviewed": "--unreview"}.get(entry.get("status"))
+        if flag is None:
+            return None, f"the review's {entry} states no status fitment review knows"
+        for socket_id, requirement in found:
+            args = ["review", str(path), flag, requirement["id"], "--socket", socket_id]
+            run = subprocess.run([str(binary), *args, *(["--note", entry["note"]] if entry.get("note") else [])],
+                                 capture_output=True)
+            if run.returncode != 0:
+                return None, f"fitment review: exit {run.returncode}: {run.stderr.decode(errors='replace')}"
+    return json.loads(path.read_text(encoding="utf-8")), None
 
 
 def locate(socket, locator):
@@ -1929,6 +1962,11 @@ def document_problems(directory, doc, socket, leaves, group, clearance, tally):
                 original = originals[k]
                 if clearance == "functional":
                     original = ring_excused(original, placed[k], result_socket, o)
+                if "waived" in truths:
+                    # A waived pass is the user's acceptance of what its review removed: its features and
+                    # placement are checked above (KO5), its physics is not KO3's to judge.
+                    tally["not judged: waived passes"] = tally.get("not judged: waived passes", 0) + 1
+                    continue
                 found = physics(original, placed[k], neighbours_at(leaves, part, k, originals, placed),
                                 f"{where} at {occurrence['path']}")
                 if "collides" in truths and found:

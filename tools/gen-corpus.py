@@ -1084,6 +1084,56 @@ RULES.update({
     "VF5": {"deferred": "documentation: the README's section on copying a catalog says to run verify --deep"},
 })
 
+# M6's rules (docs/research/m6-api.md, section 11.1), each deferred to the PR of its section 12 that builds it until
+# then; the coverage test allows M6's deferrals until M6 closes (PR 9). Every prefix is numbered from 1 without gaps.
+M6_COUNTS = {"SC": 9, "SV": 9, "ER": 7, "VN": 8, "HX": 8, "OP": 11, "CO": 5, "CA": 8, "CU": 3, "AU": 10, "UP": 8,
+             "OB": 5, "JB": 12, "JS": 13, "SD": 6, "DC": 12, "RA": 10, "SN": 11, "CX": 8, "XH": 14}
+M6_PR = {"SC": 1, "SV": 2, "ER": 2, "VN": 2, "HX": 2, "OP": 2, "CO": 6, "CA": 7, "CU": 7, "AU": 3, "UP": 4, "OB": 4,
+         "JB": 5, "JS": 5, "SD": 5, "DC": 5, "RA": 5, "SN": 6, "CX": 7, "XH": 6}
+M6_OTHER_PR = {"VN3": 4, "VN4": 7, "VN5": 5, "HX8": 7, "OP6": 5, "OP10": 9, "CO1": 4, "CO4": 2, "CA6": 2, "CA7": 4,
+               "AU8": 6, "UP5": 5, "UP6": 6, "UP7": 5, "OB1": 2, "OB4": 5, "OB5": 5, "JB2": 6, "JB10": 6, "JS7": 6,
+               "JS8": 7, "JS12": 7, "SD3": 2, "SD6": 2, "DC3": 6, "DC7": 6, "DC9": 2, "DC10": 6, "DC11": 2, "DC12": 6,
+               "RA1": 7, "RA2": 7, "RA6": 6, "RA7": 6, "RA8": 6, "RA9": 6, "RA10": 6, "SN10": 7, "XH8": 7, "XH12": 7,
+               "XH13": 2, "XH14": 8}
+for prefix, count in M6_COUNTS.items():
+    for n in range(1, count + 1):
+        rule = f"{prefix}{n}"
+        RULES[rule] = {"deferred": f"M6 PR {M6_OTHER_PR.get(rule, M6_PR[prefix])}"}
+# PR 1 builds the scorer (SC1 to SC9): fitment-corpus, its gate on an Outcome, the binary path held to it (VT4), the
+# baseline compared on every path (VT5) and the review cases (M6-38), which cite XH1: the exit set holds them, but
+# XH1 is the API's and stays deferred to PR 6; the coverage test lets an M6 rule cite supporting cases while it waits.
+M6_MATCHING = "crates/fitment/tests/matching.rs"
+M6_COVER = "crates/fitment/tests/corpus.rs"
+M6_SCORER = "crates/fitment-corpus/tests/scorer.rs"
+M6_PR1 = {
+    "SC1": [f"{M6_COVER}::no_test_keeps_a_scorer_of_its_own", f"{M6_MATCHING}::the_report_states_the_rates",
+            f"{M6_MATCHING}::the_binary_meets_the_construction"],
+    "SC2": [f"{M6_MATCHING}::a_documents_outcome_is_the_librarys", f"{M6_SCORER}::an_outcome_reads_as_its_entry"],
+    "SC3": [f"{M6_COVER}::the_scorer_is_never_published"],
+    "SC4": [f"{M6_SCORER}::a_locator_naming_no_requirement_or_several_is_a_harness_error"],
+    "SC5": [f"{M4_MATCHING}::the_false_negatives_are_the_baseline",
+            f"{M6_MATCHING}::the_binary_false_negatives_are_the_baseline",
+            f"{M6_SCORER}::a_path_is_compared_on_what_it_ran"],
+    "SC6": ["crates/fitment-core/tests/candidates.rs::every_committed_candidate_meets_its_construction"],
+    "SC7": [f"{M6_SCORER}::a_missing_corpus_passes_with_a_note", f"{M6_SCORER}::a_required_corpus_must_be_there"],
+    "SC8": [f"{M6_SCORER}::waived_is_neither_a_fit_nor_a_false_positive",
+            f"{M6_SCORER}::a_mislabelled_waived_case_is_caught",
+            f"{M4_MATCHING}::every_match_case_meets_its_construction"],
+    "SC9": [f"{M6_SCORER}::entries_are_found_by_content", f"{M6_MATCHING}::a_documents_outcome_is_the_librarys"],
+}
+for rule, tests in M6_PR1.items():
+    RULES[rule] = {"tests": tests}
+# The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
+for rule, tests in {
+    "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],
+    "KH3": [f"{M6_MATCHING}::the_binary_meets_the_construction"],
+    "KH4": [f"{M6_MATCHING}::the_binary_false_negatives_are_the_baseline"],
+    "KH14": [f"{M6_COVER}::a_test_is_found_as_written", f"{M6_COVER}::no_rule_id_is_stated_twice",
+             f"{M6_COVER}::m6_deferrals_and_lists_hold"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
+
+
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with
     the cases that cite it, its tests and any reason it is deferred."""
@@ -4136,6 +4186,68 @@ def build_gate_cases(w: Writer):
     case("m_r27_socket", {"case": "r27_target_refused"}, "m_bracket.stp", "b_socket", "refused",
          {"verdict": "socket_refused"}, "the bracket against r27's refused socket document", ["VD9", "MF2"])
 
+
+def without(entries, locator):
+    """`entries` (a `must_fail`, `may_fail` or `defect` list) less those naming `locator`, codes aside."""
+    bare = lambda e: {k: v for k, v in e.items() if k != "codes"}  # noqa: E731
+    out = []
+    for entry in entries:
+        if "any_of" in entry:
+            kept = [o for o in entry["any_of"] if bare(o) != locator]
+            if kept:
+                out.append({"any_of": kept})
+        elif bare(entry) != locator:
+            out.append(entry)
+    return out
+
+
+def build_review_cases(w: Writer):
+    """M6-38 (docs/research/m6-api.md, SC8; m4-match.md, KC13): file candidates of the corpus judged against s01's
+    and s02's sockets with one requirement removed in review, so every path applies `socket.review` and groups by
+    it. A bad candidate whose only defect breaks the removed requirement is `waived` (class `review_waived`):
+    `InterfaceMatch` with the removal listed, outside both rates, for the user accepted it; it keeps its base's
+    defect, which the removal must name whole. One whose defect is elsewhere is still rejected for it (`b_review`):
+    removal waives only what it names. Each reuses its base case's file, frame and placement; its expectation is the
+    base's less the removed requirement."""
+    by_id = {c["id"]: c for c in w.cases}
+
+    def removed(locator, note):
+        return {**locator, "status": "removed", "note": note}
+    for cid, base, review, klass, truth, text in [
+        ("m_review_s01_hole_waived", "m_bracket_missing_hole",
+         removed(l_bore((30, 15, 0)), "the bolt at (30, 15) is left out of the new design"), "review_waived", "waived",
+         "the bracket without its hole at (30, 15), that hole's bore removed in review: waived"),
+        ("m_review_s02_post_waived", "m_base02_post",
+         removed(l_bore((0, 0, -9)), "the screw is left out: the tapped hole holds nothing"), "review_waived", "waived",
+         "the base with a post in its tapped hole, the hole's bore removed in review: waived"),
+        ("m_review_s01_grip_kept_hole", "m_bracket_missing_hole",
+         removed(l_grip(8), "the bolts are chosen for each bracket"), "b_review", "does_not_fit",
+         "the bracket without its hole at (30, 15), the grip removed in review: still rejected for the hole"),
+        ("m_review_s02_grip_kept_seat", "m_block02_cb_deep",
+         removed(l_grip(8.5), "the screw is chosen for each block"), "b_review", "does_not_fit",
+         "the counterbore 7 deep, the grip removed in review: still rejected for the head's seat"),
+    ]:
+        b = by_id[base]
+        locator = {k: v for k, v in review.items() if k not in ("status", "note")}
+        if truth == "waived":
+            # The base's defect, which the removal must waive whole: at the construction's placement, unreviewed, the
+            # candidate fails only what the review removes (matching.rs checks it, SC8).
+            expect, defect = {"default": m_ok(["requirements_removed"]), "functional": "default"}, b["defect"]
+            if not defect or without(defect, locator):
+                raise RuntimeError(f"{cid}: its review does not remove its whole defect")
+        else:
+            expect = {p: e if isinstance(e, str) else {**e, "must_fail": without(e["must_fail"], locator),
+                                                       "may_fail": without(e["may_fail"], locator)}
+                      for p, e in b["expect"].items()}
+            defect = without(b["defect"], locator)
+            if not defect or any(not e["must_fail"] for e in expect.values() if not isinstance(e, str)):
+                raise RuntimeError(f"{cid}: its review removes its defect")
+        w.cases.append({
+            **b, "id": cid, "set": "corpus", "socket": {**b["socket"], "review": [review]}, "class": klass,
+            "truth": truth, "construction": {**b["construction"], "review": review["note"]}, "expect": expect,
+            "defect": defect, "rules": ["KC13", "XH1", "SC8"], "tests": text,
+        })
+
 def c_block59():
     """s59's BLOCK: 30 x 25 x 15 from (10, 5, 0); at (18, 12) a dia 6.6 hole through with a dia 11 counterbore
     from z 8.5; at (33, 24) a dia 5 hole through. Neither the counterbore nor the side its stop seats is
@@ -4368,6 +4480,7 @@ def main():
             build_candidates(w, lambda unit_set: True)
             build_component_cases(w)
             build_gate_cases(w)
+            build_review_cases(w)
             build_mirror_cases(w)
             build_hostile_cases(w)
             build_family_cases(w)

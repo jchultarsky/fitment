@@ -1,0 +1,23 @@
+[package]
+name = "fitment-corpus"
+description = "The corpus's scorer, shared by fitment's tests and the server's (never published)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# SC3 (docs/research/m6-api.md): never published, and only ever a
+# versionless dev-dependency, which `cargo publish` strips. Explicit: the
+# workspace's default is to publish.
+publish = false
+
+# SC6: gate.rs and outcome.rs use nothing beyond these two, so fitment-core's
+# tests include them by path.
+[dependencies]
+fitment-core = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

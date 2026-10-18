@@ -42,6 +42,8 @@ serde_json = { workspace = true }
 [dev-dependencies]
 # Raw edits of a catalog, in the CLI tests.
 fitment-catalog = { workspace = true, features = ["test-support"] }
+# The corpus's scorer (SC1), unpublished and stripped when packaging (SC3).
+fitment-corpus = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 

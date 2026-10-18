@@ -23,6 +23,13 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# fitment-corpus, the corpus's scorer, is a path dependency without a
+# version, a dev-dependency only, and never published, so `cargo publish`
+# strips it (docs/research/m6-api.md, SC3). A version would keep it in the
+# published manifest; this lets a path dependency be versionless where it
+# cannot reach a published crate's normal graph (cargo-deny 0.20.2:
+# private crates and dev-dependencies only).
+allow-wildcard-paths = true
 # D1: Open CASCADE never enters the Cargo graph. The fit verifier drives it
 # in a separate helper process (docs/PLAN.md, Decisions made, row 10).
 deny = [
