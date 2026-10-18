@@ -38,7 +38,7 @@ fitment-corpus (unpublished, a dev-dependency only) ──> fitment-core, serde_
   database and every stored file under its SHA-256. It is the only crate
   that may use rusqlite (`deny.toml`), and its clippy configuration bans
   hash containers, the clock and the environment as the core's does. It
-  is internal and unstable: the CLI is its one user.
+  is internal and unstable: the CLI and `fitment-server` are its users.
 - **`fitment`** is the command line: it reads the file, calls the core
   and the catalog, and prints. It never names stepq. Its `catalog` cargo
   feature, on by default, brings in `fitment-catalog`; without it,

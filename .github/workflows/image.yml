@@ -1,0 +1,138 @@
+name: Image
+
+# OP8, M6-43 (docs/research/m6-api.md): fitment-server's image, pushed to
+# ghcr.io/<owner>/fitment-server:<version> from a release's tag. Run by
+# the user only, by hand, from the tag itself and naming it:
+#
+#   gh workflow run image.yml --ref v0.3.0 -f tag=v0.3.0
+#
+# It refuses any other ref: a branch, a commit, or a tag that is not
+# v<the workspace's version> at that tag. Each architecture (linux/amd64
+# and linux/arm64, on a native runner each) is built from
+# deploy/Containerfile as CI's `container` job builds it, and smoke-tested
+# by deploy/smoke.sh (VT29) before anything is pushed; only an image that
+# passed is pushed, as <version>-amd64 and <version>-arm64, and <version>
+# then names both. It never runs on a push, a pull request or a schedule.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release's tag, v<workspace version>; run the workflow from that same tag"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: the ref is the release's tag
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image: ${{ steps.version.outputs.image }}
+    steps:
+      - name: Refuse any ref but the tag named
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ github.ref }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::the tag must be v<major>.<minor>.<patch>, not '$TAG'"
+            exit 1
+          fi
+          if [ "$REF" != "refs/tags/$TAG" ]; then
+            echo "::error::run this workflow from the tag $TAG (--ref $TAG), not from $REF"
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Refuse a tag that is not the workspace's version
+        id: version
+        env:
+          TAG: ${{ inputs.tag }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::the tag $TAG does not name the workspace's version, $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # GHCR's names are lower case.
+          owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/$owner/fitment-server" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build, smoke-test and push (${{ matrix.arch }})
+    needs: check
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      # One architecture failing pushes neither tag that names both.
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build the image as CI's container job does
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          docker build -f deploy/Containerfile -t fitment-server:release \
+            --label "org.opencontainers.image.source=$SOURCE" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            .
+      # VT29: the image as shipped, before anything is pushed.
+      - run: deploy/smoke.sh fitment-server:release
+      - name: Push this architecture's image
+        env:
+          IMAGE: ${{ needs.check.outputs.image }}
+          VERSION: ${{ needs.check.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker tag fitment-server:release "$IMAGE:$VERSION-$ARCH"
+          docker push "$IMAGE:$VERSION-$ARCH"
+          docker logout ghcr.io
+
+  manifest:
+    name: push the version's tag
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Name both architectures' images by the version
+        env:
+          IMAGE: ${{ needs.check.outputs.image }}
+          VERSION: ${{ needs.check.outputs.version }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker buildx imagetools create -t "$IMAGE:$VERSION" \
+            --annotation "index:org.opencontainers.image.source=$SOURCE" \
+            --annotation "index:org.opencontainers.image.version=$VERSION" \
+            --annotation "index:org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index:org.opencontainers.image.licenses=MIT" \
+            "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+          docker logout ghcr.io

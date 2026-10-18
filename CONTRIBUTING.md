@@ -111,17 +111,24 @@ crates/
                   status, tolerances; later features, sockets, evidence)
     clippy.toml   source-level bans for this crate only, tests included
   fitment-catalog/ lib: the catalog (M5): a SQLite database and a store of
-                  files by content; internal, the CLI its one user
+                  files by content; internal, the CLI and the server its
+                  users
     clippy.toml   source-level bans for this crate, as the core's
   fitment/        bin `fitment`: arguments, files, output, exit codes
+  fitment-server/ lib and bin: the REST API (M6), the only async crate;
+                  never published, shipped as a container image
+  fitment-corpus/ lib: the corpus's one scorer (M6), a dev-dependency
+                  only, never published
+deploy/           the server's Containerfile, its configuration, smoke test
 deny.toml         workspace policy: licences, sources, D1 crate bans
 deny/core.toml    the exact crates fitment-core may depend on
-tools/            check-core.sh and core-deps.py: fitment-core's checks
+deny/sync.toml    no async runtime in fitment or fitment-catalog
+fuzz/             the API's fuzz targets, a workspace of its own
+tools/            check-core.sh and core-deps.py: the crates' checks
 docs/             PLAN.md, the Vectera audit, decision research, the spike
 ```
 
-Coming later: `fitment-server` (M6, the only crate with an async runtime), `fitment-corpus` (M6, test-only,
-never published) and `fitment-fit` (M7, drives the Open CASCADE helper).
+Coming later: `fitment-fit` (M7, drives the Open CASCADE helper).
 The full design is in
 [docs/research/workspace-layout.md](docs/research/workspace-layout.md).
 
@@ -144,8 +151,10 @@ How `fitment-core`'s rules are enforced, each by CI on its own:
 4. **Source checks.** `tools/check-core.sh` fails on any use of the `fs`,
    `net`, `env`, `process`, `thread` or `os` modules, on async code and on
    `static` items, which clippy cannot ban as a whole. It also fails if a
-   file other than `gate.rs` and `features/step.rs` names stepq, so stepq
-   stays a private dependency, and if the package would ship a STEP file.
+   file other than those under `gate/`, `features/step.rs`,
+   `assembly/step.rs` and `properties/step.rs` names stepq, so stepq stays
+   a private dependency, and if a published package (`fitment-core`,
+   `fitment-catalog`, `fitment`) would ship a STEP file or no LICENSE.
 5. **D1.** `deny.toml` bans Open CASCADE and C++ bridge crates everywhere.
 
 An `#[allow]` for one of these needs a comment saying why, and will be

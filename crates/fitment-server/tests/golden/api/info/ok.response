@@ -2,7 +2,7 @@
 cache-control: no-store
 content-type: application/json
 fitment-format: fitment.info/1
-repr-digest: sha-256=:HqC+ij0gkjMzHLQXuA2qUx9+mFGcszJfi0Gjc6gpeik=:
+repr-digest: sha-256=:CBaY7P777hCiWQytajnkJZxUzYz9s8WUVNESmjsFwBY=:
 x-request-id: r_00000000000000000000000004
 
 {
@@ -10,7 +10,7 @@ x-request-id: r_00000000000000000000000004
   "format_version": 1,
   "server": {
     "name": "fitment-server",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "api": {
     "major": 1,

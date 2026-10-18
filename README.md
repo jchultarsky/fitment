@@ -18,8 +18,8 @@ written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 > corpus's 125 gated match cases (its 129 less the socket gate's 4, which
 > run apart and pass) passes through the API, under both policies, with no
 > false positive and the library's report to the byte. It ships as a
-> container image and is not published as a crate. M6 is to be released as
-> 0.3.0, after 0.2.0 (M5, the catalog) and 0.1.0 (M4).
+> container image and is not published as a crate. Version 0.3.0 (M6)
+> follows 0.2.0 (M5, the catalog) and 0.1.0 (M4).
 >
 > `fitment features` reads one part from a
 > STEP file, refusing a file that is not a canonical part, with reasons.
@@ -236,9 +236,11 @@ catalog` and `fitment match --catalog` exit 2 and say so.
 
 `fitment-server` is the REST API over one catalog and the matcher. It is
 not published as a crate: build it from this repository (`cargo build
---release -p fitment-server`), or build the container image, which holds
+--release -p fitment-server`), or use the container image, which holds
 the server and the `fitment` CLI of the same version and no Python, uv or
-Open CASCADE:
+Open CASCADE. Each release's image, from 0.3.0, is
+`ghcr.io/jchultarsky/fitment-server:VERSION` for linux/amd64 and
+linux/arm64, built from the release's tag; to build it yourself:
 
 ```console
 $ docker build -f deploy/Containerfile -t fitment-server .
@@ -346,7 +348,7 @@ that did not succeed has no verdict, anywhere.
 | M3 | Socket extraction |
 | M4 | Matching, evidence, and the known-answer corpus (done, 0.1.0) |
 | M5 | Catalog (done, 0.2.0) |
-| M6 | REST API (done; 0.3.0 to come) |
+| M6 | REST API (done, 0.3.0) |
 | M7 | Optional body-fit verifier |
 | M8 | Viewer |
 

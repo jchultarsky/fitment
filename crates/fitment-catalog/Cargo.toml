@@ -8,9 +8,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-# Internal and unstable: the fitment CLI is its one user. Published from
-# 0.2.0 (M5) so that fitment, which depends on it, can be; its API may
-# change in any release.
+# Internal and unstable: the fitment CLI and fitment-server (M6) are its
+# users. Published from 0.2.0 (M5) so that fitment, which depends on it,
+# can be; its API may change in any release (0.3.0's `Fs` gains required
+# methods).
 publish.workspace = true
 include = ["src/**", "LICENSE"]
 

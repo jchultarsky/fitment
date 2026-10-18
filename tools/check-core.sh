@@ -83,6 +83,18 @@ check "fitment-server does not say publish = false" \
   sh -c "! grep -qx 'publish = false' $server/Cargo.toml"
 check "fitment-server does not say dist = false" \
   sh -c "! grep -A1 -x '\[package.metadata.dist\]' $server/Cargo.toml | grep -qx 'dist = false'"
+# M6-43, OP8: the image is pushed only by image.yml, run by hand from a
+# release's tag: no trigger but workflow_dispatch, and no permission but
+# reading the repository and writing its packages.
+image=.github/workflows/image.yml
+triggers=$(sed -n '/^on:/,/^[^ ]/p' "$image" | grep -E '^  [a-z_]+:' | tr -d ' ' | tr '\n' ' ')
+check "image.yml's triggers are not workflow_dispatch alone: $triggers" \
+  test "$triggers" != "workflow_dispatch: "
+granted=$(sed -n '/^permissions:/,/^[^ ]/p' "$image" | grep -E '^  [a-z-]+:' | tr -d ' ' | tr '\n' ' ')
+check "image.yml's permissions are not contents: read and packages: write alone: $granted" \
+  test "$granted" != "contents:read packages:write "
+check "image.yml gives a job permissions of its own" \
+  grep -qE '^ +permissions:' "$image"
 # SV4: catalog.rs is the only module naming fitment_catalog (with its
 # submodules under catalog/, as SV6 reads state::db), matching.rs the only
 # one building a Matcher or a MatchDocument (the OpenAPI generator names the

@@ -5,7 +5,7 @@ tests catalog parts against the *socket* an assembly requires of a part
 (holes on given axes, diameter limits, seating planes, grips, conical
 seats) and returns a verdict with its evidence.
 
-> **Status: milestone M5 done (0.2.0).** [`read_part`] reads one part from
+> **Status: milestone M6 done (0.3.0).** [`read_part`] reads one part from
 > a STEP file through the canonical gate; [`read_assembly`] lists an
 > assembly's parts; [`SocketDocument::extract`] reads what the neighbours
 > of a part require of any part that replaces it; a [`Matcher`] judges
@@ -15,7 +15,14 @@ seats) and returns a verdict with its evidence.
 > exactly as its file, [`level_one`] finds candidates over any
 > [`IndexSource`] of their [`IndexTokens`], and
 > [`FeaturesDocument::read_with_properties`] also captures a part's stated
-> properties ([`StatedProperties`], read through [`PropertyMap`]). The
+> properties ([`StatedProperties`], read through [`PropertyMap`]). For a
+> caller that serves the matcher, as fitment's REST API does, a component
+> of an assembly is read once and chosen as a socket's target is
+> ([`AssemblyComponents`], [`SelectedComponent`]) and judged by
+> [`Matcher::judge_component`]; a run's exit code and its fitment bugs
+> come from [`Outcome::exit_code`] and [`CandidateResult::is_fitment_bug`],
+> so every caller agrees; [`Sha256`] hashes bytes as they stream; and the
+> off-by-default `schema` feature derives each document's JSON Schema. The
 > body fit (M7) is not checked yet: a candidate that passes every
 > requirement is an `InterfaceMatch`. See the
 > [plan](https://github.com/jchultarsky/fitment/blob/main/docs/PLAN.md).
@@ -84,3 +91,16 @@ MIT
 [`Matcher`]: https://docs.rs/fitment-core/latest/fitment_core/struct.Matcher.html
 [`MatchDocument`]: https://docs.rs/fitment-core/latest/fitment_core/struct.MatchDocument.html
 [`decide`]: https://docs.rs/fitment-core/latest/fitment_core/fn.decide.html
+[`Matcher::judge_document`]: https://docs.rs/fitment-core/latest/fitment_core/struct.Matcher.html#method.judge_document
+[`level_one`]: https://docs.rs/fitment-core/latest/fitment_core/fn.level_one.html
+[`IndexSource`]: https://docs.rs/fitment-core/latest/fitment_core/trait.IndexSource.html
+[`IndexTokens`]: https://docs.rs/fitment-core/latest/fitment_core/struct.IndexTokens.html
+[`FeaturesDocument::read_with_properties`]: https://docs.rs/fitment-core/latest/fitment_core/struct.FeaturesDocument.html#method.read_with_properties
+[`StatedProperties`]: https://docs.rs/fitment-core/latest/fitment_core/struct.StatedProperties.html
+[`PropertyMap`]: https://docs.rs/fitment-core/latest/fitment_core/struct.PropertyMap.html
+[`AssemblyComponents`]: https://docs.rs/fitment-core/latest/fitment_core/struct.AssemblyComponents.html
+[`SelectedComponent`]: https://docs.rs/fitment-core/latest/fitment_core/struct.SelectedComponent.html
+[`Matcher::judge_component`]: https://docs.rs/fitment-core/latest/fitment_core/struct.Matcher.html#method.judge_component
+[`Outcome::exit_code`]: https://docs.rs/fitment-core/latest/fitment_core/enum.Outcome.html#method.exit_code
+[`CandidateResult::is_fitment_bug`]: https://docs.rs/fitment-core/latest/fitment_core/struct.CandidateResult.html#method.is_fitment_bug
+[`Sha256`]: https://docs.rs/fitment-core/latest/fitment_core/struct.Sha256.html
