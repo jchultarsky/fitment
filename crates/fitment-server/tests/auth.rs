@@ -92,7 +92,7 @@ fn world(passwords: bool) -> World {
             Who::Disabled => {
                 seams
                     .db
-                    .update_user(&user.id, None, Some(true), seams.ids.now_ms())
+                    .update_user(&user.id, None, Some(true), true, seams.ids.now_ms())
                     .unwrap();
             }
             _ => {}
@@ -307,7 +307,7 @@ async fn a_login_costs_one_hash_whatever_the_username() {
     let eve = seams.db.user_by_fold("eve").unwrap().unwrap();
     seams
         .db
-        .update_user(&eve.id, None, Some(true), seams.ids.now_ms())
+        .update_user(&eve.id, None, Some(true), true, seams.ids.now_ms())
         .unwrap();
     seed_user(server.server(), "tok", Role::Reader, None);
     let mut answers = Vec::new();
@@ -457,7 +457,8 @@ async fn authentication_writes_nothing() {
 }
 
 /// AU4, AU5 (VT24): a revoked token and a disabled user are refused at the
-/// next request, with no cache; a token's effective role is capped by its
+/// next request, with no cache; disabling revokes every token of the user,
+/// and enabling restores none (review); a token's effective role is capped by its
 /// user's, and demoting the user demotes every token at once.
 #[tokio::test]
 async fn revocation_disabling_and_demotion_take_effect_at_once() {
@@ -527,14 +528,16 @@ async fn revocation_disabling_and_demotion_take_effect_at_once() {
         &format!("/v1/auth/users/{}", ada.id),
         &json!({ "disabled": false }),
     );
-    server.send(enable.bearer(&root)).await;
-    assert_eq!(
-        server
-            .send(Call::get("/v1/auth/me").bearer(&second))
-            .await
-            .status,
-        200
-    );
+    assert_eq!(server.send(enable.bearer(&root)).await.status, 200);
+    // Review: disabling revoked every token; enabling restores none.
+    let me = server.send(Call::get("/v1/auth/me").bearer(&second)).await;
+    assert_eq!(me.code(), "unauthenticated");
+    let listed = server
+        .send(Call::get(&format!("/v1/auth/tokens?owner={}", ada.id)).bearer(&root))
+        .await
+        .json();
+    let items = listed["items"].as_array().unwrap();
+    assert!(!items.is_empty() && items.iter().all(|t| !t["revoked"].is_null()));
 }
 
 /// AU4, fix 11 (VT24): every token expires: a login's in
@@ -596,6 +599,8 @@ async fn tokens_are_taken_from_the_header_only() {
         format!("/v1/auth/me?access_token={token}"),
         format!("/v1/info?token={token}"),
         format!("/v1/health?x={}", token.replace('_', "%5F")),
+        "/v1/health?x=fitment_pat_%zz".to_owned(),
+        "/v1/auth/tokens?after=fitment%5Fpat%5F%ff".to_owned(),
         "/v1/ready?access_token=x".to_owned(),
     ] {
         let reply = server.send(Call::get(&path).bearer(&token)).await;
@@ -901,4 +906,231 @@ async fn the_log_names_the_user_by_id_only() {
         "the log names the username"
     );
     assert_eq!(support::scan::logs(&logs), Vec::<String>::new());
+}
+
+/// AU10 (review): a root token (a login's, no parent) lists and revokes
+/// every token of its user; a minted token itself and what was minted from
+/// it only, so a child cannot revoke its parent or a sibling.
+#[tokio::test]
+async fn a_minted_token_reaches_only_its_own_subtree() {
+    let server = TestServer::fresh();
+    let ada = seed_user(server.server(), "ada", Role::Reader, None);
+    let (_, root) = seed_token(server.server(), &ada, Role::Reader, 30);
+    let mint = |parent: &str, name: &str| post("/v1/auth/tokens", parent, &json!({ "name": name }));
+    let secret = |v: &serde_json::Value| v["secret"].as_str().unwrap().to_owned();
+    let child = server.send(mint(&root, "child")).await.json();
+    let grandchild = server
+        .send(mint(&secret(&child), "grandchild"))
+        .await
+        .json();
+    let sibling = server.send(mint(&root, "sibling")).await.json();
+    let names = |reply: support::Reply| -> Vec<String> {
+        let mut names: Vec<String> = reply.json()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let seen = names(
+        server
+            .send(Call::get("/v1/auth/tokens").bearer(&secret(&child)))
+            .await,
+    );
+    assert_eq!(seen, ["child", "grandchild"]);
+    let seen = names(
+        server
+            .send(Call::get("/v1/auth/tokens").bearer(&root))
+            .await,
+    );
+    assert_eq!(seen, ["child", "grandchild", "seeded", "sibling"]);
+    let revoke = |by: &str, id: &serde_json::Value| {
+        Call::new(
+            Method::DELETE,
+            &format!("/v1/auth/tokens/{}", id.as_str().unwrap()),
+        )
+        .bearer(by)
+    };
+    let root_id = server
+        .send(Call::get("/v1/auth/me").bearer(&root))
+        .await
+        .json()["token"]["id"]
+        .clone();
+    for (target, what) in [(&root_id, "its parent"), (&sibling["id"], "a sibling")] {
+        let reply = server.send(revoke(&secret(&child), target)).await;
+        assert_eq!(reply.code(), "not_found", "a child revoked {what}");
+    }
+    assert_eq!(
+        server
+            .send(revoke(&secret(&child), &grandchild["id"]))
+            .await
+            .status,
+        204
+    );
+    assert_eq!(server.send(revoke(&root, &sibling["id"])).await.status, 204);
+    let me = server
+        .send(Call::get("/v1/auth/me").bearer(&secret(&sibling)))
+        .await;
+    assert_eq!(me.code(), "unauthenticated");
+}
+
+/// Review: the API refuses to disable or demote the last enabled admin
+/// (`409 last_admin`); with a second admin it may.
+#[tokio::test]
+async fn the_last_enabled_admin_stays() {
+    let server = TestServer::fresh();
+    let root = seed_user(server.server(), "root", Role::Admin, None);
+    let (_, token) = seed_token(server.server(), &root, Role::Admin, 30);
+    let patch = |body: serde_json::Value| {
+        Call::json(Method::PATCH, &format!("/v1/auth/users/{}", root.id), &body).bearer(&token)
+    };
+    let harness = server.token().to_owned();
+    let other = server
+        .send(Call::get("/v1/auth/me").bearer(&harness))
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let off = Call::json(
+        Method::PATCH,
+        &format!("/v1/auth/users/{other}"),
+        &json!({ "disabled": true }),
+    );
+    assert_eq!(
+        server.send(off.bearer(&token)).await.status,
+        200,
+        "another admin, not the last"
+    );
+    for body in [json!({ "role": "writer" }), json!({ "disabled": true })] {
+        let reply = server.send(patch(body.clone())).await;
+        assert_eq!(
+            (reply.status.as_u16(), reply.code()),
+            (409, "last_admin".into()),
+            "{body}"
+        );
+    }
+    assert_eq!(
+        server.send(patch(json!({ "role": "admin" }))).await.status,
+        200
+    );
+}
+
+/// AU4 (review): two concurrent password changes from two tokens of one
+/// user: one wins; the other, whose token the winner revoked, is refused
+/// in its own transaction, never setting its password after the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn of_two_concurrent_password_changes_one_wins() {
+    let server = std::sync::Arc::new(TestServer::fresh());
+    let password = support::password("the shared old password");
+    let ada = seed_user(server.server(), "ada", Role::Reader, Some(&password));
+    let (_, a) = seed_token(server.server(), &ada, Role::Reader, 30);
+    let (_, b) = seed_token(server.server(), &ada, Role::Reader, 30);
+    let hooks = &server.server().seams().hooks;
+    hooks.set("auth.hash", Action::Delay(Duration::from_millis(400)));
+    let mut changes = Vec::new();
+    for (token, new) in [
+        (a, "the first new password"),
+        (b, "the second new password"),
+    ] {
+        let (server, password) = (std::sync::Arc::clone(&server), password.clone());
+        let new = support::password(new);
+        changes.push(tokio::spawn(async move {
+            let body = json!({ "current": password, "new": new });
+            (
+                server.send(post("/v1/auth/password", &token, &body)).await,
+                new,
+            )
+        }));
+    }
+    let mut won = Vec::new();
+    for change in changes {
+        let (reply, new) = change.await.unwrap();
+        match reply.status.as_u16() {
+            204 => won.push(new),
+            _ => assert_eq!(reply.code(), "unauthenticated"),
+        }
+    }
+    assert_eq!(won.len(), 1, "exactly one change wins");
+    server.server().seams().hooks.clear("auth.hash");
+    let login = json!({ "username": "ada", "password": won[0] });
+    let reply = server
+        .send(Call::json(Method::POST, "/v1/auth/login", &login))
+        .await;
+    assert_eq!(reply.status, 201, "the winner's password is the one set");
+}
+
+/// JS9, review: the sweep deletes in batches of `SWEEP_BATCH` keys, each
+/// its own transaction, in one pass whatever the chains of minted tokens:
+/// 20,000 dead tokens, a chain of 1,000 among them, go within a bound.
+#[tokio::test]
+async fn the_sweep_is_linear_in_the_tokens() {
+    let server = TestServer::fresh();
+    let ada = seed_user(server.server(), "ada", Role::Reader, None);
+    let now = server.server().seams().ids.now_ms();
+    let mut db = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    let tx = db.transaction().unwrap();
+    let mut parent: Option<i64> = None;
+    for i in 0..20_000_i64 {
+        tx.execute(
+            "INSERT INTO token (id, user, name, secret_sha256, hint, role, parent, created_ms, expires_ms)
+             VALUES (?1, ?2, 'dead', ?3, 'hint', 'reader', ?4, ?5, ?5)",
+            rusqlite::params![format!("t_dead{i:022}"), ada.key, format!("{i:064}"), parent, now - 1],
+        )
+        .unwrap();
+        parent = (i < 1000).then(|| tx.last_insert_rowid());
+    }
+    tx.commit().unwrap();
+    server.server().seams().ids.fix_time(now + 31 * 86_400_000);
+    let started = std::time::Instant::now();
+    assert_eq!(server.server().sweep_auth().unwrap(), 20_000);
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(20), "{took:?}");
+    let left: i64 = db
+        .query_row("SELECT count(*) FROM token", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0);
+    assert_eq!(fitment_server::state::db::SWEEP_BATCH, 500);
+}
+
+/// AU7, HX7 (review): `X-Forwarded-For` entries with a port are read
+/// (`1.2.3.4:5678`, `[::1]:5678`); from a peer that is not a trusted proxy
+/// the header is ignored with one warning a minute, naming no value.
+#[tokio::test]
+async fn forwarded_addresses_with_ports_and_untrusted_peers() {
+    use fitment_server::http::extract::forwarded_address;
+    assert_eq!(forwarded_address(" 1.2.3.4:5678"), "1.2.3.4".parse().ok());
+    assert_eq!(forwarded_address("[::1]:5678"), "::1".parse().ok());
+    assert_eq!(
+        forwarded_address("[::ffff:10.0.0.1]:1"),
+        "10.0.0.1".parse().ok()
+    );
+    assert_eq!(forwarded_address("2001:db8::1"), "2001:db8::1".parse().ok());
+    assert_eq!(forwarded_address("unknown"), None);
+    support::logs::capture();
+    let server = TestServer::fresh();
+    let peer: std::net::SocketAddr = "192.0.2.77:4000".parse().unwrap();
+    for _ in 0..3 {
+        let call = Call::get("/v1/health")
+            .peer(peer)
+            .header("x-forwarded-for", "203.0.113.200, 198.51.100.200");
+        assert_eq!(server.send(call).await.status, 204);
+    }
+    let logs = support::logs::text();
+    let warned = logs
+        .lines()
+        .filter(|l| l.contains("X-Forwarded-For from a peer"))
+        .count();
+    assert!(warned >= 1, "no warning");
+    let mine: Vec<&str> = logs
+        .lines()
+        .filter(|l| l.contains("X-Forwarded-For from a peer"))
+        .collect();
+    assert!(
+        mine.iter()
+            .all(|l| !l.contains("203.0.113.200") && !l.contains("192.0.2.77"))
+    );
+    assert!(warned <= 2, "rate-limited: {warned}");
 }

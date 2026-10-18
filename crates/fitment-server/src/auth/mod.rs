@@ -171,6 +171,8 @@ pub struct Auth {
     pub(crate) requests: RequestLimits,
     /// AU7's logins.
     pub(crate) logins: LoginLimits,
+    /// AU10's mints per user (`auth.mints_per_minute`).
+    pub(crate) mints: RequestLimits,
     /// `last_used_ms` per token key, flushed by [`Auth::sweep`] (AU6).
     used: Mutex<BTreeMap<i64, i64>>,
     /// The limits' clock.
@@ -210,6 +212,7 @@ impl Auth {
                 usize::try_from(section.hash_concurrency.max(1)).unwrap_or(1),
             )),
             requests: RequestLimits::new(rate),
+            mints: RequestLimits::new(Rate::per(section.mints_per_minute, 60_000)),
             logins: LoginLimits::new(
                 Rate::per(section.login_per_minute, 60_000),
                 Rate::per(

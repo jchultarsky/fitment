@@ -9233,6 +9233,7 @@
       "job_finished",
       "too_many_tokens",
       "username_taken",
+      "last_admin",
       "bytes_not_kept",
       "derived_rows_gone",
       "precondition_failed",
@@ -10561,6 +10562,19 @@
             "description": "not_acceptable",
             "x-fitment-codes": [
               "not_acceptable"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "last_admin",
+            "x-fitment-codes": [
+              "last_admin"
             ]
           },
           "413": {

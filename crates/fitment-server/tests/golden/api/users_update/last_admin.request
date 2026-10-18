@@ -1,0 +1,5 @@
+PATCH /v1/auth/users/u_00000000000000000000000001
+authorization: Bearer <root's admin token>
+content-type: application/json
+
+{"role": "reader"}

@@ -63,7 +63,12 @@ Until 1.0, minor versions may contain breaking changes.
   token; the error code `username_taken`. `fitment-server admin bootstrap`
   makes the first admin offline and prints its token once; `admin user`
   and `admin token` manage users and tokens beside a running server. No
-  output of `fitment` changes.
+  output of `fitment` changes. After review: login failures are charged
+  before the hash (IPv6 clients by /64), a login at the token cap evicts
+  the oldest login token, a minted token reaches only its own descendants,
+  minting is limited to 10 a minute, disabling a user revokes their tokens,
+  the last enabled admin cannot be disabled or demoted (`last_admin`), and
+  the token sweep runs in short batches.
 
 ## [0.2.0] - 2026-10-17
 

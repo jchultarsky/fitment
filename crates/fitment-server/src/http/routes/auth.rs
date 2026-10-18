@@ -23,7 +23,7 @@ use crate::http::extract::{self, Admin, ClientAddress, Reader};
 use crate::http::json::{self, Json};
 use crate::http::operations::Role as Needed;
 use crate::http::query;
-use crate::state::{CreateUserError, MintError, MintFrom, UserRow};
+use crate::state::{CreateUserError, MintError, MintFrom, PasswordSet, UpdateUserError, UserRow};
 
 fn invalid(field: &str, detail: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::InvalidParameter, detail).with("parameter", field)
@@ -141,8 +141,9 @@ pub(super) async fn login(
     )
     .ok_or_else(|| invalid("days", format!("days is 1 to {}", settings.token_max_days)))?;
     let key = auth::login_key(&body.username);
-    let limits = &shared.auth.logins;
-    limits
+    let attempt = shared
+        .auth
+        .logins
         .admit(&key, address, shared.auth.clock.now_ms())
         .map_err(extract::rate_limited)?;
     let user = if auth::username_ok(&body.username) {
@@ -154,9 +155,12 @@ pub(super) async fn login(
     let user = user.filter(|u| !u.disabled && !u.system && u.password_phc.is_some());
     let (verified, phc) = verify(&shared, user.as_ref(), body.password).await?;
     let Some(user) = user.filter(|_| verified) else {
-        limits.failed(&key, address, shared.auth.clock.now_ms());
+        attempt.failed();
         return Err(invalid_credentials());
     };
+    // Judged right: whatever follows (a mint refused, a storage error)
+    // costs the pair no failure (AU7).
+    drop(attempt);
     let expires = shared.ids.now_ms() + days * DAY_MS;
     let from = MintFrom::Login {
         user: user.key,
@@ -245,28 +249,36 @@ pub(super) async fn password(
         return Err(invalid("new", error.to_string()));
     }
     let key = auth::login_key(&caller.user.username);
-    let limits = &shared.auth.logins;
-    limits
+    let attempt = shared
+        .auth
+        .logins
         .admit(&key, address, shared.auth.clock.now_ms())
         .map_err(extract::rate_limited)?;
-    let (verified, _) = verify(&shared, Some(&caller.user), body.current).await?;
+    let (verified, verified_phc) = verify(&shared, Some(&caller.user), body.current).await?;
     if !verified {
-        limits.failed(&key, address, shared.auth.clock.now_ms());
+        attempt.failed();
         return Err(invalid_credentials());
     }
+    drop(attempt);
     let new = body.new;
     let phc = hashing(&shared, move |a| password::hash(&new, a.pepper())).await?;
     let phc = phc.map_err(|_| ApiError::internal())?;
     let writing = Arc::clone(&shared);
-    blocking(move || {
+    let set = blocking(move || {
         let now = writing.ids.now_ms();
+        let presenting = Some((caller.token.key, verified_phc.as_str()));
         writing
             .db
-            .set_password(caller.user.key, &phc, Some(caller.token.key), now)
+            .set_password(caller.user.key, &phc, presenting, now)
             .map_err(|e| io_error(&e))
     })
     .await?;
-    Ok(StatusCode::NO_CONTENT)
+    match set {
+        PasswordSet::Done(_) => Ok(StatusCode::NO_CONTENT),
+        // Another change won meanwhile and revoked this token (review):
+        // the request is answered as the next one would be.
+        PasswordSet::Gone => Err(extract::unauthenticated(false)),
+    }
 }
 
 /// A page's response: `fitment.page`, and `Link: <next>; rel="next"`
@@ -327,12 +339,20 @@ pub(super) async fn tokens_list(
         Some(id) => (caller.user.clone(), format!("&owner={id}")),
         None => (caller.user.clone(), String::new()),
     };
+    // AU10 (review): a minted token sees itself and what was minted from
+    // it; a root token its user's every token; an admin anyone's.
+    let within = (owner.key == caller.user.key && confined(&caller)).then_some(caller.token.key);
     let reading = Arc::clone(&shared);
     let mut rows = blocking(move || {
-        reading
-            .db
-            .tokens_page(owner.key, &after, limit.saturating_add(1))
-            .map_err(|e| io_error(&e))
+        let fetched = match within {
+            Some(root) => reading
+                .db
+                .tokens_page_within(root, &after, limit.saturating_add(1)),
+            None => reading
+                .db
+                .tokens_page(owner.key, &after, limit.saturating_add(1)),
+        };
+        fetched.map_err(|e| io_error(&e))
     })
     .await?;
     let next = next_url(
@@ -347,6 +367,12 @@ pub(super) async fn tokens_list(
         .map(|row| TokenDocument::of(row, shared.auth.last_used(row.key), None))
         .collect();
     Ok(page(&Page::new(TOKEN_FORMAT, items, next)))
+}
+
+/// True if the caller's token is confined to its own subtree (AU10): a
+/// minted token, unless its effective role is admin.
+fn confined(caller: &extract::Principal) -> bool {
+    caller.token.parent.is_some() && !caller.effective.permits(Needed::Admin)
 }
 
 fn not_found() -> ApiError {
@@ -399,6 +425,13 @@ pub(super) async fn tokens_mint(
         )
         .with("expires_at_most", crate::ids::rfc3339(ceiling)));
     }
+    // AU10 (review): at most `auth.mints_per_minute` a user, so dead
+    // tokens never pile up faster than the sweep removes them.
+    shared
+        .auth
+        .mints
+        .take(caller.user.key, shared.auth.clock.now_ms())
+        .map_err(extract::rate_limited)?;
     let from = MintFrom::Token {
         parent: caller.token.key,
         user: caller.user.key,
@@ -436,6 +469,14 @@ pub(super) async fn tokens_revoke(
     };
     if target.user != caller.user.key && !caller.effective.permits(Needed::Admin) {
         return Err(not_found());
+    }
+    if target.user == caller.user.key && target.key != caller.token.key && confined(&caller) {
+        let (reading, (root, key)) = (Arc::clone(&shared), (caller.token.key, target.key));
+        let inside =
+            blocking(move || reading.db.is_within(root, key).map_err(|e| io_error(&e))).await?;
+        if !inside {
+            return Err(not_found());
+        }
     }
     let writing = Arc::clone(&shared);
     blocking(move || {
@@ -506,6 +547,8 @@ pub(super) async fn users_create(
                     "another user has this username (compared without case)",
                 ),
                 CreateUserError::Db(error) => io_error(&error),
+                // Only a bootstrap asks for the first admin.
+                CreateUserError::AdminExists => ApiError::internal(),
             })
     })
     .await?;
@@ -528,8 +571,14 @@ pub(super) async fn users_update(
         let now = writing.ids.now_ms();
         writing
             .db
-            .update_user(&id, body.role, body.disabled, now)
-            .map_err(|e| io_error(&e))
+            .update_user(&id, body.role, body.disabled, true, now)
+            .map_err(|error| match error {
+                UpdateUserError::LastAdmin => ApiError::new(
+                    ErrorCode::LastAdmin,
+                    "the last enabled admin cannot be disabled or demoted: make another admin first",
+                ),
+                UpdateUserError::Db(error) => io_error(&error),
+            })
     })
     .await?
     .ok_or_else(not_found)?;

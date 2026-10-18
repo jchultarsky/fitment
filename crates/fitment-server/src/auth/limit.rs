@@ -94,15 +94,6 @@ impl Bucket {
             wait => Err(wait),
         }
     }
-
-    /// As [`Bucket::take`], taking nothing.
-    fn peek(&mut self, rate: Rate, now_ms: u64) -> Result<(), u64> {
-        self.refill(rate, now_ms);
-        match self.wait_ms(rate) {
-            0 => Ok(()),
-            wait => Err(wait),
-        }
-    }
 }
 
 /// Buckets by key, at most `cap` of them, the least recently used evicted
@@ -176,29 +167,45 @@ impl LoginLimits {
         }
     }
 
-    /// A login attempt: one of the address's attempts (checked first),
-    /// then whether the pair has a failure left. `Err` holds the wait in
-    /// milliseconds.
+    /// A login attempt (AU7), under the buckets' lock: one of the
+    /// address's attempts, checked first, then one of the pair's failures,
+    /// both taken now, so concurrent wrong guesses cannot all pass a peek
+    /// before any is charged (review). The [`Attempt`] gives the pair's
+    /// token back when dropped, unless [`Attempt::failed`] says the
+    /// credentials were wrong: a success, or an exit that never judged
+    /// them (a full cap, no argon2 slot, a storage error), costs no
+    /// failure. An IPv6 client is keyed by its /64, which one host
+    /// usually holds whole.
     ///
     /// # Errors
     ///
     /// The milliseconds until the attempt would be admitted.
-    pub fn admit(&self, user: &[u8; 32], address: IpAddr, now_ms: u64) -> Result<(), u64> {
+    pub fn admit(&self, user: &[u8; 32], address: IpAddr, now_ms: u64) -> Result<Attempt<'_>, u64> {
+        let address = network(address);
         let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
         buckets
             .get(&LoginKey::Address(address), self.attempts, now_ms)
             .take(self.attempts, now_ms)?;
         buckets
             .get(&LoginKey::Pair(*user, address), self.failures, now_ms)
-            .peek(self.failures, now_ms)
+            .take(self.failures, now_ms)?;
+        Ok(Attempt {
+            limits: self,
+            user: *user,
+            address,
+            charged: false,
+        })
     }
 
-    /// A failed attempt of `user` from `address`.
-    pub fn failed(&self, user: &[u8; 32], address: IpAddr, now_ms: u64) {
+    /// Gives back the pair's token an admitted attempt took, capped at
+    /// full; nothing if the bucket was evicted meanwhile (a new one is
+    /// full).
+    fn refund(&self, user: &[u8; 32], address: IpAddr) {
         let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
-        let _ = buckets
-            .get(&LoginKey::Pair(*user, address), self.failures, now_ms)
-            .take(self.failures, now_ms);
+        let full = self.failures.full();
+        if let Some((bucket, _)) = buckets.buckets.get_mut(&LoginKey::Pair(*user, address)) {
+            bucket.level = (bucket.level + ONE).min(full);
+        }
     }
 
     /// The buckets kept (VT24's count).
@@ -213,6 +220,44 @@ impl LoginLimits {
     /// True if none is kept.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// An admitted login attempt (see [`LoginLimits::admit`]): dropped, it
+/// refunds the pair's token; [`Attempt::failed`] keeps it charged.
+#[derive(Debug)]
+#[must_use = "an attempt is charged only by `failed`; dropping it refunds the pair's token"]
+pub struct Attempt<'a> {
+    limits: &'a LoginLimits,
+    user: [u8; 32],
+    address: IpAddr,
+    charged: bool,
+}
+
+impl Attempt<'_> {
+    /// The credentials were wrong: the pair's token stays taken.
+    pub fn failed(mut self) {
+        self.charged = true;
+    }
+}
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        if !self.charged {
+            self.limits.refund(&self.user, self.address);
+        }
+    }
+}
+
+/// The key of `address` in the login buckets (AU7): an IPv4 address as it
+/// is, an IPv6 one by its /64.
+pub fn network(address: IpAddr) -> IpAddr {
+    match address.to_canonical() {
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            IpAddr::V6(std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+        }
+        v4 @ IpAddr::V4(_) => v4,
     }
 }
 
@@ -273,6 +318,33 @@ mod tests {
         assert_eq!(limits.take(2, 0), Ok(()), "another user's bucket");
         assert_eq!(limits.take(1, 99), Err(1));
         assert_eq!(limits.take(1, 100), Ok(()));
+    }
+
+    /// AU7 (review): an attempt takes the pair's token at admission; a
+    /// dropped attempt refunds it, a failed one keeps it; an IPv6 /64 is
+    /// one client.
+    #[test]
+    fn an_attempt_is_charged_up_front_and_refunded_unless_it_failed() {
+        let limits = LoginLimits::new(Rate::per(100, 60_000), Rate::per(2, 60_000), 100);
+        let user = [1; 32];
+        let a: IpAddr = "2001:db8:1:2:aaaa::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:bbbb::9".parse().unwrap();
+        let first = limits.admit(&user, a, 0).unwrap();
+        let second = limits.admit(&user, b, 0).unwrap();
+        assert!(
+            limits.admit(&user, a, 0).is_err(),
+            "two held at once, same /64"
+        );
+        drop(first);
+        second.failed();
+        limits.admit(&user, a, 0).unwrap().failed();
+        assert!(limits.admit(&user, b, 0).is_err(), "both charged");
+        let other: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert!(limits.admit(&user, other, 0).is_ok(), "another /64");
+        assert_eq!(
+            network("10.1.2.3".parse().unwrap()),
+            "10.1.2.3".parse::<IpAddr>().unwrap()
+        );
     }
 
     /// The map keeps at most its cap, the least recently used evicted; a

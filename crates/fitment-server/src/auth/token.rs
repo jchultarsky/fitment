@@ -126,12 +126,40 @@ pub fn bearer(value: &str) -> Option<Secret> {
 pub fn in_query(query: &str) -> bool {
     query.split('&').any(|pair| {
         let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-        let decoded = crate::http::query::decode(value).unwrap_or_default();
-        let name = crate::http::query::decode(name).unwrap_or_default();
-        name.eq_ignore_ascii_case("access_token")
-            || decoded.to_ascii_lowercase().contains(PREFIX)
-            || name.to_ascii_lowercase().contains(PREFIX)
+        // Decoded leniently: a token-shaped value that does not decode is
+        // still a token in the query (review).
+        let decoded = lenient(value).to_ascii_lowercase();
+        let name = lenient(name).to_ascii_lowercase();
+        name == "access_token" || decoded.contains(PREFIX) || name.contains(PREFIX)
     })
+}
+
+/// `text` percent-decoded where it can be, the rest kept as written, read
+/// as UTF-8 with replacements.
+fn lenient(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = text
+            .get(i + 1..i + 3)
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (b'+', _) => {
+                out.push(b' ');
+                i += 1;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
@@ -197,6 +225,11 @@ mod tests {
         assert!(in_query(&format!("token={}", token.expose())));
         assert!(in_query("access_token=abc"));
         assert!(in_query("x=fitment%5Fpat%5Fabc"));
+        assert!(
+            in_query("x=fitment_pat_%zz"),
+            "a token-shaped value that does not decode"
+        );
+        assert!(in_query("x=fitment%5Fpat%5F%ff"));
         assert!(!in_query("after=abc&limit=10"));
     }
 }

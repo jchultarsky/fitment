@@ -366,6 +366,41 @@ fn request_id(shared: &Shared, peer: Option<IpAddr>, given: Option<&HeaderValue>
     }
 }
 
+/// How often, at most, the warning below is logged.
+const FORWARDED_WARNING_MS: i64 = 60_000;
+
+/// AU7, HX7: `X-Forwarded-For` from a peer that is not a trusted proxy is
+/// ignored; the first such request a minute logs one warning naming
+/// neither the peer nor the header's values, so the operator learns that
+/// `server.trusted_proxies` may lack the proxy (review).
+fn forwarded_from_untrusted(shared: &Shared, peer: IpAddr, headers: &axum::http::HeaderMap) {
+    if !headers.contains_key("x-forwarded-for") || is_trusted(&shared.trusted_proxies, peer) {
+        return;
+    }
+    let now = shared.ids.now_ms();
+    let last = shared
+        .forwarded_warned_ms
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if last != 0 && now.saturating_sub(last) < FORWARDED_WARNING_MS {
+        return;
+    }
+    if shared
+        .forwarded_warned_ms
+        .compare_exchange(
+            last,
+            now.max(1),
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+        .is_ok()
+    {
+        tracing::warn!(
+            "X-Forwarded-For from a peer that is not in server.trusted_proxies was ignored \
+             (logged at most once a minute)"
+        );
+    }
+}
+
 /// The outer layer: the request id (HX7); an [`ApiError`] written as the
 /// problem document with that id (ER, DC9); HX6's headers on every
 /// response.
@@ -375,6 +410,9 @@ async fn finish(State(shared): State<Arc<Shared>>, mut request: Request, next: N
         .get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0.ip());
     let id = request_id(&shared, peer, request.headers().get(&REQUEST_ID));
+    if let Some(peer) = peer {
+        forwarded_from_untrusted(&shared, peer, request.headers());
+    }
     let method = request.method().clone();
     if let Ok(value) = HeaderValue::from_str(&id) {
         request.headers_mut().insert(&REQUEST_ID, value);

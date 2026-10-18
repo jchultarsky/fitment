@@ -474,6 +474,7 @@ const AUTH: [Operation; 9] = [
         codes: &[
             E::BadRequest,
             E::NotFound,
+            E::LastAdmin,
             E::NotAcceptable,
             E::BodyTooLarge,
             E::UnsupportedMediaType,

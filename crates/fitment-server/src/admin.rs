@@ -16,7 +16,8 @@ use crate::auth::{self, Minted, Pepper, PepperError, Role, password};
 use crate::config::{AuthSection, Config};
 use crate::ids::Ids;
 use crate::state::{
-    self, CreateUserError, Db, DbError, MintError, MintFrom, StateError, TokenRow, UserRow,
+    self, CreateUserError, Db, DbError, MintError, MintFrom, PasswordSet, StateError, TokenRow,
+    UpdateUserError, UserRow,
 };
 
 /// Why a command failed, each with its exit code.
@@ -91,6 +92,14 @@ impl From<MintError> for AdminError {
     }
 }
 
+fn created(error: CreateUserError) -> AdminError {
+    match error {
+        CreateUserError::Taken => AdminError::Taken,
+        CreateUserError::AdminExists => AdminError::AdminExists,
+        CreateUserError::Db(error) => AdminError::Db(error),
+    }
+}
+
 /// `server.db` opened for the offline commands.
 #[derive(Debug)]
 pub struct Admin {
@@ -123,6 +132,15 @@ impl Admin {
 
     fn hash(&self, password: &str) -> Result<String, AdminError> {
         password::check(password)?;
+        if !self.pepper.is_set() {
+            // Whether the server hashes with one is recorded nowhere: warn
+            // every time, since a password hashed here without the
+            // server's pepper never verifies there (AU1).
+            eprintln!(
+                "fitment-server: warning: no auth.pepper_file is configured: the password is \
+                 hashed without a pepper and will not verify at a server that has one (pass --config)"
+            );
+        }
         password::hash(password, &self.pepper).map_err(|_| AdminError::Hash)
     }
 
@@ -133,19 +151,26 @@ impl Admin {
             .ok_or_else(|| AdminError::NoSuchUser(username.to_owned()))
     }
 
-    /// `admin bootstrap` (AU9): refused if an admin exists; makes the user
-    /// an admin, with `password` if given, and mints its first token, an
-    /// admin's of `auth.token_default_days` (90), for the caller to print
-    /// once.
+    /// `admin bootstrap` (AU9): refused if an admin exists, checked in the
+    /// transaction that makes the user, so concurrent bootstraps make one
+    /// admin (review); makes the user an admin, with `password` if given,
+    /// and mints its first token, an admin's of `auth.token_default_days`
+    /// (90), for the caller to print once.
     ///
     /// # Errors
     ///
     /// [`AdminError`].
     pub fn bootstrap(&self, username: &str, password: Option<&str>) -> Result<Minted, AdminError> {
-        if self.db.admin_exists()? {
-            return Err(AdminError::AdminExists);
+        if !auth::username_ok(username) {
+            return Err(AdminError::Username);
         }
-        let user = self.add_user(username, Role::Admin, password)?;
+        let phc = password.map(|p| self.hash(p)).transpose()?;
+        let id = self.ids.id("u");
+        let fold = auth::fold(username);
+        let user = self
+            .db
+            .create_first_admin(&id, username, &fold, phc.as_deref(), self.ids.now_ms())
+            .map_err(created)?;
         self.mint_for(&user, "bootstrap", Role::Admin, None)
     }
 
@@ -165,23 +190,22 @@ impl Admin {
         }
         let phc = password.map(|p| self.hash(p)).transpose()?;
         let id = self.ids.id("u");
+        let fold = auth::fold(username);
         self.db
             .create_user(
                 &id,
                 username,
-                &auth::fold(username),
+                &fold,
                 role,
                 phc.as_deref(),
                 self.ids.now_ms(),
             )
-            .map_err(|error| match error {
-                CreateUserError::Taken => AdminError::Taken,
-                CreateUserError::Db(error) => AdminError::Db(error),
-            })
+            .map_err(created)
     }
 
     /// `admin user set`: a role or `disabled`, in force at the server's
-    /// next request (AU4).
+    /// next request (AU4); disabling revokes every token of the user.
+    /// Offline is the recovery path, so it may leave no enabled admin.
     ///
     /// # Errors
     ///
@@ -194,7 +218,11 @@ impl Admin {
     ) -> Result<UserRow, AdminError> {
         let user = self.person(username)?;
         self.db
-            .update_user(&user.id, role, disabled, self.ids.now_ms())?
+            .update_user(&user.id, role, disabled, false, self.ids.now_ms())
+            .map_err(|error| match error {
+                UpdateUserError::Db(error) => AdminError::Db(error),
+                UpdateUserError::LastAdmin => AdminError::Usage(error.to_string()),
+            })?
             .ok_or_else(|| AdminError::NoSuchUser(username.to_owned()))
     }
 
@@ -207,9 +235,13 @@ impl Admin {
     pub fn reset_password(&self, username: &str, password: &str) -> Result<usize, AdminError> {
         let user = self.person(username)?;
         let phc = self.hash(password)?;
-        Ok(self
+        match self
             .db
-            .set_password(user.key, &phc, None, self.ids.now_ms())?)
+            .set_password(user.key, &phc, None, self.ids.now_ms())?
+        {
+            PasswordSet::Done(revoked) => Ok(revoked),
+            PasswordSet::Gone => Err(AdminError::Usage("the password changed meanwhile".into())),
+        }
     }
 
     /// `admin user list`: every person, by folded username.

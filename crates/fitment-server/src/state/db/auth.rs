@@ -166,16 +166,71 @@ impl From<rusqlite::Error> for MintError {
     }
 }
 
-/// A username already taken (folded).
+/// Why a user was not made.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateUserError {
     /// Its folded form is another user's.
     #[error("the username is taken")]
     Taken,
+    /// `bootstrap`, and an admin exists (AU9): checked in the transaction
+    /// that inserts, so two bootstraps make one admin.
+    #[error("an admin exists")]
+    AdminExists,
     /// SQLite failed.
     #[error(transparent)]
     Db(#[from] DbError),
 }
+
+/// Why a user was not changed.
+#[derive(Debug, thiserror::Error)]
+pub enum UpdateUserError {
+    /// It is the last enabled admin, and the change would leave none.
+    #[error("the last enabled admin cannot be disabled or demoted")]
+    LastAdmin,
+    /// SQLite failed.
+    #[error(transparent)]
+    Db(#[from] DbError),
+}
+
+impl From<rusqlite::Error> for UpdateUserError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Db(error.into())
+    }
+}
+
+/// What a password change did (AU4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordSet {
+    /// Set; this many other tokens revoked.
+    Done(usize),
+    /// The presenting token is no longer live, or the password changed
+    /// since it was verified: another change won (review).
+    Gone,
+}
+
+/// Revokes `key` and every token minted from it, at any depth, inside
+/// `conn`'s transaction (AU4, AU10).
+fn revoke_in(conn: &Connection, key: i64, now_ms: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "WITH RECURSIVE minted(key) AS (
+           SELECT ?1 UNION SELECT token.key FROM token JOIN minted ON token.parent = minted.key)
+         UPDATE token SET revoked_ms = ?2
+         WHERE key IN (SELECT key FROM minted) AND revoked_ms IS NULL",
+        params![key, now_ms],
+    )
+}
+
+/// The enabled persons of the admin role but `except`.
+fn other_admins(conn: &Connection, except: i64) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT count(*) FROM user WHERE kind = 'person' AND role = 'admin' AND disabled = 0 AND key != ?1",
+        [except],
+        |r| r.get(0),
+    )
+}
+
+/// The sweep's batch of token keys per transaction.
+pub const SWEEP_BATCH: i64 = 500;
 
 const USER_COLUMNS: &str =
     "u.key, u.id, u.username, u.username_fold, u.role, u.disabled, u.kind, u.password_phc";
@@ -396,10 +451,53 @@ impl Db {
         phc: Option<&str>,
         now_ms: i64,
     ) -> Result<UserRow, CreateUserError> {
+        self.create_person(id, username, fold, role, phc, now_ms, false)
+    }
+
+    /// Makes the first admin (AU9's `bootstrap`): refused if an admin
+    /// exists, checked in the transaction that inserts it (review).
+    ///
+    /// # Errors
+    ///
+    /// [`CreateUserError::AdminExists`], or as [`Db::create_user`].
+    pub fn create_first_admin(
+        &self,
+        id: &str,
+        username: &str,
+        fold: &str,
+        phc: Option<&str>,
+        now_ms: i64,
+    ) -> Result<UserRow, CreateUserError> {
+        self.create_person(id, username, fold, Role::Admin, phc, now_ms, true)
+    }
+
+    #[allow(clippy::too_many_arguments)] // the row's columns, and the first-admin rule
+    fn create_person(
+        &self,
+        id: &str,
+        username: &str,
+        fold: &str,
+        role: Role,
+        phc: Option<&str>,
+        now_ms: i64,
+        first_admin: bool,
+    ) -> Result<UserRow, CreateUserError> {
         let mut conn = lock(&self.writer);
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(DbError::from)?;
+        if first_admin {
+            let admins: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM user WHERE kind = 'person' AND role = 'admin'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(DbError::from)?;
+            if admins > 0 {
+                return Err(CreateUserError::AdminExists);
+            }
+        }
         let made = tx
             .execute(
                 "INSERT INTO user (id, kind, username_fold, username, password_phc, role, created_ms, updated_ms)
@@ -419,33 +517,58 @@ impl Db {
 
     /// Sets a person's role or `disabled` (`PATCH /v1/auth/users/{id}`,
     /// AU9): in force at the next request, since authentication reads both
-    /// each time (AU4).
+    /// each time (AU4). Disabling revokes every token of the user;
+    /// enabling restores none (review). With `keep_an_admin` (the API),
+    /// disabling or demoting the last enabled admin is refused.
     ///
     /// # Errors
     ///
-    /// SQLite's.
+    /// [`UpdateUserError`].
     pub fn update_user(
         &self,
         id: &str,
         role: Option<Role>,
         disabled: Option<bool>,
+        keep_an_admin: bool,
         now_ms: i64,
-    ) -> Result<Option<UserRow>, DbError> {
+    ) -> Result<Option<UserRow>, UpdateUserError> {
         let mut conn = lock(&self.writer);
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(before) = user_where(&tx, "u.id = ?1 AND u.kind = 'person'", &id)? else {
+            return Ok(None);
+        };
+        let loses = disabled == Some(true) || role.is_some_and(|r| r != Role::Admin);
+        if keep_an_admin
+            && before.role == Role::Admin
+            && !before.disabled
+            && loses
+            && other_admins(&tx, before.key)? == 0
+        {
+            return Err(UpdateUserError::LastAdmin);
+        }
         tx.execute(
             "UPDATE user SET role = coalesce(?2, role), disabled = coalesce(?3, disabled), updated_ms = ?4
-             WHERE id = ?1 AND kind = 'person'",
-            params![id, role.map(Role::name), disabled.map(i64::from), now_ms],
+             WHERE key = ?1",
+            params![before.key, role.map(Role::name), disabled.map(i64::from), now_ms],
         )?;
-        let row = user_where(&tx, "u.id = ?1 AND u.kind = 'person'", &id)?;
+        if disabled == Some(true) {
+            tx.execute(
+                "UPDATE token SET revoked_ms = ?2 WHERE user = ?1 AND revoked_ms IS NULL",
+                params![before.key, now_ms],
+            )?;
+        }
+        let row = user_where(&tx, "u.key = ?1", &before.key)?;
         tx.commit()?;
         Ok(row)
     }
 
-    /// Sets `user`'s password and revokes every token of theirs but `keep`
-    /// (AU4): `POST /v1/auth/password` keeps the presenting one, an offline
-    /// reset keeps none. Returns the tokens revoked.
+    /// Sets `user`'s password and revokes every token of theirs but the
+    /// presenting one (AU4): `POST /v1/auth/password` passes `presenting`,
+    /// the token's key and the PHC string its `current` was verified
+    /// against, both checked again here (the token still live, the
+    /// password unchanged), so of two concurrent changes one wins and the
+    /// other is [`PasswordSet::Gone`]; an offline reset passes none and
+    /// revokes every token.
     ///
     /// # Errors
     ///
@@ -454,21 +577,31 @@ impl Db {
         &self,
         user: i64,
         phc: &str,
-        keep: Option<i64>,
+        presenting: Option<(i64, &str)>,
         now_ms: i64,
-    ) -> Result<usize, DbError> {
+    ) -> Result<PasswordSet, DbError> {
         let mut conn = lock(&self.writer);
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((token, verified)) = presenting {
+            let live = token_where(&tx, "t.key = ?1", &token)?
+                .is_some_and(|t| t.user == user && t.live(now_ms));
+            let unchanged = user_where(&tx, "u.key = ?1", &user)?
+                .is_some_and(|u| u.password_phc.as_deref() == Some(verified));
+            if !(live && unchanged) {
+                return Ok(PasswordSet::Gone);
+            }
+        }
         tx.execute(
             "UPDATE user SET password_phc = ?2, updated_ms = ?3 WHERE key = ?1",
             params![user, phc, now_ms],
         )?;
+        let keep = presenting.map(|(token, _)| token);
         let revoked = tx.execute(
             "UPDATE token SET revoked_ms = ?2 WHERE user = ?1 AND revoked_ms IS NULL AND key IS NOT ?3",
             params![user, now_ms, keep],
         )?;
         tx.commit()?;
-        Ok(revoked)
+        Ok(PasswordSet::Done(revoked))
     }
 
     /// Replaces `user`'s PHC string `old` by `new`, a rehash under this
@@ -512,7 +645,29 @@ impl Db {
             MintFrom::Token { parent, user } => (*user, Some(*parent)),
         };
         if live_count(&tx, user, now_ms)? >= i64::from(max_live) {
-            return Err(MintError::TooMany);
+            // At the cap a login evicts the user's oldest live root token
+            // (and what was minted from it), so a full cap never locks its
+            // user out; a mint is refused (AU10, review).
+            let oldest: Option<i64> = match from {
+                MintFrom::Login { .. } => tx
+                    .query_row(
+                        "SELECT key FROM token WHERE user = ?1 AND parent IS NULL
+                         AND revoked_ms IS NULL AND expires_ms > ?2 ORDER BY created_ms, key LIMIT 1",
+                        params![user, now_ms],
+                        |r| r.get(0),
+                    )
+                    .optional()?,
+                _ => None,
+            };
+            match oldest {
+                Some(key) => {
+                    revoke_in(&tx, key, now_ms)?;
+                }
+                None => return Err(MintError::TooMany),
+            }
+            if live_count(&tx, user, now_ms)? >= i64::from(max_live) {
+                return Err(MintError::TooMany);
+            }
         }
         tx.execute(
             "INSERT INTO token (id, user, name, secret_sha256, hint, role, parent, created_ms, expires_ms)
@@ -545,15 +700,53 @@ impl Db {
     pub fn revoke(&self, key: i64, now_ms: i64) -> Result<usize, DbError> {
         let mut conn = lock(&self.writer);
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let revoked = tx.execute(
-            "WITH RECURSIVE minted(key) AS (
-               SELECT ?1 UNION SELECT token.key FROM token JOIN minted ON token.parent = minted.key)
-             UPDATE token SET revoked_ms = ?2
-             WHERE key IN (SELECT key FROM minted) AND revoked_ms IS NULL",
-            params![key, now_ms],
-        )?;
+        let revoked = revoke_in(&tx, key, now_ms)?;
         tx.commit()?;
         Ok(revoked)
+    }
+
+    /// True if the token `key` is `ancestor` or was minted from it, at any
+    /// depth (AU10: what a minted token may see and revoke).
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn is_within(&self, ancestor: i64, key: i64) -> Result<bool, DbError> {
+        self.read(|conn| {
+            conn.query_row(
+                "WITH RECURSIVE up(key, parent) AS (
+                   SELECT key, parent FROM token WHERE key = ?2
+                   UNION ALL SELECT token.key, token.parent FROM token JOIN up ON token.key = up.parent)
+                 SELECT count(*) FROM up WHERE key = ?1",
+                params![ancestor, key],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+        })
+    }
+
+    /// As [`Db::tokens_page`], the tokens `root` is or was minted into
+    /// alone (AU10: a minted token's own subtree).
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn tokens_page_within(
+        &self,
+        root: i64,
+        after: &str,
+        limit: u32,
+    ) -> Result<Vec<TokenRow>, DbError> {
+        self.read(|conn| {
+            let mut statement = conn.prepare(&format!(
+                "WITH RECURSIVE minted(key) AS (
+                   SELECT ?1 UNION SELECT token.key FROM token JOIN minted ON token.parent = minted.key)
+                 SELECT {TOKEN_COLUMNS} FROM token AS t LEFT JOIN token AS p ON p.key = t.parent
+                 WHERE t.key IN (SELECT key FROM minted) AND t.id > ?2 ORDER BY t.id LIMIT ?3"
+            ))?;
+            let rows = statement.query_map(params![root, after, limit], |r| token_at(r, 0))?;
+            rows.collect()
+        })
     }
 
     /// Writes the batched `last_used_ms` values (AU6): the sweep's and the
@@ -581,29 +774,44 @@ impl Db {
     }
 
     /// Deletes the tokens expired or revoked before `before_ms` (JS9: 30
-    /// days after either), leaves first, so a token another still names as
-    /// its parent stays until that one goes. Returns how many it deleted.
+    /// days after either), in batches of [`SWEEP_BATCH`] keys, each its own
+    /// short transaction, so the writer is never held long (review). Keys
+    /// are walked downwards: a token minted from another has the larger
+    /// key, so a dead child goes before its parent is looked at, and one
+    /// pass is enough; a token another still names as its parent stays
+    /// until that one goes. Linear in the tokens, each child test an
+    /// indexed read (`token_parent`). Returns how many it deleted.
     ///
     /// # Errors
     ///
     /// SQLite's.
     pub fn sweep_tokens(&self, before_ms: i64) -> Result<usize, DbError> {
-        let mut conn = lock(&self.writer);
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut cursor = i64::MAX;
         let mut deleted = 0;
         loop {
-            let pass = tx.execute(
-                "DELETE FROM token WHERE min(expires_ms, coalesce(revoked_ms, expires_ms)) < ?1
-                 AND NOT EXISTS (SELECT 1 FROM token AS c WHERE c.parent = token.key)",
-                [before_ms],
-            )?;
-            deleted += pass;
-            if pass == 0 {
-                break;
+            let mut conn = lock(&self.writer);
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let keys: Vec<i64> = {
+                let mut statement =
+                    tx.prepare("SELECT key FROM token WHERE key < ?1 ORDER BY key DESC LIMIT ?2")?;
+                let rows = statement.query_map(params![cursor, SWEEP_BATCH], |r| r.get(0))?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            let Some(&last) = keys.last() else {
+                return Ok(deleted);
+            };
+            {
+                let mut delete = tx.prepare(
+                    "DELETE FROM token WHERE key = ?1 AND (expires_ms < ?2 OR revoked_ms < ?2)
+                     AND NOT EXISTS (SELECT 1 FROM token AS c WHERE c.parent = ?1)",
+                )?;
+                for key in &keys {
+                    deleted += delete.execute(params![key, before_ms])?;
+                }
             }
+            tx.commit()?;
+            cursor = last;
         }
-        tx.commit()?;
-        Ok(deleted)
     }
 
     /// True if another holder renewed the lease within 30 s (SD6): AU9's

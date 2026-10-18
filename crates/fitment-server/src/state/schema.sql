@@ -27,6 +27,8 @@ CREATE TABLE token (
   parent INTEGER REFERENCES token(key),                                      -- AU10: minted from; NULL for a login's
   created_ms INTEGER NOT NULL, expires_ms INTEGER NOT NULL,                  -- AU4: always expires; AU10: ≤ the parent's
   last_used_ms INTEGER, revoked_ms INTEGER) STRICT;
+CREATE INDEX token_user ON token(user, revoked_ms, expires_ms);             -- AU10's live count
+CREATE INDEX token_parent ON token(parent);                                -- AU4's cascade, the sweep
 CREATE TRIGGER token_not_for_system BEFORE INSERT ON token
 WHEN (SELECT kind FROM user WHERE key = NEW.user) = 'system'
 BEGIN SELECT RAISE(ABORT, 'the system user holds no token'); END;

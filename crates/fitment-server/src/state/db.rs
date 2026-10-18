@@ -5,7 +5,10 @@
 
 mod auth;
 
-pub use auth::{CreateUserError, MintError, MintFrom, NewToken, Presented, TokenRow, UserRow};
+pub use auth::{
+    CreateUserError, MintError, MintFrom, NewToken, PasswordSet, Presented, SWEEP_BATCH, TokenRow,
+    UpdateUserError, UserRow,
+};
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -84,7 +87,7 @@ pub enum DbError {
 /// keys, no trusted schema, the busy timeout; `fullfsync` on Apple (ST9).
 fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_millis(5_000))?;
-    let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+    let mode = journal_mode_wal(conn)?;
     if !mode.eq_ignore_ascii_case("wal") {
         return Err(rusqlite::Error::InvalidParameterName(
             "journal_mode is not wal: the state directory must be on a local file system".into(),
@@ -99,6 +102,26 @@ fn configure(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch("PRAGMA fullfsync = ON; PRAGMA checkpoint_fullfsync = ON;")?;
     }
     Ok(())
+}
+
+/// Switches to WAL and answers the mode in force. SQLite answers a
+/// switch that meets another connection's lock with `SQLITE_BUSY` at once,
+/// without its busy handler, as concurrent first opens do (review: eight
+/// bootstraps on a new state), so it is retried for up to the busy
+/// timeout.
+fn journal_mode_wal(conn: &Connection) -> rusqlite::Result<String> {
+    let started = std::time::Instant::now();
+    loop {
+        match conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0)) {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy
+                    && started.elapsed() < std::time::Duration::from_millis(5_000) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            other => return other,
+        }
+    }
 }
 
 /// What a database with these header fields is: `objects`, whether its
@@ -238,6 +261,10 @@ impl Db {
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
+        // Before the first read: a first start and the offline commands
+        // may open a new database at once, and its creation's locks are
+        // waited for, not failed (review).
+        conn.busy_timeout(std::time::Duration::from_millis(5_000))?;
         let found = kind(&conn)?;
         match found {
             Kind::Foreign => return Err(DbError::Foreign),
@@ -261,9 +288,11 @@ impl Db {
             _ => {}
         }
         configure(&conn)?;
-        if found == Kind::Empty {
-            create(&mut conn, system_id, now_ms)?;
-            // The header in the file itself, for `check-config`'s read.
+        // The header in the file itself, for `check-config`'s read; only
+        // the connection that made the schema checkpoints, since two
+        // checkpoints at once fail rather than wait (review: concurrent
+        // first opens).
+        if found == Kind::Empty && create(&mut conn, system_id, now_ms)? {
             conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         }
         let readers = (0..READERS)
@@ -408,13 +437,15 @@ pub fn may_migrate(kind: Kind, held: bool) -> Result<(), DbError> {
 }
 
 /// Schema 1 and the `system` user, in one exclusive transaction, the
-/// header set last inside it (OB1, M6-56).
-fn create(conn: &mut Connection, system_id: &str, now_ms: i64) -> rusqlite::Result<()> {
+/// header set last inside it (OB1, M6-56). False if another connection
+/// made them first.
+fn create(conn: &mut Connection, system_id: &str, now_ms: i64) -> rusqlite::Result<bool> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
     // A second process may have created it between the header's read and
     // the lock: then there is nothing to do.
     if kind(&tx)? != Kind::Empty {
-        return tx.commit();
+        tx.commit()?;
+        return Ok(false);
     }
     tx.execute_batch(SCHEMA)?;
     tx.execute(
@@ -428,5 +459,6 @@ fn create(conn: &mut Connection, system_id: &str, now_ms: i64) -> rusqlite::Resu
     )?;
     tx.pragma_update(None, "application_id", APPLICATION_ID)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-    tx.commit()
+    tx.commit()?;
+    Ok(true)
 }

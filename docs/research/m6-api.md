@@ -632,13 +632,13 @@ Ported from Vectera's `catalog/src/auth.rs` and `commons/src/auth.rs` (MIT, same
 | 10 | No rate limit on login | AU7 |
 | 11 | Tokens never expire unless asked | AU4: every token expires (90 days by default, at most 365) |
 
-- **AU1. Passwords** (B AU1). argon2id, version 0x13, m = 19 MiB, t = 2, p = 1 (OWASP's minimum); a random salt per password; the pepper as argon2's secret, read from `auth.pepper_file` (mode 0600 checked). Accepted: 12 to 256 Unicode scalar values, at most 1,024 bytes, compared as given (no normalization, which would need a dependency). A verification against older parameters rehashes and stores the new PHC string. Without a pepper the server starts, with one warning. Measured in the prototype: 20.9 ms for one hash and one verification.
+- **AU1. Passwords** (B AU1). argon2id, version 0x13, m = 19 MiB, t = 2, p = 1 (OWASP's minimum); a random salt per password; the pepper as argon2's secret, read from `auth.pepper_file` (mode 0600 checked). Accepted: 12 to 256 Unicode scalar values, at most 1,024 bytes, compared as given, byte for byte (no Unicode normalization, which would need a dependency: a password typed in another normal form does not match, by decision of PR 3's review). A verification against older parameters rehashes and stores the new PHC string. Without a pepper the server starts, with one warning, and the offline commands warn whenever they hash without one. Rotating the pepper is not supported in M6: every password would have to be set again. Measured in the prototype: 20.9 ms for one hash and one verification.
 - **AU2. Login costs the same for every username** (B AU2). `POST /v1/auth/login` runs one argon2 verification whether the username exists, is disabled or has no password; a dummy PHC string, made at startup with the same parameters, stands in. At most `auth.hash_concurrency` (2) verifications run at once on the blocking pool; the rest wait in a fair queue for at most 10 s (`503 request_timeout`). Every failure is `401 invalid_credentials`.
 - **AU3. Tokens** (B AU3; M6-18). `fitment_pat_` followed by base64url (no padding) of 32 bytes from `getrandom`; the prefix lets secret scanners and logs recognize one.
   - **Stored:** `secret_sha256`, core's `sha256_hex` of the whole string, with a unique index; lookup is by that hash, which needs no constant-time comparison (a preimage-resistant hash of 256 random bits).
   - **The plaintext** is returned once, at creation (`fitment.token`'s `secret`), and is never logged or stored; in memory it is a `Secret` whose `Debug` and `Display` print `fitment_pat_…<hint>`.
   - **Presented only** as `Authorization: Bearer <token>`. A token in a query string is refused, since it would reach logs and proxies.
-- **AU4. Expiry and revocation** (B AU4). Every token has an expiry, 90 days by default and at most `auth.token_max_days` (365). Its owner or an admin revokes it, and revoking a token revokes every token minted from it, transitively, in one transaction (AU10's `parent`). A password change through `POST /v1/auth/password` revokes every other token of the user, and an offline `user reset-password` (AU9) every one (review F1). Expiry and revocation are checked on every request from the database, with no cache, so a revocation or a disabled user takes effect at the next request.
+- **AU4. Expiry and revocation** (B AU4). Every token has an expiry, 90 days by default and at most `auth.token_max_days` (365). Its owner or an admin revokes it, and revoking a token revokes every token minted from it, transitively, in one transaction (AU10's `parent`). A password change through `POST /v1/auth/password` revokes every other token of the user, and an offline `user reset-password` (AU9) every one (review F1). Expiry and revocation are checked on every request from the database, with no cache, so a revocation or a disabled user takes effect at the next request. Disabling a user revokes every token of theirs; enabling restores none (PR 3's review). A password change re-checks, in the transaction that sets it, that its presenting token is still live and the password the one verified, so of two concurrent changes one wins and the other's token, revoked by the winner, is `401 unauthenticated`.
 - **AU5. Roles** (B AU5, A 12.3; M6-17).
 
   | Role | Can |
@@ -655,11 +655,13 @@ Ported from Vectera's `catalog/src/auth.rs` and `commons/src/auth.rs` (MIT, same
   - **Requests:** 50 a second per user, over all their tokens, with a burst of 100, so minting tokens multiplies nothing.
   - **Login:** 30 attempts per client address per minute, checked first; then 10 failures per (folded username, client address) per 15 minutes. A bucket is made for any username string, existing or not, so the limits show nothing about which usernames exist (AU2); and failures from one address never limit the same username from another, so no one can lock an admin out entirely (AU9 recovers offline in any case). The client address is the TCP peer's, unless the peer is in `server.trusted_proxies`; then it is the right-most address of `X-Forwarded-For` not in that list.
   - **Bounded:** at most `auth.login_buckets` (10,000) login buckets are kept, the least recently used evicted. One address makes at most 30 a minute, so it cannot evict its way to fresh allowances faster than its own address bucket allows.
+  - **Charged up front** (PR 3's review): an attempt takes the address's token and the pair's failure under the buckets' lock before its hash, so concurrent wrong guesses cannot all pass one check; a success, or an exit that never judged the credentials (a cap, no argon2 slot, a storage error), gives the pair's failure back. A password change counts in its user's buckets the same way.
+  - **Addresses:** an IPv6 client is keyed by its /64, which one host usually holds whole; an `X-Forwarded-For` entry may carry a port (`1.2.3.4:5678`, `[::1]:5678`); the header from a peer outside `server.trusted_proxies` is ignored with one warning a minute, naming no value.
 - **AU8. Resources are owned** (B AU8, merge). A job, a match, an upload, an assembly or a socket line belongs to the user who created it. Another user's is `404 not_found` to anyone but an admin, the same answer as for an id that does not exist, so ids cannot be probed. Namespaced resources (uploads and assemblies by SHA-256, socket lines by derived id) resolve among the caller's own; an admin reads another owner's with `?owner=USER_ID`, on `GET` and `HEAD` only. A job-creating route, or any other write, never takes `?owner=`, so no job runs on another user's inputs (review question 8). Catalog entries are shared by every user (RA1).
 - **AU9. The first admin and recovery are offline** (B AU9; M6-19). `fitment-server admin bootstrap|user|token … --state DIR` opens `server.db` directly, which WAL allows while the server runs, and never opens the catalog or takes the lease (SD6). It never migrates `server.db` while a server holds the lease (renewed within 30 s): an older schema is then refused with exit 2, and an upgrade migrates at the server's start (SD3; review question 2).
   - **`bootstrap`** refuses if an admin exists; it creates the user, mints a 90-day admin token and prints it to stdout once.
   - **`user reset-password --password-stdin`** and **`token revoke`** work when every admin token is lost; a reset revokes every token of the user (AU4).
-- **AU10. A token mints only within itself** (review F1, F5; M6-58). `POST /v1/auth/tokens` makes a token whose role is at most the presenting token's effective role (AU5) and whose expiry is at most the presenting token's, and records the presenting token as its `parent`; asking for more is `400 invalid_parameter`, never a silent cap. A login's token has no parent and is capped by the user's role and `auth.token_max_days`. A user holds at most `auth.max_live_tokens` (20) live tokens; one more, by login or by minting, is `409 too_many_tokens`. Revoking a token revokes its descendants (AU4). So a leaked token can neither outlive nor outrank itself, nor multiply its user's caps (AU7, UP4, JS10).
+- **AU10. A token mints only within itself** (review F1, F5; M6-58). `POST /v1/auth/tokens` makes a token whose role is at most the presenting token's effective role (AU5) and whose expiry is at most the presenting token's, and records the presenting token as its `parent`; asking for more is `400 invalid_parameter`, never a silent cap. A login's token has no parent and is capped by the user's role and `auth.token_max_days`. A user holds at most `auth.max_live_tokens` (20) live tokens: one more by minting is `409 too_many_tokens`, and a login at the cap evicts the user's oldest live root token (no parent: a login's or an offline command's) with what was minted from it, so a full cap never locks its user out (PR 3's review). A user mints at most `auth.mints_per_minute` (10) a minute, so dead tokens never outrun the sweep. A root token lists and revokes every token of its user; a minted token itself and what was minted from it only; an admin anyone's (PR 3's review). Revoking a token revokes its descendants (AU4). So a leaked token can neither outlive nor outrank itself, nor multiply its user's caps (AU7, UP4, JS10).
 
 ### 4.12 HTTP hardening (HX)
 
@@ -690,7 +692,7 @@ Ported from Vectera's `catalog/src/auth.rs` and `commons/src/auth.rs` (MIT, same
   | Keep-alive idle | 60 s |
 
   NDJSON streams have no total timeout; they have heartbeats and stream caps (JS10).
-- **HX4. No CORS by default** (B HX4). Without `server.cors_origins`, no CORS layer is installed and browsers keep cross-origin reads blocked. With an allowlist: exact origins only, never a wildcard with credentials; methods `GET`, `POST`, `PUT` and `DELETE`; headers `Authorization`, `Content-Type`, `Idempotency-Key`, `Prefer`.
+- **HX4. No CORS by default** (B HX4). Without `server.cors_origins`, no CORS layer is installed and browsers keep cross-origin reads blocked. With an allowlist: exact origins only, never a wildcard with credentials; methods `GET`, `POST`, `PUT` and `DELETE`; headers `Authorization`, `Content-Type`, `Idempotency-Key`, `Prefer`. `PATCH` (`/v1/auth/users/{id}`) stays out in M6, which has no browser client; M8's viewer decides (PR 3's review).
 - **HX5. Typed path parameters, fixed routes** (B HX5). Every path parameter is parsed into a type before any handler logic: a catalog `Reference` (`Reference::parse`), a socket reference (`sk_` and 20 hex, an optional `@rN`), `Sha256Hex`, a job, token or user id, or a closed enum. A malformed reference is `400 invalid_reference`; a malformed server id is `404 not_found`, the answer for an id that does not exist. A parameter's value is never echoed unescaped. There are no wildcard routes, no static file serving and no route that turns a parameter into a file-system path (PH1); axum percent-decodes before matching, and NUL, `/` and `..` after decoding fail the types.
 - **HX6. Response headers** (B HX6). Every response carries `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, and `Cache-Control: no-store` except where VN5 says otherwise; no `Server` header. JSON is `application/json`, errors `application/problem+json`, NDJSON `application/x-ndjson`, STEP `application/octet-stream` with `Content-Disposition: attachment` and a filename built only from the catalog id and revision (`BRKT-0042_r3.stp`, ID1's alphabet) or the first 12 hex of an assembly's SHA-256.
 - **HX7. Request ids** (B HX8; review question 7). `X-Request-Id` is generated (128 random bits) unless the peer is a trusted proxy that supplied one of at most 64 characters of `[A-Za-z0-9._-]`; any other value is ignored and one is generated; it is set on the response, recorded in the trace span, stored on any job created, and carried by every error (`request_id`).
@@ -767,7 +769,7 @@ Rejected: `sha2` 0.11 (MSRV 1.88); chrono, uuid and rand (times are `i64` Unix m
   [auth]     pepper_file = ""; token_default_days = 90; token_max_days = 365; hash_concurrency = 2
              hash_wait_seconds = 10; max_live_tokens = 20; login_buckets = 10000
              rate_per_second = 50; rate_burst = 100; login_per_minute = 30; login_failures = 10
-             login_failure_minutes = 15
+             login_failure_minutes = 15; mints_per_minute = 10
   [fit]      verifier = "none"
   [log]      format = "json"; filter = "info"
   [metrics]  listen = ""            # off; for example "127.0.0.1:9464"
@@ -926,6 +928,8 @@ CREATE TABLE token (
   parent INTEGER REFERENCES token(key),                                      -- AU10: minted from; NULL for a login's
   created_ms INTEGER NOT NULL, expires_ms INTEGER NOT NULL,                  -- AU4: always expires; AU10: ≤ the parent's
   last_used_ms INTEGER, revoked_ms INTEGER) STRICT;
+CREATE INDEX token_user ON token(user, revoked_ms, expires_ms);             -- AU10's live count
+CREATE INDEX token_parent ON token(parent);                                -- AU4's cascade, the sweep
 CREATE TRIGGER token_not_for_system BEFORE INSERT ON token
 WHEN (SELECT kind FROM user WHERE key = NEW.user) = 'system'
 BEGIN SELECT RAISE(ABORT, 'the system user holds no token'); END;
@@ -1219,14 +1223,14 @@ A match's id is the id of the job that made it; its record and document follow t
 
 | Method and path | Mode | Role | Returns |
 | --- | --- | --- | --- |
-| `POST /v1/auth/login` | sync | none | `{username, password, token_name, days}` → `201` `fitment.token` with its `secret`, once; failures `401 invalid_credentials` (AU2), `429 rate_limited` (AU7); a user at `auth.max_live_tokens`: `409 too_many_tokens` (AU10) |
+| `POST /v1/auth/login` | sync | none | `{username, password, token_name, days}` → `201` `fitment.token` with its `secret`, once; failures `401 invalid_credentials` (AU2), `429 rate_limited` (AU7); a user at `auth.max_live_tokens`: their oldest live root token evicted (AU10) |
 | `GET /v1/auth/me` | sync | reader | `fitment.user` of the caller, with the presenting token's id and effective role |
 | `POST /v1/auth/password` | sync | reader | `{current, new}` → `204` (AU1); every other token of the caller revoked (AU4) |
 | `GET /v1/auth/tokens` | sync | reader | `fitment.page` of the caller's `fitment.token`, never a secret |
 | `POST /v1/auth/tokens` | sync | reader | `{name, role, days}` → `201` `fitment.token` with its `secret`, once, its `parent` the presenting token; a role above the presenting token's effective role, or an expiry past the presenting token's: `400 invalid_parameter`; at `auth.max_live_tokens`: `409 too_many_tokens` (AU10) |
-| `DELETE /v1/auth/tokens/{id}` | sync | reader (own), admin (any) | `204`: revoked, with every token minted from it (AU4); `current` names the presenting token (a logout) |
+| `DELETE /v1/auth/tokens/{id}` | sync | reader (own), admin (any) | `204`: revoked, with every token minted from it (AU4); `current` names the presenting token (a logout); a minted token reaches only itself and its descendants (AU10) |
 | `GET /v1/auth/users`, `POST /v1/auth/users` | sync | admin | `fitment.page` of `fitment.user`; `{username, role, password?}` → `201` |
-| `PATCH /v1/auth/users/{id}` | sync | admin | `{role?, disabled?}` → `200` `fitment.user`; takes effect at the next request (AU4) |
+| `PATCH /v1/auth/users/{id}` | sync | admin | `{role?, disabled?}` → `200` `fitment.user`; takes effect at the next request, disabling revoking every token of the user (AU4); the last enabled admin is `409 last_admin` |
 
 ### 7.11 The documents the API adds
 
@@ -1343,6 +1347,7 @@ The `type` URI's host is a placeholder for the project's documentation site (que
 | `job_finished` | usage | 409 | — | a cancel after the end, or of a job that cannot stop (JB5) |
 | `too_many_tokens` | usage | 409 | — | AU10: the user holds `auth.max_live_tokens` live tokens |
 | `username_taken` | usage | 409 | — | `POST /v1/auth/users` (and AU9's `user add`) with a username another user holds, compared folded (added in PR 3) |
+| `last_admin` | usage | 409 | — | `PATCH /v1/auth/users/{id}` disabling or demoting the last enabled admin (added in PR 3's review); AU9's offline `user set`, the recovery path, may |
 | `bytes_not_kept` | usage | 410 | 2 | ID9: pruned or deleted bytes |
 | `derived_rows_gone` | usage | 410 | 2 | `get --format features` of a superseded revision (IN9) |
 | `precondition_failed` | usage | 412 | — | `If-Match` on a page of another generation (VN4) |
@@ -1897,7 +1902,19 @@ Each PR comes with its tests and two adversarial reviews, as in M4 and M5, and n
      - **The goldens** seed their principals with the fixed ids, record `authorization: Bearer <…>` rather than a token and mask a creating response's secret; `/v1/info`'s scenarios now authenticate, so their goldens and the OpenAPI document's were rewritten with the minor's rise. Under `test-support` with fixed ids a token's secret is derived from the id counter (`Ids::secret_bytes`), so a hint is exact.
      - **The harness** presents an admin token made with the offline library unless a call names its own credentials or is anonymous, and the leak scan knows every password, token (with and without its prefix) and pepper the tests use; a creating response's secret is registered and masked for the scan. VT24's 10⁵ usernames run on the limiter itself, and 500 over HTTP, with passwords too short to hash.
      - **The request's log span** names the user by id once authenticated, never by username (OP1).
-     - **`/v1/info`** keeps `INFO_CONCURRENCY` until PR 7's reader pool, though it now needs a reader. CORS's methods stay HX4's (`GET`, `POST`, `PUT`, `DELETE`): a browser on an allowed origin cannot send `PATCH /v1/auth/users/{id}` until HX4 names it.
+     - **`/v1/info`** keeps `INFO_CONCURRENCY` until PR 7's reader pool, though it now needs a reader. CORS's methods stay HX4's, without `PATCH` (decided in review: no browser client until M8).
+     - **Changed in review.**
+       - *The pair limit:* it was peeked before the hash and charged after, so concurrent wrong guesses all passed (30 of 30 measured). `LoginLimits::admit` now takes the address's token and the pair's failure under the lock and returns an `Attempt`, which refunds the failure when dropped unless `failed()` charges it; a success and the exits that never judged the credentials refund. The password change uses it too. `hostile.rs::concurrent_wrong_guesses_cannot_pass_the_pair_limit` (30 at once: 10 hashed, 20 `429`) and `successes_refund_and_ipv6_is_keyed_by_its_64`.
+       - *Addresses:* IPv6 keyed by /64 in the address's and the pair's buckets; `X-Forwarded-For` entries with a port read; one warning a minute for the header from an untrusted peer. `deploy/fitment-server.toml` shows `trusted_proxies` and `pepper_file` beside the proxy advice.
+       - *Indexes and the sweep:* `token_user (user, revoked_ms, expires_ms)` and `token_parent (parent)` in schema 1 (section 6.2; schema 1 is not released, so it changes in place). The sweep walks keys downwards in batches of 500 (`SWEEP_BATCH`), each its own short transaction: a minted token has the larger key, so a dead child goes before its parent is looked at and one pass suffices, linear in the tokens (`auth.rs::the_sweep_is_linear_in_the_tokens`: 20,000 dead tokens, a chain of 1,000 among them). Minting is limited to `auth.mints_per_minute` (10) a user, a new key.
+       - *The cap:* a login at it evicts the oldest live root token, with its descendants, instead of `409`; a mint at it is still `409 too_many_tokens`.
+       - *Reach:* a minted token lists and revokes itself and its descendants only; a root token its user's every token; admins as before.
+       - *Races:* `bootstrap` checks for an admin in the transaction that inserts (`create_first_admin`), and eight at once on a state not yet made make one admin; that showed a first open could fail `database is locked`, since SQLite answers a switch to WAL that meets another connection's lock at once, without its busy handler: the switch is retried within the busy timeout, the busy timeout is set before the first read, and only the connection that made the schema checkpoints. `set_password` re-checks the presenting token and the PHC string in its transaction.
+       - *Disabling* revokes every token of the user; enabling restores none. The API refuses to disable or demote the last enabled admin, `409 last_admin` (a new code; the offline `user set`, the recovery path, may).
+       - *The offline commands* warn on stderr whenever they hash without a pepper (whether the server has one is recorded nowhere) and refuse `--password-stdin` from a terminal (not tested: the tests have no terminal).
+       - *A token-shaped query value* that does not decode is still `400 bad_request`: the query is decoded leniently for that check.
+       - *Decided and recorded:* passwords stay byte-exact (AU1); pepper rotation is out of M6 (AU1, the image's configuration); CORS without `PATCH` (HX4).
+       - *A password change that loses* answers `401 unauthenticated` rather than a `409`: the winner revoked its token, and the answer is the one its next request would get.
 4. **Uploads and the object store.**
    - **Contents:** CA7 in `fitment-catalog` (the streaming writer and reader, with `CountingFs` over them); the object store and its rules (OB2, OB3, and OB4 for uploads) against `fitment_catalog::fs::Fs`; CO1; the upload routes with streaming, caps, the minimum throughput, quotas and per-user access (UP1 to UP4, UP8, AU8 for uploads); upload expiry in the sweep; keyset pages (VN3) for uploads.
    - **Tests:** VT17 and VT20 for uploads; VT18's upload throughput; VT13's upload half; VT11 at every upload file call through `CountingFs::failing_at`; VT25 for uploads; VT48; VT37's CO1; VT38's CA7; VT42's pages.
@@ -1971,6 +1988,7 @@ Every limit is a configuration key (OP3), stated in `fitment.info` where a clien
 | Concurrent argon2 | 2 | AU2 |
 | Token lifetime | 90 days by default, 365 at most; a minted token's at most its parent's | AU4, AU10 |
 | Live tokens per user | 20 | AU10 |
+| Tokens minted per user | 10 a minute | AU10 |
 | Login | 30 per address per minute; 10 failures per (username, address) per 15 min; 10,000 buckets | AU7 |
 | Requests per user | 50 a second, burst 100 | AU7 |
 | Catalog busy timeouts: job writes / sync delete / reads | 60 s / 10 s / 5 s | CX3, CX4 |

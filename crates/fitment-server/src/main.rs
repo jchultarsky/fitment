@@ -238,8 +238,16 @@ fn open(at: &StateArgs) -> Result<Admin, AdminError> {
     Admin::open(&config)
 }
 
-/// The password on stdin, its final line break dropped.
+/// The password on stdin, its final line break dropped; refused from a
+/// terminal, where it would be echoed and kept in the scrollback (review).
 fn password_from_stdin() -> Result<String, AdminError> {
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        return Err(AdminError::Usage(
+            "--password-stdin reads a pipe, not a terminal: pipe the password in, as \
+             `printf '%s' \"$PASSWORD\" | fitment-server admin …`"
+                .into(),
+        ));
+    }
     let mut text = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut text)
         .map_err(|_| AdminError::Usage("the password on stdin is not UTF-8".into()))?;

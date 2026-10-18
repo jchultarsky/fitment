@@ -209,15 +209,26 @@ pub(crate) fn client_address(shared: &Shared, request: &Parts) -> IpAddr {
     for entry in forwarded.into_iter().rev() {
         // An entry the proxies did not write well ends the walk: what lies
         // left of it is the client's own text.
-        let Ok(address) = entry.trim().parse::<IpAddr>() else {
+        let Some(address) = forwarded_address(entry) else {
             return peer;
         };
-        let address = address.to_canonical();
         if !shared.trusted_proxies.contains(&address) {
             return address;
         }
     }
     peer
+}
+
+/// One `X-Forwarded-For` entry's address (AU7): `1.2.3.4`, `2001:db8::1`,
+/// or either with a port, `1.2.3.4:5678` or `[::1]:5678`, as some proxies
+/// write it; canonical (an IPv4-mapped address as its IPv4 one).
+pub fn forwarded_address(entry: &str) -> Option<IpAddr> {
+    let entry = entry.trim();
+    entry
+        .parse::<IpAddr>()
+        .or_else(|_| entry.parse::<SocketAddr>().map(|s| s.ip()))
+        .ok()
+        .map(|a| a.to_canonical())
 }
 
 /// The client's address (AU7), as `client_address` reads it.

@@ -363,8 +363,9 @@ async fn login_buckets_are_keyed_by_the_client_and_bounded() {
     for i in 0..100_000_u32 {
         let address = std::net::IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + i % 5000));
         let user = fitment_server::auth::login_key(&format!("user{i}"));
-        let _ = limits.admit(&user, address, u64::from(i));
-        limits.failed(&user, address, u64::from(i));
+        if let Ok(attempt) = limits.admit(&user, address, u64::from(i)) {
+            attempt.failed();
+        }
     }
     assert!(limits.len() <= 10_000, "{}", limits.len());
 }
@@ -446,10 +447,11 @@ async fn a_token_mints_only_within_itself() {
 }
 
 /// AU10, M6-61 (VT24): a user holds at most `auth.max_live_tokens` (20)
-/// live tokens; the 21st, by login or by minting, is `409
-/// too_many_tokens`; expired and revoked ones do not count.
+/// live tokens: a 21st by minting is `409 too_many_tokens`, and by login it
+/// evicts the oldest live root token (review); expired and revoked ones do
+/// not count.
 #[tokio::test]
-async fn the_twenty_first_live_token_is_refused() {
+async fn the_live_token_cap_holds_without_locking_anyone_out() {
     let server = TestServer::fresh();
     let password = support::password("the capped password");
     let ada = seed_user(server.server(), "ada", Role::Reader, Some(&password));
@@ -462,26 +464,144 @@ async fn the_twenty_first_live_token_is_refused() {
         .collect();
     let body = json!({ "username": "ada", "password": password });
     let login = || Call::json(Method::POST, "/v1/auth/login", &body);
-    assert_eq!(server.send(login()).await.status, 201, "the 20th");
+    let twentieth = server.send(login()).await.json();
+    assert_eq!(twentieth["id"].as_str().map(|_| ()), Some(()), "the 20th");
+    // Review: at the cap a login evicts the oldest live root token, so the
+    // cap never locks its user out; the 21st login is in, live[0] is out.
     let reply = server.send(login()).await;
-    assert_eq!(reply.code(), "too_many_tokens");
-    assert_eq!(reply.status, 409);
+    assert_eq!(reply.status, 201, "the 21st login evicts, not refuses");
+    let me = server.send(Call::get("/v1/auth/me").bearer(&live[0])).await;
+    assert_eq!(
+        me.code(),
+        "unauthenticated",
+        "the oldest root token was evicted"
+    );
     let reply = server
         .send(post(
             "/v1/auth/tokens",
-            &live[0],
+            &live[1],
             &json!({ "name": "one more" }),
         ))
         .await;
-    assert_eq!(reply.code(), "too_many_tokens");
-    let logout = Call::new(Method::DELETE, "/v1/auth/tokens/current").bearer(&live[1]);
+    assert_eq!(
+        reply.code(),
+        "too_many_tokens",
+        "a mint at the cap is refused"
+    );
+    assert_eq!(reply.status, 409);
+    let logout = Call::new(Method::DELETE, "/v1/auth/tokens/current").bearer(&live[2]);
     assert_eq!(server.send(logout).await.status, 204);
     let reply = server
         .send(post(
             "/v1/auth/tokens",
-            &live[0],
+            &live[1],
             &json!({ "name": "one more" }),
         ))
+        .await;
+    assert_eq!(reply.status, 201);
+}
+
+/// AU7 (review): the pair's failure is taken before the hash, so thirty
+/// concurrent wrong guesses for one username from one address verify
+/// exactly ten and the rest are `429`, however they interleave.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_wrong_guesses_cannot_pass_the_pair_limit() {
+    let server = std::sync::Arc::new(TestServer::fresh());
+    let password = support::password("the guessed password");
+    seed_user(server.server(), "ada", Role::Reader, Some(&password));
+    server.server().seams().auth.clock.freeze();
+    let wrong = support::password("a wrong guess, again");
+    let before = server.server().seams().auth.hashes();
+    let mut guesses = tokio::task::JoinSet::new();
+    for _ in 0..30 {
+        let (server, wrong) = (std::sync::Arc::clone(&server), wrong.clone());
+        guesses.spawn(async move { server.send(login("ada", &wrong, "198.51.100.7")).await });
+    }
+    let mut codes = Vec::new();
+    while let Some(reply) = guesses.join_next().await {
+        codes.push(reply.unwrap().code());
+    }
+    let verified = codes.iter().filter(|c| *c == "invalid_credentials").count();
+    let limited = codes.iter().filter(|c| *c == "rate_limited").count();
+    assert_eq!((verified, limited), (10, 20), "{codes:?}");
+    assert_eq!(server.server().seams().auth.hashes(), before + 10);
+}
+
+/// AU7 (review): a success and an exit that never judged the credentials
+/// refund the pair's failure; an IPv6 client is keyed by its /64.
+#[tokio::test]
+async fn successes_refund_and_ipv6_is_keyed_by_its_64() {
+    let server = TestServer::fresh();
+    let password = support::password("ada's refunded password");
+    seed_user(server.server(), "ada", Role::Reader, Some(&password));
+    let wrong = support::password("a wrong password, refunded");
+    server.server().seams().auth.clock.freeze();
+    for _ in 0..9 {
+        let reply = server.send(login("ada", &wrong, "198.51.100.8")).await;
+        assert_eq!(reply.code(), "invalid_credentials");
+    }
+    for _ in 0..3 {
+        assert_eq!(
+            server
+                .send(login("ada", &password, "198.51.100.8"))
+                .await
+                .status,
+            201
+        );
+    }
+    let tenth = server.send(login("ada", &wrong, "198.51.100.8")).await;
+    assert_eq!(
+        tenth.code(),
+        "invalid_credentials",
+        "successes cost no failure"
+    );
+    let limited = server.send(login("ada", &password, "198.51.100.8")).await;
+    assert_eq!(limited.code(), "rate_limited");
+    let six = |host: &str| SocketAddr::new(host.parse().unwrap(), 40000);
+    for i in 0..10 {
+        let call = login("ada", &wrong, "198.51.100.9").peer(six(&format!("2001:db8:a:b::{i:x}")));
+        assert_eq!(server.send(call).await.code(), "invalid_credentials");
+    }
+    let same = login("ada", &password, "198.51.100.9").peer(six("2001:db8:a:b:ffff::1"));
+    assert_eq!(
+        server.send(same).await.code(),
+        "rate_limited",
+        "the same /64"
+    );
+    let other = login("ada", &password, "198.51.100.9").peer(six("2001:db8:a:c::1"));
+    assert_eq!(server.send(other).await.status, 201, "another /64");
+}
+
+/// AU10 (review): a user mints at most `auth.mints_per_minute` (10)
+/// tokens a minute, so dead tokens cannot pile up faster than the sweep.
+#[tokio::test]
+async fn minting_is_limited_per_user() {
+    let server = TestServer::fresh();
+    let ada = seed_user(server.server(), "ada", Role::Reader, None);
+    let (_, token) = seed_token(server.server(), &ada, Role::Reader, 30);
+    let clock = &server.server().seams().auth.clock;
+    clock.freeze();
+    for i in 0..10 {
+        let reply = server
+            .send(post(
+                "/v1/auth/tokens",
+                &token,
+                &json!({ "name": format!("m{i}") }),
+            ))
+            .await;
+        assert_eq!(reply.status, 201, "mint {i}");
+        let secret = reply.json()["secret"].as_str().unwrap().to_owned();
+        let revoke = Call::new(Method::DELETE, "/v1/auth/tokens/current").bearer(&secret);
+        assert_eq!(server.send(revoke).await.status, 204);
+    }
+    let reply = server
+        .send(post("/v1/auth/tokens", &token, &json!({ "name": "m10" })))
+        .await;
+    assert_eq!(reply.code(), "rate_limited");
+    assert_eq!(reply.header("retry-after"), Some("6"));
+    clock.advance(Duration::from_secs(6));
+    let reply = server
+        .send(post("/v1/auth/tokens", &token, &json!({ "name": "m11" })))
         .await;
     assert_eq!(reply.status, 201);
 }

@@ -133,6 +133,8 @@ pub(crate) struct Shared {
     pub(crate) verifier: matching::Verifier,
     /// Set when the server drains (SD1): readiness answers 503.
     pub(crate) draining: AtomicBool,
+    /// When the warning of an untrusted `X-Forwarded-For` was last logged.
+    pub(crate) forwarded_warned_ms: std::sync::atomic::AtomicI64,
     /// Cleared when a lease renewal fails or finds another holder (SD6).
     pub(crate) lease_ok: AtomicBool,
     /// Set once the lease is given up.
@@ -248,6 +250,7 @@ impl Server {
                 trusted_proxies,
                 verifier,
                 draining: AtomicBool::new(false),
+                forwarded_warned_ms: std::sync::atomic::AtomicI64::new(0),
                 lease_ok: AtomicBool::new(true),
                 released: AtomicBool::new(false),
                 info_slots: tokio::sync::Semaphore::new(INFO_CONCURRENCY),

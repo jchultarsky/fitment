@@ -283,6 +283,9 @@ pub struct AuthSection {
     /// AU7: failures per (username, address) per `login_failure_minutes`.
     pub login_failures: u32,
     pub login_failure_minutes: u32,
+    /// AU10: tokens a user mints a minute through `POST /v1/auth/tokens`,
+    /// so dead tokens cannot pile up faster than the sweep (review).
+    pub mints_per_minute: u32,
 }
 
 impl Default for AuthSection {
@@ -300,6 +303,7 @@ impl Default for AuthSection {
             login_per_minute: 30,
             login_failures: 10,
             login_failure_minutes: 15,
+            mints_per_minute: 10,
         }
     }
 }
@@ -323,6 +327,7 @@ impl AuthSection {
             self.login_per_minute,
             self.login_failures,
             self.login_failure_minutes,
+            self.mints_per_minute,
         ]
         .contains(&0)
         {

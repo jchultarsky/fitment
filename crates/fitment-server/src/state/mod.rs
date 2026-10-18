@@ -15,7 +15,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub use db::{
-    CreateUserError, Db, DbError, Kind, MintError, MintFrom, NewToken, Presented, TokenRow, UserRow,
+    CreateUserError, Db, DbError, Kind, MintError, MintFrom, NewToken, PasswordSet, Presented,
+    TokenRow, UpdateUserError, UserRow,
 };
 
 /// The marker's name.

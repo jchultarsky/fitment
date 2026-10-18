@@ -309,3 +309,62 @@ fn the_commands_never_migrate_beside_a_server() {
     assert!(may_migrate(Kind::Current, true).is_ok());
     assert!(may_migrate(Kind::Empty, true).is_ok());
 }
+
+/// AU9 (review): eight concurrent bootstraps on one state directory not
+/// yet made make one admin; the others are refused (exit 2), checked in
+/// the transaction that inserts.
+#[test]
+fn concurrent_bootstraps_make_one_admin() {
+    let dirs = Dirs::new();
+    let at = state(&dirs);
+    let runs: Vec<_> = (0..8)
+        .map(|i| {
+            let at = at.clone();
+            std::thread::spawn(move || admin(&at, &format!("bootstrap --username root{i}"), ""))
+        })
+        .collect();
+    let mut codes: Vec<Option<i32>> = Vec::new();
+    for run in runs {
+        let (code, stdout, stderr) = run.join().unwrap();
+        if code == Some(0) {
+            scan::secret(stdout.trim_end());
+        } else {
+            assert!(stderr.contains("an admin exists"), "{stderr}");
+        }
+        codes.push(code);
+    }
+    assert_eq!(
+        codes.iter().filter(|c| **c == Some(0)).count(),
+        1,
+        "{codes:?}"
+    );
+    assert!(codes.iter().all(|c| matches!(c, Some(0 | 2))), "{codes:?}");
+    let (_, listing, _) = admin(&at, "user list", "");
+    assert_eq!(
+        listing.lines().filter(|l| l.contains(" admin ")).count(),
+        1,
+        "{listing}"
+    );
+}
+
+/// AU1 (review): hashing a password offline without a configured pepper
+/// warns on stderr, since the server's pepper is recorded nowhere.
+#[test]
+fn hashing_without_a_pepper_warns() {
+    let dirs = Dirs::new();
+    let at = state(&dirs);
+    let password = support::password("a pepperless password");
+    let (code, _, stderr) = admin(
+        &at,
+        "user add --username ada --password-stdin",
+        &format!("{password}\n"),
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("warning: no auth.pepper_file is configured"),
+        "{stderr}"
+    );
+    let (code, _, stderr) = admin(&at, "user add --username bob", "");
+    assert_eq!(code, Some(0));
+    assert!(!stderr.contains("warning"), "no hash, no warning: {stderr}");
+}

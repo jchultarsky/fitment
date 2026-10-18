@@ -127,7 +127,7 @@ use Setup as S;
 /// Every scenario: at least one per operation of `OPERATIONS` (XH14), and
 /// one per error code a request can reach in this build.
 #[rustfmt::skip]
-const SCENARIOS: [Scenario; 37] = [
+const SCENARIOS: [Scenario; 38] = [
     scenario("health", "ok", S::None, P::None, Method::GET, "/v1/health", &[], b""),
     scenario("ready", "ok", S::None, P::None, Method::GET, "/v1/ready", &[], b""),
     scenario("ready", "catalog_unavailable", S::NoCatalog, P::None, Method::GET, "/v1/ready", &[], b""),
@@ -178,6 +178,8 @@ const SCENARIOS: [Scenario; 37] = [
         br#"{"username": "ROOT", "role": "reader"}"#),
     scenario("users_update", "ok", S::None, P::Admin, Method::PATCH,
         "/v1/auth/users/u_00000000000000000000000001", JSON, br#"{"role": "admin", "disabled": false}"#),
+    scenario("users_update", "last_admin", S::None, P::Admin, Method::PATCH,
+        "/v1/auth/users/u_00000000000000000000000001", JSON, br#"{"role": "reader"}"#),
     scenario("users_update", "not_found", S::None, P::Admin, Method::PATCH,
         "/v1/auth/users/u_7zzzzzzzzzzzzzzzzzzzzzzzzz", JSON, br#"{"disabled": true}"#),
     scenario("users_update", "unauthenticated", S::None, P::None, Method::PATCH,
