@@ -365,6 +365,33 @@ async fn a_jobs_inputs_hold_its_uploads_from_submission() {
     assert_eq!(server.object_files(), Vec::<String>::new());
 }
 
+/// ST5: an unlink batch ends at its time budget as well as its count, so
+/// on a slow file system a request still waits at most one short batch:
+/// with no budget it looks at one candidate and says it was cut; with
+/// time to spare it looks at them all.
+#[test]
+fn an_unlink_batch_ends_at_its_budget() {
+    let dirs = Dirs::new();
+    let (db, _) = fitment_server::state::open(&dirs.state, "u_system", 0).unwrap();
+    let conn = rusqlite::Connection::open(dirs.state.join("server.db")).unwrap();
+    for i in 0..3_u32 {
+        let sha256 = fitment_core::sha256_hex(&i.to_be_bytes());
+        conn.execute(
+            "INSERT INTO object (sha256, bytes, added_ms) VALUES (?1, 1, 0)",
+            [&sha256],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO object_candidate VALUES (?1)", [&sha256])
+            .unwrap();
+    }
+    let cut = db.unlink_unnamed(256, Duration::ZERO, |_| Ok(())).unwrap();
+    assert_eq!((cut.looked, cut.gone.len(), cut.cut), (1, 1, true));
+    let rest = db
+        .unlink_unnamed(256, Duration::from_secs(60), |_| Ok(()))
+        .unwrap();
+    assert_eq!((rest.looked, rest.gone.len(), rest.cut), (2, 2, false));
+}
+
 /// OB2, OB4 (H2 of PR 4's review): every column naming an object is
 /// indexed, and the sweep looks only at candidates (objects whose naming
 /// row went), in short batches: over a store of 20,000 objects a sweep
