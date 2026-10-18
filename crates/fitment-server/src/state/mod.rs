@@ -30,11 +30,14 @@ pub const MARKER_TEXT: &str = "fitment.server 1\n";
 
 /// The names a state directory holds: anything else in a directory without
 /// the marker means it is not one (a typo in `paths.state`).
-const NAMES: [&str; 6] = [
+const NAMES: [&str; 7] = [
     MARKER,
     db::DATABASE,
     "server.db-wal",
     "server.db-shm",
+    // SQLite's rollback journal, which a concurrent first start's schema
+    // transaction may hold for a moment before the switch to WAL.
+    "server.db-journal",
     "objects",
     "tmp",
 ];
@@ -161,8 +164,14 @@ fn open_as(
         Db::open(dir, system_id, now_ms)?
     };
     if !was {
+        // Written aside and renamed into place, so a concurrent first
+        // start never reads a marker half written.
         let marker = dir.join(MARKER);
-        std::fs::write(&marker, MARKER_TEXT).map_err(io_at(dir, &marker))?;
+        let aside = dir
+            .join("tmp")
+            .join(format!("marker-{}-{}.part", std::process::id(), now_ms));
+        std::fs::write(&aside, MARKER_TEXT).map_err(io_at(dir, &aside))?;
+        std::fs::rename(&aside, &marker).map_err(io_at(dir, &marker))?;
     }
     Ok(opened)
 }
