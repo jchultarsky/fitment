@@ -139,11 +139,18 @@ fn kind_of(id: i64, version: i64, objects: bool) -> Kind {
     }
 }
 
-/// What the database at `conn` is.
+/// What the database at `conn` is, its three fields read by one
+/// statement, so from one snapshot: a concurrent first start committing
+/// between separate reads would give its tables without its header, which
+/// reads as foreign (CI).
 fn kind(conn: &Connection) -> rusqlite::Result<Kind> {
-    let id: i64 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
-    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let objects: i64 = conn.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
+    let (id, version, objects): (i64, i64, i64) = conn.query_row(
+        "SELECT (SELECT application_id FROM pragma_application_id()),
+                (SELECT user_version FROM pragma_user_version()),
+                (SELECT count(*) FROM sqlite_schema)",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
     Ok(kind_of(id, version, objects > 0))
 }
 
