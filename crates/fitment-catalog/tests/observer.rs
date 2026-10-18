@@ -122,11 +122,17 @@ fn ingest_stops(dir: &Path) {
         66 + batches,
         "a question per file and per commit"
     );
-    for k in all.points() {
+    let points = all.points();
+    let mut reached = 0;
+    for &k in &points {
         let root = dir.join(format!("ingest-{k}"));
         let (mut catalog, _) = Catalog::init(&root, Options::default()).unwrap();
         let stop = StopAt::new(k);
         let run = catalog.ingest_inputs(&inputs, None, &stop).unwrap();
+        if unreached(run.stopped.as_ref(), &stop, k) {
+            continue;
+        }
+        reached += 1;
         assert!(matches!(run.stopped, Some(Error::Cancelled)), "{k}");
         assert_eq!(stop.asked(), k + 1, "stopped at its question");
         let committed = stop.kept();
@@ -139,6 +145,19 @@ fn ingest_stops(dir: &Path) {
         assert_eq!(i64::try_from(files).unwrap(), rows, "{k}");
         assert_eq!(rows, i64::try_from(committed).unwrap(), "{k}");
     }
+    assert!(reached * 2 > points.len(), "{reached} of {}", points.len());
+}
+
+/// True if a run never asked its `k`-th question: DB3 cuts a batch after
+/// a second too, so on a slow runner this run's batches can fall otherwise
+/// than the full run's, with fewer commits and so fewer questions. Such a
+/// run must have finished; one that reached its question is checked.
+fn unreached(stopped: Option<&Error>, stop: &StopAt, k: usize) -> bool {
+    if stop.asked() > k {
+        return false;
+    }
+    assert!(stopped.is_none(), "{k}: stopped before its question");
+    true
 }
 
 /// A catalog of the variants in `root`, every entry stale: its
@@ -171,7 +190,9 @@ fn reindex_stops(dir: &Path) {
         .unwrap();
     assert!(run.stopped.is_none());
     assert_eq!(run.lines.len(), 66);
-    for k in all.points() {
+    let points = all.points();
+    let mut reached = 0;
+    for &k in &points {
         let root = dir.join(format!("reindex-{k}"));
         let mut catalog = stale(&root, &inputs);
         let stop = StopAt::new(k);
@@ -179,6 +200,10 @@ fn reindex_stops(dir: &Path) {
             .reindex_observed(&Scope::Stale, &stop)
             .unwrap()
             .unwrap();
+        if unreached(run.stopped.as_ref(), &stop, k) {
+            continue;
+        }
+        reached += 1;
         assert_eq!(stop.asked(), k + 1, "stopped at its question");
         let committed = stop.kept();
         assert_eq!(run.lines.len(), committed, "{k}");
@@ -192,6 +217,7 @@ fn reindex_stops(dir: &Path) {
         // to `list` (RX2): nothing else is wrong.
         assert_eq!(catalog.verify(false, false).unwrap(), Vec::new(), "{k}");
     }
+    assert!(reached * 2 > points.len(), "{reached} of {}", points.len());
 }
 
 /// A match: stopped before it starts and before each group, one thread or

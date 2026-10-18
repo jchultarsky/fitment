@@ -1103,9 +1103,23 @@ pub fn waiting(path: &str, body: &serde_json::Value) -> Call {
 }
 
 impl TestServer {
-    /// Uploads `bytes` as the harness's admin; their SHA-256.
+    /// Uploads `bytes` as the harness's admin; their SHA-256. A `429`
+    /// (AU7's 50 a second past a burst of 100, which a fast runner reaches
+    /// uploading hundreds of files) is waited out as its `Retry-After`
+    /// says; tests of the limit itself send their own requests.
     pub async fn upload(&self, bytes: &[u8]) -> String {
-        let reply = self.send(put_upload(bytes)).await;
+        let mut reply = self.send(put_upload(bytes)).await;
+        for _ in 0..30 {
+            if reply.status != 429 {
+                break;
+            }
+            let wait = reply
+                .header("retry-after")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(1);
+            tokio::time::sleep(Duration::from_secs(wait.max(1))).await;
+            reply = self.send(put_upload(bytes)).await;
+        }
         assert!(
             reply.status.is_success(),
             "{}",
