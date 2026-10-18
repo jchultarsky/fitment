@@ -667,7 +667,7 @@ async fn stream(
     let limits = &shared.config.limits;
     let cap = cap(limits);
     let started = Instant::now();
-    let deadline = started + Duration::from_secs(limits.upload_minutes.saturating_mul(60));
+    let deadline = started + shared.config.upload_time();
     let chunk_wait = Duration::from_secs(limits.upload_chunk_seconds);
     let mut throughput = Throughput::new(started, limits);
     let (mut last_chunk, mut received) = (started, 0_u64);

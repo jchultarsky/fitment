@@ -213,10 +213,49 @@ async fn restarts_at_random_times_keep_every_job() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
+/// One MiB.
+const MIB: u64 = 1 << 20;
+
+/// The bytes `dir`'s file system has free, measured by filling it with a
+/// probe file a MiB at a time until a write fails, then removing it (std
+/// has no `statvfs`).
+fn free_bytes(dir: &std::path::Path) -> u64 {
+    use std::io::Write as _;
+    let probe = dir.join(format!("probe-{}", std::process::id()));
+    let mut file = std::fs::File::create(&probe).unwrap();
+    let chunk = vec![0_u8; 64 * 1024];
+    let mut written = 0_u64;
+    while file
+        .write_all(&chunk)
+        .and_then(|()| file.sync_all())
+        .is_ok()
+    {
+        written += chunk.len() as u64;
+    }
+    drop(file);
+    std::fs::remove_file(&probe).unwrap();
+    written
+}
+
+/// A ballast of `bytes`, synced.
+fn write_ballast(path: &std::path::Path, bytes: u64) {
+    use std::io::Write as _;
+    let mut file = std::fs::File::create(path).unwrap();
+    let chunk = vec![0_u8; 64 * 1024];
+    let mut left = bytes;
+    while left > 0 {
+        let n = usize::try_from(left.min(chunk.len() as u64)).unwrap();
+        file.write_all(&chunk[..n]).unwrap();
+        left -= n as u64;
+    }
+    file.sync_all().unwrap();
+}
+
 /// VT11's weekly leg (UP2, UP4, OB2, OB5; M6-44): the state directory on
 /// `FITMENT_TMPFS`, a small real file system, beside a ballast file the
-/// test writes first; uploads of distinct 1 MiB bodies until one is
-/// refused `507 storage_full`. Meanwhile the server answers health; no
+/// test sizes to leave room for three uploads and half a fourth; uploads
+/// of distinct 1 MiB bodies until the fourth is refused `507
+/// storage_full`. Meanwhile the server answers health; no
 /// upload is half-stored (every object whole, no temporary left). With
 /// the ballast removed, an upload, an ingest, a socket extraction and a
 /// match succeed (each document checked by XH11 as it is read), and the
@@ -230,13 +269,19 @@ async fn a_full_disk_refuses_then_recovers() {
     let mut dirs = Dirs::new();
     dirs.state = tmpfs.join(format!("state-{}", std::process::id()));
     let ballast = tmpfs.join(format!("ballast-{}", std::process::id()));
-    std::fs::write(&ballast, vec![0_u8; 8 << 20]).unwrap();
     let toml = format!(
         "{RESTART}[paths]\ncatalog = {:?}\nstate = {:?}\n",
         dirs.catalog.display().to_string(),
         dirs.state.display().to_string()
     );
     let server = TestServer::process(dirs, &toml);
+    // The review of PR 8: the ballast leaves room for three uploads and
+    // half of a fourth, measured now the server's state exists, so the
+    // fourth object's write meets the full disk with half a MiB to spare
+    // for server.db's pages, whatever the file system's size and overhead.
+    let free = free_bytes(&tmpfs);
+    let ballast_bytes = free.saturating_sub(3 * MIB + MIB / 2);
+    write_ballast(&ballast, ballast_bytes);
     let mut refused = None;
     for n in 0..200_u32 {
         let mut body = vec![0_u8; 1 << 20];
@@ -253,6 +298,7 @@ async fn a_full_disk_refuses_then_recovers() {
         (507, "storage_full"),
         "after {count} uploads"
     );
+    assert_eq!(count, 3, "three uploads fit beside the ballast");
     assert_eq!(server.get("/v1/health").await.status, 204);
     assert!(server.temporaries().is_empty(), "a temporary stayed");
     // OB2: every object in the store is whole, its bytes its name.

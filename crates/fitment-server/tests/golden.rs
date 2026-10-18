@@ -16,7 +16,7 @@
 
 mod support;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -1329,6 +1329,43 @@ async fn writes_the_api_outputs() {
     std::fs::write(out.join("openapi.json"), fitment_server::OPENAPI).unwrap();
 }
 
+/// XH14's operations whose seeds find their referent on the fuzz target
+/// but none succeeds there, and why.
+const NO_2XX_SEED: [(&str, &str); 2] = [
+    (
+        "assemblies_delete",
+        "409 assembly_in_use: the world's retained match j_…09 names s02_cbore as its socket's source",
+    ),
+    (
+        "jobs_cancel",
+        "409 job_finished: the world's job j_…05 has ended, as the golden's second scenario's",
+    ),
+];
+
+/// When XH14's check runs operation `op`'s goldens: those that change the
+/// world the fuzz target holds (a delete, a revocation, a password change)
+/// after the rest, a delete of several entries before the single deletes
+/// that would leave it nothing to delete.
+fn destroys(op: &str) -> u8 {
+    if op.ends_with("_delete_many") {
+        1
+    } else if op.ends_with("_delete")
+        || matches!(
+            op,
+            "tokens_revoke"
+                | "password"
+                | "users_update"
+                | "catalog_prune"
+                | "catalog_gc"
+                | "catalog_replace"
+        )
+    {
+        2
+    } else {
+        0
+    }
+}
+
 /// Whether `path` (its query dropped) is an instance of the template
 /// `pattern`, each `{name}` one non-empty segment.
 fn instance_of(pattern: &str, path: &str) -> bool {
@@ -1350,18 +1387,23 @@ fn instance_of(pattern: &str, path: &str) -> bool {
 /// operation has a request in VT26's seed corpus, which is the goldens'
 /// requests (`fuzz.yml` copies them): the route target's own decoder
 /// reads at least one of each operation's as a request with its method
-/// and to its path, and each passes the route target's property (VT26) on every
-/// PR. No golden names an operation that is not one, and the served
-/// OpenAPI document names exactly `OPERATIONS`, from which the router is
-/// built (`routes::handler`), so no route is missing from it.
+/// and to its path, and each passes the route target's property (VT26) on
+/// every PR. The target holds the world the goldens name (the review of
+/// PR 8), so each operation's seeds reach its work: none is only `404`,
+/// and each has a seed answered `2xx` but [`NO_2XX_SEED`]'s. No golden
+/// names an operation that is not one, and the served OpenAPI document
+/// names exactly `OPERATIONS`, from which the router is built
+/// (`routes::handler`), so no route is missing from it.
 #[test]
 fn every_operation_has_a_matrix_row_a_golden_and_a_seed() {
     use fitment_server::http::operations::OPERATIONS;
     let dirs = Dirs::new();
     let target = fitment_server::fuzzing::Target::new(&dirs.catalog, &dirs.state);
-    let mut seeded = BTreeSet::new();
     let mut failures = Vec::new();
-    let mut answered = 0;
+    // Every seed, the operation it is a request of (its directory's, when
+    // its method and path are that operation's: a scenario of the
+    // router's own answers seeds it too, but not as its request).
+    let mut seeds = Vec::new();
     for dir in std::fs::read_dir(golden_dir()).unwrap() {
         let dir = dir.unwrap().path();
         let name = dir.file_name().unwrap().to_string_lossy().into_owned();
@@ -1382,30 +1424,46 @@ fn every_operation_has_a_matrix_row_a_golden_and_a_seed() {
                 ));
                 continue;
             };
-            // A scenario of the router's own answers (a path no route
-            // takes, a method the operation does not) seeds it too, but
-            // not as the operation's request.
             let uri = request.uri().to_string();
-            if let Some(op) =
-                op.filter(|op| instance_of(op.path, &uri) && request.method().as_str() == op.method)
-            {
-                seeded.insert(op.id);
-            }
-            match target.route(&seed) {
-                Some(status) if status.is_success() => answered += 1,
-                Some(_) => {}
-                None => failures.push(format!("{}: not sent", path.display())),
-            }
+            let own = op
+                .filter(|op| instance_of(op.path, &uri) && request.method().as_str() == op.method)
+                .map(|op| op.id);
+            seeds.push((destroys(&name), path, seed, own));
+        }
+    }
+    // What changes the world runs last, so the rest meet it whole.
+    seeds.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    let mut answers: BTreeMap<&str, Vec<u16>> = BTreeMap::new();
+    for (_, path, seed, own) in &seeds {
+        let Some(status) = target.route(seed) else {
+            failures.push(format!("{}: not sent", path.display()));
+            continue;
+        };
+        if let Some(op) = own {
+            answers.entry(op).or_default().push(status.as_u16());
         }
     }
     for op in &OPERATIONS {
-        if !seeded.contains(op.id) {
-            failures.push(format!("{}: no request of it in the seed corpus", op.id));
+        match answers.get(op.id) {
+            None => failures.push(format!("{}: no request of it in the seed corpus", op.id)),
+            Some(statuses) if statuses.iter().all(|s| *s == 404) => failures.push(format!(
+                "{}: every seed of it is 404 on the fuzz target ({statuses:?})",
+                op.id
+            )),
+            Some(_) => {}
         }
     }
-    // The seeds reach the handlers: the target's token stands for the
-    // goldens' credentials.
-    assert!(answered >= 20, "{answered} seeds succeeded");
+    // Each operation has a seed answered 2xx but these, whose seeds find
+    // their referent and meet a conflict the world holds.
+    for (op, statuses) in &answers {
+        let succeeded = statuses.iter().any(|s| (200..300).contains(s));
+        let excepted = NO_2XX_SEED.iter().any(|(id, _)| id == op);
+        if succeeded == excepted {
+            failures.push(format!(
+                "{op}: {statuses:?}, and listed as without a 2xx: {excepted}"
+            ));
+        }
+    }
     let openapi: serde_json::Value = serde_json::from_slice(fitment_server::OPENAPI).unwrap();
     let mut documented = BTreeSet::new();
     for (path, item) in openapi["paths"].as_object().unwrap() {

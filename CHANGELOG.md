@@ -250,18 +250,23 @@ Until 1.0, minor versions may contain breaking changes.
   `jobs.abandoned_max` (2) jobs are given up at once; at that bound
   `/v1/ready` answers `503 shutting_down` with `details.reason: "stuck"`
   so an orchestrator restarts the server, and
-  `fitment_jobs_abandoned` counts them. A stop no longer waits for a stuck
-  thread, and the next write job waits for a writer a given-up job holds
-  at most `catalog.write_busy_ms` (`catalog_busy`). A path segment that
+  `fitment_jobs_abandoned` counts them. Only the pure kinds are given up:
+  a catalog write job keeps its permits until its call returns, so its
+  end still lists what it committed. One job an owner is given up at a
+  time; a job refused at a bound keeps being watched, and one refused at
+  `jobs.abandoned_max` keeps the server unready. A stop no longer waits
+  for a stuck thread. A path segment that
   does not percent-decode to UTF-8 is `400 bad_request` in the error
   document, as every error is, where it was a plain-text `400` (found by
   the new fuzzing). Two `cargo fuzz` targets (`fuzz/`, its own workspace)
   send arbitrary requests through the router and arbitrary bodies through
   every request type, weekly (`fuzz.yml`), seeded with the goldens'
   requests; every operation has a golden, a row in the permission matrix
-  and a fuzz seed. `scale.yml` gains the 10⁴ scaled catalog through the
-  API with sixteen clients for two minutes, a restart soak of 100 kills
-  and a full 32 MiB tmpfs. No output of `fitment` changes.
+  and a fuzz seed, the fuzz target holding the world the goldens name.
+  `scale.yml` gains the 10⁴ scaled catalog through the API with sixteen
+  clients for two minutes, a restart soak of 100 kills, a full 32 MiB
+  tmpfs and 32 clients over the corpus, each job with a timeout. No output
+  of `fitment` changes.
 
 ### Changed
 

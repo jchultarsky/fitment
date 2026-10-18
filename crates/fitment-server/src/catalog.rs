@@ -366,7 +366,7 @@ impl CatalogDir {
             tracing::warn!(error = %unavailable.log, "the catalog is unavailable");
             ApiError::from(unavailable)
         })?;
-        let mut writer = self.writer_within()?;
+        let mut writer = lock(&self.writer);
         if writer.is_none() {
             let opened = Catalog::open(
                 &self.root,
@@ -381,33 +381,6 @@ impl CatalogDir {
             return Err(self.mapped(&error));
         }
         Ok(work(catalog))
-    }
-
-    /// CX3, JS8 (PR 8): the job writer, waited for at most
-    /// `catalog.write_busy_ms`: the write lane runs one job at a time, so it
-    /// is free unless a job given up in a stuck call still holds it; then
-    /// the next write job fails `catalog_busy`, retryable, instead of
-    /// joining it.
-    fn writer_within(&self) -> Result<std::sync::MutexGuard<'_, Option<Catalog>>, ApiError> {
-        let until = std::time::Instant::now()
-            + std::time::Duration::from_millis(u64::from(self.write_busy_ms));
-        loop {
-            match self.writer.try_lock() {
-                Ok(guard) => return Ok(guard),
-                Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                    return Ok(poisoned.into_inner());
-                }
-                Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    tracing::warn!("the job writer is held by a job given up (JS8)");
-                    return Err(
-                        ApiError::new(ErrorCode::CatalogBusy, "the catalog is busy").retry_after(1)
-                    );
-                }
-            }
-        }
     }
 
     /// CA3, CX6: a `PASSIVE` checkpoint on a reader: `(busy, log pages,

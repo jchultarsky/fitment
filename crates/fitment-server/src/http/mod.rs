@@ -176,14 +176,7 @@ fn per_route(
                 + 10,
         )
     } else if upload {
-        Duration::from_secs(
-            shared
-                .config
-                .limits
-                .upload_minutes
-                .saturating_add(1)
-                .saturating_mul(60),
-        )
+        shared.config.upload_time() + Duration::from_secs(60)
     } else {
         Duration::from_secs(u64::from(shared.config.server.handler_timeout_seconds))
     };

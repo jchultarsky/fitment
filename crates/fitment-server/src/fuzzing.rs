@@ -17,8 +17,10 @@
 //! written again (compact, pretty, its keys in another order), is accepted
 //! as the same value with the same JB9 fingerprint.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 
 use axum::body::Body;
 use axum::http::{HeaderName, HeaderValue, Method, Request, StatusCode};
@@ -27,6 +29,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tower::ServiceExt as _;
 
+use crate::auth::Role;
 use crate::http::error::ErrorCode;
 use crate::{Config, Flags, Server};
 
@@ -40,20 +43,45 @@ pub const LOAD: [&str; 5] = [
     "quota_exceeded",
 ];
 
-/// The target's admin.
-const ADMIN: &str = "fuzzer";
+/// The world's principals, as the goldens name them (`Bearer <ada's
+/// reader token>`): `root`, an admin, and `ada`, a reader with
+/// [`ADA_PASSWORD`]; any other name is `root`.
+const PRINCIPALS: [(&str, Role); 2] = [("root", Role::Admin), ("ada", Role::Reader)];
+
+/// `ada`'s password, as the goldens' login and password scenarios send it.
+const ADA_PASSWORD: &str = "correct horse battery staple";
+
+/// The world's files: the goldens' (VT6) bytes and names.
+const BRACKET: &[u8] = b"a bracket's bytes\n";
+const SECOND: &[u8] = b"a second part's bytes\n";
+const P01: &[u8] = include_bytes!("../../fitment-core/tests/data/p01_through.stp");
+const S02: &[u8] = include_bytes!("../../fitment-core/tests/assemblies/s02_cbore.stp");
+const BLOCK02: &[u8] = include_bytes!("../../fitment-core/tests/candidates/m_block02.stp");
+const CB_DEEP: &[u8] = include_bytes!("../../fitment-core/tests/candidates/m_block02_cb_deep.stp");
+const SOCKET: &[u8] = include_bytes!("../../fitment/tests/golden/socket/s02_cbore--BLOCK.json");
+const JUNK: &[u8] = b"not STEP";
+
+/// The match the goldens name `j_…09` (VT6's `MATCH_BODY`).
+const MATCH_BODY: &str = r#"{"socket": "sk_4c08cde1bddb3df26f3b@r1", "candidates": {"files": [
+    {"upload": "sha256:1f021de7913c486df1f45d44bc6306c39f1b7374d9eccb818e27fbc6990db4ea", "label": "m_block02.stp"},
+    {"upload": "sha256:4f68da82466fb9b036f4773f9aeefa44a8abef375f45abf155b47f22f56ba6be", "label": "m_block02_cb_deep.stp"}]}}"#;
 
 /// The server a route target sends to: in process, on a current-thread
 /// runtime, its ids fixed (OP11) so a crash replays; its clock is the
-/// real one, which the offline admin's tokens are minted by.
+/// real one, which the offline admin's tokens are minted by. Its state is
+/// the world VT6's goldens name (XH14): `root` (`u_…01`) and `ada`, ada's
+/// uploads, her registered `s02_cbore.stp` and its socket line
+/// `sk_4c08cde1bddb3df26f3b`, her finished jobs `j_…05` and `j_…08` and
+/// her match `j_…09`, and the catalog's `m_block02`, `m_block02_cb_deep`
+/// and `junk`, so the goldens' requests reach their handlers' work.
 pub struct Target {
     runtime: tokio::runtime::Runtime,
     router: axum::Router,
     admin: crate::admin::Admin,
-    /// The admin's token, minted again when a request revoked it (a
+    /// Each principal's token, minted again when a request revoked it (a
     /// password change, a revocation, a disabling).
-    token: std::sync::Mutex<String>,
-    _server: Server,
+    tokens: Mutex<BTreeMap<String, String>>,
+    server: Server,
 }
 
 impl std::fmt::Debug for Target {
@@ -62,15 +90,18 @@ impl std::fmt::Debug for Target {
     }
 }
 
+/// What one of the world's requests answered: its status and JSON body.
+type Answer = (StatusCode, Value);
+
 impl Target {
-    /// A server on the catalog at `catalog`, which the caller made (a small
-    /// one), and a state directory made at `state`, with its first admin's
-    /// token; uploads capped at 1 MiB and each user's quota at 1 GiB, so a
-    /// long run stays small, and AU7's rates out of the way.
+    /// A server on the catalog at `catalog`, which the caller made (empty),
+    /// and a state directory made at `state`, holding the goldens' world;
+    /// uploads capped at 1 MiB and each user's quota at 1 GiB, so a long
+    /// run stays small, and AU7's rates out of the way.
     ///
     /// # Panics
     ///
-    /// When the runtime, the server or the admin cannot be made: the
+    /// When the runtime, the server or the world cannot be made: the
     /// harness cannot run.
     #[allow(clippy::expect_used)]
     pub fn new(catalog: &Path, state: &Path) -> Self {
@@ -80,7 +111,7 @@ impl Target {
             listen: Some("127.0.0.1:0".into()),
             ..Flags::default()
         };
-        let mut config = Config::from_sources(&flags, &std::collections::BTreeMap::new())
+        let mut config = Config::from_sources(&flags, &BTreeMap::new())
             .expect("the fuzz target's configuration");
         config.limits.max_upload_mib = 1;
         config.limits.user_quota_gib = 1;
@@ -98,47 +129,175 @@ impl Target {
             server.seams().ids.fix_ids();
             server
         });
-        let admin = crate::admin::Admin::open(&config).expect("the state, offline");
-        let token = admin
-            .bootstrap(ADMIN, None)
-            .expect("the first admin")
-            .secret
-            .expose()
-            .to_owned();
-        let router = server.router();
-        Self {
+        let tokens = principals(&server);
+        let target = Self {
             runtime,
-            router,
-            admin,
-            token: std::sync::Mutex::new(token),
-            _server: server,
-        }
+            router: server.router(),
+            admin: crate::admin::Admin::open(&config).expect("the state, offline"),
+            tokens: Mutex::new(tokens),
+            server,
+        };
+        target.world();
+        target
     }
 
-    fn token(&self) -> std::sync::MutexGuard<'_, String> {
-        self.token
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn tokens(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, String>> {
+        self.tokens.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The admin restored (an admin, enabled) and a token minted for it,
-    /// its old ones revoked when the live-token cap is met.
+    /// `who`'s token (`root`'s for a name the world does not hold).
+    fn token(&self, who: &str) -> String {
+        let tokens = self.tokens();
+        tokens
+            .get(who)
+            .or_else(|| tokens.get("root"))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// `who` restored (its role, enabled) and a token minted for it, its
+    /// old ones revoked when the live-token cap is met.
     #[allow(clippy::expect_used)]
-    fn renew(&self) {
-        let _ = self
-            .admin
-            .set_user(ADMIN, Some(crate::auth::Role::Admin), Some(false));
-        let minted = self.admin.mint(ADMIN, "fuzz", None, None).or_else(|_| {
-            for token in self.admin.tokens(ADMIN).unwrap_or_default() {
+    fn renew(&self, who: &str) {
+        let Some((name, role)) = PRINCIPALS.iter().find(|(n, _)| *n == who) else {
+            return;
+        };
+        let _ = self.admin.set_user(name, Some(*role), Some(false));
+        let minted = self.admin.mint(name, "fuzz", None, None).or_else(|_| {
+            for token in self.admin.tokens(name).unwrap_or_default() {
                 let _ = self.admin.revoke(&token.id);
             }
-            self.admin.mint(ADMIN, "fuzz", None, None)
+            self.admin.mint(name, "fuzz", None, None)
         });
-        minted
-            .expect("a token")
-            .secret
-            .expose()
-            .clone_into(&mut self.token());
+        let secret = minted.expect("a token").secret.expose().to_owned();
+        self.tokens().insert((*name).to_owned(), secret);
+    }
+
+    /// Sends one of the world's requests as `who`, waiting for a job.
+    #[allow(clippy::expect_used)]
+    fn send(&self, who: &str, method: Method, path: &str, body: Option<(&str, &[u8])>) -> Answer {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {}", self.token(who)))
+            .header("prefer", "wait=60");
+        if let Some((media, _)) = body {
+            builder = builder.header("content-type", media);
+        }
+        let bytes = body.map(|(_, b)| b.to_vec()).unwrap_or_default();
+        let request = builder.body(Body::from(bytes)).expect("a world's request");
+        self.runtime.block_on(async {
+            let response = self
+                .router
+                .clone()
+                .oneshot(request)
+                .await
+                .unwrap_or_else(|never| match never {});
+            let status = response.status();
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .map(http_body_util::Collected::to_bytes);
+            let value = body
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or(Value::Null);
+            (status, value)
+        })
+    }
+
+    /// A JSON request of the world's, which must succeed: its answer.
+    fn ok(&self, who: &str, path: &str, body: &str) -> Value {
+        let (status, value) = self.send(
+            who,
+            Method::POST,
+            path,
+            Some(("application/json", body.as_bytes())),
+        );
+        let succeeded = value["state"]
+            .as_str()
+            .is_none_or(|s| s == "succeeded" || s == "refused");
+        assert!(
+            status.is_success() && succeeded,
+            "the fuzz target's world: {path} answered {status}: {value}"
+        );
+        value
+    }
+
+    /// Submits a job of `body` to `path` as `who` so that its id is the
+    /// world's `j_…n`: the ids drawn before a job's are found by a first
+    /// submission, then the counter set so the job's is `n`.
+    fn job_at(&self, n: u64, who: &str, path: &str, body: &str) {
+        let ids = &self.server.seams().ids;
+        ids.set_next(n + 10_000);
+        let first = self.ok(who, path, body);
+        let drawn = number(first["id"].as_str().unwrap_or_default()).saturating_sub(n + 10_000);
+        ids.set_next(n.saturating_sub(drawn));
+        let job = self.ok(who, path, body);
+        assert_eq!(
+            number(job["id"].as_str().unwrap_or_default()),
+            n,
+            "the fuzz target's world: no job j_…{n}: {job}"
+        );
+    }
+
+    /// The goldens' world (XH14), through the API itself.
+    fn world(&self) {
+        let ids = &self.server.seams().ids;
+        ids.set_next(100);
+        for bytes in [BRACKET, SECOND, P01, S02, BLOCK02, CB_DEEP, SOCKET] {
+            let path = format!("/v1/uploads/sha256:{}", fitment_core::sha256_hex(bytes));
+            self.send(
+                "ada",
+                Method::PUT,
+                &path,
+                Some(("application/octet-stream", bytes)),
+            );
+        }
+        let mut files = Vec::new();
+        for (bytes, name) in [
+            (BLOCK02, "m_block02.stp"),
+            (CB_DEEP, "m_block02_cb_deep.stp"),
+            (JUNK, "junk.stp"),
+            (P01, "p01_through.stp"),
+        ] {
+            let sha = fitment_core::sha256_hex(bytes);
+            self.send(
+                "root",
+                Method::PUT,
+                &format!("/v1/uploads/sha256:{sha}"),
+                Some(("application/octet-stream", bytes)),
+            );
+            if name != "p01_through.stp" {
+                files.push(
+                    serde_json::json!({ "upload": format!("sha256:{sha}"), "file_name": name }),
+                );
+            }
+        }
+        let s02 = format!("sha256:{}", fitment_core::sha256_hex(S02));
+        let p01 = format!("sha256:{}", fitment_core::sha256_hex(P01));
+        self.ok(
+            "ada",
+            "/v1/assemblies",
+            &serde_json::json!({ "upload": s02, "file_name": "s02_cbore.stp" }).to_string(),
+        );
+        self.ok(
+            "ada",
+            "/v1/sockets",
+            &serde_json::json!({ "assembly": s02, "part": "BLOCK" }).to_string(),
+        );
+        self.ok(
+            "root",
+            "/v1/catalog/entries",
+            &serde_json::json!({ "files": files }).to_string(),
+        );
+        let features = serde_json::json!({ "upload": p01 }).to_string();
+        self.job_at(5, "ada", "/v1/features", &features);
+        self.job_at(8, "ada", "/v1/features", &features);
+        self.job_at(9, "ada", "/v1/matches", MATCH_BODY);
+        // Nothing the fuzzer makes takes a seeded id.
+        ids.set_next(1_000_000);
     }
 
     /// Sends the request `input` writes, if it writes one, and checks the
@@ -150,8 +309,7 @@ impl Target {
     /// finding.
     #[allow(clippy::panic)]
     pub fn route(&self, input: &[u8]) -> Option<StatusCode> {
-        let token = self.token().clone();
-        let (request, substituted) = decode(input, &token)?;
+        let (request, principal) = decode(input, &|who| self.token(who))?;
         let method = request.method().clone();
         let (status, content_type, body) = self.runtime.block_on(async {
             let response = self
@@ -177,39 +335,94 @@ impl Target {
         if let Err(problem) = check(&method, status, content_type.as_deref(), &body) {
             panic!("{method} answered {status}: {problem}");
         }
-        if substituted && status == StatusCode::UNAUTHORIZED {
-            self.renew();
+        if let (Some(who), StatusCode::UNAUTHORIZED) = (principal, status) {
+            self.renew(&who);
         }
         Some(status)
     }
+}
+
+/// The number of a fixed id (OP11), from its base32 digits.
+fn number(id: &str) -> u64 {
+    const ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
+    id.split_once('_').map_or(0, |(_, body)| {
+        body.bytes().fold(0_u64, |n, b| {
+            let digit = ALPHABET.iter().position(|a| *a == b).unwrap_or(0);
+            n.wrapping_mul(32)
+                .wrapping_add(u64::try_from(digit).unwrap_or(0))
+        })
+    })
+}
+
+/// The world's people with their fixed ids (`root` is `u_…01`, as the
+/// goldens' `PATCH` names it) and a token each, made through the seams.
+#[allow(clippy::expect_used)]
+fn principals(server: &Server) -> BTreeMap<String, String> {
+    let seams = server.seams();
+    seams.ids.set_next(1);
+    let mut tokens = BTreeMap::new();
+    for (name, role) in PRINCIPALS {
+        let now = seams.ids.now_ms();
+        let phc = (name == "ada").then(|| {
+            crate::auth::password::hash(ADA_PASSWORD, seams.auth.pepper()).expect("a hash")
+        });
+        let id = seams.ids.id("u");
+        let user = seams
+            .db
+            .create_user(&id, name, name, role, phc.as_deref(), now)
+            .expect("a person of the world");
+        let minted = crate::auth::mint(
+            seams.db,
+            seams.ids,
+            &crate::state::MintFrom::Offline { user: user.key },
+            "fuzz",
+            role,
+            now,
+            now + 90 * crate::auth::DAY_MS,
+            20,
+        )
+        .expect("a token of the world");
+        tokens.insert(name.to_owned(), minted.secret.expose().to_owned());
+    }
+    tokens
 }
 
 /// The request `input` writes (the module's format), its `Bearer <…>`
 /// credential replaced by `token`, from a loopback peer; `None` when
 /// `input` writes none (no line, a method or path that does not parse).
 pub fn request(input: &[u8], token: &str) -> Option<Request<Body>> {
-    decode(input, token).map(|(request, _)| request)
+    decode(input, &|_| token.to_owned()).map(|(request, _)| request)
 }
 
-/// [`request`], and whether its credential was the target's.
-fn decode(input: &[u8], token: &str) -> Option<(Request<Body>, bool)> {
+/// [`request`], each `Bearer <name's …>` the token `tokens` gives `name`,
+/// and the name whose token it sent, if one.
+fn decode(
+    input: &[u8],
+    tokens: &dyn Fn(&str) -> String,
+) -> Option<(Request<Body>, Option<String>)> {
     let (head, body) = split_head(input);
     let head = std::str::from_utf8(head).ok()?;
     let mut lines = head.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l));
     let (method, target) = lines.next()?.split_once(' ')?;
     let method = Method::from_bytes(method.as_bytes()).ok()?;
     let mut builder = Request::builder().method(method).uri(target);
-    let mut substituted = false;
+    let mut principal = None;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
         let value = value.trim_start();
-        let value = if name.eq_ignore_ascii_case("authorization") && value.starts_with("Bearer <") {
-            substituted = true;
-            format!("Bearer {token}")
-        } else {
-            value.to_owned()
+        let value = match value.strip_prefix("Bearer <") {
+            Some(named) if name.eq_ignore_ascii_case("authorization") => {
+                let who = named
+                    .split_once("'s")
+                    .map_or("root", |(who, _)| who)
+                    .to_owned();
+                let token = tokens(&who);
+                principal = Some(who);
+                format!("Bearer {token}")
+            }
+            _ => value.to_owned(),
         };
         let (Ok(name), Ok(value)) = (
             HeaderName::from_bytes(name.as_bytes()),
@@ -226,7 +439,7 @@ fn decode(input: &[u8], token: &str) -> Option<(Request<Body>, bool)> {
             [127, 0, 0, 1],
             40_000,
         ))));
-    Some((request, substituted))
+    Some((request, principal))
 }
 
 /// The head (before the first blank line) and the body.

@@ -161,8 +161,8 @@ pub struct Jobs {
     /// each when stored, never for a page.
     pub(crate) indexed: AtomicU64,
     /// JS8 (PR 8): runs given up in a call that never returned, whose
-    /// threads have not returned yet.
-    pub(crate) abandoned: AtomicUsize,
+    /// threads have not returned yet, by owner; jobs refused at the bound.
+    pub(crate) given_up: stuck::Abandoned,
     /// JS8: `jobs.abandoned_max`, the bound on [`Jobs::abandoned`].
     pub(crate) abandoned_max: usize,
     /// JS8: `jobs.stuck_grace_seconds`, in milliseconds.
@@ -217,7 +217,7 @@ impl Jobs {
             catalog_judged: AtomicU64::new(0),
             match_threads: jobs.match_threads.max(1),
             indexed: AtomicU64::new(0),
-            abandoned: AtomicUsize::new(0),
+            given_up: stuck::Abandoned::default(),
             abandoned_max: usize::try_from(jobs.abandoned_max).unwrap_or(usize::MAX),
             stuck_grace_ms: AtomicU64::new(jobs.stuck_grace_seconds.saturating_mul(1000)),
         }
@@ -226,13 +226,21 @@ impl Jobs {
     /// JS8 (PR 8): the runs given up in a call that never returned whose
     /// threads have not returned (OP6's `fitment_jobs_abandoned`).
     pub fn abandoned(&self) -> usize {
-        self.abandoned.load(Ordering::SeqCst)
+        self.given_up.given_up()
     }
 
-    /// JS8: `jobs.abandoned_max` runs are given up: the server is unready
-    /// (OP7) until it restarts, or until their calls return.
+    /// JS8: the runs given up and the jobs refused at the bound reach
+    /// `jobs.abandoned_max`: the server is unready (OP7) until it restarts,
+    /// or until their calls return or the refused are given up.
     pub fn stuck(&self) -> bool {
-        self.abandoned() >= self.abandoned_max
+        self.given_up.stuck(self.abandoned_max)
+    }
+
+    /// OP11, CX6: the query jobs counted as running, whose threads may pin
+    /// the catalog's log (a given-up one's until its thread returns).
+    #[cfg(feature = "test-support")]
+    pub fn queries_running(&self) -> usize {
+        self.queries_started()
     }
 
     /// JS8: how long a stopped job's call may run on before it is given up.
@@ -686,7 +694,7 @@ async fn dispatch(shared: Arc<Shared>, mut entry: Entry, control: Arc<Control>) 
     }
     hook(&shared, "job.permitted").await;
     // CX6: a query picked before the barrier rose waits for it to lower.
-    let _counted = if entry.kind.lane() == Lane::Query {
+    let counted = if entry.kind.lane() == Lane::Query {
         Some(admitted(&shared).await)
     } else {
         None
@@ -721,7 +729,7 @@ async fn dispatch(shared: Arc<Shared>, mut entry: Entry, control: Arc<Control>) 
     };
     hook(&shared, "job.dispatched").await;
     let timer = deadline.map(|d| tokio::spawn(expire(Arc::clone(&shared), row.clone(), d)));
-    let ran = run_blocking(&shared, &row, &control, (cpu, memory)).await;
+    let ran = run_blocking(&shared, &row, &control, (cpu, memory), counted).await;
     if let Some(timer) = timer {
         timer.abort();
     }
@@ -741,7 +749,8 @@ async fn dispatch(shared: Arc<Shared>, mut entry: Entry, control: Arc<Control>) 
 }
 
 /// CX6: a query job counted as started, from before its check of the
-/// barrier to its end.
+/// barrier to its end: the end of its thread, which a given-up job's
+/// outlives (JS8, the review of PR 8).
 struct Counted(Arc<Shared>);
 
 impl Drop for Counted {
@@ -801,8 +810,8 @@ async fn catalog_memory(shared: &Arc<Shared>, again: &Reestimate) -> u32 {
 
 /// The job's run on the blocking pool, its permits dropped when the
 /// closure ends, a panic included (JS6), beside its watchdog (JS8, PR 8):
-/// a call that outlives its stop by `jobs.stuck_grace_seconds` is given up
-/// (`stuck.rs`). A panic or a failure of `server.db` ends the job
+/// a pure job's call that outlives its stop by `jobs.stuck_grace_seconds`
+/// is given up (`stuck.rs`); its CX6 count drops with its thread. A panic or a failure of `server.db` ends the job
 /// `failed`, `internal`, the panic's text in the log under the job's id
 /// only (VT9, XH13).
 async fn run_blocking(
@@ -810,27 +819,25 @@ async fn run_blocking(
     row: &JobRow,
     control: &Arc<Control>,
     permits: stuck::Permits,
+    counted: Option<Counted>,
 ) -> run::Ran {
     let watched = stuck::Watched::new(permits);
     let ending = stuck::Ending {
         shared: Arc::clone(shared),
         watched: Arc::clone(&watched),
         job: row.id.clone(),
+        owner: row.owner,
+        counted,
     };
     let (working, running, ctl) = (Arc::clone(shared), row.clone(), Arc::clone(control));
     let mut handle = tokio::task::spawn_blocking(move || {
         let _ending = ending;
         run::execute(&working, &running, &ctl)
     });
-    let result = tokio::select! {
-        result = &mut handle => result,
-        stop = stuck::overdue(shared, control) => {
-            if let Some(ran) = stuck::give_up(shared, row, &watched, stop).await {
-                // The thread is left to return, if it ever does.
-                return ran;
-            }
-            handle.await
-        }
+    let result = match stuck::watch(shared, row, control, &watched, &mut handle).await {
+        // The thread is left to return, if it ever does.
+        stuck::Watch::GivenUp(ran) => return ran,
+        stuck::Watch::Returned(result) => result,
     };
     let failure = match result {
         Ok(Ok(ran)) => return ran,

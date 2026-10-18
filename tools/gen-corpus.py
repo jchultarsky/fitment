@@ -1649,6 +1649,25 @@ for rule, tests in {
     "XH12": [f"{S_SOAK}::restarts_at_random_times_keep_every_job"],
 }.items():
     RULES[rule]["tests"] = RULES[rule]["tests"] + tests
+# The review of PR 8's tests, each of a finding its fix answers: write jobs never given up, a refused job watched again
+# and counted toward the bound, one given-up job an owner, CX6's count kept until a given-up thread returns, and the
+# limits the review found unexceeded.
+for rule, tests in {
+    "JS8": [f"{S_FAULT}::a_stuck_write_job_is_never_given_up", f"{S_FAULT}::a_refused_stuck_job_is_given_up_when_a_place_frees",
+            f"{S_FAULT}::an_owner_has_one_job_given_up_at_a_time"],
+    "JB5": [f"{S_FAULT}::a_stuck_write_job_is_never_given_up"],
+    "OP7": [f"{S_FAULT}::a_refused_stuck_job_is_given_up_when_a_place_frees",
+            f"{S_FAULT}::an_owner_has_one_job_given_up_at_a_time"],
+    "CX6": [f"{S_FAULT}::a_stuck_call_is_given_up_and_its_permits_released"],
+    "HX3": [f"{S_HOST}::an_upload_past_its_minutes_is_cut"],
+    "UP2": [f"{S_HOST}::an_upload_past_its_minutes_is_cut"],
+    "JS5": [f"{S_HOST}::the_write_and_maintenance_queues_are_capped"],
+    "UP3": [f"{S_HOST}::an_upload_lives_its_hours_and_no_longer"],
+    "JB12": [f"{S_HOST}::a_job_is_retained_its_days_and_no_longer"],
+    "OP3": [f"{S_HOST}::an_ingest_past_the_catalogs_pages_fails_storage_full",
+            f"{S_HOST}::an_upload_past_its_minutes_is_cut"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],

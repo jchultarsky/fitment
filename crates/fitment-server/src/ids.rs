@@ -101,6 +101,13 @@ impl Ids {
         self.next.store(1, Ordering::Relaxed);
     }
 
+    /// OP11: the next fixed id's number, for a world whose ids a test or
+    /// the fuzz target names (XH14); with fixed ids only.
+    #[cfg(feature = "test-support")]
+    pub fn set_next(&self, n: u64) {
+        self.next.store(n.max(1), Ordering::Relaxed);
+    }
+
     /// OP11: a fixed clock, in Unix milliseconds (not 0).
     #[cfg(feature = "test-support")]
     pub fn fix_time(&self, ms: i64) {

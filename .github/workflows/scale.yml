@@ -4,7 +4,8 @@ name: Scale
 # scaled corpus parts, every corpus socket run against it with level 1 and
 # exhaustively, compared by digest. M6's weekly legs (docs/research/
 # m6-api.md, section 11.2; PR 8): the same catalog through the API (VT27,
-# VT28), the restart soak (VT10) and a full disk (VT11). Weekly, and on
+# VT28), the restart soak (VT10), a full disk (VT11) and many clients over
+# the corpus (VT14). Weekly, and on
 # request; 10⁵ is run by hand (each test's header says how).
 on:
   schedule:
@@ -21,6 +22,7 @@ jobs:
   scale:
     name: 10⁴ scaled parts
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -39,8 +41,10 @@ jobs:
     # its time and a second, the widest socket's exhaustive document
     # downloaded, then sixteen clients for two minutes; timings, the
     # server's peak memory and the load's percentiles reported, the gates
-    # order-of-magnitude ceilings.
+    # order-of-magnitude ceilings. CI's 4-vCPU runners give
+    # query_slots = 1, so the load queues behind one slot.
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -61,6 +65,7 @@ jobs:
     # pseudo-random time in each and started again; every job ends once,
     # as it ended before, and the catalog verifies clean.
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -76,6 +81,7 @@ jobs:
     # stays up, and once space is freed an ingest and a match succeed and
     # the catalog verifies clean.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -88,3 +94,23 @@ jobs:
       - run: cargo test -p fitment-server --test soak --locked a_full_disk_refuses_then_recovers -- --nocapture
         env:
           FITMENT_TMPFS: /mnt/fitment-tmpfs
+
+  server-corpus-load:
+    name: many clients over the corpus
+    # VT14 on the corpus (JS1 to JS5; the review of PR 8 moved it here
+    # from CI's per-PR server-corpus job, where 4-vCPU runners took about
+    # ten minutes): 32 clients, each its own user, every file-candidate
+    # socket under both policies, interleaved; every document the
+    # sequential pass's, the caps held. Per PR, the committed set's VT14
+    # (concurrency.rs::many_clients_extract_the_same_sockets) still runs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v10.1.0
+      - run: tools/gen-corpus.py corpus/out
+      - run: cargo test --release -p fitment-server --test concurrency --locked many_clients_match_the_corpus_alike -- --nocapture
+        env:
+          FITMENT_REQUIRE_CORPUS: "1"

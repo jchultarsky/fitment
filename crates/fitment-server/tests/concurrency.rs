@@ -770,7 +770,8 @@ async fn finished(server: &TestServer, id: &str, token: &str) -> serde_json::Val
 }
 
 /// VT14 on the corpus (JS1 to JS5; PR 8), in release with the corpus (run
-/// by CI's `server-corpus` job): 32 clients over the bound socket, each its
+/// weekly by `scale.yml`'s `server-corpus-load` job, the review of PR 8):
+/// 32 clients over the bound socket, each its
 /// own user, each running every file-candidate socket of the corpus under
 /// `default` and `functional`, interleaved (each starts at another key):
 /// every document and exit code equals the sequential pass's; a refusal

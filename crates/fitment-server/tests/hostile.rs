@@ -2502,3 +2502,181 @@ async fn a_json_body_past_its_cap_is_refused() {
         "{read} chunks read: the cap and one chunk, then cut"
     );
 }
+
+/// HX3, UP2 (the review of PR 8): the whole upload's time,
+/// `limits.upload_minutes` (2, its minutes shortened to a second each by
+/// `[test] upload_minute_ms`, OP11): a body fed briskly that takes longer
+/// is cut `503 request_timeout`, `details.limit = "upload_minutes"`,
+/// retryable on a `PUT`, nothing kept; one inside the time is kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_past_its_minutes_is_cut() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.limits.upload_minutes = 2;
+    config.test.upload_minute_ms = 1000;
+    let server = std::sync::Arc::new(TestServer::in_process(dirs, config));
+    // 64 KiB every 100 ms: 640 KiB/s, ten times the minimum, for `pieces`.
+    let feed = |pieces: usize| {
+        let (body, tx, _) = support::fed();
+        let feeding = tokio::spawn(async move {
+            for n in 0..pieces {
+                let chunk = axum::body::Bytes::from(vec![u8::try_from(n % 251).unwrap(); 65_536]);
+                if tx.send(chunk).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        (body, feeding)
+    };
+    let started = Instant::now();
+    let (body, feeding) = feed(40);
+    let call = Call::new(Method::POST, "/v1/uploads").header("content-type", "model/step");
+    let cut = server.send_body(call, body).await;
+    feeding.abort();
+    assert_eq!(
+        (cut.status.as_u16(), cut.code()),
+        (503, "request_timeout".into())
+    );
+    assert_eq!(cut.json()["details"]["limit"], "upload_minutes");
+    assert!(
+        started.elapsed() >= Duration::from_secs(2) && started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(server.temporaries().is_empty(), "nothing kept");
+    assert_eq!(server.object_files(), Vec::<String>::new());
+    let (body, _) = feed(10);
+    let call = Call::new(Method::POST, "/v1/uploads").header("content-type", "model/step");
+    assert_eq!(
+        server.send_body(call, body).await.status,
+        201,
+        "inside its time"
+    );
+}
+
+/// JS5 (the review of PR 8): the write and maintenance lanes' queues,
+/// `jobs.queue_write` and `jobs.queue_maintenance` (1 each, dispatch
+/// held): the second ingest and the second verify are `503 queue_full`,
+/// and no row is written for either.
+#[tokio::test]
+async fn the_write_and_maintenance_queues_are_capped() {
+    let (server, tokens, sha) = jobs_world(|c| {
+        c.jobs.queue_write = 1;
+        c.jobs.queue_maintenance = 1;
+    });
+    let _ = tokens;
+    server.server().hold_jobs();
+    let ingest =
+        json!({ "files": [{ "upload": format!("sha256:{sha}"), "file_name": "p01.stp" }] });
+    let up = server.upload(&support::part("p01_through.stp")).await;
+    assert_eq!(up, sha);
+    for (path, body) in [
+        ("/v1/catalog/entries", ingest),
+        ("/v1/catalog/verify", json!({ "deep": false })),
+    ] {
+        let first = server.send(Call::json(Method::POST, path, &body)).await;
+        assert_eq!(first.status, 202, "{path}");
+        let rows = job_rows(&server);
+        let second = server.send(Call::json(Method::POST, path, &body)).await;
+        assert_eq!(
+            (second.status.as_u16(), second.code()),
+            (503, "queue_full".into()),
+            "{path}"
+        );
+        assert_eq!(job_rows(&server), rows, "{path}: a refusal leaves no row");
+    }
+    server.server().resume_jobs();
+}
+
+/// UP3, UP5 (the review of PR 8): an upload's lifetime,
+/// `limits.upload_ttl_hours` (1), on the test-support clock: an hour less
+/// a millisecond after it, the sweep keeps it; a millisecond past the
+/// hour, it is gone.
+#[tokio::test]
+async fn an_upload_lives_its_hours_and_no_longer() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.limits.upload_ttl_hours = 1;
+    let server = TestServer::in_process(dirs, config);
+    let sha = server.upload(b"bytes that live an hour").await;
+    let head = || Call::new(Method::HEAD, &format!("/v1/uploads/sha256:{sha}"));
+    let seams = server.server().seams();
+    let now = seams.ids.now_ms();
+    seams.ids.fix_time(now + 3_600_000 - 1);
+    server.server().sweep_store().unwrap();
+    assert_eq!(server.send(head()).await.status, 200, "inside its hour");
+    seams.ids.fix_time(now + 3_600_000 + 1);
+    server.server().sweep_store().unwrap();
+    assert_eq!(server.send(head()).await.status, 404, "past its hour");
+}
+
+/// JB12, JS9 (the review of PR 8): a finished job's record lives
+/// `jobs.retention_days` (1), on the test-support clock: a day less a
+/// millisecond after its end the sweep keeps it; a millisecond past the
+/// day, it is gone.
+#[tokio::test]
+async fn a_job_is_retained_its_days_and_no_longer() {
+    let (server, tokens, sha) = jobs_world(|c| c.jobs.retention_days = 1);
+    let job = server
+        .send(submission(&sha, &tokens[0]).header("prefer", "wait=30"))
+        .await
+        .json();
+    assert_eq!(job["state"], "succeeded", "{job}");
+    let get = || Call::get(&format!("/v1/jobs/{}", job["id"].as_str().unwrap())).bearer(&tokens[0]);
+    let seams = server.server().seams();
+    let now = seams.ids.now_ms();
+    seams.ids.fix_time(now + 86_400_000 - 1);
+    server.server().sweep_jobs().unwrap();
+    assert_eq!(server.send(get()).await.status, 200, "inside its day");
+    seams.ids.fix_time(now + 86_400_000 + 1);
+    server.server().sweep_jobs().unwrap();
+    assert_eq!(server.send(get()).await.status, 404, "past its day");
+}
+
+/// OP3, SZ5 (the review of PR 8): `catalog.max_db_pages` through the
+/// server's configuration: an ingest that would grow the catalog's
+/// database past it fails `storage_full`, the catalog unchanged and
+/// verifying clean.
+#[tokio::test]
+async fn an_ingest_past_the_catalogs_pages_fails_storage_full() {
+    let dirs = Dirs::new();
+    let pages = {
+        let catalog =
+            fitment_catalog::Catalog::open(&dirs.catalog, fitment_catalog::Options::default())
+                .unwrap();
+        catalog
+            .connection()
+            .query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    let mut config = dirs.config();
+    config.catalog.max_db_pages = u64::try_from(pages).unwrap() + 2;
+    let server = TestServer::in_process(dirs, config);
+    let mut files = Vec::new();
+    for n in 0..60 {
+        let bytes = support::part("p01_through.stp")
+            .into_iter()
+            .chain(format!("/* {n} */").into_bytes())
+            .collect::<Vec<u8>>();
+        let sha = server.upload(&bytes).await;
+        files.push(
+            json!({ "upload": format!("sha256:{sha}"), "file_name": format!("p{n:02}.stp") }),
+        );
+    }
+    let job = server
+        .send(support::waiting(
+            "/v1/catalog/entries",
+            &json!({ "files": files }),
+        ))
+        .await
+        .json();
+    let job = server
+        .finished_job(job["id"].as_str().unwrap(), Duration::from_secs(120))
+        .await;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(job["error"]["code"], "storage_full", "{job}");
+    let info = server.get("/v1/catalog").await.json();
+    assert_eq!(info["entries"], 0, "{info}");
+    assert_eq!(support::verified(&server.dirs.catalog), Some(0));
+}

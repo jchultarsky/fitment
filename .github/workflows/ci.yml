@@ -149,12 +149,6 @@ jobs:
       - run: cargo test --release -p fitment-server --test hostile --locked hostile_parts_through_the_api_are_the_clis
         env:
           FITMENT_REQUIRE_CORPUS: "1"
-      # VT14 on the corpus (PR 8): 32 clients, each its own user, every
-      # file-candidate socket under both policies, interleaved; every
-      # document the sequential pass's, the caps held.
-      - run: cargo test --release -p fitment-server --test concurrency --locked many_clients_match_the_corpus_alike -- --nocapture
-        env:
-          FITMENT_REQUIRE_CORPUS: "1"
       - run: diff library-report/report.json target/fitment-corpus/api-report.json
       - uses: actions/upload-artifact@v7
         with:

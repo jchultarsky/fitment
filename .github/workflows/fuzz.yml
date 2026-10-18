@@ -23,6 +23,8 @@ jobs:
   fuzz:
     name: fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
+    # Ten minutes of fuzzing after a build of about five.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
