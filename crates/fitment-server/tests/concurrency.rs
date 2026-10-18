@@ -640,3 +640,218 @@ async fn a_deep_verify_runs_beside_a_running_ingest() {
         .await;
     assert_eq!(ingest["exit_code"], 3, "{ingest}");
 }
+
+// ------------------------------------------------------------- the corpus
+
+/// One file-candidate socket key of the corpus: its source, part and
+/// occurrence, and its candidates' files.
+struct CorpusKey {
+    source: String,
+    part: String,
+    occurrence: Option<String>,
+    files: Vec<String>,
+}
+
+/// Every socket key of the corpus with file candidates, as the exit runs
+/// them (gate cases aside).
+fn corpus_keys(corpus: &fitment_corpus::Corpus) -> Vec<CorpusKey> {
+    let mut out = Vec::new();
+    for (key, group) in corpus.socket_groups() {
+        let mut files: Vec<String> = group
+            .iter()
+            .filter(|c| !c.socket_gate())
+            .filter_map(|c| match c.candidate() {
+                fitment_corpus::CandidateRef::File(file) => Some(file),
+                fitment_corpus::CandidateRef::Component { .. } => None,
+            })
+            .collect();
+        files.sort();
+        files.dedup();
+        if files.is_empty() {
+            continue;
+        }
+        out.push(CorpusKey {
+            source: key.source.clone(),
+            part: key.part.clone(),
+            occurrence: key
+                .occurrence
+                .as_deref()
+                .and_then(|o| serde_json::from_str(o).ok()),
+            files,
+        });
+    }
+    out
+}
+
+/// One client's pass over `keys` (from `start`, wrapping) under both of
+/// M4's policies, as `token`'s user, every load refusal retried: the
+/// documents by key and policy. The candidates and sources are uploaded,
+/// the source registered and the socket extracted (unreviewed) first, so
+/// each user judges its own revision.
+async fn corpus_pass(
+    server: &TestServer,
+    corpus: &fitment_corpus::Corpus,
+    keys: &[CorpusKey],
+    start: usize,
+    token: &str,
+    refusals: &std::sync::atomic::AtomicUsize,
+) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    for k in 0..keys.len() {
+        let key = &keys[(start + k) % keys.len()];
+        let mut list = Vec::new();
+        for file in key
+            .files
+            .iter()
+            .chain(std::iter::once(&format!("{}.stp", key.source)))
+        {
+            let bytes = std::fs::read(corpus.dir().join(file)).unwrap();
+            let put = support::put_upload(&bytes).bearer(token);
+            assert!(patient(server, put, refusals).await.status.is_success());
+            let sha = fitment_core::sha256_hex(&bytes);
+            list.push(serde_json::json!({ "upload": format!("sha256:{sha}"), "label": file }));
+        }
+        let source = list.pop().unwrap()["upload"].clone();
+        let file = format!("{}.stp", key.source);
+        let body = serde_json::json!({ "upload": source, "file_name": file });
+        let call = support::waiting("/v1/assemblies", &body).bearer(token);
+        let registered = patient(server, call, refusals).await.json();
+        // An assembly the user holds already answers `fitment.assembly`.
+        if let Some(id) = registered["id"].as_str().filter(|id| id.starts_with("j_")) {
+            let registered = finished(server, id, token).await;
+            assert_eq!(registered["state"], "succeeded", "{registered}");
+        }
+        let body = serde_json::json!({ "assembly": source, "part": key.part,
+                                       "occurrence": key.occurrence, "carry": false });
+        let call = support::waiting("/v1/sockets", &body).bearer(token);
+        let job = patient(server, call, refusals).await.json();
+        let job = finished(server, job["id"].as_str().unwrap(), token).await;
+        assert_eq!(job["state"], "succeeded", "{job}");
+        let revision = job["result"]["href"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("/v1/sockets/");
+        for policy in fitment_corpus::Policy::M4 {
+            let body = serde_json::json!({ "socket": revision, "candidates": { "files": list },
+                                           "policy": policy.request() });
+            let call = support::waiting("/v1/matches", &body).bearer(token);
+            let job = patient(server, call, refusals).await.json();
+            let job = finished(server, job["id"].as_str().unwrap(), token).await;
+            let id = job["id"].as_str().unwrap();
+            let document = server
+                .send(Call::get(&format!("/v1/jobs/{id}/document")).bearer(token))
+                .await;
+            let name = format!(
+                "{} {} {:?} {}",
+                key.source,
+                key.part,
+                key.occurrence,
+                policy.name()
+            );
+            out.push((format!("{name} exit {}", job["exit_code"]), document.body));
+        }
+    }
+    out
+}
+
+/// Job `id` once it has ended, read as `token`'s user.
+async fn finished(server: &TestServer, id: &str, token: &str) -> serde_json::Value {
+    let started = std::time::Instant::now();
+    loop {
+        let job = server
+            .send(Call::get(&format!("/v1/jobs/{id}?wait=5")).bearer(token))
+            .await
+            .json();
+        if !["queued", "running", "cancelling"].contains(&job["state"].as_str().unwrap_or("")) {
+            return job;
+        }
+        assert!(started.elapsed() < Duration::from_secs(1200), "{job}");
+    }
+}
+
+/// VT14 on the corpus (JS1 to JS5; PR 8), in release with the corpus (run
+/// by CI's `server-corpus` job): 32 clients over the bound socket, each its
+/// own user, each running every file-candidate socket of the corpus under
+/// `default` and `functional`, interleaved (each starts at another key):
+/// every document and exit code equals the sequential pass's; a refusal
+/// for load is only a declared one, retried with backoff and counted; the
+/// query lane never runs past its slots and the CPU permits never go
+/// below zero.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn many_clients_match_the_corpus_alike() {
+    use fitment_server::auth::Role;
+    let Some(corpus) = fitment_corpus::Corpus::locate_release_only() else {
+        return;
+    };
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.auth.rate_per_second = 100_000;
+    config.auth.rate_burst = 100_000;
+    let slots = i64::from(config.jobs.query_slots());
+    let server = std::sync::Arc::new(TestServer::bound(dirs, config).await);
+    let corpus = std::sync::Arc::new(corpus);
+    let keys = std::sync::Arc::new(corpus_keys(&corpus));
+    let refusals = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let started = std::time::Instant::now();
+    let token = server.token().to_owned();
+    let sequential = corpus_pass(&server, &corpus, &keys, 0, &token, &refusals).await;
+    let alone = started.elapsed();
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let watching = (
+        std::sync::Arc::clone(&server),
+        std::sync::Arc::clone(&running),
+    );
+    let watcher = tokio::spawn(async move {
+        let mut most = 0;
+        while watching.1.load(std::sync::atomic::Ordering::SeqCst) {
+            let reading = watching.0.server().clone();
+            let text = tokio::task::spawn_blocking(move || reading.metrics_text())
+                .await
+                .unwrap();
+            let now = gauge(&text, "fitment_jobs_running{lane=\"query\"}");
+            assert!(now <= slots, "{now} running past {slots} slots");
+            assert!(gauge(&text, "fitment_cpu_permits_free") >= 0);
+            most = most.max(now);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        most
+    });
+    let started = std::time::Instant::now();
+    let mut clients = Vec::new();
+    for n in 0..32 {
+        let user = support::seed_user(server.server(), &format!("client{n}"), Role::Reader, None);
+        let token = support::seed_token(server.server(), &user, Role::Reader, 30).1;
+        let (server, corpus, keys) = (
+            std::sync::Arc::clone(&server),
+            std::sync::Arc::clone(&corpus),
+            std::sync::Arc::clone(&keys),
+        );
+        let refusals = std::sync::Arc::clone(&refusals);
+        clients.push(tokio::spawn(async move {
+            let start = n * keys.len() / 32;
+            corpus_pass(&server, &corpus, &keys, start, &token, &refusals).await
+        }));
+    }
+    let mut expected: std::collections::BTreeMap<String, Vec<u8>> =
+        sequential.into_iter().collect();
+    let runs = expected.len();
+    for client in clients {
+        for (name, body) in client.await.unwrap() {
+            let want = expected.entry(name.clone()).or_default();
+            assert!(
+                *want == body,
+                "{name}: another document than the sequential pass's"
+            );
+        }
+    }
+    running.store(false, std::sync::atomic::Ordering::SeqCst);
+    let most = watcher.await.unwrap();
+    eprintln!(
+        "VT14 on the corpus: {} keys, {runs} runs a client; one client alone in {alone:?}, \
+         32 at once in {:?}; at most {most} of {slots} query slots ran at once; {} refusals \
+         for load, retried",
+        keys.len(),
+        started.elapsed(),
+        refusals.load(std::sync::atomic::Ordering::Relaxed)
+    );
+}

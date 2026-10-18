@@ -585,7 +585,7 @@ const PENDING: [(&str, u32); 0] = [];
 
 /// The PR this tree builds (section 12): a pending code waits for a later
 /// one, at most the exit.
-const PR_NOW: u32 = 7;
+const PR_NOW: u32 = 8;
 
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/api")
@@ -1327,4 +1327,103 @@ async fn writes_the_api_outputs() {
         std::fs::write(&path, render_response(scenario, &reply)).unwrap();
     }
     std::fs::write(out.join("openapi.json"), fitment_server::OPENAPI).unwrap();
+}
+
+/// Whether `path` (its query dropped) is an instance of the template
+/// `pattern`, each `{name}` one non-empty segment.
+fn instance_of(pattern: &str, path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(p, _)| p);
+    let (mut want, mut got) = (pattern.split('/'), path.split('/'));
+    loop {
+        match (want.next(), got.next()) {
+            (None, None) => return true,
+            (Some(w), Some(g)) if w.starts_with('{') && w.ends_with('}') && !g.is_empty() => {}
+            (Some(w), Some(g)) if w == g => {}
+            _ => return false,
+        }
+    }
+}
+
+/// XH14 (PR 8): every operation is covered. VT23's matrix has a row for
+/// each operation of `OPERATIONS` (`auth.rs`'s test fails on one without)
+/// and VT6 a golden (`the_apis_documents_are_their_goldens`); here every
+/// operation has a request in VT26's seed corpus, which is the goldens'
+/// requests (`fuzz.yml` copies them): the route target's own decoder
+/// reads at least one of each operation's as a request with its method
+/// and to its path, and each passes the route target's property (VT26) on every
+/// PR. No golden names an operation that is not one, and the served
+/// OpenAPI document names exactly `OPERATIONS`, from which the router is
+/// built (`routes::handler`), so no route is missing from it.
+#[test]
+fn every_operation_has_a_matrix_row_a_golden_and_a_seed() {
+    use fitment_server::http::operations::OPERATIONS;
+    let dirs = Dirs::new();
+    let target = fitment_server::fuzzing::Target::new(&dirs.catalog, &dirs.state);
+    let mut seeded = BTreeSet::new();
+    let mut failures = Vec::new();
+    let mut answered = 0;
+    for dir in std::fs::read_dir(golden_dir()).unwrap() {
+        let dir = dir.unwrap().path();
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let op = OPERATIONS.iter().find(|op| op.id == name);
+        if op.is_none() && name != "unrouted" {
+            failures.push(format!("{name}: goldens of no operation"));
+        }
+        for file in std::fs::read_dir(&dir).unwrap() {
+            let path = file.unwrap().path();
+            if path.extension().is_none_or(|e| e != "request") {
+                continue;
+            }
+            let seed = std::fs::read(&path).unwrap();
+            let Some(request) = fitment_server::fuzzing::request(&seed, "a-token") else {
+                failures.push(format!(
+                    "{}: the fuzz target reads no request",
+                    path.display()
+                ));
+                continue;
+            };
+            // A scenario of the router's own answers (a path no route
+            // takes, a method the operation does not) seeds it too, but
+            // not as the operation's request.
+            let uri = request.uri().to_string();
+            if let Some(op) =
+                op.filter(|op| instance_of(op.path, &uri) && request.method().as_str() == op.method)
+            {
+                seeded.insert(op.id);
+            }
+            match target.route(&seed) {
+                Some(status) if status.is_success() => answered += 1,
+                Some(_) => {}
+                None => failures.push(format!("{}: not sent", path.display())),
+            }
+        }
+    }
+    for op in &OPERATIONS {
+        if !seeded.contains(op.id) {
+            failures.push(format!("{}: no request of it in the seed corpus", op.id));
+        }
+    }
+    // The seeds reach the handlers: the target's token stands for the
+    // goldens' credentials.
+    assert!(answered >= 20, "{answered} seeds succeeded");
+    let openapi: serde_json::Value = serde_json::from_slice(fitment_server::OPENAPI).unwrap();
+    let mut documented = BTreeSet::new();
+    for (path, item) in openapi["paths"].as_object().unwrap() {
+        for (method, operation) in item.as_object().unwrap() {
+            let id = operation["operationId"].as_str().unwrap_or_default();
+            let listed = OPERATIONS.iter().find(|op| op.id == id);
+            if listed.is_none_or(|op| op.path != path || !op.method.eq_ignore_ascii_case(method)) {
+                failures.push(format!("{method} {path}: {id} is not OPERATIONS' entry"));
+            }
+            documented.insert(id.to_owned());
+        }
+    }
+    let ids: BTreeSet<String> = OPERATIONS.iter().map(|op| op.id.to_owned()).collect();
+    if documented != ids {
+        failures.push(format!(
+            "the OpenAPI document's operations are not OPERATIONS: {:?}",
+            documented.symmetric_difference(&ids).collect::<Vec<_>>()
+        ));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -260,6 +260,13 @@ pub(crate) fn render(shared: &Shared) -> String {
     let _ = writeln!(out, "fitment_cpu_permits_free {}", shared.jobs.cpu_free().0);
     header(
         &mut out,
+        "fitment_jobs_abandoned",
+        "gauge",
+        "jobs given up in a call that never returned, their threads not returned (JS8)",
+    );
+    let _ = writeln!(out, "fitment_jobs_abandoned {}", shared.jobs.abandoned());
+    header(
+        &mut out,
         "fitment_memory_mib_free",
         "gauge",
         "memory budget free, MiB (JS3)",

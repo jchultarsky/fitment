@@ -2314,3 +2314,191 @@ async fn a_reindex_takes_the_memory_its_largest_file_implies() {
         assert!(done["state"] != "failed", "{done}");
     }
 }
+
+/// One malformed request of VT19's sweep: its name, the call, and the code
+/// it must answer.
+struct Malformed {
+    what: &'static str,
+    call: Call,
+    code: Option<&'static str>,
+}
+
+/// VT19's requests against the routes of `match_world`'s server.
+fn malformed(socket: &str, files: &serde_json::Value, upload: &str) -> Vec<Malformed> {
+    let raw = |path: &str, content_type: Option<&str>, body: &[u8]| {
+        let call = Call::new(Method::POST, path).body(body);
+        match content_type {
+            Some(t) => call.header("content-type", t),
+            None => call,
+        }
+    };
+    let json = |path: &str, body: &[u8]| raw(path, Some("application/json"), body);
+    let features = format!(r#"{{"upload": "sha256:{upload}"}}"#);
+    let review = format!("/v1/sockets/{socket}/review");
+    let matching = |policy: &str| {
+        format!(
+            r#"{{"socket": "{socket}", "candidates": {{"files": {files}}}, "policy": {policy}}}"#
+        )
+        .into_bytes()
+    };
+    let deep = "[".repeat(100_000);
+    let m = |what, call, code| Malformed { what, call, code };
+    vec![
+        m("an empty body", json("/v1/features", b""), Some("bad_request")),
+        m("no Content-Type", raw("/v1/features", None, features.as_bytes()), Some("unsupported_media_type")),
+        m("a wrong Content-Type", raw("/v1/features", Some("text/plain"), features.as_bytes()), Some("unsupported_media_type")),
+        m("invalid UTF-8", json("/v1/features", b"{\"upload\": \"sha256:\xff\xfe\"}"), Some("bad_request")),
+        m("a byte-order mark", json("/v1/features", &[b"\xef\xbb\xbf".as_slice(), features.as_bytes()].concat()), Some("bad_request")),
+        m("trailing garbage", json("/v1/features", format!("{features} x").as_bytes()), Some("bad_request")),
+        m("a truncated document", json("/v1/features", &features.as_bytes()[..20]), Some("bad_request")),
+        m("nesting 10^5 deep", json("/v1/features", deep.as_bytes()), Some("bad_request")),
+        m("nesting 10^5 deep in a field", json("/v1/features", format!(r#"{{"upload": {deep}"#).as_bytes()), Some("bad_request")),
+        m("a duplicate key", json("/v1/features", format!(r#"{{"upload": "sha256:{upload}", "upload": "sha256:{upload}"}}"#).as_bytes()), Some("bad_request")),
+        m("an unknown field", json("/v1/features", format!(r#"{{"upload": "sha256:{upload}", "uplaod": 1}}"#).as_bytes()), Some("bad_request")),
+        m("a number beyond f64", json("/v1/matches", &matching(r#"{"tolerance_mm": 1e999}"#)), Some("bad_request")),
+        m("NaN", json("/v1/matches", &matching(r#"{"tolerance_mm": NaN}"#)), Some("bad_request")),
+        m("-0.0 as a tolerance", json("/v1/matches", &matching(r#"{"tolerance_mm": -0.0}"#)), Some("invalid_parameter")),
+        m("a negative tolerance", json("/v1/matches", &matching(r#"{"tolerance_deg": -1}"#)), Some("invalid_parameter")),
+        m("a duplicated status in a decision", json(&review, br#"{"decisions": [{"requirement": "R1", "status": "kept", "status": "removed", "note": "n"}]}"#), Some("bad_request")),
+        m("a status of the wrong type", json(&review, br#"{"decisions": [{"requirement": "R1", "status": 1}]}"#), Some("bad_request")),
+    ]
+}
+
+/// VT19 (VN6, ER7): malformed bodies, swept in process: each a `4xx` with
+/// a stable code (the same twice) and never a `500`: an empty body, a
+/// missing or wrong `Content-Type`, invalid UTF-8, a byte-order mark,
+/// trailing garbage, a truncated document, nesting 10⁵ deep (`serde_json`'s
+/// recursion limit), a number beyond `f64`, `NaN` and `-0.0` where a
+/// tolerance is asked, duplicate keys (a duplicated `status` in a review
+/// decision is read neither way), unknown fields; a `fitment.socket`
+/// upload of another format version, and one with its digest broken
+/// (VD9's refusal, exit 3's code), as an import and as a match's socket.
+/// With VT26's first finding (PR 8): a path segment that does not decode
+/// is `400 bad_request`, a document, on every operation with a parameter.
+#[tokio::test]
+async fn malformed_bodies_are_refused_with_stable_codes() {
+    let (server, socket, files) = match_world(|c| c.auth.rate_burst = 10_000).await;
+    let upload = server.upload(b"bytes for VT19's features").await;
+    let mut failures = Vec::new();
+    for case in malformed(&socket, &files, &upload) {
+        let first = server.send(case.call.clone()).await;
+        let second = server.send(case.call).await;
+        let (status, code) = (first.status.as_u16(), first.code());
+        if !(400..500).contains(&status) || second.code() != code {
+            failures.push(format!(
+                "{}: {status} {code}, then {}",
+                case.what,
+                second.code()
+            ));
+        } else if case.code.is_some_and(|c| c != code) {
+            failures.push(format!("{}: {code}, not {:?}", case.what, case.code));
+        }
+    }
+    // Socket documents: another format version, and a broken digest.
+    let golden = support::cli_golden("socket", "s01_bolted--BRACKET.json");
+    let text = String::from_utf8(golden).unwrap();
+    let versioned = text.replacen("\"format_version\": 1", "\"format_version\": 2", 1);
+    assert_ne!(versioned, text);
+    let digest = text.find("\"digest\": \"").unwrap() + 11;
+    let flipped = if &text[digest..=digest] == "0" {
+        "1"
+    } else {
+        "0"
+    };
+    let broken = format!("{}{flipped}{}", &text[..digest], &text[digest + 1..]);
+    for (what, bytes) in [
+        ("another format version", versioned),
+        ("a broken digest", broken),
+    ] {
+        let sha = server.upload(bytes.as_bytes()).await;
+        for (route, body) in [
+            (
+                "/v1/sockets/import",
+                json!({ "upload": format!("sha256:{sha}") }),
+            ),
+            (
+                "/v1/matches",
+                json!({ "socket": { "upload": format!("sha256:{sha}") }, "candidates": { "files": files } }),
+            ),
+        ] {
+            let reply = server.send(Call::json(Method::POST, route, &body)).await;
+            let again = server.send(Call::json(Method::POST, route, &body)).await;
+            if reply.status != 422
+                || reply.code() != "socket_unreadable"
+                || again.code() != reply.code()
+            {
+                failures.push(format!("{what} {route}: {} {}", reply.status, reply.code()));
+            } else if reply.json()["exit_code"] != 3 {
+                failures.push(format!(
+                    "{what} {route}: exit {}, not 3",
+                    reply.json()["exit_code"]
+                ));
+            }
+        }
+    }
+    // VT26's finding: segments that do not decode, on every operation
+    // with a parameter, answered `4xx` in the error document (a route
+    // that reads its reference itself says `invalid_reference`; a body's
+    // check may come first, as ER5 orders them).
+    for op in &fitment_server::http::operations::OPERATIONS {
+        if !op.path.contains('{') {
+            continue;
+        }
+        for segment in ["%%41", "%C0%AE", "%ff"] {
+            let path = op
+                .path
+                .split('/')
+                .map(|s| if s.starts_with('{') { segment } else { s })
+                .collect::<Vec<_>>()
+                .join("/");
+            let method = Method::from_bytes(op.method.as_bytes()).unwrap();
+            let reply = server.send(Call::new(method.clone(), &path)).await;
+            let documented = method == Method::HEAD
+                || fitment_server::http::error::ErrorCode::ALL
+                    .iter()
+                    .any(|c| c.name() == reply.code());
+            if !reply.status.is_client_error() || !documented {
+                failures.push(format!("{} {path}: {}", op.method, reply.status));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// HX2, VT17 (PR 8's check of `M6_LIMITS`): a JSON request's cap,
+/// `limits.max_json_kib`. A body at the cap is read (and judged for what
+/// it says); one byte past it is `413 body_too_large`; one streamed 100
+/// times past it is cut after the cap and one chunk, never buffered whole.
+#[tokio::test]
+async fn a_json_body_past_its_cap_is_refused() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.limits.max_json_kib = 1;
+    let server = TestServer::in_process(dirs, config);
+    let sha = server.upload(b"bytes for the JSON cap").await;
+    let body = |len: usize| {
+        let mut text = format!(r#"{{"upload": "sha256:{sha}"}}"#);
+        text.insert_str(1, &" ".repeat(len - text.len()));
+        Call::new(Method::POST, "/v1/features")
+            .header("content-type", "application/json")
+            .body(text.as_bytes())
+    };
+    let at = server.send(body(1024)).await;
+    assert_eq!(at.status, 202, "{}", String::from_utf8_lossy(&at.body));
+    let past = server.send(body(1025)).await;
+    assert_eq!(
+        (past.status.as_u16(), past.code()),
+        (413, "body_too_large".into())
+    );
+    let chunk = 16;
+    let (endless, taken) = support::endless(100 * 1024 / chunk, chunk);
+    let streamed =
+        Call::new(Method::POST, "/v1/features").header("content-type", "application/json");
+    let reply = server.send_body(streamed, endless).await;
+    assert_eq!(reply.code(), "body_too_large");
+    let read = taken.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        read <= 1024 / chunk + 1,
+        "{read} chunks read: the cap and one chunk, then cut"
+    );
+}

@@ -235,6 +235,12 @@ pub struct Jobs {
     pub streams_per_user: u32,
     /// JS10: event streams at once on the server.
     pub streams: u32,
+    /// JS8 (PR 8): how long a job's call may run on after a cancel or its
+    /// deadline set its flag before the job is given up.
+    pub stuck_grace_seconds: u64,
+    /// JS8: the jobs given up at once, whose threads have not returned;
+    /// at this bound the server is unready and gives up no more.
+    pub abandoned_max: u32,
 }
 
 impl Default for Jobs {
@@ -259,6 +265,8 @@ impl Default for Jobs {
             drain_seconds: 25,
             streams_per_user: 8,
             streams: 256,
+            stuck_grace_seconds: 60,
+            abandoned_max: 2,
         }
     }
 }
@@ -713,11 +721,13 @@ impl Config {
             self.jobs.streams_per_user,
             self.jobs.streams,
             self.jobs.match_threads,
+            self.jobs.abandoned_max,
         ]
         .contains(&0)
             || self.jobs.memory_mib == 0
             || self.jobs.deadline_extract_minutes == 0
             || self.jobs.sweep_minutes == 0
+            || self.jobs.stuck_grace_seconds == 0
         {
             return Err(value_error(
                 "jobs",

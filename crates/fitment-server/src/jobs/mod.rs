@@ -24,6 +24,7 @@ pub mod request;
 pub(crate) mod run;
 mod scheduler;
 pub(crate) mod socket;
+mod stuck;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -59,6 +60,8 @@ pub struct Control {
     /// Read where the job may stop.
     pub(crate) flag: AtomicBool,
     stop: Mutex<Option<Stop>>,
+    /// Told when the flag is set: the watchdog waits on it (JS8).
+    set: Notify,
 }
 
 impl Control {
@@ -68,6 +71,7 @@ impl Control {
             id: id.to_owned(),
             flag: AtomicBool::new(false),
             stop: Mutex::new(None),
+            set: Notify::new(),
         }
     }
 
@@ -83,6 +87,21 @@ impl Control {
             *reason = Some(stop);
         }
         self.flag.store(true, Ordering::SeqCst);
+        drop(reason);
+        self.set.notify_waiters();
+    }
+
+    /// Resolves with the flag's reason once it is set (JS8's watchdog).
+    pub(crate) async fn stopped(&self) -> Stop {
+        loop {
+            let set = self.set.notified();
+            tokio::pin!(set);
+            set.as_mut().enable();
+            if let Some(stop) = self.stop() {
+                return stop;
+            }
+            set.await;
+        }
     }
 
     /// Records and sends the job's progress (JB8).
@@ -141,6 +160,13 @@ pub struct Jobs {
     /// DC12, VT46: the match documents whose structure was scanned, once
     /// each when stored, never for a page.
     pub(crate) indexed: AtomicU64,
+    /// JS8 (PR 8): runs given up in a call that never returned, whose
+    /// threads have not returned yet.
+    pub(crate) abandoned: AtomicUsize,
+    /// JS8: `jobs.abandoned_max`, the bound on [`Jobs::abandoned`].
+    pub(crate) abandoned_max: usize,
+    /// JS8: `jobs.stuck_grace_seconds`, in milliseconds.
+    stuck_grace_ms: AtomicU64,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -191,7 +217,33 @@ impl Jobs {
             catalog_judged: AtomicU64::new(0),
             match_threads: jobs.match_threads.max(1),
             indexed: AtomicU64::new(0),
+            abandoned: AtomicUsize::new(0),
+            abandoned_max: usize::try_from(jobs.abandoned_max).unwrap_or(usize::MAX),
+            stuck_grace_ms: AtomicU64::new(jobs.stuck_grace_seconds.saturating_mul(1000)),
         }
+    }
+
+    /// JS8 (PR 8): the runs given up in a call that never returned whose
+    /// threads have not returned (OP6's `fitment_jobs_abandoned`).
+    pub fn abandoned(&self) -> usize {
+        self.abandoned.load(Ordering::SeqCst)
+    }
+
+    /// JS8: `jobs.abandoned_max` runs are given up: the server is unready
+    /// (OP7) until it restarts, or until their calls return.
+    pub fn stuck(&self) -> bool {
+        self.abandoned() >= self.abandoned_max
+    }
+
+    /// JS8: how long a stopped job's call may run on before it is given up.
+    pub(crate) fn stuck_grace(&self) -> Duration {
+        Duration::from_millis(self.stuck_grace_ms.load(Ordering::SeqCst))
+    }
+
+    /// OP11: `jobs.stuck_grace_seconds`, shortened for a test (JS8).
+    #[cfg(feature = "test-support")]
+    pub fn set_stuck_grace(&self, grace: Duration) {
+        self.stuck_grace_ms.store(millis(grace), Ordering::SeqCst);
     }
 
     /// JB12: how long a terminal job's record is kept.
@@ -748,24 +800,38 @@ async fn catalog_memory(shared: &Arc<Shared>, again: &Reestimate) -> u32 {
 }
 
 /// The job's run on the blocking pool, its permits dropped when the
-/// closure ends, a panic included (JS6). A panic or a failure of
-/// `server.db` ends the job `failed`, `internal`, the panic's text in the
-/// log under the job's id only (VT9, XH13).
+/// closure ends, a panic included (JS6), beside its watchdog (JS8, PR 8):
+/// a call that outlives its stop by `jobs.stuck_grace_seconds` is given up
+/// (`stuck.rs`). A panic or a failure of `server.db` ends the job
+/// `failed`, `internal`, the panic's text in the log under the job's id
+/// only (VT9, XH13).
 async fn run_blocking(
     shared: &Arc<Shared>,
     row: &JobRow,
     control: &Arc<Control>,
-    permits: (
-        tokio::sync::OwnedSemaphorePermit,
-        tokio::sync::OwnedSemaphorePermit,
-    ),
+    permits: stuck::Permits,
 ) -> run::Ran {
+    let watched = stuck::Watched::new(permits);
+    let ending = stuck::Ending {
+        shared: Arc::clone(shared),
+        watched: Arc::clone(&watched),
+        job: row.id.clone(),
+    };
     let (working, running, ctl) = (Arc::clone(shared), row.clone(), Arc::clone(control));
-    let result = tokio::task::spawn_blocking(move || {
-        let _permits = permits;
+    let mut handle = tokio::task::spawn_blocking(move || {
+        let _ending = ending;
         run::execute(&working, &running, &ctl)
-    })
-    .await;
+    });
+    let result = tokio::select! {
+        result = &mut handle => result,
+        stop = stuck::overdue(shared, control) => {
+            if let Some(ran) = stuck::give_up(shared, row, &watched, stop).await {
+                // The thread is left to return, if it ever does.
+                return ran;
+            }
+            handle.await
+        }
+    };
     let failure = match result {
         Ok(Ok(ran)) => return ran,
         Ok(Err(error)) => format!("server.db failed: {error}"),

@@ -22,14 +22,19 @@ pub(super) async fn health() -> StatusCode {
 }
 
 /// OP7: `204`, or `503` with `shutting_down` while the server drains or
-/// after it lost its lease (SD6), or `catalog_unavailable` with its reason
-/// while the catalog cannot be opened. A stale catalog is ready.
+/// after it lost its lease (SD6), or holds `jobs.abandoned_max` jobs given
+/// up in calls that never returned (JS8, `stuck`: restart it), or
+/// `catalog_unavailable` with its reason while the catalog cannot be
+/// opened. A stale catalog is ready.
 pub(super) async fn ready(State(shared): State<Arc<Shared>>) -> Result<StatusCode, ApiError> {
     if shared.draining.load(Ordering::SeqCst) {
         return Err(shutting_down("draining"));
     }
     if !shared.lease_ok.load(Ordering::SeqCst) {
         return Err(shutting_down("lease"));
+    }
+    if shared.jobs.stuck() {
+        return Err(shutting_down("stuck"));
     }
     let checked = Arc::clone(&shared);
     blocking(move || {
@@ -49,6 +54,7 @@ pub(super) async fn ready(State(shared): State<Arc<Shared>>) -> Result<StatusCod
 fn shutting_down(reason: &'static str) -> ApiError {
     let detail = match reason {
         "draining" => "the server is draining: send the request to another server or later",
+        "stuck" => "jobs are stuck in calls that never returned: the server needs a restart",
         _ => "the server no longer holds its state directory's lease",
     };
     ApiError::new(ErrorCode::ShuttingDown, detail)

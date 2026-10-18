@@ -2675,3 +2675,138 @@ async fn the_barrier_counts_the_catalogs_own_pages() {
     server.ingest(&three_parts()).await;
     assert_eq!(support::verified(&server.dirs.catalog), Some(0));
 }
+
+/// JS8's enforcement for a stuck core call (PR 8): extractions held
+/// forever at `job.read`, where no flag is checked, as a call that never
+/// returns. Past its deadline and `jobs.stuck_grace_seconds` the first is
+/// given up: it ends `failed`, `deadline_exceeded`, with no document, its
+/// permits and its slot released (the only CPU permit runs the next job),
+/// and the server, at `jobs.abandoned_max`, is unready. At that bound a
+/// second stuck job, cancelled, is not given up: it keeps its permits past
+/// the grace, as before. When the calls return at last, the first's
+/// result is discarded (no revision, its end unchanged), the second ends
+/// `cancelled`, nothing is counted and the server is ready; a job then
+/// runs as ever. XH12 holds throughout.
+#[tokio::test]
+async fn a_stuck_call_is_given_up_and_its_permits_released() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.jobs.cpu = 1;
+    config.jobs.abandoned_max = 1;
+    config.jobs.stuck_grace_seconds = 1;
+    let server = TestServer::in_process(dirs, config);
+    let assembly = support::assembly("s02_cbore.stp");
+    assert_eq!(
+        server.register(&assembly, "s02_cbore.stp").await["state"],
+        "succeeded"
+    );
+    let sha = fitment_core::sha256_hex(&assembly);
+    let seams = server.server().seams();
+    let stuck = Gate::new();
+    seams.hooks.set("job.read", Action::Pause(stuck.clone()));
+    seams.jobs.set_deadline(Duration::from_millis(300));
+    let first = submit_extraction(&server, &sha).await;
+    assert!(stuck.arrived(1, Duration::from_secs(30)).await);
+    let given_up = server.finished_job(&first, Duration::from_secs(30)).await;
+    assert_eq!(given_up["state"], "failed", "{given_up}");
+    assert_eq!(given_up["error"]["code"], "deadline_exceeded");
+    assert!(given_up["document"].is_null() && given_up["result"].is_null());
+    no_verdict(&given_up);
+    assert_eq!(seams.jobs.abandoned(), 1);
+    assert_eq!(seams.jobs.cpu_free(), (1, 1), "its permit is back");
+    let ready = server.send(Call::get("/v1/ready").anonymous()).await;
+    assert_eq!(
+        (ready.status.as_u16(), ready.code()),
+        (503, "shutting_down".into())
+    );
+    assert_eq!(ready.json()["details"]["reason"], "stuck");
+    // At the bound: a second stuck job keeps its permit past the grace.
+    seams.jobs.set_deadline(Duration::from_secs(600));
+    let second = submit_extraction(&server, &sha).await;
+    assert!(stuck.arrived(2, Duration::from_secs(30)).await, "it ran");
+    let cancel = server
+        .send(Call::new(
+            Method::POST,
+            &format!("/v1/jobs/{second}/cancel"),
+        ))
+        .await;
+    assert_eq!(cancel.json()["state"], "cancelling");
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let held = server.get(&format!("/v1/jobs/{second}")).await.json();
+    assert_eq!(held["state"], "cancelling", "{held}");
+    assert_eq!(seams.jobs.cpu_free(), (0, 1), "it keeps its permit");
+    assert_eq!(seams.jobs.abandoned(), 1);
+    // The calls return at last.
+    seams.hooks.clear("job.read");
+    stuck.open();
+    let cancelled = server.finished_job(&second, Duration::from_secs(60)).await;
+    assert_eq!(cancelled["state"], "cancelled", "{cancelled}");
+    let started = std::time::Instant::now();
+    while seams.jobs.abandoned() > 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "never returned"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let after = server.get(&format!("/v1/jobs/{first}")).await.json();
+    assert_eq!(after["state"], "failed", "its end stands: {after}");
+    assert!(after["document"].is_null() && after["result"].is_null());
+    assert!(lines(&server).await.is_empty(), "no revision from either");
+    assert_eq!(
+        server.send(Call::get("/v1/ready").anonymous()).await.status,
+        204
+    );
+    let (bytes, golden) = p01();
+    let upload = server.upload(&bytes).await;
+    let job = server
+        .send(waiting("/v1/features", &features(&upload)))
+        .await
+        .json();
+    assert_eq!(job["state"], "succeeded", "{job}");
+    let document = server.document(&job).await;
+    assert_eq!(document.body, golden);
+    assert_eq!(seams.jobs.cpu_free(), (1, 1));
+}
+
+/// JS8 (PR 8), SD1, SD4: a graceful stop with a job stuck in its call
+/// (the built binary held 10 minutes at `job.read`, where no flag is
+/// read): the drain sets its flag and waits its bound, and the process
+/// exits 0 without waiting for the stuck thread, as it would forever; the
+/// next start finds the job running and queues it again (SD4), which then
+/// runs to the CLI's bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_does_not_wait_for_a_stuck_call() {
+    const RESTART: &str = "[test]\nlease_stale_ms = 1\n";
+    let config = format!(
+        "[jobs]\ndrain_seconds = 1\n{RESTART}hooks = {{ \"job.read\" = \"delay:600000\" }}\n"
+    );
+    let mut server = TestServer::process(Dirs::new(), &config);
+    let (bytes, golden) = p01();
+    let sha = server.upload(&bytes).await;
+    let job = server
+        .send(Call::json(Method::POST, "/v1/features", &features(&sha)))
+        .await
+        .json();
+    let id = job["id"].as_str().unwrap().to_owned();
+    let started = std::time::Instant::now();
+    while server.get(&format!("/v1/jobs/{id}")).await.json()["state"] != "running" {
+        assert!(started.elapsed() < Duration::from_secs(30), "never ran");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let child = server.child.take().unwrap();
+    let stopping = std::time::Instant::now();
+    let (code, _, stderr) = tokio::task::spawn_blocking(move || child.stop())
+        .await
+        .unwrap();
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stopping.elapsed() < Duration::from_secs(25),
+        "{:?}",
+        stopping.elapsed()
+    );
+    server.restart_process(RESTART);
+    let job = server.finished_job(&id, Duration::from_secs(60)).await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    assert_eq!(server.document(&job).await.body, golden);
+}

@@ -1,0 +1,61 @@
+name: Fuzz
+
+# VT26 (docs/research/m6-api.md, M6-42): the API's two cargo-fuzz targets,
+# ten minutes each on a nightly toolchain. `route` sends arbitrary requests
+# through the router in process: no panic, no 5xx but the declared load
+# refusals, every error a fitment.error document. `body` decodes every
+# request type's body: an accepted one, written again, is the same value.
+# Both are seeded with VT6's golden requests (XH14: every operation has
+# one). Weekly, and on request; a crash fails the run with its input
+# uploaded, and becomes a VT19 or VT20 case.
+on:
+  schedule:
+    - cron: "37 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [route, body]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      # Pinned so a new cargo-fuzz cannot change how the targets build.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz@0.13.2
+      # The route target takes a golden's request as it is; the body target
+      # its body, the bytes after the first blank line.
+      - name: Seed with VT6's golden requests
+        run: |
+          mkdir -p "$RUNNER_TEMP/seeds"
+          for file in crates/fitment-server/tests/golden/api/*/*.request; do
+            name="$(basename "$(dirname "$file")")-$(basename "$file")"
+            if [ "${{ matrix.target }}" = route ]; then
+              cp "$file" "$RUNNER_TEMP/seeds/$name"
+            else
+              sed '1,/^$/d' "$file" > "$RUNNER_TEMP/seeds/$name"
+            fi
+          done
+      # rust-toolchain.toml pins stable; `+nightly` outranks it.
+      - run: cargo +nightly fuzz run ${{ matrix.target }} "$RUNNER_TEMP/seeds" -- -max_total_time=600 -rss_limit_mb=4096 -timeout=60
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: fuzz-${{ matrix.target }}-crashes
+          path: fuzz/artifacts
+          retention-days: 30
+          if-no-files-found: ignore

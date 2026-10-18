@@ -240,6 +240,28 @@ Until 1.0, minor versions may contain breaking changes.
   catalog run of the exit set under three policies give the
   CLI's bytes on the server's catalog, and `fitment catalog verify --deep`
   is clean after.
+- **M6, PR 8 (hardening):** a job whose library call never returns no
+  longer holds its CPU and memory permits and its lane forever. Once a
+  cancel or its deadline has stopped it and `jobs.stuck_grace_seconds`
+  (60) have passed, `fitment-server` gives the job up: it ends as its stop
+  says (`cancelled`, or `failed` with `deadline_exceeded`) with no
+  document, its permits and slot are released, and the stuck thread is
+  left to return, whatever it then makes discarded. At most
+  `jobs.abandoned_max` (2) jobs are given up at once; at that bound
+  `/v1/ready` answers `503 shutting_down` with `details.reason: "stuck"`
+  so an orchestrator restarts the server, and
+  `fitment_jobs_abandoned` counts them. A stop no longer waits for a stuck
+  thread, and the next write job waits for a writer a given-up job holds
+  at most `catalog.write_busy_ms` (`catalog_busy`). A path segment that
+  does not percent-decode to UTF-8 is `400 bad_request` in the error
+  document, as every error is, where it was a plain-text `400` (found by
+  the new fuzzing). Two `cargo fuzz` targets (`fuzz/`, its own workspace)
+  send arbitrary requests through the router and arbitrary bodies through
+  every request type, weekly (`fuzz.yml`), seeded with the goldens'
+  requests; every operation has a golden, a row in the permission matrix
+  and a fuzz seed. `scale.yml` gains the 10⁴ scaled catalog through the
+  API with sixteen clients for two minutes, a restart soak of 100 kills
+  and a full 32 MiB tmpfs. No output of `fitment` changes.
 
 ### Changed
 

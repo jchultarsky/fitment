@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::Response;
 
@@ -16,6 +16,7 @@ use crate::Shared;
 use crate::auth::documents::Page;
 use crate::http::blocking;
 use crate::http::error::{ApiError, ErrorCode};
+use crate::http::extract::Path;
 use crate::http::extract::{Principal, Reader};
 use crate::http::json;
 use crate::http::query;
