@@ -393,7 +393,16 @@ async fn the_sweep_follows_its_candidates_not_the_store() {
     }
     tx.commit().unwrap();
     drop(conn);
-    let bound = Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 5 });
+    // The sweep makes one file call per candidate: 1.7 s for the 10,000 on
+    // macOS, but 33 s on CI's Windows runner (about 3 ms a call there), so
+    // Windows has its own bound; the idle sweep below is the scale check.
+    let bound = Duration::from_secs(if cfg!(windows) {
+        90
+    } else if cfg!(debug_assertions) {
+        10
+    } else {
+        5
+    });
     let started = std::time::Instant::now();
     let sweeping = server.server().clone();
     let sweep = tokio::task::spawn_blocking(move || sweeping.sweep_store().unwrap());
