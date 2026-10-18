@@ -154,8 +154,10 @@ fn foreign(kind: Kind, why: &str) -> Halt {
 }
 
 /// Carries the decisions of `text`, an earlier document read leniently
-/// (`SocketDocument::prior`, MF11), to `document`, if it is the same
-/// file's and target's.
+/// (`SocketDocument::prior`, MF11), to `document`, as the CLI's
+/// `carry_over` and `foreign` do (review S12 of PR 5): refused if it is
+/// another file's, or another part's when both name one; carried only if
+/// its target is `document`'s, so one that names none carries nothing.
 fn carry_text(kind: Kind, document: &mut SocketDocument, text: &[u8]) -> Result<CarryOver, Halt> {
     let old = std::str::from_utf8(text)
         .ok()
@@ -165,10 +167,13 @@ fn carry_text(kind: Kind, document: &mut SocketDocument, text: &[u8]) -> Result<
     if old.sha256() != document.source().sha256 {
         return Err(foreign(kind, "carry_from is the socket of another file"));
     }
-    if old.target().is_some() && old.target() != target {
-        return Err(foreign(kind, "carry_from is the socket of another part"));
+    match (old.target(), target) {
+        (Some(a), Some(b)) if a != b => {
+            Err(foreign(kind, "carry_from is the socket of another part"))
+        }
+        (a, b) if a != b => Ok(CarryOver::default()),
+        _ => Ok(document.carry_over_prior(&old)),
     }
-    Ok(document.carry_over_prior(&old))
 }
 
 /// What the new revision carries from: its parent, and the counts.

@@ -38,6 +38,12 @@ pub(crate) use scheduler::{Entry, Full};
 /// One MiB.
 const MIB: u64 = 1024 * 1024;
 
+/// JS3 (review S13 of PR 5): a job's memory per byte of its largest
+/// input: the CLI's peak resident set measured at 13 to 20 times the file
+/// on the corpus's files of 2 MB and more, so 20, and the input's own
+/// bytes, which the job holds.
+const ESTIMATE_PER_BYTE: u64 = 21;
+
 /// A dispatched job's stop flag (JS8) and why it was set.
 #[derive(Debug)]
 pub struct Control {
@@ -95,6 +101,12 @@ pub struct Jobs {
     /// Cleared when a drain starts (SD1): nothing more is dispatched.
     dispatching: AtomicBool,
     started: AtomicBool,
+    /// When the dispatcher last reconciled with `server.db`, in
+    /// milliseconds since `epoch`.
+    reconciled_ms: AtomicU64,
+    /// A reconciliation is pending.
+    reconciling: AtomicBool,
+    epoch: std::time::Instant,
     /// Set when the server drains (SD1): streams and waits end.
     shutdown: watch::Sender<bool>,
     /// A dispatched job ended.
@@ -130,6 +142,9 @@ impl Jobs {
             streams: Arc::new(Streams::new(jobs.streams_per_user, jobs.streams)),
             dispatching: AtomicBool::new(true),
             started: AtomicBool::new(false),
+            reconciled_ms: AtomicU64::new(0),
+            reconciling: AtomicBool::new(false),
+            epoch: std::time::Instant::now(),
             shutdown: watch::channel(false).0,
             ended: Notify::new(),
             retention_ms: i64::try_from(jobs.retention_days)
@@ -183,10 +198,13 @@ impl Jobs {
     }
 
     /// JS2, JS3: a job's permits and its memory estimate, from the largest
-    /// input's bytes: ten times the file (SZ1), in MiB; one above the
-    /// budget waits for the whole of it and runs alone.
+    /// input's bytes: [`ESTIMATE_PER_BYTE`] times the file, in MiB; one
+    /// above the budget waits for the whole of it and runs alone.
     pub(crate) fn entry(&self, row: &JobRow, input_bytes: u64) -> Entry {
-        let estimate = input_bytes.saturating_mul(10).div_ceil(MIB).max(1);
+        let estimate = input_bytes
+            .saturating_mul(ESTIMATE_PER_BYTE)
+            .div_ceil(MIB)
+            .max(1);
         Entry {
             key: row.key,
             id: row.id.clone(),
@@ -215,7 +233,7 @@ impl Jobs {
         let mut sched = lock(&self.sched);
         sched.unreserve(reservation.lane, reservation.owner);
         reservation.held = false;
-        sched.push(entry);
+        let _ = sched.push(entry);
     }
 
     /// JS4: starts every job a lane may run now, each on its own task.
@@ -240,6 +258,64 @@ impl Jobs {
         for (entry, control) in picks {
             tokio::spawn(dispatch(Arc::clone(shared), entry, control));
         }
+        self.reconcile(shared);
+    }
+
+    /// Review S2 of PR 5: within a second of any kick, and at most once a
+    /// second, the dispatcher takes up queued jobs of `server.db` it does
+    /// not hold (one a failed start or a lost submission left), so no
+    /// committed job waits for a restart.
+    fn reconcile(&self, shared: &Arc<Shared>) {
+        if self.reconciling.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let now = u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let last = self.reconciled_ms.load(Ordering::SeqCst);
+        let wait = if last == 0 {
+            0
+        } else {
+            (last + 1000).saturating_sub(now)
+        };
+        // A server dropped meanwhile is not kept, nor its lease (SD3).
+        let weak = Arc::downgrade(shared);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(wait)).await;
+            let Some(shared) = weak.upgrade() else {
+                return;
+            };
+            let jobs = &shared.jobs;
+            let done = u64::try_from(jobs.epoch.elapsed().as_millis()).unwrap_or(u64::MAX);
+            jobs.reconciled_ms.store(done.max(1), Ordering::SeqCst);
+            jobs.reconciling.store(false, Ordering::SeqCst);
+            if !jobs.dispatching.load(Ordering::SeqCst) {
+                return;
+            }
+            let reading = Arc::clone(&shared);
+            let Ok(queued) = crate::http::blocking(move || {
+                reading
+                    .db
+                    .queued_jobs()
+                    .map_err(|e| crate::http::db_error(&e))
+            })
+            .await
+            else {
+                return;
+            };
+            let added = {
+                let mut sched = lock(&jobs.sched);
+                queued
+                    .iter()
+                    .filter(|(row, bytes)| sched.push(jobs.entry(row, *bytes)))
+                    .count()
+            };
+            if added > 0 {
+                tracing::warn!(
+                    added,
+                    "queued jobs the dispatcher did not hold were taken up"
+                );
+                jobs.kick(&shared);
+            }
+        });
     }
 
     /// The first request's kick, for a server dispatching nothing yet
@@ -253,12 +329,6 @@ impl Jobs {
     fn done(&self, entry: &Entry) {
         lock(&self.sched).done(entry);
         self.ended.notify_waiters();
-    }
-
-    /// True if job `key` is queued or dispatched in this process.
-    pub(crate) fn live(&self, key: i64) -> bool {
-        let sched = lock(&self.sched);
-        sched.live.contains_key(&key)
     }
 
     /// JB5: a cancelled job leaves its queue.
@@ -437,7 +507,8 @@ async fn dispatch(shared: Arc<Shared>, entry: Entry, control: Arc<Control>) {
             jobs.publish(&row.id, &events);
             crate::metrics::job_ended(&shared.metrics, &row);
         }
-        run::Ran::Requeued(row) => {
+        run::Ran::Requeued(row, events) => {
+            jobs.publish(&row.id, &events);
             tracing::info!(job = row.id, "a drain queued a running job again");
         }
     }
@@ -573,7 +644,7 @@ pub(crate) fn recover(shared: &Shared) -> Result<Vec<Recovered>, crate::state::D
     let queued = shared.db.queued_jobs()?;
     let mut sched = lock(&shared.jobs.sched);
     for (row, bytes) in &queued {
-        sched.push(shared.jobs.entry(row, *bytes));
+        let _ = sched.push(shared.jobs.entry(row, *bytes));
     }
     Ok(recovered)
 }
@@ -608,8 +679,6 @@ pub(crate) async fn wait(shared: &Arc<Shared>, row: JobRow, limit: Duration) -> 
         }
     }
     drop(live);
-    let live = shared.jobs.live(row.key) || !current.state.terminal();
-    shared.jobs.channels.release(row.key, live);
     current
 }
 
@@ -639,9 +708,10 @@ pub(crate) fn progress(shared: &Shared, row: &JobRow) -> Option<Progress> {
 mod tests {
     use super::*;
 
-    /// JS2, JS3: a job takes one CPU permit and ten times its largest
-    /// input in MiB, at least one; an estimate above the budget takes the
-    /// whole budget, so it waits for it and runs alone, never refused.
+    /// JS2, JS3: a job takes one CPU permit and 21 times its largest
+    /// input in MiB, at least one (review S13 of PR 5); an estimate above
+    /// the budget takes the whole budget, so it waits for it and runs
+    /// alone, never refused.
     #[test]
     fn a_jobs_permits_are_its_estimate() {
         let mut config = Config::default();
@@ -677,8 +747,8 @@ mod tests {
             last_seq: 1,
         };
         assert_eq!(jobs.entry(&row(1), 0).memory_mib, 1);
-        assert_eq!(jobs.entry(&row(1), 56_000).memory_mib, 1);
-        assert_eq!(jobs.entry(&row(1), 3 * MIB).memory_mib, 30);
+        assert_eq!(jobs.entry(&row(1), 40_000).memory_mib, 1);
+        assert_eq!(jobs.entry(&row(1), 3 * MIB).memory_mib, 63);
         assert_eq!(
             jobs.entry(&row(1), 100 * MIB).memory_mib,
             64,

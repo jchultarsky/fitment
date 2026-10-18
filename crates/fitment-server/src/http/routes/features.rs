@@ -24,6 +24,12 @@ pub(super) async fn create(
     headers: HeaderMap,
     Sent(body, sent): Sent<FeaturesRequest>,
 ) -> Result<Response, ApiError> {
+    // JB9 (review S4 of PR 5): a key's replay is answered before the
+    // references are checked, so it stands once its inputs are gone.
+    let fingerprint = request::fingerprint("POST", "/v1/features", &sent);
+    if let Some(replayed) = jobs::replay(&shared, &caller, &headers, &fingerprint).await? {
+        return Ok(replayed);
+    }
     let sha256 = request::sha256_ref(&body.upload, "upload")?;
     let bytes = super::nameable(&shared, caller.user.key, &sha256).await?;
     let (request, request_sha256) = request::normalized(&FeaturesJob {
@@ -34,7 +40,8 @@ pub(super) async fn create(
         request,
         request_sha256,
         inputs: vec![(sha256, bytes)],
-        fingerprint: request::fingerprint("POST", "/v1/features", &sent),
+        fingerprint,
+        cites: Vec::new(),
     };
     jobs::submit(&shared, &caller, &headers, &request_id, submission).await
 }

@@ -1278,9 +1278,51 @@ async fn event_streams_are_capped_per_user_and_in_all() {
     drop((second, bob));
 }
 
+/// JS10, JB11 (decided in PR 5's review): a wait holds one of its user's
+/// stream slots while it waits, so past `jobs.streams_per_user` a
+/// `?wait=N` or a `Prefer: wait=N` submission is `429 too_many_streams`,
+/// the latter before any row; a wait of zero takes no slot; a slot given
+/// back serves the wait.
+#[tokio::test]
+async fn waits_count_against_the_stream_cap() {
+    let (server, tokens, sha) = jobs_world(|c| c.jobs.streams_per_user = 1);
+    server.server().hold_jobs();
+    let job = server.send(submission(&sha, &tokens[0])).await.json();
+    let id = job["id"].as_str().unwrap().to_owned();
+    let stream = server
+        .open(Call::get(&format!("/v1/jobs/{id}/events")).bearer(&tokens[0]))
+        .await;
+    assert_eq!(stream.status(), 200);
+    let poll = |wait: u32| Call::get(&format!("/v1/jobs/{id}?wait={wait}")).bearer(&tokens[0]);
+    assert_eq!(server.send(poll(5)).await.code(), "too_many_streams");
+    assert_eq!(server.send(poll(0)).await.status, 200, "no wait, no slot");
+    let rows = job_rows(&server);
+    let waiting = submission(&sha, &tokens[0]).header("prefer", "wait=5");
+    assert_eq!(server.send(waiting).await.code(), "too_many_streams");
+    assert_eq!(job_rows(&server), rows, "refused before any row");
+    drop(stream);
+    server.server().resume_jobs();
+    let start = Instant::now();
+    loop {
+        let reply = server.send(poll(5)).await;
+        if reply.status == 200 {
+            assert_eq!(reply.json()["state"], "succeeded");
+            break;
+        }
+        assert_eq!(reply.code(), "too_many_streams");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the slot never came back"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
 /// JB7, JS8, SN7, VT41's deadline case: a job past its deadline is made
 /// `cancelling`, then, when its call returns, `failed`,
-/// `deadline_exceeded`, with no document and no verdict.
+/// `deadline_exceeded`, with no document and no verdict; a cancel in
+/// between changes neither (`202`, the first reason stands: review S7 of
+/// PR 5), and its key is kept (JB9).
 #[tokio::test]
 async fn a_job_past_its_deadline_fails_with_no_document() {
     let (server, tokens, sha) = jobs_world(|_| {});
@@ -1288,7 +1330,8 @@ async fn a_job_past_its_deadline_fails_with_no_document() {
     seams.jobs.set_deadline(Duration::from_millis(200));
     let gate = Gate::new();
     seams.hooks.set("job.read", Action::Pause(gate.clone()));
-    let job = server.send(submission(&sha, &tokens[0])).await.json();
+    let keyed = submission(&sha, &tokens[0]).header("idempotency-key", "late");
+    let job = server.send(keyed.clone()).await.json();
     let id = job["id"].as_str().unwrap().to_owned();
     assert!(gate.arrived(1, Duration::from_secs(30)).await);
     let events = Call::get(&format!("/v1/jobs/{id}/events")).bearer(&tokens[0]);
@@ -1298,7 +1341,16 @@ async fn a_job_past_its_deadline_fails_with_no_document() {
     })
     .await;
     assert_eq!(seen.last().unwrap()["state"], "cancelling");
+    // Review S7 of PR 5: a cancel after the deadline leaves its reason.
+    let cancel = Call::new(Method::POST, &format!("/v1/jobs/{id}/cancel")).bearer(&tokens[0]);
+    let cancelling = server.send(cancel).await;
     gate.open();
+    assert_eq!(cancelling.status, 202);
+    assert_eq!(
+        cancelling.json()["cancel_requested"],
+        false,
+        "the first reason stands"
+    );
     let ended = support::lines(&mut body, Duration::from_secs(30), |e| e["type"] == "end").await;
     let end = ended.last().unwrap();
     assert_eq!(end["state"], "failed");
@@ -1313,6 +1365,12 @@ async fn a_job_past_its_deadline_fails_with_no_document() {
         job["exit_code"],
         serde_json::Value::Null,
         "no CLI run passes a deadline"
+    );
+    let again = server.send(keyed).await;
+    assert_eq!(
+        again.json()["id"],
+        id.as_str(),
+        "JB9: a deadline's end keeps its key"
     );
 }
 

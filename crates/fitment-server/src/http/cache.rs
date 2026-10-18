@@ -126,7 +126,7 @@ pub(crate) fn object_error(sha256: &str, error: &ObjectError) -> ApiError {
 }
 
 /// The contract's headers on `response` (DC4, VN5, HX6).
-fn headers(response: &mut Response, served: &Served, etag: &str, body: &[u8], gz: bool) {
+fn headers(response: &mut Response, served: &Served, etag: &str, digest: &str, gz: bool) {
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
@@ -152,12 +152,7 @@ fn headers(response: &mut Response, served: &Served, etag: &str, body: &[u8], gz
     if let Ok(value) = HeaderValue::from_str(etag) {
         headers.insert(header::ETAG, value);
     }
-    let digest = if gz || !body.is_empty() || served.bytes == 0 {
-        json::repr_digest(body)
-    } else {
-        format!("sha-256=:{}:", json::base64(&unhex(&served.sha256)))
-    };
-    if let Ok(value) = HeaderValue::from_str(&digest) {
+    if let Ok(value) = HeaderValue::from_str(digest) {
         headers.insert("repr-digest", value);
     }
     headers.insert(
@@ -183,15 +178,24 @@ fn unhex(hex: &str) -> Vec<u8> {
         .collect()
 }
 
-/// Sends `served` (OB3): within the one-buffer cap, read whole and
-/// checked, gzipped if the client asks; above it, hashed in one pass and
+/// The largest object sent from one buffer (review S1 of PR 5): above it
+/// a download is streamed, so an unread response holds at most this many
+/// bytes of the object, and only these are gzipped (DC6).
+pub const SEND_BUFFER_MAX: u64 = 1024 * 1024;
+
+/// The bytes each streamed read takes (OB3's second pass).
+const CHUNK: usize = 256 * 1024;
+
+/// Sends `served` (OB3): within [`SEND_BUFFER_MAX`] (and the store's
+/// one-buffer cap), read whole and checked into one buffer, sent without a
+/// copy and gzipped if the client asks; above it, hashed in one pass and
 /// streamed in a second that fails on a change, never gzipped.
 pub(crate) async fn object(
     shared: &Arc<Shared>,
     request: &HeaderMap,
     served: Served,
 ) -> Result<Response, ApiError> {
-    let small = served.bytes <= shared.objects.one_buffer_max();
+    let small = served.bytes <= SEND_BUFFER_MAX.min(shared.objects.one_buffer_max());
     let gz = small && wants_gzip(request);
     let etag = if gz {
         format!("\"sha256:{}-gz\"", served.sha256)
@@ -217,13 +221,16 @@ pub(crate) async fn object(
         }
     })
     .await?;
-    let mut response = (StatusCode::OK, Body::from(body.clone())).into_response();
-    headers(&mut response, &served, &etag, &body, gz);
+    let digest = json::repr_digest(&body);
+    let mut response = (StatusCode::OK, Body::from(Bytes::from(body))).into_response();
+    headers(&mut response, &served, &etag, &digest, gz);
     Ok(response)
 }
 
-/// OB3's two passes, the second fed to the body from the blocking pool;
-/// a client gone stops the reader (VT13).
+/// OB3's two passes, the second fed to the body by an async task: each
+/// chunk is read in its own short blocking call and sent outside it, so no
+/// blocking thread ever waits for a client (review R of PR 5); a client
+/// gone stops the reader (VT13).
 async fn streamed(shared: &Arc<Shared>, served: Served, etag: &str) -> Result<Response, ApiError> {
     let (opening, sha256, bytes) = (Arc::clone(shared), served.sha256.clone(), served.bytes);
     let reader = blocking(move || {
@@ -234,28 +241,38 @@ async fn streamed(shared: &Arc<Shared>, served: Served, etag: &str) -> Result<Re
     })
     .await?;
     let (body, out) = ChannelBody::new(4);
-    tokio::task::spawn_blocking(move || {
+    tokio::spawn(async move {
         let mut reader = reader;
-        let mut buf = vec![0_u8; 256 * 1024];
         loop {
-            match reader.read_chunk(&mut buf) {
-                Ok(0) => return,
-                Ok(n) => {
-                    if out
-                        .blocking_send(Ok(Bytes::copy_from_slice(&buf[..n])))
-                        .is_err()
-                    {
+            let read = tokio::task::spawn_blocking(move || {
+                let mut buf = vec![0_u8; CHUNK];
+                let read = reader.read_chunk(&mut buf).map(|n| {
+                    buf.truncate(n);
+                    buf
+                });
+                (reader, read)
+            })
+            .await;
+            let Ok((back, read)) = read else {
+                return;
+            };
+            reader = back;
+            match read {
+                Ok(chunk) if chunk.is_empty() => return,
+                Ok(chunk) => {
+                    if out.send(Ok(Bytes::from(chunk))).await.is_err() {
                         return;
                     }
                 }
                 Err(error) => {
-                    let _ = out.blocking_send(Err(error));
+                    let _ = out.send(Err(error)).await;
                     return;
                 }
             }
         }
     });
     let mut response = (StatusCode::OK, Body::new(body)).into_response();
-    headers(&mut response, &served, etag, &[], false);
+    let digest = format!("sha-256=:{}:", json::base64(&unhex(&served.sha256)));
+    headers(&mut response, &served, etag, &digest, false);
     Ok(response)
 }

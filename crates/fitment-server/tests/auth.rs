@@ -118,13 +118,13 @@ async fn own(server: &TestServer, token: &str, user: i64) -> Owned {
         .next()
         .unwrap()
         .to_owned();
-    let queued = support::seed_job_input(server, user, &shas[1], "features", "queued");
+    let _ = user;
     Owned {
         assembly: shas[0].clone(),
         spare: shas[1].clone(),
         line,
         job: job["id"].as_str().unwrap().to_owned(),
-        queued,
+        queued: String::new(),
     }
 }
 
@@ -135,6 +135,26 @@ async fn seed_owned(world: &mut World) {
         world.owned.insert(who, owned);
     }
     world.other_owned = Some(own(&world.server, &world.other_token, world.other.key).await);
+    // The cancel's targets, seeded queued (on each user's upload, not an
+    // assembly a delete targets) with the dispatcher held, so its
+    // reconciliation leaves them queued.
+    world.server.server().hold_jobs();
+    let users: Vec<(Who, i64)> = world.users.iter().map(|(w, u)| (*w, u.key)).collect();
+    for (who, key) in users {
+        if let Some(owned) = world.owned.get_mut(&who) {
+            owned.queued = support::seed_job_input(
+                &world.server,
+                key,
+                &world.uploads[&who],
+                "features",
+                "queued",
+            );
+        }
+    }
+    let (other, upload) = (world.other.key, world.other_upload.clone());
+    if let Some(owned) = world.other_owned.as_mut() {
+        owned.queued = support::seed_job_input(&world.server, other, &upload, "features", "queued");
+    }
 }
 
 /// True for an operation whose target is a PR 5 resource.

@@ -37,7 +37,7 @@ async fn carry_from(
     shared: &Arc<Shared>,
     owner: i64,
     carry: &CarryFrom,
-) -> Result<(Value, String, u64), ApiError> {
+) -> Result<(Value, String, u64, Option<i64>), ApiError> {
     match carry {
         CarryFrom::Revision(text) => {
             let reference = SocketRef::parse(text)?;
@@ -51,6 +51,7 @@ async fn carry_from(
                 Value::String(exact),
                 revision.document_sha256,
                 revision.document_bytes,
+                Some(revision.key),
             ))
         }
         CarryFrom::Upload { upload } => {
@@ -75,6 +76,7 @@ async fn carry_from(
                 serde_json::json!({ "upload": format!("sha256:{sha256}") }),
                 sha256,
                 bytes,
+                None,
             ))
         }
     }
@@ -89,6 +91,11 @@ pub(super) async fn create(
     headers: HeaderMap,
     Sent(body, sent): Sent<SocketRequest>,
 ) -> Result<Response, ApiError> {
+    // JB9 (review S4 of PR 5): a key's replay before any reference.
+    let fingerprint = request::fingerprint("POST", "/v1/sockets", &sent);
+    if let Some(replayed) = jobs::replay(&shared, &caller, &headers, &fingerprint).await? {
+        return Ok(replayed);
+    }
     let sha256 = request::sha256_ref(&body.assembly, "assembly")?;
     if body.part.is_none() && body.occurrence.is_none() {
         return Err(ApiError::new(
@@ -105,10 +112,14 @@ pub(super) async fn create(
     let owner = caller.user.key;
     let assembly = super::assemblies::of(&shared, owner, sha256.clone()).await?;
     let mut inputs = vec![(sha256.clone(), assembly.bytes)];
+    let mut cites = Vec::new();
     let carry_from = match &body.carry_from {
         Some(carry) => {
-            let (normalized, object, bytes) = carry_from(&shared, owner, carry).await?;
+            let (normalized, object, bytes, revision) = carry_from(&shared, owner, carry).await?;
             inputs.push((object, bytes));
+            // OB4 (review S8 of PR 5): a carried revision is cited, so the
+            // sweep keeps it until the job ends.
+            cites.extend(revision);
             Some(normalized)
         }
         None => None,
@@ -125,7 +136,8 @@ pub(super) async fn create(
         request,
         request_sha256,
         inputs,
-        fingerprint: request::fingerprint("POST", "/v1/sockets", &sent),
+        fingerprint,
+        cites,
     };
     jobs::submit(&shared, &caller, &headers, &request_id, submission).await
 }

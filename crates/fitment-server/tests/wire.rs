@@ -197,7 +197,9 @@ async fn a_client_gone_mid_download_or_mid_stream_changes_nothing() {
 }
 
 /// OP6: `metrics.listen` serves Prometheus text at `/metrics` on its own
-/// port, without authentication; any other path there is `404`.
+/// port, without authentication; any other path there is `404`; past
+/// sixteen open at once, a connection is closed at accept
+/// (review S11 of PR 5).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metrics_are_served_on_their_own_listener() {
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -234,5 +236,128 @@ async fn metrics_are_served_on_their_own_listener() {
         .await
         .unwrap();
     assert_eq!(other.status, 404);
+    // Review S11 of PR 5: past its cap, a connection is closed at accept.
+    let mut idle = Vec::new();
+    for _ in 0..16 {
+        // net.rs's METRICS_CONNECTIONS.
+        idle.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut extra = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut byte = [0_u8; 1];
+    let read = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::io::AsyncReadExt::read(&mut extra, &mut byte),
+    )
+    .await;
+    assert!(
+        matches!(read, Ok(Ok(0) | Err(_))),
+        "the extra connection was served: {read:?}"
+    );
+    drop(idle);
+    let start = Instant::now();
+    loop {
+        let reply = support::try_wire(addr, &Call::get("/metrics").anonymous()).await;
+        if reply.is_some_and(|r| r.status == 200) {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the slots never came back"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     server.stop().await;
+}
+
+/// Bytes that are no STEP file, of `n` bytes, distinct per `seed`.
+fn junk(n: u32, seed: u8) -> Vec<u8> {
+    (0..n)
+        .map(|i| u8::try_from(i % 251).unwrap() ^ seed)
+        .collect()
+}
+
+/// Review S1 of PR 5, DC6, OB3: an object above `SEND_BUFFER_MAX` (1 MiB)
+/// is streamed (no `Content-Length`, chunked) and never gzipped, its bytes
+/// and `Repr-Digest` the object's; one within it is sent from one buffer
+/// (`Content-Length`) and gzipped on request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_large_object_is_streamed_and_a_small_one_buffered() {
+    let dirs = Dirs::new();
+    let config = dirs.config();
+    let server = TestServer::bound(dirs, config).await;
+    for (bytes, streamed) in [(junk(2 << 20, 1), true), (junk(512 << 10, 2), false)] {
+        server.register(&bytes, "blob.stp").await;
+        let path = format!(
+            "/v1/assemblies/sha256:{}/step",
+            fitment_core::sha256_hex(&bytes)
+        );
+        let plain = server.get(&path).await;
+        assert_eq!(plain.body, bytes);
+        assert_eq!(
+            plain.header("content-length").is_none(),
+            streamed,
+            "{streamed}"
+        );
+        assert_eq!(
+            plain.header("repr-digest"),
+            Some(fitment_server::http::json::repr_digest(&bytes).as_str())
+        );
+        let asked = server
+            .send(Call::get(&path).header("accept-encoding", "gzip"))
+            .await;
+        assert_eq!(
+            asked.header("content-encoding").is_some(),
+            !streamed,
+            "{streamed}"
+        );
+    }
+}
+
+/// Review R of PR 5: downloads nobody reads hold no blocking thread. On a
+/// runtime of four blocking threads, twelve streamed downloads left unread
+/// (each past the socket's buffers) leave `GET /v1/jobs`, which needs the
+/// blocking pool, answering.
+#[test]
+fn unread_downloads_hold_no_blocking_thread() {
+    use std::io::Write as _;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(4)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let dirs = Dirs::new();
+        let config = dirs.config();
+        let server = TestServer::bound(dirs, config).await;
+        let bytes = junk(16 << 20, 3);
+        server.register(&bytes, "big.stp").await;
+        // The store's one-buffer cap lowered, so a build that streamed only
+        // above it streams these too.
+        server.server().seams().objects.set_one_buffer_max(1 << 20);
+        let token = server.token().to_owned();
+        let path = format!(
+            "/v1/assemblies/sha256:{}/step",
+            fitment_core::sha256_hex(&bytes)
+        );
+        let mut held = Vec::new();
+        for _ in 0..12 {
+            let mut stream = std::net::TcpStream::connect(server.addr()).unwrap();
+            write!(
+                stream,
+                "GET {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\n\r\n"
+            )
+            .unwrap();
+            held.push(stream);
+        }
+        // Long enough for the downloads to fill their sockets' buffers.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let listed =
+            tokio::time::timeout(Duration::from_secs(10), server.send(Call::get("/v1/jobs")))
+                .await
+                .expect("GET /v1/jobs answers beside unread downloads");
+        assert_eq!(listed.status, 200);
+        drop(held);
+    });
 }

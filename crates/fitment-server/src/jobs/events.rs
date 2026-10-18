@@ -37,11 +37,47 @@ pub(crate) const CAPACITY: usize = 1024;
 /// At most ten progress events a second per job (JB8).
 pub(crate) const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
+/// Each job's live-event sender, by its key.
+type Senders = Arc<Mutex<HashMap<i64, broadcast::Sender<Live>>>>;
+
 /// Live events and progress, per job.
 #[derive(Debug, Default)]
 pub(crate) struct Channels {
-    senders: Mutex<HashMap<i64, broadcast::Sender<Live>>>,
+    senders: Senders,
     progress: Mutex<HashMap<i64, (Progress, Instant)>>,
+}
+
+/// A receiver of one job's live events; dropping the last drops its
+/// channel, however the stream or wait holding it ended (review S10 of
+/// PR 5).
+#[derive(Debug)]
+pub(crate) struct Subscription {
+    senders: Senders,
+    key: i64,
+    rx: Option<broadcast::Receiver<Live>>,
+}
+
+impl Subscription {
+    /// The next live event, as `broadcast::Receiver::recv`.
+    pub async fn recv(&mut self) -> Result<Live, broadcast::error::RecvError> {
+        match &mut self.rx {
+            Some(rx) => rx.recv().await,
+            None => Err(broadcast::error::RecvError::Closed),
+        }
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        drop(self.rx.take());
+        let mut senders = lock(&self.senders);
+        if senders
+            .get(&self.key)
+            .is_some_and(|s| s.receiver_count() == 0)
+        {
+            senders.remove(&self.key);
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -61,19 +97,15 @@ fn kind_of(name: &str) -> &'static str {
 
 impl Channels {
     /// A receiver of job `key`'s live events.
-    pub fn subscribe(&self, key: i64) -> broadcast::Receiver<Live> {
-        lock(&self.senders)
+    pub fn subscribe(&self, key: i64) -> Subscription {
+        let rx = lock(&self.senders)
             .entry(key)
             .or_insert_with(|| broadcast::channel(CAPACITY).0)
-            .subscribe()
-    }
-
-    /// Drops job `key`'s channel when no one listens and the job is not
-    /// live (a stream or a wait on a job that had ended).
-    pub fn release(&self, key: i64, live: bool) {
-        let mut senders = lock(&self.senders);
-        if !live && senders.get(&key).is_some_and(|s| s.receiver_count() == 0) {
-            senders.remove(&key);
+            .subscribe();
+        Subscription {
+            senders: Arc::clone(&self.senders),
+            key,
+            rx: Some(rx),
         }
     }
 
@@ -236,6 +268,10 @@ impl hyper::body::Body for ChannelBody {
     }
 }
 
+/// A job's persisted events after a `seq`, read from `server.db`; called
+/// on a blocking thread.
+pub(crate) type Refill = Arc<dyn Fn(i64) -> Vec<EventRow> + Send + Sync>;
+
 /// What a stream forwards, after its replay (JS10).
 pub(crate) struct Forward {
     /// The job's id.
@@ -243,7 +279,9 @@ pub(crate) struct Forward {
     /// The last persisted `seq` sent.
     pub last: i64,
     /// Live events.
-    pub live: broadcast::Receiver<Live>,
+    pub live: Subscription,
+    /// Rereads what a gap in the live `seq`s skipped (review S6 of PR 5).
+    pub refill: Refill,
     /// The server's drain (SD1).
     pub shutdown: watch::Receiver<bool>,
     /// The heartbeat's interval (15 s; a seam shortens it).
@@ -260,8 +298,37 @@ impl Forward {
             .is_ok()
     }
 
+    /// Sends the persisted `rows` past `last`, in order: `None` if the
+    /// client left, else whether the `end` event was among them.
+    pub async fn rows(&mut self, rows: &[EventRow]) -> Option<bool> {
+        for row in rows {
+            if row.seq <= self.last {
+                continue;
+            }
+            if !self.send(&documents::event_line(&self.job, row)).await {
+                return None;
+            }
+            self.last = row.seq;
+            if row.kind == "end" {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+
+    /// Sends what `server.db` holds past `last` (review S6, S9 of PR 5),
+    /// as [`Forward::rows`].
+    pub async fn catch_up(&mut self) -> Option<bool> {
+        let (refill, last) = (Arc::clone(&self.refill), self.last);
+        let rows = crate::http::blocking(move || Ok(refill(last)))
+            .await
+            .unwrap_or_default();
+        self.rows(&rows).await
+    }
+
     /// Forwards live events until the `end` event, the drain, or the
-    /// client's leaving (JS10): persisted ones past `last` only; `lagged`
+    /// client's leaving (JS10): persisted ones past `last` only, in `seq`
+    /// order, a gap filled from `server.db` (review S6 of PR 5); `lagged`
     /// when the reader fell behind; a heartbeat when idle.
     pub async fn run(mut self) {
         loop {
@@ -284,6 +351,12 @@ impl Forward {
                     }
                 }
                 Ok(Ok(event)) => {
+                    if event.seq.is_some_and(|s| s > self.last.saturating_add(1)) {
+                        match self.catch_up().await {
+                            None | Some(true) => return,
+                            Some(false) => {}
+                        }
+                    }
                     if event.seq.is_some_and(|s| s <= self.last) {
                         continue;
                     }
@@ -324,6 +397,46 @@ mod tests {
         }
     }
 
+    fn row(seq: i64, kind: &str) -> EventRow {
+        EventRow {
+            job: 1,
+            seq,
+            at_ms: 0,
+            kind: kind.into(),
+            data: "{}".into(),
+        }
+    }
+
+    /// `receiver`'s events forwarded after `last`, `refill` reading
+    /// `rows`: the lines sent.
+    async fn forwarded(
+        receiver: broadcast::Receiver<Live>,
+        last: i64,
+        rows: Vec<EventRow>,
+    ) -> Vec<String> {
+        let (out, mut rx) = mpsc::channel(16);
+        let (_drain, shutdown) = watch::channel(false);
+        let forward = Forward {
+            job: "j_x".into(),
+            last,
+            live: Subscription {
+                senders: Senders::default(),
+                key: 1,
+                rx: Some(receiver),
+            },
+            refill: Arc::new(move |after| rows.iter().filter(|r| r.seq > after).cloned().collect()),
+            shutdown,
+            heartbeat: Duration::from_secs(60),
+            out,
+        };
+        forward.run().await;
+        let mut lines = Vec::new();
+        while let Ok(Ok(bytes)) = rx.try_recv() {
+            lines.push(String::from_utf8(bytes.to_vec()).unwrap());
+        }
+        lines
+    }
+
     /// JS10: a reader that fell behind gets one `lagged` line, with how
     /// many it missed, and goes on from the next event to the end; an event
     /// it already replayed is not sent twice.
@@ -334,21 +447,7 @@ mod tests {
             sender.send(live(seq, "state")).unwrap();
         }
         sender.send(live(6, "end")).unwrap();
-        let (out, mut rx) = mpsc::channel(16);
-        let (_drain, shutdown) = watch::channel(false);
-        let forward = Forward {
-            job: "j_x".into(),
-            last: 5,
-            live: receiver,
-            shutdown,
-            heartbeat: Duration::from_secs(60),
-            out,
-        };
-        forward.run().await;
-        let mut lines = Vec::new();
-        while let Ok(Ok(bytes)) = rx.try_recv() {
-            lines.push(String::from_utf8(bytes.to_vec()).unwrap());
-        }
+        let lines = forwarded(receiver, 5, Vec::new()).await;
         assert!(lines[0].contains("\"type\":\"lagged\""), "{lines:?}");
         assert!(lines[0].contains("\"missed\":4"), "{lines:?}");
         assert!(!lines[0].contains("\"seq\""), "transient: no seq");
@@ -357,5 +456,42 @@ mod tests {
             ["{\"seq\":6}\n".to_owned()],
             "5 was replayed already"
         );
+    }
+
+    /// JS10, review S6 of PR 5: persisted events published out of order
+    /// reach the stream in `seq` order, none lost and none twice: a gap is
+    /// filled from `server.db`.
+    #[tokio::test]
+    async fn events_published_out_of_order_arrive_in_order() {
+        let (sender, receiver) = broadcast::channel(16);
+        for (seq, kind) in [(3, "state"), (2, "state"), (5, "end"), (4, "state")] {
+            sender.send(live(seq, kind)).unwrap();
+        }
+        let rows = (2..=5)
+            .map(|seq| row(seq, if seq == 5 { "end" } else { "state" }))
+            .collect();
+        let lines = forwarded(receiver, 1, rows).await;
+        let seqs: Vec<i64> = lines
+            .iter()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).unwrap()["seq"]
+                    .as_i64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(seqs, [2, 3, 4, 5], "{lines:?}");
+    }
+
+    /// Review S10 of PR 5: the last subscription dropped drops its job's
+    /// channel; one still held keeps it.
+    #[test]
+    fn the_last_subscription_drops_its_channel() {
+        let channels = Channels::default();
+        let first = channels.subscribe(1);
+        let second = channels.subscribe(1);
+        drop(first);
+        assert_eq!(lock(&channels.senders).len(), 1);
+        drop(second);
+        assert_eq!(lock(&channels.senders).len(), 0);
     }
 }

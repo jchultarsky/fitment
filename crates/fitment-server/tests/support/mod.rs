@@ -1010,7 +1010,8 @@ pub fn seed_job_input(
     let n: i64 = conn
         .query_row("SELECT count(*) FROM job", [], |r| r.get(0))
         .unwrap();
-    let id = format!("j_{:026}", n + 1);
+    // A range of their own: the server's fixed ids count from 1 too.
+    let id = format!("j_9{:025}", n + 1);
     conn.execute(
         "INSERT INTO job (id, owner, kind, lane, state, request, request_sha256, request_id,
                           created_ms)

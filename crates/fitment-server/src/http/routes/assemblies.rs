@@ -62,15 +62,17 @@ pub(super) async fn create(
     headers: HeaderMap,
     Sent(body, sent): Sent<AssemblyRequest>,
 ) -> Result<Response, ApiError> {
+    // JB9 (review S4 of PR 5): a key's replay first, before the no-job
+    // answer and before the references are checked.
+    let fingerprint = request::fingerprint("POST", "/v1/assemblies", &sent);
+    if let Some(replayed) = jobs::replay(&shared, &caller, &headers, &fingerprint).await? {
+        return Ok(replayed);
+    }
     let sha256 = request::sha256_ref(&body.upload, "upload")?;
     if let Some(name) = &body.file_name {
         request::file_name(name)?;
     }
     let bytes = super::nameable(&shared, caller.user.key, &sha256).await?;
-    let fingerprint = request::fingerprint("POST", "/v1/assemblies", &sent);
-    if let Some(replayed) = jobs::replay(&shared, &caller, &headers, &fingerprint).await? {
-        return Ok(replayed);
-    }
     let owner = caller.user.key;
     let found = of(&shared, owner, sha256.clone()).await.ok();
     if found
@@ -105,6 +107,7 @@ pub(super) async fn create(
         request_sha256,
         inputs: vec![(sha256, bytes)],
         fingerprint,
+        cites: Vec::new(),
     };
     jobs::submit(&shared, &caller, &headers, &request_id, submission).await
 }

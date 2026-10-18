@@ -115,6 +115,8 @@ pub(super) enum Revised {
     Retry,
     /// Another triple holds the id (RA4).
     Collision,
+    /// The owner's assembly is gone.
+    Gone,
 }
 
 const REVISION: &str = "r.key, r.line_id, r.n, r.how, r.verified,
@@ -339,6 +341,11 @@ pub(super) fn revise(
     if now.map(|r| r.key) != rows.base {
         return Ok(Revised::Retry);
     }
+    // Review S3 of PR 5, defence in depth: no revision of an assembly the
+    // owner no longer holds.
+    if live_assembly(tx, rows.owner, rows.assembly_sha256)?.is_none() {
+        return Ok(Revised::Gone);
+    }
     let Some(made) = &rows.revision else {
         return Ok(match now {
             Some(r) => Revised::Made(format!("/v1/sockets/{}@r{}", rows.line_id, r.n)),
@@ -474,9 +481,15 @@ impl Db {
         let Some(key) = live_assembly(&tx, owner, sha256)? else {
             return Ok(AssemblyDeleted::NotFound);
         };
+        // RA6, and review S3 of PR 5: a live line, or a job of the owner's
+        // that has not ended and names the bytes (an extraction queued on
+        // it), keeps the assembly.
         let used: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM socket_line WHERE owner = ?1 AND assembly_sha256 = ?2
-                            AND deleted_ms IS NULL)",
+                            AND deleted_ms IS NULL)
+                 OR EXISTS (SELECT 1 FROM job_input i JOIN job j ON j.key = i.job
+                            WHERE j.owner = ?1 AND i.sha256 = ?2
+                              AND j.state IN ('queued', 'running', 'cancelling'))",
             params![owner, sha256],
             |r| r.get(0),
         )?;
@@ -525,22 +538,6 @@ impl Db {
             conn.query_row(
                 &format!("SELECT {REVISION} FROM socket_revision r WHERE r.owner = ?1 AND r.line_id = ?2 AND r.n = ?3"),
                 params![owner, id, n],
-                revision_row,
-            )
-            .optional()
-        })
-    }
-
-    /// The revision a socket job of `job` made, if any (JS13).
-    ///
-    /// # Errors
-    ///
-    /// SQLite's.
-    pub fn revision_of_job(&self, job: i64) -> Result<Option<RevisionRow>, DbError> {
-        self.read(|conn| {
-            conn.query_row(
-                &format!("SELECT {REVISION} FROM socket_revision r WHERE r.job = ?1"),
-                [job],
                 revision_row,
             )
             .optional()

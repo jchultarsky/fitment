@@ -296,6 +296,8 @@ async fn a_jobs_inputs_hold_its_uploads_from_submission() {
         b"a match's candidate".as_slice(),
         b"a features job's".as_slice(),
     );
+    // Seeded rows the dispatcher must leave queued (its reconciliation).
+    server.server().hold_jobs();
     let mut jobs = Vec::new();
     for (bytes, kind) in [(matched, "match"), (read, "features")] {
         assert_eq!(
@@ -837,8 +839,9 @@ async fn a_job_holds_its_inputs_from_submission_to_its_end() {
 
 /// SD4, JB6, SD5, JS13: a start settles what the last process left, from
 /// `server.db` alone: a running pure job is queued again with its next
-/// attempt and runs; one on its second attempt is `interrupted`,
-/// retryable, its key released; a cancelled one is `cancelled`; one past
+/// attempt and runs; one on its second attempt is `interrupted`, not
+/// retryable (PR 5's review), its key released; a cancelled one is
+/// `cancelled`; one past
 /// its deadline `failed`, `deadline_exceeded`; an extraction whose
 /// revision committed ends with it and is not run again (one revision);
 /// queued jobs run in their order. XH12: each ends once, and stays so.
@@ -891,7 +894,10 @@ async fn a_start_settles_what_the_last_process_left() {
     let second = ended(&ids[1]).await;
     assert_eq!(second["state"], "interrupted");
     assert_eq!(second["error"]["code"], "job_interrupted");
-    assert_eq!(second["error"]["retryable"], true);
+    assert_eq!(
+        second["error"]["retryable"], false,
+        "a pure job's second attempt: PR 5's review"
+    );
     no_verdict(&second);
     let again = Call::json(Method::POST, "/v1/features", &features(&part))
         .header("idempotency-key", "key-1");
@@ -1074,6 +1080,48 @@ async fn a_graceful_stop_queues_a_running_job_again() {
     assert_eq!(job["state"], "succeeded", "{job}");
     assert_eq!(job["attempt"], 1, "SD1: a drain consumes no attempt");
     assert_eq!(server.document(&job).await.body, golden);
+    // Decided in PR 5's review: the drain's requeue is a persisted event.
+    let token = server.token().to_owned();
+    let mut replay = support::wire_open(
+        server.addr(),
+        &Call::get(&format!("/v1/jobs/{id}/events")).bearer(&token),
+    )
+    .await
+    .into_body();
+    let events = support::lines(&mut replay, Duration::from_secs(10), |e| e["type"] == "end").await;
+    let states: Vec<&str> = events.iter().filter_map(|e| e["state"].as_str()).collect();
+    assert_eq!(
+        states[..4],
+        ["queued", "running", "queued", "running"],
+        "{states:?}"
+    );
+}
+
+/// RA6, OB4, review S3 of PR 5: an assembly a job that has not ended
+/// names cannot be deleted (`409 assembly_in_use`), so an extraction
+/// queued on it runs on a registered assembly; once it ended and its line
+/// is gone, the delete is `204`.
+#[tokio::test]
+async fn an_assembly_a_queued_job_names_stays() {
+    let (server, sha) = registered().await;
+    server.server().hold_jobs();
+    let id = submit_extraction(&server, &sha).await;
+    let path = format!("/v1/assemblies/sha256:{sha}");
+    assert_eq!(
+        server.send(Call::new(Method::DELETE, &path)).await.code(),
+        "assembly_in_use"
+    );
+    server.server().resume_jobs();
+    let job = server.finished_job(&id, Duration::from_secs(30)).await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    let line = lines(&server).await[0]["id"].as_str().unwrap().to_owned();
+    server
+        .send(Call::new(Method::DELETE, &format!("/v1/sockets/{line}")))
+        .await;
+    assert_eq!(
+        server.send(Call::new(Method::DELETE, &path)).await.status,
+        204
+    );
 }
 
 /// UP7, OB3, SD4: a job reads each input checked against its name: an
@@ -1103,4 +1151,53 @@ async fn a_damaged_input_fails_its_job() {
     assert_eq!(job["error"]["code"], "blob_damaged");
     assert!(job["document"].is_null());
     no_verdict(&job);
+}
+
+/// JS11, review S2 of PR 5: a submission whose handler is cut after its
+/// commit (`job.submitted` delayed past a 1 s handler time: `503
+/// request_timeout`) is still queued and run, since the commit and the
+/// queueing run on their own task; and a queued row the dispatcher never
+/// held (as a failed start or a lost submission leaves one) is taken up at
+/// its next dispatch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_committed_job_runs_though_its_answer_was_lost() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.server.handler_timeout_seconds = 1;
+    let server = TestServer::in_process(dirs, config);
+    let (bytes, golden) = p01();
+    let sha = server.upload(&bytes).await;
+    let hooks = &server.server().seams().hooks;
+    hooks.set("job.submitted", Action::Delay(Duration::from_millis(2_000)));
+    let cut = server
+        .send(Call::json(Method::POST, "/v1/features", &features(&sha)))
+        .await;
+    assert_eq!(cut.code(), "request_timeout");
+    hooks.clear("job.submitted");
+    let listed = server.get("/v1/jobs").await.json();
+    let id = listed["items"][0]["id"].as_str().unwrap().to_owned();
+    let job = server.finished_job(&id, Duration::from_secs(30)).await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    assert_eq!(server.document(&job).await.body, golden);
+    // A queued row of server.db's alone.
+    let conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    let owner: i64 = conn
+        .query_row("SELECT owner FROM job WHERE id = ?1", [&id], |r| r.get(0))
+        .unwrap();
+    let orphan = support::seed_job_input(&server, owner, &sha, "features", "queued");
+    conn.execute(
+        "UPDATE job SET request = CAST(?2 AS BLOB) WHERE id = ?1",
+        rusqlite::params![
+            orphan,
+            json!({ "upload": format!("sha256:{sha}") }).to_string()
+        ],
+    )
+    .unwrap();
+    let next = server
+        .send(waiting("/v1/features", &features(&sha)))
+        .await
+        .json();
+    assert_eq!(next["state"], "succeeded");
+    let taken = server.finished_job(&orphan, Duration::from_secs(30)).await;
+    assert_eq!(taken["state"], "succeeded", "{taken}");
 }

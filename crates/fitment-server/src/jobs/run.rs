@@ -31,8 +31,9 @@ use crate::state::{
 pub(crate) enum Ran {
     /// It ended: its row and the events its end wrote.
     Ended(JobRow, Vec<EventRow>),
-    /// A drain stopped it: queued again, its attempt unchanged (SD1).
-    Requeued(JobRow),
+    /// A drain stopped it: queued again, its attempt unchanged, with its
+    /// `state` event (SD1).
+    Requeued(JobRow, Vec<EventRow>),
 }
 
 /// An end to write because a step could not go on.
@@ -71,14 +72,17 @@ pub(crate) fn conclude(
     finished: Finished,
 ) -> Result<Ran, DbError> {
     Ok(match finished {
-        Finished::Ended(row, events) if row.state == State::Queued && events.is_empty() => {
-            Ran::Requeued(row)
-        }
+        Finished::Ended(row, events) if row.state == State::Queued => Ran::Requeued(row, events),
         Finished::Ended(row, events) => Ran::Ended(row, events),
         Finished::Already(row) => Ran::Ended(row, Vec::new()),
-        Finished::Retry | Finished::Collision => {
-            tracing::error!(job = row.id, "a socket line's id names another triple");
-            let ending = internal(row.kind, "a socket line's id names another triple");
+        Finished::Retry | Finished::Collision | Finished::Gone => {
+            let what = if matches!(finished, Finished::Gone) {
+                "the job's assembly was deleted under it"
+            } else {
+                "a socket line's id names another triple"
+            };
+            tracing::error!(job = row.id, what, "a job could not commit its result");
+            let ending = internal(row.kind, what);
             return conclude(
                 shared,
                 row,

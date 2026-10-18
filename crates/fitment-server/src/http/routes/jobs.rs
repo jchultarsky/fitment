@@ -26,9 +26,9 @@ use crate::http::json::{self, Json};
 use crate::http::operations::Role as Needed;
 use crate::http::{RequestId, blocking, cache, db_error, query};
 use crate::jobs::documents::{self, FORMAT_VERSION, JOB_FORMAT};
-use crate::jobs::events::{ChannelBody, Forward};
+use crate::jobs::events::{ChannelBody, Forward, StreamSlot};
 use crate::jobs::model::{Kind, State as JobState, Stop};
-use crate::jobs::request::{self, PinRequest};
+use crate::jobs::request::{self, PinRequest, SocketRef};
 use crate::jobs::{self, Full};
 use crate::state::{Cancelled, JobRow, NewJob, Submitted};
 
@@ -43,6 +43,8 @@ pub(crate) struct Submission {
     pub inputs: Vec<(String, u64)>,
     /// JB9's fingerprint of the request as sent.
     pub fingerprint: String,
+    /// The socket revisions it cites (OB4's `job_cites`): a `carry_from`.
+    pub cites: Vec<i64>,
 }
 
 /// HX5: a job's id; anything else names nothing (`404`).
@@ -72,9 +74,16 @@ pub(crate) async fn find(
 }
 
 /// VN5: a job's ETag, `W/"j<seq>.<state>"`: its last persisted event and
-/// its state, so progress changes nothing.
+/// its state, so progress changes nothing; then `.p` when pinned and `.c`
+/// when a cancel was asked, which write no event (review S5 of PR 5).
 pub(crate) fn etag(row: &JobRow) -> String {
-    format!("W/\"j{}.{}\"", row.last_seq, row.state.name())
+    format!(
+        "W/\"j{}.{}{}{}\"",
+        row.last_seq,
+        row.state.name(),
+        if row.pinned { ".p" } else { "" },
+        if row.cancel_requested { ".c" } else { "" }
+    )
 }
 
 /// `fitment.job` answered with `status` (section 7.11).
@@ -103,6 +112,35 @@ pub(crate) async fn answer(shared: &Arc<Shared>, row: &JobRow, status: StatusCod
 /// `Preference-Applied` value when it was applied.
 fn wait_of(shared: &Shared, wanted: Option<u64>) -> Option<u64> {
     wanted.map(|n| n.min(u64::from(shared.config.limits.wait_max_seconds)))
+}
+
+/// JS10: `429 too_many_streams`, past a stream cap.
+fn too_many_streams() -> ApiError {
+    ApiError::new(
+        ErrorCode::TooManyStreams,
+        "you hold the most event streams a user may: close one",
+    )
+    .with("limit", "jobs.streams_per_user")
+    .retry_after(1)
+}
+
+/// JS10, JB11 (decided in PR 5's review): a wait of more than zero
+/// seconds holds one of the caller's stream slots while it waits, as an
+/// event stream does; past the cap it is `429 too_many_streams`.
+fn wait_slot(
+    shared: &Shared,
+    caller: &Principal,
+    wait: Option<u64>,
+) -> Result<Option<StreamSlot>, ApiError> {
+    match wait {
+        Some(seconds) if seconds > 0 => shared
+            .jobs
+            .streams
+            .take(caller.user.key)
+            .map(Some)
+            .ok_or_else(too_many_streams),
+        _ => Ok(None),
+    }
 }
 
 /// The answer to a job-creating request (JB11): `202` with the job, or,
@@ -201,8 +239,40 @@ async fn insert(
         .jobs
         .reserve(lane, owner)
         .map_err(|f| full(f, lane.name()))?;
-    let writing = Arc::clone(shared);
     let id = shared.ids.id("j");
+    tracing::Span::current().record("job", id.as_str());
+    // Review S2 of PR 5: the commit and what follows it (the job queued and
+    // dispatched) run on their own task, so a client gone or the handler's
+    // time spent cannot drop a committed job before it is queued.
+    let committing = Arc::clone(shared);
+    let task = tokio::spawn(async move {
+        commit(
+            &committing,
+            owner,
+            id,
+            key,
+            request_id,
+            submission,
+            reservation,
+        )
+        .await
+    });
+    task.await.unwrap_or_else(|_| Err(ApiError::internal()))
+}
+
+/// JS11: the job's row, inputs, citations and key in one transaction;
+/// then, for a new job, `job.submitted`, its first event, its queueing and
+/// a dispatch.
+async fn commit(
+    shared: &Arc<Shared>,
+    owner: i64,
+    id: String,
+    key: Option<String>,
+    request_id: String,
+    submission: Submission,
+    reservation: jobs::Reservation,
+) -> Result<(JobRow, bool), ApiError> {
+    let writing = Arc::clone(shared);
     let inputs: Vec<String> = submission.inputs.iter().map(|(s, _)| s.clone()).collect();
     let largest = submission.inputs.iter().map(|(_, b)| *b).max().unwrap_or(0);
     let submitted = blocking(move || {
@@ -216,6 +286,7 @@ async fn insert(
             request_id: &request_id,
             created_ms: writing.ids.now_ms(),
             inputs: &inputs,
+            cites: &submission.cites,
         };
         writing.db.submit_job(&new).map_err(|e| db_error(&e))
     })
@@ -227,7 +298,6 @@ async fn insert(
             let entry = shared.jobs.entry(&row, largest);
             shared.jobs.enqueue(reservation, entry);
             shared.jobs.kick(shared);
-            tracing::Span::current().record("job", row.id.as_str());
             Ok((row, true))
         }
         Submitted::Existing(row) => Ok((row, false)),
@@ -284,6 +354,7 @@ pub(crate) async fn replay(
         return Ok(None);
     };
     let wait = wait_of(shared, request::prefer_wait(headers));
+    let _slot = wait_slot(shared, caller, wait)?;
     created(shared, row, wait).await.map(Some)
 }
 
@@ -306,6 +377,7 @@ pub(crate) async fn submit(
     }
     let key = request::idempotency_key(headers)?;
     let wait = wait_of(shared, request::prefer_wait(headers));
+    let _slot = wait_slot(shared, caller, wait)?;
     let (row, _) = in_time(
         shared,
         insert(shared, caller, key, request_id.0.clone(), submission),
@@ -398,7 +470,9 @@ pub(super) async fn get(
         None => None,
     };
     let row = in_time(&shared, find(&shared, &caller, job_id(&id)?)).await?;
-    let row = match wait_of(&shared, wait) {
+    let wait = wait_of(&shared, wait);
+    let _slot = wait_slot(&shared, &caller, wait)?;
+    let row = match wait {
         Some(seconds) => jobs::wait(&shared, row, Duration::from_secs(seconds)).await,
         None => row,
     };
@@ -429,12 +503,7 @@ pub(super) async fn events(
     };
     let row = find(&shared, &caller, job_id(&id)?).await?;
     let Some(slot) = shared.jobs.streams.take(caller.user.key) else {
-        return Err(ApiError::new(
-            ErrorCode::TooManyStreams,
-            "you hold the most event streams a user may: close one",
-        )
-        .with("limit", "jobs.streams_per_user")
-        .retry_after(1));
+        return Err(too_many_streams());
     };
     let live = shared.jobs.channels.subscribe(row.key);
     let (reading, key) = (Arc::clone(&shared), row.key);
@@ -446,12 +515,12 @@ pub(super) async fn events(
     })
     .await?;
     let (body, out) = ChannelBody::new(16);
-    let ended = replay.iter().any(|e| e.kind == "end");
-    let last = replay.last().map_or(after, |e| e.seq);
-    let forward = Forward {
+    let reading = Arc::clone(&shared);
+    let mut forward = Forward {
         job: row.id.clone(),
-        last,
+        last: after,
         live,
+        refill: Arc::new(move |after| reading.db.events_after(key, after).unwrap_or_default()),
         shutdown: shared.jobs.shutdown_signal(),
         heartbeat: shared.jobs.heartbeat(),
         out,
@@ -459,19 +528,16 @@ pub(super) async fn events(
     let streaming = Arc::clone(&shared);
     tokio::spawn(async move {
         let _slot = slot;
-        for event in &replay {
-            let text = documents::event_line(&forward.job, event);
-            if forward.out.send(Ok(text.into())).await.is_err() {
-                return;
-            }
+        if forward.rows(&replay).await != Some(false) || *forward.shutdown.borrow() {
+            return;
         }
-        if !ended && !*forward.shutdown.borrow() {
-            forward.run().await;
-        } else {
-            drop(forward);
+        // Review S9 of PR 5: a job that ended, its `end` at or before
+        // `after`, has nothing live to wait for.
+        if jobs::reread(&streaming, &row).await.state.terminal() {
+            let _ = forward.catch_up().await;
+            return;
         }
-        let live = streaming.jobs.live(key);
-        streaming.jobs.channels.release(key, live);
+        forward.run().await;
     });
     let mut response = (StatusCode::OK, axum::body::Body::new(body)).into_response();
     response.headers_mut().insert(
@@ -502,14 +568,28 @@ pub(super) async fn document(
             "the job produced no document: see its state and error",
         ));
     };
-    let digest = if matches!(row.kind, Kind::SocketExtract | Kind::SocketImport) {
-        let (reading, key) = (Arc::clone(&shared), row.key);
-        blocking(move || reading.db.revision_of_job(key).map_err(|e| db_error(&e)))
+    // DC4 (review of PR 5): the digest of the revision `result` names,
+    // which an `unchanged` extraction did not make.
+    let named = row
+        .result
+        .as_deref()
+        .and_then(|href| href.strip_prefix("/v1/sockets/"))
+        .and_then(|name| SocketRef::parse(name).ok())
+        .filter(|_| matches!(row.kind, Kind::SocketExtract | Kind::SocketImport));
+    let digest = match named {
+        Some(reference) => {
+            let (reading, owner) = (Arc::clone(&shared), row.owner);
+            blocking(move || {
+                reading
+                    .db
+                    .revision(owner, &reference.id, reference.n)
+                    .map_err(|e| db_error(&e))
+            })
             .await?
             .map(|r| r.document_digest)
             .filter(|d| !d.is_empty())
-    } else {
-        None
+        }
+        None => None,
     };
     let served = cache::Served {
         sha256,

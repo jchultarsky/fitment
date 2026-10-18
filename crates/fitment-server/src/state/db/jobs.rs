@@ -108,6 +108,8 @@ pub struct NewJob<'a> {
     pub created_ms: i64,
     /// Every object it names, held from now until it ends (OB4).
     pub inputs: &'a [String],
+    /// The socket revisions it cites (OB4's `job_cites`), held as long.
+    pub cites: &'a [i64],
 }
 
 /// How a submission ended (JB9).
@@ -233,6 +235,8 @@ pub enum Finished {
     /// Another triple holds the line's id in the owner's namespace (RA4):
     /// a collision, `internal`.
     Collision,
+    /// The owner's assembly was deleted under the job: nothing written.
+    Gone,
 }
 
 /// What a cancel did (JB5).
@@ -429,6 +433,12 @@ impl Db {
                 params![key, i64::try_from(n).unwrap_or(i64::MAX), sha256],
             )?;
         }
+        for revision in new.cites {
+            tx.execute(
+                "INSERT OR IGNORE INTO job_cites (job, revision) VALUES (?1, ?2)",
+                params![key, revision],
+            )?;
+        }
         let event = append(
             &tx,
             key,
@@ -608,7 +618,8 @@ impl Db {
 
     /// JB5: a cancel of job `key`. A queued job ends `cancelled` at once
     /// (`end` gives its end event's data); a running one becomes
-    /// `cancelling`, `cancel_requested` set; one that ended is left.
+    /// `cancelling`, `cancel_requested` set; one `cancelling` already, by a
+    /// cancel or its deadline, and one that ended are left.
     ///
     /// # Errors
     ///
@@ -639,17 +650,16 @@ impl Db {
                 tx.commit()?;
                 Ok(Cancelled::Ended(row, events))
             }
-            State::Running | State::Cancelling => {
+            State::Running => {
                 tx.execute("UPDATE job SET cancel_requested = 1 WHERE key = ?1", [key])?;
-                let event = if row.state == State::Running {
-                    Some(set_state(&tx, key, State::Cancelling, row.attempt, now_ms)?)
-                } else {
-                    None
-                };
+                let event = set_state(&tx, key, State::Cancelling, row.attempt, now_ms)?;
                 let row = by_key(&tx, key)?;
                 tx.commit()?;
-                Ok(Cancelled::Cancelling(row, event))
+                Ok(Cancelled::Cancelling(row, Some(event)))
             }
+            // JB5, JB7 (review S7 of PR 5): the first reason stands, so a
+            // deadline's `cancelling` stays a deadline's.
+            State::Cancelling => Ok(Cancelled::Cancelling(row, None)),
             _ => Ok(Cancelled::Finished(row)),
         }
     }
@@ -673,8 +683,9 @@ impl Db {
     }
 
     /// SD1: a pure job stopped by a drain goes back to `queued`, its
-    /// attempt unchanged and no event written, since a drain is not the
-    /// job's doing; a stop that committed first ends it as JB5 says.
+    /// attempt unchanged, since a drain is not the job's doing, with its
+    /// `state` event (decided in PR 5's review); a stop that committed first
+    /// ends it as JB5 says.
     ///
     /// # Errors
     ///
@@ -693,13 +704,13 @@ impl Db {
         let ending = match row.state {
             State::Running => {
                 tx.execute(
-                    "UPDATE job SET state = 'queued', started_ms = NULL, deadline_ms = NULL
-                     WHERE key = ?1",
+                    "UPDATE job SET started_ms = NULL, deadline_ms = NULL WHERE key = ?1",
                     [key],
                 )?;
+                let event = set_state(&tx, key, State::Queued, row.attempt, now_ms)?;
                 let row = by_key(&tx, key)?;
                 tx.commit()?;
-                return Ok(Finished::Ended(row, Vec::new()));
+                return Ok(Finished::Ended(row, vec![event]));
             }
             State::Cancelling if row.cancel_requested => &stopped.cancelled,
             State::Cancelling => &stopped.deadline,
@@ -760,6 +771,7 @@ impl Db {
                     Rows::Socket(s) => match super::assemblies::revise(&tx, s, row.key, now_ms)? {
                         super::assemblies::Revised::Retry => return Ok(Finished::Retry),
                         super::assemblies::Revised::Collision => return Ok(Finished::Collision),
+                        super::assemblies::Revised::Gone => return Ok(Finished::Gone),
                         super::assemblies::Revised::Made(href) => ending.result = Some(href),
                     },
                 }
@@ -1027,6 +1039,7 @@ fn write_end(
     }
     if row.kind != Kind::Match {
         tx.execute("DELETE FROM job_input WHERE job = ?1", [row.key])?;
+        tx.execute("DELETE FROM job_cites WHERE job = ?1", [row.key])?;
     }
     let state = append(
         tx,

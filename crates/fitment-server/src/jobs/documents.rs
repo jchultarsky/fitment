@@ -139,10 +139,13 @@ pub struct JobDocument {
 
 /// ER6: whether a job's error of `code` may succeed when submitted again:
 /// the registry's flag, but `job_interrupted` is not for a replace or a
-/// prune, whose client checks first (JB6).
+/// prune, whose client checks first (JB6), nor for a pure job, which ends
+/// so only once two attempts were stopped (SD5; decided in PR 5's review).
 pub fn retryable(code: ErrorCode, kind: Kind) -> bool {
     match code {
-        ErrorCode::JobInterrupted => !matches!(kind, Kind::CatalogReplace | Kind::CatalogPrune),
+        ErrorCode::JobInterrupted => {
+            !kind.pure() && !matches!(kind, Kind::CatalogReplace | Kind::CatalogPrune)
+        }
         _ => code.spec().retryable,
     }
 }
@@ -353,8 +356,8 @@ pub fn stopped(kind: Kind) -> Stopped {
 }
 
 /// JB6: a job the process stopped under that will not run again:
-/// `interrupted`, `job_interrupted`, retryable but for a replace or a
-/// prune (ER6).
+/// `interrupted`, `job_interrupted`, retryable as [`retryable`] says, its
+/// key released either way (JB9).
 pub fn interrupted(row: &JobRow) -> End {
     let mut details = serde_json::Map::new();
     details.insert("attempt".into(), row.attempt.into());
@@ -397,10 +400,13 @@ mod tests {
         assert_eq!(value["type"], "heartbeat");
     }
 
-    /// ER6: `job_interrupted` is retryable but for a replace or a prune.
+    /// ER6: `job_interrupted` is retryable but for a replace, a prune or
+    /// a pure job (its second attempt's: PR 5's review).
     #[test]
-    fn interrupted_is_retryable_but_for_replace_and_prune() {
+    fn interrupted_is_retryable_but_for_replace_prune_and_pure_jobs() {
         assert!(retryable(ErrorCode::JobInterrupted, Kind::CatalogIngest));
+        assert!(!retryable(ErrorCode::JobInterrupted, Kind::Features));
+        assert!(!retryable(ErrorCode::JobInterrupted, Kind::SocketExtract));
         assert!(!retryable(ErrorCode::JobInterrupted, Kind::CatalogReplace));
         assert!(!retryable(ErrorCode::JobInterrupted, Kind::CatalogPrune));
         assert!(!retryable(ErrorCode::DeadlineExceeded, Kind::Features));

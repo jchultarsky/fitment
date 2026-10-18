@@ -915,10 +915,52 @@ async fn a_deleted_line_revives_numbered_on() {
     );
 }
 
+/// OB4, RA9, review S8 of PR 5: a revision an extraction carries from is
+/// cited from its submission, so a sweep while the job is queued keeps it,
+/// its line deleted; the job runs on it and succeeds.
+#[tokio::test]
+async fn a_carried_revision_stays_until_its_job_ends() {
+    let server = TestServer::fresh();
+    let bytes = support::assembly(S02);
+    let sha = sha_of(&bytes);
+    server.register(&bytes, S02).await;
+    let first = server.extract(&sha, "BLOCK").await;
+    let href = first["result"]["href"].as_str().unwrap();
+    let carried = href.trim_start_matches("/v1/sockets/").to_owned();
+    let id = carried.split('@').next().unwrap().to_owned();
+    server.server().hold_jobs();
+    let body = json!({
+        "assembly": format!("sha256:{sha}"),
+        "part": "BLOCK",
+        "carry_from": carried,
+    });
+    let queued = server
+        .send(Call::json(Method::POST, "/v1/sockets", &body))
+        .await;
+    assert_eq!(queued.status, 202);
+    let delete = Call::new(Method::DELETE, &format!("/v1/sockets/{id}"));
+    assert_eq!(server.send(delete).await.status, 204);
+    let (_, revisions) = server.server().sweep_jobs().unwrap();
+    assert_eq!(revisions, 0, "the queued job cites it");
+    assert_eq!(
+        server.get(&format!("/v1/sockets/{carried}")).await.status,
+        200
+    );
+    server.server().resume_jobs();
+    let job = server
+        .finished_job(
+            queued.json()["id"].as_str().unwrap(),
+            Duration::from_secs(30),
+        )
+        .await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+}
+
 /// VT42, JB9: a key binds the request as sent: the same body again, or
 /// with its keys reordered and its spacing changed, is the same job (`202`
-/// while it runs, `200` once it ended); another body is `422`; a key whose
-/// job was cancelled is released, so it makes a new job.
+/// while it runs, `200` once it ended, and once its upload is gone, review
+/// S4 of PR 5); another body is `422`; a key whose job was cancelled is
+/// released, so it makes a new job.
 #[tokio::test]
 async fn a_key_binds_the_request_as_sent() {
     let server = TestServer::fresh();
@@ -950,6 +992,18 @@ async fn a_key_binds_the_request_as_sent() {
         (ended.status.as_u16(), ended.json()["id"].as_str()),
         (200, Some(id.as_str()))
     );
+    // Review S4 of PR 5: the replay stands once its input is gone.
+    let delete = Call::new(Method::DELETE, &format!("/v1/uploads/sha256:{sha}"));
+    assert_eq!(server.send(delete).await.status, 204);
+    let gone = server.send(keyed(&body, "k-1")).await;
+    assert_eq!(
+        (gone.status.as_u16(), gone.json()["id"].as_str()),
+        (200, Some(id.as_str())),
+        "{}",
+        String::from_utf8_lossy(&gone.body)
+    );
+    let sha = server.upload(&support::part("p01_through.stp")).await;
+    assert_eq!(body, format!(r#"{{"upload": "sha256:{sha}"}}"#));
     server.server().hold_jobs();
     let second = server.send(keyed(&body, "k-2")).await.json();
     let cancel = format!("/v1/jobs/{}/cancel", second["id"].as_str().unwrap());
@@ -970,9 +1024,10 @@ async fn a_key_binds_the_request_as_sent() {
 }
 
 /// VN5, review F6: a job's ETag is `W/"j<seq>.<state>"`, its last persisted
-/// event and its state: `If-None-Match` answers `304` until a persisted
-/// event or the state changes it; progress, which is transient, changes
-/// nothing.
+/// event and its state, `.p` when pinned and `.c` when a cancel was asked
+/// (review S5 of PR 5): `If-None-Match` answers `304` until a persisted
+/// event, the state or a pin changes it; progress, which is transient,
+/// changes nothing.
 #[tokio::test]
 async fn a_jobs_etag_follows_its_persisted_events() {
     let server = TestServer::fresh();
@@ -1000,7 +1055,20 @@ async fn a_jobs_etag_follows_its_persisted_events() {
         .send(Call::get(&path).header("if-none-match", &etag))
         .await;
     assert_eq!(after.status, 200);
-    assert_eq!(after.header("etag"), Some("W/\"j4.succeeded\""));
+    let done = after.header("etag").unwrap().to_owned();
+    assert_eq!(done, "W/\"j4.succeeded\"");
+    // Review S5 of PR 5: pinning, which writes no event, changes it too.
+    let pin = Call::json(
+        Method::POST,
+        &format!("{path}/pin"),
+        &json!({ "pinned": true }),
+    );
+    assert_eq!(server.send(pin).await.json()["pinned"], true);
+    let pinned = server
+        .send(Call::get(&path).header("if-none-match", &done))
+        .await;
+    assert_eq!(pinned.status, 200);
+    assert_eq!(pinned.header("etag"), Some("W/\"j4.succeeded.p\""));
 }
 
 /// The keys an event may carry: none states a verdict (M6-51).
@@ -1104,6 +1172,106 @@ async fn events_replay_then_follow_without_loss() {
     }
 }
 
+/// Waits up to ten seconds for every live-event channel to be dropped.
+async fn channels_close(server: &TestServer) {
+    let start = std::time::Instant::now();
+    while server.server().seams().jobs.channels_open() > 0 {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "a channel stayed open"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// JS10, review S9 of PR 5: a stream of a job that ended, `after` at or
+/// past its `end` event, ends at once: no heartbeat, no channel left.
+#[tokio::test]
+async fn a_stream_past_a_finished_jobs_end_closes() {
+    let server = TestServer::fresh();
+    let sha = server.upload(&support::part("p01_through.stp")).await;
+    server
+        .server()
+        .seams()
+        .jobs
+        .set_heartbeat(Duration::from_millis(50));
+    let body = json!({ "upload": format!("sha256:{sha}") });
+    let job = server
+        .send(support::waiting("/v1/features", &body))
+        .await
+        .json();
+    let id = job["id"].as_str().unwrap().to_owned();
+    let mut all = server
+        .open(Call::get(&format!("/v1/jobs/{id}/events")))
+        .await;
+    let events = support::lines(all.body_mut(), Duration::from_secs(10), |e| {
+        e["type"] == "end"
+    })
+    .await;
+    let end = events.last().unwrap()["seq"].as_i64().unwrap();
+    for after in [end, end + 5] {
+        let start = std::time::Instant::now();
+        let mut stream = server
+            .open(Call::get(&format!("/v1/jobs/{id}/events?after={after}")))
+            .await;
+        let lines = support::lines(stream.body_mut(), Duration::from_secs(5), |_| false).await;
+        assert!(
+            lines.is_empty(),
+            "after={after}: {} lines, the first {:?}",
+            lines.len(),
+            lines.first()
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "after={after}: it ended"
+        );
+    }
+    channels_close(&server).await;
+}
+
+/// JS10, review S10 of PR 5: a client that leaves while its stream's
+/// replay is still being sent (more lines than its body buffers) leaves
+/// no channel open.
+#[tokio::test]
+async fn a_stream_dropped_during_its_replay_leaves_no_channel() {
+    let server = TestServer::fresh();
+    let sha = server.upload(&support::part("p01_through.stp")).await;
+    server.server().hold_jobs();
+    let queued = server
+        .send(Call::json(
+            Method::POST,
+            "/v1/features",
+            &json!({ "upload": format!("sha256:{sha}") }),
+        ))
+        .await
+        .json();
+    let id = queued["id"].as_str().unwrap().to_owned();
+    {
+        let mut conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        let key: i64 = tx
+            .query_row("SELECT key FROM job WHERE id = ?1", [&id], |r| r.get(0))
+            .unwrap();
+        let note = format!(r#"{{"text":"{}"}}"#, "n".repeat(100));
+        for seq in 2..100_i64 {
+            tx.execute(
+                "INSERT INTO job_event (job, seq, at_ms, type, data) VALUES (?1, ?2, 0, 'note', ?3)",
+                rusqlite::params![key, seq, note],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let stream = server
+        .open(Call::get(&format!("/v1/jobs/{id}/events")))
+        .await;
+    assert_eq!(stream.status(), 200);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    drop(stream);
+    channels_close(&server).await;
+    server.server().resume_jobs();
+}
+
 /// RA3, RA6, RA8: an assembly is registered once per caller: again, its
 /// name added, with no job; the list and the document show it; its bytes
 /// download re-hashed, named by their hash (HX6); a refused assembly is
@@ -1165,6 +1333,35 @@ async fn assemblies_are_the_callers_registered_bytes() {
         204
     );
     assert_eq!(server.get(&path).await.code(), "not_found");
+}
+
+/// DC4, review of PR 5: an extraction `unchanged`, which made no
+/// revision, serves its document with the `Fitment-Digest` of the
+/// revision its `result` names, as the one that made it does.
+#[tokio::test]
+async fn an_unchanged_extraction_carries_its_revisions_digest() {
+    let server = TestServer::fresh();
+    let bytes = support::assembly(S02);
+    let sha = sha_of(&bytes);
+    server.register(&bytes, S02).await;
+    let first = server.extract(&sha, "BLOCK").await;
+    let body = json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK", "carry": false });
+    let again = server.send(waiting("/v1/sockets", &body)).await.json();
+    assert_eq!(again["outcome"], "unchanged");
+    assert_eq!(again["result"], first["result"]);
+    let golden = support::cli_golden("socket", "s02_cbore--BLOCK.json");
+    let digest: Value = serde_json::from_slice(&golden).unwrap();
+    for job in [&first, &again] {
+        let path = format!("/v1/jobs/{}/document", job["id"].as_str().unwrap());
+        let document = server.get(&path).await;
+        assert_eq!(document.body, golden);
+        assert_eq!(
+            document.header("fitment-digest"),
+            digest["digest"].as_str(),
+            "{}",
+            job["outcome"]
+        );
+    }
 }
 
 /// DC1, DC4 to DC6, VN5: a document is served with `Fitment-Format`,

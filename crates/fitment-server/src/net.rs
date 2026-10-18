@@ -339,6 +339,10 @@ async fn sweep(shared: Arc<Shared>) {
     }
 }
 
+/// OP6: the metrics listener's connections at once; one more is closed
+/// at accept (review S11 of PR 5).
+const METRICS_CONNECTIONS: usize = 16;
+
 /// OP6: the metrics listener on `metrics.listen`, if set: `GET /metrics`
 /// answers Prometheus text, without authentication, on its own port.
 async fn metrics_listener(shared: &Arc<Shared>) -> io::Result<Option<tokio::task::JoinHandle<()>>> {
@@ -349,38 +353,22 @@ async fn metrics_listener(shared: &Arc<Shared>) -> io::Result<Option<tokio::task
     let listener = TcpListener::bind(address.as_str()).await?;
     tracing::info!(address = %listener.local_addr()?, "metrics listening");
     let shared = Arc::clone(shared);
+    let slots = Arc::new(tokio::sync::Semaphore::new(METRICS_CONNECTIONS));
     Ok(Some(tokio::spawn(async move {
         loop {
+            // Review S11 of PR 5: an error such as EMFILE repeats at once,
+            // so the loop waits before it accepts again.
             let Ok((stream, _)) = listener.accept().await else {
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 continue;
             };
-            let serving = Arc::clone(&shared);
-            let service = hyper::service::service_fn(move |request: hyper::Request<Incoming>| {
-                let rendering = Arc::clone(&serving);
-                async move {
-                    let found = request.uri().path() == "/metrics";
-                    let text = if found {
-                        tokio::task::spawn_blocking(move || crate::metrics::render(&rendering))
-                            .await
-                            .unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    let mut response = hyper::Response::new(Body::from(text));
-                    if found {
-                        response.headers_mut().insert(
-                            hyper::header::CONTENT_TYPE,
-                            hyper::header::HeaderValue::from_static(
-                                "text/plain; version=0.0.4; charset=utf-8",
-                            ),
-                        );
-                    } else {
-                        *response.status_mut() = hyper::StatusCode::NOT_FOUND;
-                    }
-                    Ok::<_, std::convert::Infallible>(response)
-                }
-            });
+            let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+                drop(stream);
+                continue;
+            };
+            let service = metrics_service(&shared);
             tokio::spawn(async move {
+                let _slot = slot;
                 let _ = hyper::server::conn::http1::Builder::new()
                     .timer(TokioTimer::new())
                     .header_read_timeout(Duration::from_secs(10))
@@ -389,4 +377,43 @@ async fn metrics_listener(shared: &Arc<Shared>) -> io::Result<Option<tokio::task
             });
         }
     })))
+}
+
+/// OP6: `GET /metrics`'s text, `404` at any other path.
+fn metrics_service(
+    shared: &Arc<Shared>,
+) -> impl hyper::service::Service<
+    hyper::Request<Incoming>,
+    Response = hyper::Response<Body>,
+    Error = std::convert::Infallible,
+    Future = impl Future<Output = Result<hyper::Response<Body>, std::convert::Infallible>> + Send,
+> + Clone
++ Send
++ 'static {
+    let serving = Arc::clone(shared);
+    hyper::service::service_fn(move |request: hyper::Request<Incoming>| {
+        let rendering = Arc::clone(&serving);
+        async move {
+            let found = request.uri().path() == "/metrics";
+            let text = if found {
+                tokio::task::spawn_blocking(move || crate::metrics::render(&rendering))
+                    .await
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let mut response = hyper::Response::new(Body::from(text));
+            if found {
+                response.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    hyper::header::HeaderValue::from_static(
+                        "text/plain; version=0.0.4; charset=utf-8",
+                    ),
+                );
+            } else {
+                *response.status_mut() = hyper::StatusCode::NOT_FOUND;
+            }
+            Ok::<_, std::convert::Infallible>(response)
+        }
+    })
 }

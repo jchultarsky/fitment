@@ -520,6 +520,7 @@ async fn run(scenario: &Scenario) -> (Reply, String) {
             support::seed_upload(server.server(), ada.key, SECOND);
         }
         if scenario.setup == S::InUse {
+            server.server().hold_jobs();
             let sha256 = fitment_core::sha256_hex(BRACKET);
             support::seed_job_input(&server, ada.key, &sha256, "match", "queued");
         }

@@ -279,6 +279,57 @@ async fn carrying_is_the_clis() {
     assert_eq!(job["error"]["code"], "carry_from_foreign");
 }
 
+/// MF11, review S12 of PR 5: a `carry_from` of the same file that names
+/// no target (an older document whose target was edited out) is neither
+/// refused nor carried from, as the CLI's `carry_over` leaves such an OUT:
+/// the extraction is the CLI's onto that file, byte for byte, and the
+/// unreviewed document.
+#[tokio::test]
+async fn a_carry_from_naming_no_target_carries_nothing() {
+    let server = TestServer::fresh();
+    let name = "s02_cbore.stp";
+    let bytes = support::assembly(name);
+    let dir = file_in(&server.dirs, name, &bytes);
+    assert_eq!(
+        cli(&dir, &["socket", name, "--part", "BLOCK", "-o", "OUT.json"]).0,
+        Some(0)
+    );
+    let review = cli(&dir, &["review", "OUT.json", "--keep", "bore:hole-427"]);
+    assert_eq!(review.0, Some(0), "{}", review.2);
+    let mut edited: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("OUT.json")).unwrap()).unwrap();
+    edited["socket_rules_version"] = json!(fitment_core::SOCKET_RULES_VERSION - 1);
+    edited["extracted"]
+        .as_object_mut()
+        .unwrap()
+        .remove("target");
+    let mut stated = edited.clone();
+    for key in ["digest", "review", "stale_reviews"] {
+        stated.as_object_mut().unwrap().remove(key);
+    }
+    let digest = fitment_core::sha256_hex(stated.to_string().as_bytes());
+    edited["digest"] = json!(format!("sha256:{digest}"));
+    let edited = serde_json::to_vec(&edited).unwrap();
+    std::fs::write(dir.join("OUT.json"), &edited).unwrap();
+    let again = cli(&dir, &["socket", name, "--part", "BLOCK", "-o", "OUT.json"]);
+    assert_eq!(again.0, Some(0), "not refused: {}", again.2);
+    let carried = std::fs::read(dir.join("OUT.json")).unwrap();
+    assert_eq!(
+        carried,
+        support::cli_golden("socket", "s02_cbore--BLOCK.json"),
+        "nothing carried"
+    );
+    server.register(&bytes, name).await;
+    let sha = fitment_core::sha256_hex(&bytes);
+    let upload = server.upload(&edited).await;
+    let body = json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK",
+                       "carry_from": { "upload": format!("sha256:{upload}") } });
+    let job = server.send(waiting("/v1/sockets", &body)).await.json();
+    assert_eq!(job["state"], "succeeded", "{job}");
+    let document = server.document(&job).await.body;
+    assert!(fitment_corpus::parity::bytes("carried", &carried, &document).is_none());
+}
+
 /// The exit's file half for PR 5 (section 12, item 5's "done when"): every
 /// assembly of the corpus registered through `assembly_read` gives `fitment
 /// parts FILE --format json`'s bytes and exit code, and every socket its

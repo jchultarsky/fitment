@@ -97,6 +97,10 @@ impl LaneQueue {
         Some(entry)
     }
 
+    fn contains(&self, key: i64) -> bool {
+        self.queues.values().any(|q| q.iter().any(|e| e.key == key))
+    }
+
     fn remove(&mut self, key: i64) -> bool {
         let Some((&owner, queue)) = self
             .queues
@@ -181,9 +185,19 @@ impl Sched {
         }
     }
 
-    /// Queues `entry`, past any cap: recovery's re-queued jobs (SD4).
-    pub fn push(&mut self, entry: Entry) {
+    /// Queues `entry`, past any cap (recovery's and reconciliation's jobs),
+    /// unless it is queued or dispatched already: true if it was queued.
+    pub fn push(&mut self, entry: Entry) -> bool {
+        if self.holds(entry.key) {
+            return false;
+        }
         self.lanes[entry.kind.lane().index()].push(entry);
+        true
+    }
+
+    /// True if job `key` is queued or dispatched here.
+    pub fn holds(&self, key: i64) -> bool {
+        self.live.contains_key(&key) || self.lanes.iter().any(|lane| lane.contains(key))
     }
 
     /// The jobs each lane may start now (JS4).
