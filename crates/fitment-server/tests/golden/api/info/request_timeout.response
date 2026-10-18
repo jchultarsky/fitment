@@ -1,0 +1,22 @@
+503
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:0czOCbSY84bZug6cz9xYMMPV33Ds5KFjgU4rGviIx2k=:
+retry-after: 1
+x-request-id: r_00000000000000000000000001
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/request_timeout",
+  "title": "The request took too long",
+  "status": 503,
+  "detail": "the request took too long",
+  "code": "request_timeout",
+  "class": "error",
+  "exit_code": null,
+  "retryable": true,
+  "details": {},
+  "request_id": "r_00000000000000000000000001"
+}

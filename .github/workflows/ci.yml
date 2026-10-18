@@ -42,6 +42,9 @@ jobs:
       # M5's CT20: the CLI builds without the catalog and its SQLite.
       - run: cargo clippy -p fitment --all-targets --no-default-features --locked -- -D warnings
       - run: cargo test -p fitment --no-default-features --locked --test no_catalog
+      # M6's server without its features: no schema, no test seams in the
+      # library (docs/research/m6-api.md, section 11.2).
+      - run: cargo clippy -p fitment-server --all-targets --no-default-features --locked -- -D warnings
 
   corpus:
     name: test parts and Open CASCADE oracle
@@ -139,6 +142,20 @@ jobs:
       - run: cargo test --workspace --all-features --locked
         env:
           FITMENT_REQUIRE_CORPUS: "1"
+      # VT36: the OpenAPI document is the committed one, and every document
+      # validates against its schema; behind the `schema` feature, so named
+      # explicitly (docs/research/m6-api.md, section 11.2).
+      - run: cargo test -p fitment-server --features schema --test openapi --locked
+      # VT8: the API's own documents, compared across the three operating
+      # systems by the determinism job.
+      - run: tools/api-outputs.sh api-outputs
+        shell: bash
+      - uses: actions/upload-artifact@v7
+        with:
+          name: api-outputs-${{ matrix.os }}
+          path: api-outputs
+          retention-days: 7
+          if-no-files-found: error
       # CT7: one ingest sequence's catalog outputs, compared across the three
       # operating systems by the determinism job.
       - run: cargo build -p fitment --locked
@@ -152,7 +169,7 @@ jobs:
           if-no-files-found: error
 
   determinism:
-    name: catalog outputs equal on every OS
+    name: catalog and API outputs equal on every OS
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -161,6 +178,22 @@ jobs:
           pattern: catalog-outputs-*
       - run: diff -r catalog-outputs-ubuntu-latest catalog-outputs-macos-latest
       - run: diff -r catalog-outputs-ubuntu-latest catalog-outputs-windows-latest
+      # VT8 (docs/research/m6-api.md): the API's documents, byte for byte.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: api-outputs-*
+      - run: diff -r api-outputs-ubuntu-latest api-outputs-macos-latest
+      - run: diff -r api-outputs-ubuntu-latest api-outputs-windows-latest
+
+  container:
+    name: container image
+    # VT29 (docs/research/m6-api.md; OP8, M6-43): the image as shipped,
+    # built without test seams and smoke-tested; pushed only by the user.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -f deploy/Containerfile -t fitment-server:ci .
+      - run: deploy/smoke.sh fitment-server:ci
 
   msrv:
     name: MSRV
@@ -203,9 +236,10 @@ jobs:
       # Both crates packaged as crates.io would take them, and each built from
       # its .crate: fitment against fitment-core's through Cargo's local
       # registry overlay (docs/research/m4-match.md, section 22.1).
-      # fitment-corpus is never published (docs/research/m6-api.md, SC3),
-      # and `cargo package` does not skip it by itself.
-      - run: cargo package --workspace --exclude fitment-corpus --locked
+      # fitment-corpus and fitment-server are never published
+      # (docs/research/m6-api.md, SC3, M6-35), and `cargo package` does not
+      # skip either by itself.
+      - run: cargo package --workspace --exclude fitment-corpus --exclude fitment-server --locked
 
   deny:
     name: cargo-deny

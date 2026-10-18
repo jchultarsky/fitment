@@ -61,7 +61,8 @@ pub use preimage::Status;
 pub use query::{CatalogRun, NotRun, Selection};
 pub use reindex::{Rebuilt, Reindex, Reindexed, Scope};
 pub use snapshot::{
-    BadName, BadRow, EntryStatus, HistoryStep, Listed, Named, Snapshot, StoredRefusal, has_internal,
+    BadName, BadRow, EntryStatus, HistoryStep, Listed, Named, Snapshot, StatusCounts,
+    StoredRefusal, has_internal,
 };
 pub use verify::{Kind as ProblemKind, Problem};
 
@@ -366,6 +367,52 @@ impl Catalog {
             fs,
             options,
         })
+    }
+
+    /// Checks that `root` is a catalog this build can open, writing
+    /// nothing (docs/research/m6-api.md, OP4's `check-config`): the
+    /// marker, the store's directories (PH2), and the database's header,
+    /// read as bytes with no connection, so no `-wal` or `-shm` file is
+    /// made, no pragma set and no migration run. An older schema passes:
+    /// [`Catalog::open`] migrates it (DB5).
+    ///
+    /// # Errors
+    ///
+    /// As [`Catalog::open`]: [`Error::NotACatalog`], [`Error::Newer`],
+    /// [`Error::Linked`] or [`Error::Io`].
+    pub fn inspect(root: &Path) -> Result<schema::Kind, Error> {
+        let fs = StdFs;
+        let given = root;
+        let root = &absolute(root)?;
+        let layout = Layout::new(root);
+        let not_a_catalog = || Error::NotACatalog(given.to_owned());
+        let marker = layout.marker();
+        match fs.read_capped(&marker, 64) {
+            Ok(Content::Bytes(b)) if b == MARKER_TEXT.as_bytes() => {}
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(io_at(&marker)(e)),
+            _ => return Err(not_a_catalog()),
+        }
+        layout
+            .check_links(&fs)
+            .map_err(|linked| Error::Linked(linked.0))?;
+        let database = layout.database();
+        match fs.symlink_metadata(&database) {
+            Ok(meta) if meta.is_file() => {}
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(io_at(&database)(e)),
+            _ => return Err(not_a_catalog()),
+        }
+        let mut header = Vec::with_capacity(100);
+        let file = std::fs::File::open(&database).map_err(io_at(&database))?;
+        io::Read::read_to_end(&mut io::Read::take(file, 100), &mut header)
+            .map_err(io_at(&database))?;
+        match schema::kind_of_header(&header) {
+            schema::Kind::Foreign => Err(not_a_catalog()),
+            schema::Kind::Newer(found) => Err(Error::Newer {
+                found,
+                ours: schema::SCHEMA_VERSION,
+            }),
+            kind => Ok(kind),
+        }
     }
 
     /// The catalog's directory.

@@ -1,0 +1,21 @@
+413
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:vvp31NW4mpOlg7rtt2r/RNU95FUoCHps8coOH+jALCI=:
+x-request-id: r_00000000000000000000000001
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/body_too_large",
+  "title": "The request body is too large",
+  "status": 413,
+  "detail": "this route takes no request body",
+  "code": "body_too_large",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000001"
+}

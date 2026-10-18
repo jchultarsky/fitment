@@ -69,6 +69,34 @@ pub fn kind(conn: &Connection) -> rusqlite::Result<Kind> {
     })
 }
 
+/// What a database is, read from its file's first 100 bytes alone, with
+/// no connection (`Catalog::inspect`; docs/research/m6-api.md, OP4): the
+/// header's `user_version` (bytes 60 to 63) and `application_id` (68 to
+/// 71), big-endian. A file shorter than a header, or not SQLite's, is
+/// [`Kind::Foreign`]. The header is current once the database has been
+/// checkpointed, which closing its last connection does.
+pub fn kind_of_header(header: &[u8]) -> Kind {
+    let field = |at: usize| -> Option<i64> {
+        let bytes: [u8; 4] = header.get(at..at + 4)?.try_into().ok()?;
+        Some(i64::from(i32::from_be_bytes(bytes)))
+    };
+    if !header.starts_with(b"SQLite format 3\0") {
+        return Kind::Foreign;
+    }
+    let (Some(version), Some(id)) = (field(60), field(68)) else {
+        return Kind::Foreign;
+    };
+    if id != APPLICATION_ID || version < 1 {
+        Kind::Foreign
+    } else if version > SCHEMA_VERSION {
+        Kind::Newer(version)
+    } else if version < SCHEMA_VERSION {
+        Kind::Older(version)
+    } else {
+        Kind::Current
+    }
+}
+
 /// One step of DB5's forward migration: from its version to the next.
 pub type Migration = fn(&Connection) -> rusqlite::Result<()>;
 

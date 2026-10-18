@@ -11,6 +11,7 @@ use super::topo::{Curve, Face, Loop, P, Topo, Travel, cross, dot, length, sub};
 use crate::geom::Point3;
 
 /// A plane face's outline: known, or unknown with the reason.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
@@ -36,6 +37,7 @@ pub enum Outline {
 }
 
 /// Why an outline is unknown.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -55,6 +57,7 @@ pub enum OutlineProblem {
 }
 
 /// One loop of an outline.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -71,6 +74,7 @@ pub struct OutlineLoop {
 }
 
 /// One edge of a loop, in the direction the loop runs.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]

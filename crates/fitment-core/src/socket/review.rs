@@ -9,6 +9,7 @@ use super::check::MAX_NOTE_CHARS;
 use super::model::{Extracted, Requirement, ReviewEntry, ReviewStatus, Socket};
 
 /// Why a decision could not be carried over.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -22,6 +23,7 @@ pub enum StaleReason {
 }
 
 /// A decision that could not be carried over, kept for the user to see.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]

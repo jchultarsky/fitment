@@ -58,6 +58,20 @@ pub struct StoredRefusal {
     pub instance: Option<u64>,
 }
 
+/// Live entries by status ([`Snapshot::status_counts`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct StatusCounts {
+    /// Live entries.
+    pub entries: u64,
+    /// Indexed and searched.
+    pub indexed: u64,
+    /// Quarantined.
+    pub quarantined: u64,
+    /// Read by an older build (RX2).
+    pub stale: u64,
+}
+
 /// One revision of an entry, as `list` and `get` show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -244,6 +258,54 @@ impl Snapshot<'_> {
     /// The generation it reads.
     pub fn generation(&self) -> i64 {
         self.generation
+    }
+
+    /// Live entries by status, in one query (docs/research/m6-api.md,
+    /// DC11's `fitment.info`): what counting [`Snapshot::list`]'s statuses
+    /// gives, without reading each entry. `stale` counts every kind of
+    /// stale (extractor, signature, properties).
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    pub fn status_counts(&self) -> Result<StatusCounts, Error> {
+        let (entries, indexed, quarantined): (i64, i64, i64) = self.tx.query_row(
+            "WITH cur AS (
+               SELECT r.sha256 FROM entry e
+               JOIN revision r ON r.entry = e.key AND r.superseded_generation IS NULL
+               WHERE e.deleted_generation IS NULL),
+             f AS (
+               SELECT c.sha256,
+                 (SELECT x.extractor_version FROM features x WHERE x.sha256 = c.sha256
+                  ORDER BY x.extractor_version = ?1 DESC, x.extractor_version DESC LIMIT 1) AS ev,
+                 (SELECT x.status FROM features x WHERE x.sha256 = c.sha256
+                  ORDER BY x.extractor_version = ?1 DESC, x.extractor_version DESC LIMIT 1) AS st,
+                 EXISTS (SELECT 1 FROM tokens t WHERE t.sha256 = c.sha256
+                         AND t.extractor_version = ?1 AND t.signature_version = ?2) AS sig,
+                 EXISTS (SELECT 1 FROM properties p WHERE p.sha256 = c.sha256
+                         AND p.properties_version = ?3) AS prop
+               FROM cur c)
+             SELECT count(*),
+                    coalesce(sum(ev = ?1 AND st = ?4 AND sig AND prop), 0),
+                    coalesce(sum(ev = ?1 AND st <> ?4), 0)
+             FROM f",
+            params![
+                EXTRACTOR_VERSION,
+                SIGNATURE_VERSION,
+                PROPERTIES_VERSION,
+                Status::Accepted.as_str()
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let count = |n: i64| u64::try_from(n).map_err(|_| corrupt("a count"));
+        let (entries, indexed, quarantined) =
+            (count(entries)?, count(indexed)?, count(quarantined)?);
+        Ok(StatusCounts {
+            entries,
+            indexed,
+            quarantined,
+            stale: entries.saturating_sub(indexed + quarantined),
+        })
     }
 
     /// Every live entry's current revision, ordered by id case-folded,

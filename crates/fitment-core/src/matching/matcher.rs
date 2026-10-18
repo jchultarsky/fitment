@@ -60,6 +60,7 @@ impl SocketRefused {
 }
 
 /// How far one socket's judgment went (MF5).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -74,6 +75,7 @@ pub enum Stage {
 }
 
 /// How the verified placement was chosen (EV4).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -89,6 +91,7 @@ pub enum Chosen {
 }
 
 /// What M4 does not check in a socket (EV1, M4-11, VR16).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "what", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -147,6 +150,7 @@ impl SocketResult {
 }
 
 /// Where a candidate came from (MF6's `source`).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -178,6 +182,7 @@ impl CandidateSource {
 }
 
 /// What level 1 admits for a whole socket document (M5's QR3).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "admitted", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -212,6 +217,7 @@ pub struct NotCurrent {
 
 /// A flag a candidate's verdict carries (VD12): a closed list whose names
 /// never change meaning.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -231,6 +237,7 @@ pub enum CandidateFlag {
 }
 
 /// The facts of the read that judged a candidate (EV6).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct ReadFacts {

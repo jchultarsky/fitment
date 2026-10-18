@@ -21,6 +21,7 @@ pub const PARTS_FORMAT_VERSION: u32 = 1;
 
 /// The file a document was read from, named by its content, never by its
 /// path.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -78,6 +79,7 @@ pub struct BadHex {
 }
 
 /// Whether the assembly gate passes, and why not.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -89,6 +91,7 @@ pub struct GateResult {
 }
 
 /// One occurrence of a listed definition.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -110,6 +113,7 @@ pub struct PartOccurrence {
 }
 
 /// What reading a part gave, in brief (check 36).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -128,6 +132,7 @@ pub struct ComponentSummary {
 }
 
 /// A definition reached from the root.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -150,6 +155,7 @@ pub struct PartEntry {
 ///
 /// A document comes only from [`read`](Self::read) or
 /// [`from_json`](Self::from_json).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 // The fields are private; the methods below read them.

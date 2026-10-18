@@ -22,9 +22,13 @@ check() { # description, then a grep that must find nothing
 check "uses a std module it must not (fs, net, env, process, thread, os)" \
   grep -rnE '\bstd::(fs|net|env|process|thread|os)\b|use std::\{[^}]*\b(fs|net|env|process|thread|os)\b' "${code[@]}"
 
-# No async code, so no runtime can creep in.
+# No async code, so no runtime can creep in. SV1 (docs/research/m6-api.md):
+# fitment-server is the only async crate; the catalog and the CLI are
+# synchronous too.
 check "contains async code" \
   grep -rnE '\basync\b|\.await\b' "$src"
+check "fitment-catalog or fitment contains async code" \
+  grep -rnE '\basync\b|\.await\b' crates/fitment-catalog/src crates/fitment/src
 
 # With unsafe forbidden, global mutable state needs a static item.
 check "declares a static item (global state)" \
@@ -61,7 +65,8 @@ target=$(cargo metadata --format-version 1 --no-deps --locked |
 version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
 # The workspace at once, as CI's package job does: fitment's manifest names
 # fitment-catalog, which only the workspace's local overlay holds.
-cargo package --workspace --exclude fitment-corpus --no-verify --locked --allow-dirty --quiet
+# fitment-server is never published either (M6-35).
+cargo package --workspace --exclude fitment-corpus --exclude fitment-server --no-verify --locked --allow-dirty --quiet
 for package in fitment-core fitment fitment-catalog; do
   tree=$(cargo tree -p "$package" -e normal,build --all-features --locked --prefix none)
   check "fitment-corpus is in $package's normal graph" \
@@ -70,6 +75,46 @@ for package in fitment-core fitment fitment-catalog; do
   check "the packaged $package names fitment-corpus" \
     grep -q 'fitment-corpus' <<<"$manifest"
 done
+
+# M6 (docs/research/m6-api.md, section 4.13). M6-35: fitment-server is
+# never published and not a dist artifact.
+server=crates/fitment-server
+check "fitment-server does not say publish = false" \
+  sh -c "! grep -qx 'publish = false' $server/Cargo.toml"
+check "fitment-server does not say dist = false" \
+  sh -c "! grep -A1 -x '\[package.metadata.dist\]' $server/Cargo.toml | grep -qx 'dist = false'"
+# SV4: catalog.rs is the only module naming fitment_catalog, matching.rs the
+# only one building a Matcher or a MatchDocument (the OpenAPI generator
+# names the document's type for its schema only).
+check "names fitment_catalog outside fitment-server's catalog.rs" \
+  sh -c "grep -rlE '\bfitment_catalog\b' $server/src | grep -vx '$server/src/catalog.rs' | grep ."
+check "builds a Matcher or a MatchDocument outside fitment-server's matching.rs" \
+  sh -c "grep -rlE '\b(Matcher|MatchDocument)::' $server/src | grep -vx '$server/src/matching.rs' | grep ."
+# SV6: server.db is opened by state/db.rs alone.
+check "names rusqlite outside fitment-server's state/db.rs" \
+  sh -c "grep -rlE '\brusqlite\b' $server/src | grep -vx '$server/src/state/db.rs' | grep ."
+# SV7, DC1: documents are served as the library's bytes, never re-serialized
+# through a Value; clippy cannot scope a ban to a module.
+check "uses serde_json::(Value|from_str|to_value) in matching.rs or objects.rs" \
+  sh -c "grep -nE 'serde_json::(Value|from_str|to_value)' $server/src/matching.rs $server/src/state/objects.rs 2>/dev/null | grep ."
+
+# SV1, VT35: no async runtime or HTTP stack in the CLI's or the catalog's
+# graph, whatever their features...
+for package in fitment fitment-catalog; do
+  tree=$(cargo tree -p "$package" -e normal --all-features --locked --prefix none)
+  check "$package's graph holds an async crate" \
+    grep -qE '^(tokio|mio|hyper|axum|tower|async-std|smol|futures-executor) ' <<<"$tree"
+  cargo deny --manifest-path "crates/$package/Cargo.toml" --config deny/sync.toml check bans
+done
+# ...and SV9: the server's default runtime graph holds no schemars, no h2,
+# no TLS stack, and serde_json with its three features exactly.
+tree=$(cargo tree -p fitment-server -e normal --locked --prefix none)
+check "fitment-server's runtime graph holds schemars, h2, a TLS stack or reqwest" \
+  grep -qE '^(schemars|h2|rustls|ring|aws-lc-rs|aws-lc-sys|native-tls|openssl|reqwest) ' <<<"$tree"
+features=$(cargo tree -p fitment-server -e normal,features --locked --prefix none |
+  sed -nE 's/^serde_json feature "([^"]+)".*/\1/p' | sort -u | tr '\n' ' ')
+check "serde_json's features in fitment-server's runtime graph are not default, float_roundtrip, std: $features" \
+  test "$features" != "default float_roundtrip std "
 
 cargo deny --manifest-path crates/fitment-core/Cargo.toml --config deny/core.toml check bans
 python3 tools/core-deps.py

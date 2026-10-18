@@ -19,6 +19,7 @@ pub const CATALOG_FORMAT: &str = "fitment.catalog";
 pub const CATALOG_FORMAT_VERSION: u32 = 1;
 
 /// A `fitment.catalog` document.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
 pub struct CatalogDocument {
@@ -33,6 +34,7 @@ pub struct CatalogDocument {
 }
 
 /// The versions a build or a row is of, named as the document names them.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[allow(clippy::struct_field_names)]
 struct Versions {
@@ -42,6 +44,7 @@ struct Versions {
 }
 
 /// Live entries by status.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 struct Tally {
     entries: usize,
@@ -50,12 +53,14 @@ struct Tally {
     stale: usize,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 struct Product {
     id: Option<String>,
     name: Option<String>,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 struct Refusal {
     code: String,
@@ -63,6 +68,7 @@ struct Refusal {
     instance: Option<u64>,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 struct Features {
     planes: u32,
@@ -73,12 +79,14 @@ struct Features {
 }
 
 /// The stated properties `get` shows (PR7), each with its mapped meaning.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 struct Properties {
     truncated: bool,
     stated: Vec<Stated>,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 struct Stated {
     instance: u64,
@@ -89,12 +97,14 @@ struct Stated {
     mapped: Option<MappedOut>,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 struct MappedOut {
     field: &'static str,
     meaning: &'static str,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 struct Step {
     revision: u32,
@@ -105,6 +115,7 @@ struct Step {
 }
 
 /// One entry's revision.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 pub struct Entry {
     id: String,
@@ -123,6 +134,7 @@ pub struct Entry {
 }
 
 /// One input's or entry's change.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 pub struct Change {
     input: String,

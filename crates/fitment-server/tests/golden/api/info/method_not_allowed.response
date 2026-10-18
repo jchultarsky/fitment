@@ -1,0 +1,27 @@
+405
+allow: GET, HEAD
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:cJL1lC/I+3DYQkNmT1gmuX/HFdg/y3CwpEn9uIWYahw=:
+x-request-id: r_00000000000000000000000001
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/method_not_allowed",
+  "title": "The method is not allowed here",
+  "status": 405,
+  "detail": "this method is not allowed on this route",
+  "code": "method_not_allowed",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {
+    "allowed": [
+      "GET",
+      "HEAD"
+    ]
+  },
+  "request_id": "r_00000000000000000000000001"
+}

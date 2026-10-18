@@ -25,6 +25,7 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 /// A point, in millimetres. Serializes as `[x, y, z]`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "[f64; 3]", into = "[f64; 3]")]
 // The field is private; `new` is the only way in.
@@ -56,6 +57,7 @@ impl Point3 {
 }
 
 /// A vector, in millimetres. Serializes as `[x, y, z]`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "[f64; 3]", into = "[f64; 3]")]
 #[allow(clippy::exhaustive_structs)]
@@ -84,6 +86,7 @@ impl Vec3 {
 }
 
 /// A unit direction. Serializes as `[x, y, z]`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "[f64; 3]", into = "[f64; 3]")]
 #[allow(clippy::exhaustive_structs)]
@@ -165,6 +168,7 @@ impl Dir3 {
 /// `p_parent = R · p_child + t`, with the rotation row-major. This is
 /// stepq's convention, so a transform read from stepq is copied, not
 /// recomputed.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawRigid", into = "RawRigid")]
 // The fields are private; `new` checks them.
@@ -311,6 +315,7 @@ impl Rigid {
     }
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRigid {

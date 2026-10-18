@@ -91,6 +91,7 @@ fn constants() -> SocketConstants {
 }
 
 /// The constants a document was extracted with.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -103,6 +104,7 @@ pub struct SocketExtraction {
 
 /// A socket document: the sockets of every chosen occurrence of a part, or
 /// the reasons the assembly gives none.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 // The fields are private; documents come only from `extract` and

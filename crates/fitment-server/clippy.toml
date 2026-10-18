@@ -1,0 +1,22 @@
+# Clippy reads this file for fitment-server only, its tests included. SV7
+# (docs/research/m6-api.md): the environment is read in config.rs alone,
+# the process exits in main.rs alone, no thread is spawned (only the
+# catalog's own scoped threads exist) and no runtime worker is blocked in
+# place. lib.rs denies these lints; a local `#[allow]` with its reason is
+# the escape hatch, and it shows up in review. serde_json's `Value`,
+# `from_str` and `to_value` are banned in matching.rs and objects.rs by
+# tools/check-core.sh (DC1), since clippy cannot scope a ban to a module.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+doc-valid-idents = ["OpenAPI", "SQLite", "..", "JSON"]
+
+disallowed-methods = [
+  { path = "std::env::var", reason = "SV7: only config.rs reads the environment" },
+  { path = "std::env::var_os", reason = "SV7: only config.rs reads the environment" },
+  { path = "std::env::vars", reason = "SV7: only config.rs reads the environment" },
+  { path = "std::env::vars_os", reason = "SV7: only config.rs reads the environment" },
+  { path = "std::process::exit", reason = "SV7: only main.rs ends the process, by returning its ExitCode" },
+  { path = "std::thread::spawn", reason = "SV7: blocking work runs in spawn_blocking (SV3)" },
+  { path = "tokio::task::block_in_place", reason = "SV7: blocking work runs in spawn_blocking (SV3)" },
+]

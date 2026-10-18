@@ -1,0 +1,86 @@
+200
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.info/1
+repr-digest: sha-256=:qZxaYZSllTAQSOXPFSiGlpta2B88e447LDvzrudv4hQ=:
+x-request-id: r_00000000000000000000000001
+
+{
+  "format": "fitment.info",
+  "format_version": 1,
+  "server": {
+    "name": "fitment-server",
+    "version": "0.2.0"
+  },
+  "api": {
+    "major": 1,
+    "minor": 0
+  },
+  "versions": {
+    "extractor_version": 6,
+    "socket_rules_version": 7,
+    "signature_version": 2,
+    "match_rules_version": 1,
+    "properties_version": 1,
+    "catalog_schema": 1,
+    "server_db_schema": 1
+  },
+  "formats": [
+    {
+      "format": "fitment.catalog",
+      "format_version": 1
+    },
+    {
+      "format": "fitment.error",
+      "format_version": 1
+    },
+    {
+      "format": "fitment.features",
+      "format_version": 1
+    },
+    {
+      "format": "fitment.info",
+      "format_version": 1
+    },
+    {
+      "format": "fitment.match",
+      "format_version": 1
+    },
+    {
+      "format": "fitment.parts",
+      "format_version": 1
+    },
+    {
+      "format": "fitment.socket",
+      "format_version": 1
+    }
+  ],
+  "fit_verifier": null,
+  "catalog": {
+    "generation": 1,
+    "entries": 0,
+    "indexed": 0,
+    "quarantined": 0,
+    "stale": 0,
+    "state": {
+      "stale": false,
+      "reindex": null,
+      "wal_barrier": false,
+      "queues_full": false
+    }
+  },
+  "limits": {
+    "max_upload_mib": 128,
+    "upload_min_kib_s": 64,
+    "max_socket_mib": 16,
+    "max_json_kib": 1024,
+    "max_candidates": 10000,
+    "max_catalog_candidates": 100000,
+    "page_default": 100,
+    "page_max": 1000,
+    "wait_max_seconds": 60,
+    "require_reviewed_floor": false,
+    "upload_ttl_hours": 24,
+    "max_live_tokens": 20
+  }
+}

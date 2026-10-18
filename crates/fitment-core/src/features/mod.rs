@@ -92,6 +92,7 @@ fn summary(refusals: &[Refusal]) -> String {
 /// Every length is in millimetres. Every value traces to a STEP `#id`.
 /// Other crates can read the fields but not build a `Part`: one comes only
 /// from [`read_part`] or from a checked [`FeaturesDocument`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -139,6 +140,7 @@ pub struct Part {
 }
 
 /// How many faces of each surface kind a part has.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -160,6 +162,7 @@ pub struct FaceCounts {
 }
 
 /// Something reading the part noticed that is not wrong.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -173,6 +176,7 @@ pub struct Note {
 }
 
 /// What kind of [`Note`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -187,6 +191,7 @@ pub enum NoteCode {
 }
 
 /// The product definition a part was read from.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -199,6 +204,7 @@ pub struct DefinitionRef {
 }
 
 /// A `product`, as the file states it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -215,6 +221,7 @@ pub struct ProductRef {
 
 /// The frame features are stated in: that of the part's shape
 /// representation, the space an assembly placement of the part maps.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -224,6 +231,7 @@ pub struct Frame {
 }
 
 /// A solid of the part.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -253,6 +261,7 @@ pub struct SolidInfo {
 }
 
 /// The units a solid's context states.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -268,6 +277,7 @@ pub struct SolidUnits {
 }
 
 /// A unit as the file states it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -281,6 +291,7 @@ pub struct StatedUnit {
 }
 
 /// An uncertainty as the file states it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -295,6 +306,7 @@ pub struct StatedUncertainty {
 
 /// An item of the part's shape that is not a solid. The gate lets only
 /// curve and point sets through.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -435,6 +447,22 @@ impl FromStr for FeatureId {
 impl Serialize for FeatureId {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self)
+    }
+}
+
+/// CO4: a feature id is written as its string, `<kind>-<#id>`.
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for FeatureId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "FeatureId".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let kinds: Vec<&str> = FeatureKind::ALL.iter().map(|k| k.name()).collect();
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": format!("^({})-(0|[1-9][0-9]*)$", kinds.join("|")),
+        })
     }
 }
 

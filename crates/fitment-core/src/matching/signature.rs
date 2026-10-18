@@ -16,6 +16,7 @@ use crate::socket::{BoreSpan, Requires, ShaftSpan, SpanBasis};
 use crate::verdict::RequirementId;
 
 /// A closed interval, either end unbounded (SG6).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Window {
@@ -54,6 +55,7 @@ pub(crate) fn slack(v: f64) -> f64 {
 }
 
 /// One hole or shaft stack a candidate offers (CF3, CF5).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct SigStack {
@@ -75,6 +77,7 @@ pub struct SigStack {
 }
 
 /// One plane a candidate offers (CF6).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct SigPlane {
@@ -93,6 +96,7 @@ pub struct SigPlane {
 }
 
 /// One cone a candidate offers (CF7).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct SigCone {
@@ -112,6 +116,7 @@ pub struct SigCone {
 
 /// What of a candidate M2 left unread (CF4): it never serves a
 /// requirement.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[non_exhaustive]
 pub struct Unread {
@@ -128,6 +133,7 @@ pub struct Unread {
 }
 
 /// A candidate's signature (SG2): policy-free, so M5 stores it once.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct PartSignature {

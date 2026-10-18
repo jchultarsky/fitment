@@ -18,6 +18,7 @@ use super::topo::{Curve, Face, Loop, P, Surface, Topo, cross, dot, sub};
 use crate::geom::Point3;
 
 /// An axis-aligned box in the part's frame, in mm.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]

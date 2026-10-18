@@ -20,6 +20,7 @@ pub const FEATURES_FORMAT_VERSION: u32 = 1;
 /// surface (section 5.2 of the design). They are written into every
 /// document; changing one raises [`EXTRACTOR_VERSION`]. They are not the
 /// matching tolerance.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -63,6 +64,7 @@ impl Extraction {
 ///
 /// Every key is written, with `null` for a value the file does not state,
 /// and reading a document requires every key.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -86,6 +88,7 @@ pub struct FileHeader {
 }
 
 /// Whether a document holds a part or the reasons it was refused.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 // A document is accepted or refused; there is no third outcome.
@@ -106,6 +109,7 @@ pub enum Status {
 /// `from_json` checks. Its JSON keys are in a fixed order, every one is
 /// written (absent values as `null`), and the same input gives the same
 /// bytes on every operating system.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 // The fields are private; the methods below read them.
 #[allow(clippy::exhaustive_structs)]

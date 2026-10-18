@@ -10,6 +10,7 @@ use crate::geom::Rigid;
 
 /// How a span of a bore or shaft fits what occupies it (B1 to B4, I1, I2,
 /// J1, B8).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 // The fits the rules can state; a new one is a new rule version.
@@ -26,6 +27,7 @@ pub enum Fit {
 }
 
 /// A flag a requirement or relation carries (section 8.4).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -67,6 +69,7 @@ pub enum Flag {
 }
 
 /// What a span piece lies on (X8).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -83,6 +86,7 @@ pub enum SpanBasis {
 
 /// One span of a bore: an interval of the hole's stations and what
 /// occupies it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -111,6 +115,7 @@ pub struct BoreSpan {
 }
 
 /// One span of a shaft requirement.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -153,6 +158,7 @@ fn unknown_piece(
 }
 
 /// Which ends of a hole must be open (B6, J1).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -164,6 +170,7 @@ pub struct Open {
 }
 
 /// Whether a bore's depth is known (U8).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -175,6 +182,7 @@ pub enum Depth {
 }
 
 /// Why an `unresolved` requirement exists (section 8.4).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -191,6 +199,7 @@ pub enum Cause {
 }
 
 /// Where a seat's contact requires flat material (C4).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -202,6 +211,7 @@ pub enum Basis {
 }
 
 /// One neighbour face in a contact.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -217,6 +227,7 @@ pub struct Toucher {
 }
 
 /// One target face a seat requires (C4).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -233,6 +244,7 @@ pub struct SeatContact {
 
 /// A wider neighbour cylinder ending at a target hole's rim (H1), for
 /// review.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -248,6 +260,7 @@ pub struct Ring {
 }
 
 /// What a requirement asks of a candidate.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
@@ -381,6 +394,7 @@ pub enum Requires {
 }
 
 /// One cause of an `unresolved` requirement.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -392,6 +406,7 @@ pub struct CauseFaces {
 }
 
 /// One relation a requirement was derived from (Y2).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -430,6 +445,7 @@ pub struct SourceRef {
 }
 
 /// One requirement.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -493,6 +509,7 @@ impl Requirement {
 }
 
 /// Why a target feature is left out (A1, A2).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -504,6 +521,7 @@ pub enum LeftOutReason {
 }
 
 /// A target hole, shaft or undecided cylinder no requirement anchors.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -523,6 +541,7 @@ pub struct LeftOut {
 }
 
 /// The requirements of one or more occurrences of the target.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -538,6 +557,7 @@ pub struct Socket {
 }
 
 /// The part chosen.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -563,6 +583,7 @@ pub struct Target {
 }
 
 /// An occurrence: the target's or a neighbour's.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -587,6 +608,7 @@ pub struct PlacedRef {
 }
 
 /// What M7 checks the candidate's body against (V1, V2).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -599,6 +621,7 @@ pub struct Envelope {
 }
 
 /// What extraction derived; the digest covers it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -616,6 +639,7 @@ pub struct Extracted {
 }
 
 /// How the part was chosen.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -631,6 +655,7 @@ pub struct SelectionRecord {
 }
 
 /// The socket rules' constants, written into every document (Z3 to Z6).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -654,6 +679,7 @@ pub struct SocketConstants {
 }
 
 /// One review decision (section 9.4).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -670,6 +696,7 @@ pub struct ReviewEntry {
 }
 
 /// A review decision.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 // Review keeps or removes; there is no third decision (R18).

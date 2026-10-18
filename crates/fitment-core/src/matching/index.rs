@@ -48,6 +48,7 @@ fn bin(v: f64) -> i64 {
 
 /// Two stacks with near-parallel axes (SL7), by their indices in
 /// [`IndexTokens::stacks`]: their senses and diameters are the stacks'.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -61,6 +62,7 @@ pub struct PairToken {
 }
 
 /// A candidate's level-1 tokens (SL7): policy-free.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -212,6 +214,7 @@ impl IndexTokens {
 }
 
 /// Why a query returns no candidate (SL8).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 #[non_exhaustive]

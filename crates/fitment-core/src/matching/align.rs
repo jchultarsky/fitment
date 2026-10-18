@@ -29,6 +29,7 @@ const MAX_PAIR_CHECKS: u64 = 4_000_000;
 const SAME_LINE: f64 = 1e-6;
 
 /// What a placement was built from.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]

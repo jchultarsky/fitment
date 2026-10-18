@@ -40,13 +40,22 @@ deny = [
   { crate = "cxx", reason = "D1: no C++ bridge; kernels run out of process" },
   { crate = "cxx-build", reason = "D1: no C++ bridge; kernels run out of process" },
   { crate = "stepq", wrappers = ["fitment-core"], reason = "STEP reading lives in fitment-core" },
-  { crate = "rusqlite", wrappers = ["fitment-catalog"], reason = "M5's DB1: only the catalog touches SQLite" },
+  # M6-32, SV6 (docs/research/m6-api.md): the server's own server.db too;
+  # it opens catalog.db only through fitment-catalog.
+  { crate = "rusqlite", wrappers = ["fitment-catalog", "fitment-server"], reason = "M5's DB1 and M6's SV6: only the catalog and the server's own state touch SQLite" },
 ]
 # fitment-core's file formats depend on serde_json's exact features:
 # preserve_order changes map order and arbitrary_precision changes how floats
 # parse, and Cargo would turn either on for fitment-core if any sibling asked.
+#
+# `alloc` (SV9, docs/research/m6-api.md): schemars, behind the `schema`
+# features no runtime build enables; with `std` on, `alloc` changes no
+# parsing, printing or key order. `[graph] all-features` turns those
+# features on, so cargo-deny sees it; tools/check-core.sh checks that the
+# server's default normal graph has the three features alone.
+# `raw_value`, `preserve_order` and `arbitrary_precision` stay refused.
 features = [
-  { crate = "serde_json", allow = ["default", "std", "float_roundtrip"], exact = true, reason = "fitment-core's JSON must not change with what else is in the build" },
+  { crate = "serde_json", allow = ["default", "std", "float_roundtrip", "alloc"], exact = true, reason = "fitment-core's JSON must not change with what else is in the build" },
 ]
 
 [sources]

@@ -46,6 +46,32 @@ clap = { version = "4", features = ["derive", "wrap_help"] }
 # may depend on it (deny.toml).
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 
+# JSON Schema derives for the documents, behind each crate's `schema`
+# feature only (docs/research/m6-api.md, CO4, CA6, VN7): the OpenAPI test
+# turns it on, and no runtime build does (SV9).
+schemars = { version = "1.2.3", default-features = false, features = ["derive", "std"] }
+
+# fitment-server only (docs/research/m6-api.md, section 4.13): the one
+# async crate (SV1), with the versions B's prototype built on Rust 1.85.
+# Plain HTTP/1.1, no HTTP/2 and no TLS stack (HX1, SV9).
+tokio = { version = "1.53", features = ["rt-multi-thread", "net", "signal", "sync", "time", "macros", "fs", "io-util"] }
+# Without `json` (M6-34: it adds serde_json's `raw_value`), `http2`, `ws`
+# or `multipart`.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "query", "tokio", "tracing", "matched-path"] }
+hyper = { version = "1.12", features = ["http1", "server"] }
+# The plain `http1::Builder`, not `server-auto`, which pulls in `h2` (HX1).
+hyper-util = { version = "0.1.21", features = ["server", "server-graceful", "tokio", "http1"] }
+tower = { version = "0.5.3", default-features = false, features = ["limit", "timeout", "util"] }
+# The handler timeout, the body check and the request id are the server's own,
+# since each answers with the error document (HX2, HX3, HX7).
+tower-http = { version = "0.7.1", features = ["trace", "sensitive-headers", "catch-panic", "cors"] }
+http-body-util = "0.1"
+getrandom = "0.4"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "json", "ansi", "std"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
+anyhow = "1"
+
 # Dev-only.
 assert_cmd = "2"
 predicates = "3"

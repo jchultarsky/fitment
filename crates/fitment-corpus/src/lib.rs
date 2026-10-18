@@ -17,6 +17,7 @@ pub mod outcome;
 pub mod parity;
 pub mod policy;
 pub mod report;
+pub mod schema;
 pub mod score;
 
 pub use corpus::{CandidateRef, Case, Corpus, SocketKey, Truth};

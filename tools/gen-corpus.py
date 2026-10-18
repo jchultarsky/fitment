@@ -1123,6 +1123,92 @@ M6_PR1 = {
 }
 for rule, tests in M6_PR1.items():
     RULES[rule] = {"tests": tests}
+# PR 2 builds the server's skeleton (section 12, item 2): the crate and its dependencies (SV), the errors (ER),
+# versions, OpenAPI and negotiation (VN1, VN2, VN6 to VN8), the hardening layers (HX1 to HX7), configuration and
+# operations (OP1 to OP5, OP7 to OP9, OP11), the documents' schemas (CO4, CA6), server.db and its lease (OB1, SD3,
+# SD6), the API's own documents (DC9, DC11) and the leak scan (XH13).
+SERVER = "crates/fitment-server"
+S_API, S_ERR, S_GOLD = f"{SERVER}/tests/api.rs", f"{SERVER}/tests/errors.rs", f"{SERVER}/tests/golden.rs"
+S_HOST, S_SLOW, S_WIRE = f"{SERVER}/tests/hostile.rs", f"{SERVER}/tests/slow.rs", f"{SERVER}/tests/wire.rs"
+S_PROC, S_CONC, S_STATE = f"{SERVER}/tests/process.rs", f"{SERVER}/tests/concurrency.rs", f"{SERVER}/tests/state.rs"
+S_LAY, S_LEAK, S_OAPI = f"{SERVER}/tests/layout.rs", f"{SERVER}/tests/leaks.rs", f"{SERVER}/tests/openapi.rs"
+S_JSON, S_CONF = f"{SERVER}/src/http/json.rs", f"{SERVER}/src/config.rs"
+M6_PR2 = {
+    "SV1": [f"{S_LAY}::the_cli_and_the_catalog_have_no_async_crate"],
+    "SV2": [f"{S_LAY}::only_main_reads_arguments_and_exits", f"{S_WIRE}::serve_runs_until_its_shutdown"],
+    "SV3": [f"{S_WIRE}::blocking_work_never_holds_a_worker", f"{S_HOST}::blocking_work_past_its_time_is_cut"],
+    "SV4": [f"{S_LAY}::only_catalog_rs_names_the_catalog_crate"],
+    "SV5": [f"{S_LAY}::versions_are_in_lockstep", f"{S_API}::info_states_the_build_the_catalog_and_the_limits",
+            f"{S_API}::a_newer_catalog_is_unavailable_with_exit_3",
+            f"{S_PROC}::bad_starts_are_refused_before_listening"],
+    "SV6": [f"{S_LAY}::the_two_databases_stay_apart", f"{S_PROC}::bad_starts_are_refused_before_listening",
+            f"{S_PROC}::a_parent_component_in_a_path_is_refused", f"{S_CONF}::parent_components_are_refused"],
+    "SV7": [f"{S_LAY}::the_bans_are_in_clippy_toml"],
+    "SV8": [f"{S_LAY}::the_fit_verifier_is_held_send_and_sync"],
+    "SV9": [f"{S_LAY}::the_servers_runtime_graph_is_sv9s"],
+    "ER1": [f"{S_ERR}::the_registry_is_section_7_12", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "ER2": [f"{S_ERR}::exit_codes_follow_the_class", f"{S_API}::readiness_follows_the_catalog_and_the_drain",
+            f"{S_API}::a_newer_catalog_is_unavailable_with_exit_3"],
+    "ER3": [f"{S_ERR}::an_internal_error_says_nothing_but_its_code", f"{S_ERR}::a_catalog_error_names_no_path",
+            f"{S_JSON}::a_refused_body_is_not_echoed", f"{S_LEAK}::planted_leaks_in_a_response_are_found"],
+    "ER4": [f"{S_ERR}::refusals_keep_their_own_codes"],
+    "ER5": [f"{S_ERR}::usage_errors_come_first"],
+    "ER6": [f"{S_ERR}::retryable_is_stated_and_depends_on_the_route", f"{S_HOST}::a_handler_past_its_time_is_cut"],
+    "ER7": [f"{S_ERR}::statuses_follow_er7"],
+    "VN1": [f"{S_API}::info_states_the_build_the_catalog_and_the_limits",
+            f"{S_OAPI}::the_openapi_document_is_the_committed_one"],
+    "VN2": [f"{S_API}::info_states_the_build_the_catalog_and_the_limits"],
+    "VN6": [f"{S_JSON}::request_bodies_follow_vn6", f"{S_JSON}::content_types_are_checked"],
+    "VN7": [f"{S_OAPI}::the_openapi_document_is_the_committed_one",
+            f"{S_OAPI}::every_document_validates_against_its_schema",
+            f"{S_API}::the_openapi_document_is_served_as_committed", f"{S_OAPI}::no_properties_map_names_a_keyword"],
+    "VN8": [f"{S_API}::accept_is_honoured", f"{S_JSON}::accept_admits_its_ranges"],
+    "HX1": [f"{S_SLOW}::a_stalled_header_is_cut_at_the_timeout",
+            f"{S_SLOW}::connections_past_the_cap_are_closed_at_accept", f"{S_SLOW}::a_head_past_64_kib_is_refused",
+            f"{S_SLOW}::no_http2_and_no_upgrade", f"{S_SLOW}::a_client_that_never_reads_loses_its_connection",
+            f"{S_SLOW}::a_connection_lives_at_most_its_lifetime"],
+    "HX2": [f"{S_HOST}::a_body_where_none_is_taken_is_refused"],
+    "HX3": [f"{S_HOST}::a_handler_past_its_time_is_cut", f"{S_HOST}::blocking_work_past_its_time_is_cut",
+            f"{S_SLOW}::a_slow_handler_times_out_on_the_wire", f"{S_SLOW}::an_idle_connection_is_closed"],
+    "HX4": [f"{S_API}::cors_only_with_an_allowlist"],
+    "HX5": [f"{S_API}::unknown_paths_are_not_found"],
+    "HX6": [f"{S_API}::every_response_carries_the_security_headers"],
+    "HX7": [f"{S_WIRE}::request_ids_are_believed_from_trusted_proxies_only",
+            f"{SERVER}/src/http/mod.rs::a_mapped_peer_is_its_ipv4_address"],
+    "OP1": [f"{S_PROC}::stdout_carries_the_address_alone", f"{S_PROC}::logs_can_be_text",
+            f"{S_LEAK}::planted_leaks_in_the_log_are_found"],
+    "OP2": [f"{S_PROC}::configuration_sources_take_their_order", f"{S_CONF}::variables_are_read_as_their_keys_type",
+            f"{S_CONF}::an_unknown_variable_or_wrong_type_is_refused"],
+    "OP3": [f"{S_PROC}::the_paths_are_required_and_limits_are_keys"],
+    "OP4": [f"{S_PROC}::check_config_checks_and_writes_nothing",
+            "crates/fitment-catalog/tests/inspect.rs::inspect_reads_and_writes_nothing"],
+    "OP5": [f"{S_API}::health_needs_nothing_but_the_process", f"{S_PROC}::healthcheck_asks_the_server"],
+    "OP7": [f"{S_API}::readiness_follows_the_catalog_and_the_drain", f"{S_CONC}::a_lost_lease_turns_readiness_off"],
+    "OP8": [f"{S_LAY}::the_image_is_built_as_op8_says", f"{S_PROC}::the_version_is_the_workspaces"],
+    "OP9": [f"{S_LAY}::the_fit_verifier_is_held_send_and_sync",
+            f"{S_API}::info_states_the_build_the_catalog_and_the_limits"],
+    "OP11": [f"{S_LAY}::the_seams_are_test_support_only", f"{S_PROC}::stdout_carries_the_address_alone"],
+    "CO4": [f"{S_OAPI}::every_document_validates_against_its_schema",
+            f"{S_OAPI}::an_edited_document_fails_its_schema"],
+    "CA6": [f"{S_OAPI}::every_document_validates_against_its_schema"],
+    "OB1": [f"{S_STATE}::the_first_start_makes_the_state", f"{S_STATE}::a_restart_opens_the_same_state",
+            f"{S_STATE}::the_schema_guards_itself", f"{S_PROC}::a_foreign_or_newer_state_is_refused",
+            f"{S_STATE}::a_marker_without_its_database_is_refused", f"{S_STATE}::the_state_is_the_owners_alone"],
+    "SD3": [f"{S_PROC}::the_address_is_announced_last"],
+    "SD6": [f"{S_CONC}::a_second_server_on_one_state_is_refused", f"{S_CONC}::a_stale_lease_is_taken_over",
+            f"{S_CONC}::a_lost_lease_turns_readiness_off", f"{S_CONC}::a_lost_lease_stops_the_server",
+            f"{S_CONC}::a_busy_renewal_is_retried"],
+    "DC9": [f"{S_ERR}::the_apis_documents_follow_dc9", f"{S_GOLD}::the_apis_documents_are_their_goldens",
+            f"{S_OAPI}::every_document_validates_against_its_schema"],
+    "DC11": [f"{S_API}::info_states_the_build_the_catalog_and_the_limits", f"{S_API}::info_counts_the_catalog",
+             f"{S_HOST}::info_reads_the_catalog_four_at_a_time",
+             "crates/fitment-catalog/tests/inspect.rs::status_counts_are_the_lists"],
+    "XH13": [f"{S_LEAK}::planted_leaks_in_a_response_are_found", f"{S_LEAK}::planted_leaks_in_the_log_are_found"],
+}
+for rule, tests in M6_PR2.items():
+    assert RULES[rule] == {"deferred": "M6 PR 2"}, rule
+    RULES[rule] = {"tests": tests}
+assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 2"}], "a PR 2 rule is still deferred"
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],

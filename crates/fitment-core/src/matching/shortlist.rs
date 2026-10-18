@@ -16,6 +16,7 @@ use crate::verdict::RequirementId;
 
 /// A candidate the shortlist keeps (SL6): for each requirement, the
 /// candidate elements that may be its witness, which alignment starts from.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Kept {
@@ -27,6 +28,7 @@ pub struct Kept {
 }
 
 /// What the candidate lacks (SL6), in the socket's terms.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Missing {
@@ -39,6 +41,7 @@ pub struct Missing {
 }
 
 /// What kind of element was not found.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]

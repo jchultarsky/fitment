@@ -85,6 +85,7 @@ impl AssemblyRead {
 }
 
 /// Whether a definition is a part (it uses nothing) or an assembly.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 // A definition has usages or it has none.
@@ -127,6 +128,7 @@ pub enum ComponentRead {
 }
 
 /// Something reading an assembly noticed that refuses nothing.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -141,6 +143,7 @@ pub struct AssemblyNote {
 }
 
 /// The kinds of [`AssemblyNote`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -220,6 +223,7 @@ impl Ord for OccurrencePath {
 }
 
 /// How a file's paths are written (O2).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 // A segment is a usage id or an instance.
@@ -556,6 +560,7 @@ impl Listing {
 }
 
 /// How the part was chosen.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]

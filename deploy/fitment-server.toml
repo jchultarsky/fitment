@@ -1,0 +1,11 @@
+# The image's default configuration (docs/research/m6-api.md, OP3, OP8).
+# Every other key keeps its default; FITMENT_SERVER__<SECTION>__<KEY>
+# sets one at run time (OP2), such as FITMENT_SERVER__LIMITS__MAX_UPLOAD_MIB.
+
+[server]
+# Inside the container; publish the port behind a TLS proxy (M6-20).
+listen = "0.0.0.0:8080"
+
+[paths]
+catalog = "/var/lib/fitment/catalog"
+state = "/var/lib/fitment/state"

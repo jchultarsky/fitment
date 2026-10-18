@@ -24,6 +24,13 @@ libm = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# CO4 (docs/research/m6-api.md): the documents' JSON Schemas, behind the
+# `schema` feature only; deny/core.toml allows schemars and its own
+# dependencies for that feature alone.
+schemars = { workspace = true, optional = true }
+
+[features]
+schema = ["dep:schemars"]
 
 [lints]
 workspace = true
