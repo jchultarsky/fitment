@@ -958,3 +958,59 @@ fn a_part_that_leaves_the_search_exits_3() {
         "{err}"
     );
 }
+
+/// CL5: a reader that closes stdout early (`| head`) ends the output
+/// quietly, and the command keeps its own exit code.
+#[test]
+fn a_closed_stdout_ends_output_quietly() {
+    let dir = scratch("closed");
+    let inputs = prototype(&dir);
+    catalog(&dir, &["init", "-C", "parts"]);
+    catalog(&dir, &["ingest", "-C", "parts", inputs.to_str().unwrap()]);
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("fitment"))
+        .current_dir(&dir)
+        .args(["catalog", "list", "-C", "parts", "--format", "json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Closed before the command can write.
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    assert!(!err.contains("error"), "{err}");
+}
+
+/// PH5: on Windows a catalog whose path is not Unicode is refused, since
+/// SQLite needs UTF-8 there.
+#[cfg(windows)]
+#[test]
+fn a_path_that_is_not_unicode_is_refused() {
+    use std::os::windows::ffi::OsStringExt as _;
+    let dir = scratch("unicode");
+    // A lone surrogate: a valid Windows name, not Unicode.
+    let name = std::ffi::OsString::from_wide(&[0x0063, 0xD800]);
+    let root = dir.join(name);
+    let error =
+        fitment_catalog::Catalog::init(&root, fitment_catalog::Options::default()).unwrap_err();
+    assert!(
+        matches!(error, fitment_catalog::Error::NotUnicode(_)),
+        "{error:?}"
+    );
+}
+
+/// SZ4: `gc --vacuum` says what VACUUM needs before it runs it.
+#[test]
+fn vacuum_says_what_it_needs() {
+    let dir = scratch("vacuum");
+    let inputs = prototype(&dir);
+    catalog(&dir, &["init", "-C", "parts"]);
+    catalog(&dir, &["ingest", "-C", "parts", inputs.to_str().unwrap()]);
+    let (code, _, err) = catalog(&dir, &["gc", "-C", "parts", "--vacuum"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("VACUUM needs free space about the database's size ("),
+        "{err}"
+    );
+}

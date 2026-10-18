@@ -1,0 +1,31 @@
+name: Scale
+
+# CT11 (docs/research/m5-catalog.md, section 8.3): a 10⁴-part catalog of
+# scaled corpus parts, every corpus socket run against it with level 1 and
+# exhaustively, compared by digest. Weekly, and on request; 10⁵ is run by
+# hand (the test's header says how).
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  scale:
+    name: 10⁴ scaled parts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v10.1.0
+      - run: tools/gen-corpus.py corpus/out
+      - run: tools/scale-step.py corpus/out "$RUNNER_TEMP/scaled" 10000 --manifest corpus/out/manifest.json
+      - run: cargo test --release -p fitment --test catalog_scale --locked -- --nocapture
+        env:
+          FITMENT_SCALE_DIR: ${{ runner.temp }}/scaled

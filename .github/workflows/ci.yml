@@ -131,6 +131,28 @@ jobs:
       - run: cargo test --workspace --all-features --locked
         env:
           FITMENT_REQUIRE_CORPUS: "1"
+      # CT7: one ingest sequence's catalog outputs, compared across the three
+      # operating systems by the determinism job.
+      - run: cargo build -p fitment --locked
+      - run: tools/catalog-outputs.sh catalog-outputs
+        shell: bash
+      - uses: actions/upload-artifact@v7
+        with:
+          name: catalog-outputs-${{ matrix.os }}
+          path: catalog-outputs
+          retention-days: 7
+          if-no-files-found: error
+
+  determinism:
+    name: catalog outputs equal on every OS
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: catalog-outputs-*
+      - run: diff -r catalog-outputs-ubuntu-latest catalog-outputs-macos-latest
+      - run: diff -r catalog-outputs-ubuntu-latest catalog-outputs-windows-latest
 
   msrv:
     name: MSRV
