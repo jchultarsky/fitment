@@ -8,6 +8,22 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+M6: the REST API, to be released as 0.3.0. `fitment-server` serves the
+catalog and the matcher over HTTP: uploads by SHA-256, jobs for every
+operation that reads STEP, judges a candidate or scans the catalog,
+sockets with revisions, bearer tokens and three roles, and every result
+document byte for byte what the CLI prints for the same inputs. Every
+match case of the corpus passes through the built server under both
+policies, its report the library's to the byte. `fitment-server` is not
+published: it ships as a container image (`deploy/Containerfile`) with
+the CLI of the same version. Publish `fitment-core` first, then
+`fitment-catalog` (internal and unstable), then `fitment`. The document
+formats of 0.2.0 keep their layouts and versions; `fitment.verify` and
+`fitment.gc` v1 are new, and the API adds its own envelope documents.
+`fitment-catalog`'s `Fs` trait gains two required methods (PR 4), a
+breaking change for an implementor of it; every other change to
+`fitment-catalog` and `fitment-core` is an addition.
+
 ### Added
 
 - **M6, PR 1 (the scorer, the review cases and the registry):** the
@@ -267,6 +283,15 @@ Until 1.0, minor versions may contain breaking changes.
   clients for two minutes, a restart soak of 100 kills, a full 32 MiB
   tmpfs and 32 clients over the corpus, each job with a timeout. No output
   of `fitment` changes.
+- **M6, PR 9 (the exit):** every M6 rule has its tests, and the coverage
+  test no longer allows a rule to wait for an M6 PR; every error code a
+  request can reach has a golden. The README says how to run the server
+  and its image, make the first admin and tokens, run a match over HTTP,
+  put TLS at a reverse proxy, and keep one server per catalog with both
+  directories on a local disk, never a network file system or a sync
+  folder, as the image's notes and configuration now say too.
+  ARCHITECTURE.md maps the server and the scorer, and PLAN.md records M6
+  done with the exit's numbers.
 
 ### Changed
 

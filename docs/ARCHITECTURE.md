@@ -2,19 +2,25 @@
 
 How fitment is put together, and the rules every change keeps. The design
 of each part is in [PLAN.md](PLAN.md) and, for reading features (milestone
-M2), sockets (M3), matching (M4) and the catalog (M5), in
+M2), sockets (M3), matching (M4), the catalog (M5) and the REST API (M6), in
 [research/m2-features.md](research/m2-features.md),
 [research/m3-socket.md](research/m3-socket.md),
-[research/m4-match.md](research/m4-match.md) and
-[research/m5-catalog.md](research/m5-catalog.md); this page is the map.
+[research/m4-match.md](research/m4-match.md),
+[research/m5-catalog.md](research/m5-catalog.md) and
+[research/m6-api.md](research/m6-api.md); this page is the map.
 
 ## Crates
 
 ```text
-fitment (CLI) ──> fitment-catalog ──> rusqlite (SQLite, bundled)
-      │                 │
-      └─────────────────┴──> fitment-core ──> stepq (private: no type of it is public)
-                                   └────────> libm, serde, serde_json, thiserror
+fitment-server ──> tokio, hyper, axum, tower, argon2; rusqlite ──> server.db
+  │ (unpublished)
+  ├──────────────────> fitment-catalog ──> rusqlite (SQLite, bundled) ──> catalog.db
+  │                          │
+fitment (CLI) ──> fitment-catalog                                (no async crate)
+  │                          │
+  └──────────────────────────┴──> fitment-core ──> stepq (private: no type of it is public)
+                                        └────────> libm, serde, serde_json, thiserror
+fitment-corpus (unpublished, a dev-dependency only) ──> fitment-core, serde_json
 ```
 
 - **`fitment-core`** is the library: bytes in, values out. It does no I/O
@@ -37,6 +43,26 @@ fitment (CLI) ──> fitment-catalog ──> rusqlite (SQLite, bundled)
   and the catalog, and prints. It never names stepq. Its `catalog` cargo
   feature, on by default, brings in `fitment-catalog`; without it,
   `fitment catalog` and `match --catalog` exit 2.
+- **`fitment-server`** is the REST API (M6), library and binary: the only
+  async crate, never published (`publish = false`, `dist = false`) and
+  shipped as a container image with the CLI of the same version. It
+  makes the CLI's library calls and keeps its own state in `server.db`,
+  the one other database rusqlite may open (`deny.toml`). Only
+  `catalog.rs` and its submodules name `fitment-catalog`, only
+  `matching.rs` builds a `Matcher` or a `MatchDocument`, and only
+  `state/db` opens `server.db` (`tests/layout.rs`, `tools/check-core.sh`);
+  its clippy configuration bans spawning a thread and blocking a runtime
+  worker in place (blocking work runs in `spawn_blocking`), and reading
+  the environment outside `config.rs`. `deny/sync.toml` keeps tokio, hyper, axum and tower out of
+  `fitment` and `fitment-catalog`, and the server's runtime graph has no
+  schemars, TLS stack or HTTP/2.
+- **`fitment-corpus`** is the corpus's one scorer (M6), never published
+  and a dev-dependency only: the strict gate, the false positives and
+  negatives, the baseline, the report and the `fitment.match` checker,
+  over an `Outcome` read from a library result or a document's entry.
+  The library's, the binary's, the catalog's and the API's suites all
+  score with it, and `tools/check-core.sh` checks no published crate
+  names it.
 
 ## Reading a part
 
@@ -203,6 +229,74 @@ for `get ID@rN` until `prune --revisions`; their derived rows go, so level
 batch, and `gc --versions` removes older ones, never a newer build's.
 The design, every rule and its tests are in `docs/research/m5-catalog.md`.
 
+## Serving the API
+
+```text
+client ─HTTPS─> TLS proxy ─HTTP/1.1─> accept loop: header timeout, head   net.rs
+  │                                     and connection caps, write timeout
+  ▼
+tower layers: request id, trace, sensitive headers, panic caught,         http/mod.rs
+  │   per-route body limits and timeouts, response headers
+  ▼
+router from OPERATIONS; Reader | Writer | Admin by token and role         http/operations.rs,
+  │                                                                          extract.rs, auth/
+  ├─ uploads: streamed, hashed as they come, synced, renamed  uploads.rs, state/objects.rs
+  ├─ sync reads: a catalog snapshot from the reader pool,     catalog/read.rs, http/cache.rs
+  │    stored documents sent as their bytes, checked
+  ├─ sync writes: a review (one parse slot), a delete         http/routes/sockets.rs, catalog/
+  └─ a job: its row and inputs committed before the answer    jobs/request.rs
+        ▼
+     scheduler: lanes query │ write │ maintenance, owners in turn,         jobs/scheduler.rs,
+       per-owner caps, one fair CPU budget and a memory budget             jobs/mod.rs
+        ▼
+     one blocking task per job: the CLI's library calls, a stop flag      jobs/run.rs, socket.rs,
+       and the catalog's Observer asked between files, batches and        matches.rs, catalog.rs,
+       windows; a watchdog for a call that never returns                  stuck.rs
+        ▼
+     the document stored as an object, then the job's end committed;      jobs/events.rs,
+       progress and notes as NDJSON events, never a verdict                runs.rs
+disk:  <catalog>/ catalog.db, blobs/, tmp/   opened only through fitment-catalog (schema 1, M5's)
+       <state>/   server.db, objects/sha256/, tmp/   opened only by fitment-server
+```
+
+**One rule decides sync or job:** an operation that parses STEP bytes,
+judges a candidate or scans the whole catalog is a job (`features`,
+`assembly_read`, `socket_extract`, `socket_import`, `match` and the
+catalog's ingest, replace, reindex, prune, gc and verify); everything else
+answers in the request. `Prefer: wait=N` (at most 60 s) answers with the
+finished job. A job's state follows the exit code the CLI would give:
+`succeeded` (0, 4 or 5), `refused` (2 or 3), `failed` (1, or no answer),
+`cancelled` or `interrupted`.
+
+**Three lanes over one budget.** Queries (reads, extractions, matches)
+run `max(1, cpu / match_threads)` at a time, catalog writes one at a time
+on the one writer, and `verify` beside them on the maintenance lane, all
+inside one fair semaphore of `jobs.cpu` permits and a memory semaphore
+whose estimates are heuristic (21 times a job's largest input, or per
+entry for a catalog match). Each owner's jobs wait in their
+own queue, owners in turn, within per-owner caps; a full lane refuses a
+submission with nothing written. A cancel, a deadline or a drain sets the
+job's flag, read where the job may stop; a pure job whose call never
+returns is given up past a grace, its permits released, and a write job
+always ends as its work ended.
+
+**Two stores, the server's state apart from the catalog.** The catalog is
+M5's, at schema 1: the CLI may work on it beside the server, and the
+server sees its writes at its next snapshot. Everything the server adds,
+users and tokens, uploads, assemblies, socket lines and their insert-only
+revisions, jobs, their events and run records, lives in `server.db`
+beside a content-addressed object store that keeps the catalog's rules:
+bytes before rows, an object read only checked against its name, unlinked
+only by the sweep under the write lock once no row names it. A job holds
+its inputs from its submission until it ends, a match for as long as its
+record is kept (30 days unless pinned). A lease in `server.db` keeps one
+server per state directory; one server per catalog, both on a local disk,
+is the deployment's rule. A restart settles what a killed process left: a
+pure job runs again once, a write job cut short is `interrupted` with the
+catalog's generation at its start and at recovery, and a result whose end
+committed is kept. The design, every rule and its tests are in
+`docs/research/m6-api.md`.
+
 ## Soundness: refuse, or say unknown, but never guess
 
 fitment may miss a match. It must never claim one. Reading features keeps
@@ -242,6 +336,22 @@ the same rule:
   A damaged or lost posting can hide a part until `verify` reports it, and
   can never pass one; a copied database is trusted only after `verify
   --deep`, which reads every part again from its file.
+- **An API document is the CLI's bytes.** Every `features.v1`,
+  `fitment.parts`, `fitment.socket`, `fitment.match`, `fitment.catalog`,
+  `fitment.verify` and `fitment.gc` the server serves is the string the
+  library returned, stored as an object and sent unchanged, with the
+  CLI's exit code beside it (`Fitment-Exit-Code`); `matching.rs` makes the
+  CLI's calls and no verdict of its own. No request overrides a refusal
+  the CLI makes (a stale or unreviewed socket, a stale or empty catalog, a
+  blocked socket); configuration can only tighten.
+- **An error or a stop is never a verdict.** A cancelled, interrupted,
+  failed or timed-out match stores no verdict anywhere: its events carry
+  counts and notes, never a candidate's verdict, its `outcome` is null in
+  every envelope, and a run the CLI would end with exit 1 keeps its
+  document as `failed`, `complete: false`. No verdict is shown before its
+  document is stored, and no endpoint takes a match document or run record
+  as input. `Match` needs a verified fit: the server judges with
+  `NoFitVerifier`, so `InterfaceMatch` is the best verdict until M7.
 - **Never state a wrong known value.** Every rule that was found to guess
   in review was withdrawn or made to say `unknown` instead: the seam proof
   (F3), a walk that turns back along its axis (W7b), a drill point after a
@@ -264,7 +374,9 @@ the same rule:
   `fitment.socket` (`SOCKET_FORMAT_VERSION`) is frozen at the first
   publish like `features.v1`.
 - **The catalog** writes `fitment.catalog` v1 (`list`, `get`, and the
-  changes of `ingest`, `replace`, `delete`, `reindex` and `prune`). Its
+  changes of `ingest`, `replace`, `delete`, `reindex` and `prune`), and
+  since M6 `fitment.verify` and `fitment.gc` v1, which hold no path and no
+  time. Its
   database has a schema version, and a newer one is refused by every
   command. Its rows are keyed by content and version: features by
   `EXTRACTOR_VERSION`, tokens and postings also by `SIGNATURE_VERSION`
@@ -277,6 +389,18 @@ the same rule:
   again onto a reviewed file keeps the decisions on requirements that did
   not change. Golden files can only be re-blessed when a version they
   record has risen (`FITMENT_BLESS=1`; never under `CI`).
+- **The API** is `/v1`; its own documents (`fitment.job`,
+  `fitment.job.event`, `fitment.run`, `fitment.page`, `fitment.error`,
+  `fitment.info`, `fitment.upload`, `fitment.assembly`, `fitment.token`,
+  `fitment.user`) are envelopes that may gain optional fields within v1,
+  and `fitment.info` states the API's minor, every version above and the
+  limits. The result documents never change through the API. Errors are
+  one registry of stable codes (`ErrorCode::ALL`), each with its class,
+  exit code, HTTP status and whether a retry may succeed. The committed
+  `openapi.json`, generated from the operation table and the documents'
+  JSON Schemas (each crate's `schema` feature), is what the server serves,
+  and a test fails when it drifts. `server.db` has its own application id
+  and schema version, refused when newer and migrated forward at start.
 - **The extraction constants** (`Extraction`, design section 5.2) are
   written into every document and are the ones the code uses: the struct
   takes its values from the modules' own constants.
@@ -301,7 +425,12 @@ The same bytes give the same output bytes on Linux, macOS and Windows:
    locale; the catalog counts changes by a generation number, not a time,
    and every query that lists rows has an `ORDER BY` or is collected into
    an ordered set;
-5. `serde_json` with `float_roundtrip`, pinned by `Cargo.lock`.
+5. `serde_json` with `float_roundtrip`, pinned by `Cargo.lock`;
+6. through the API, documents are stored and served as bytes, never
+   parsed and written again: job ids, times, users and URLs live only in
+   the envelopes, `server.db`, logs and metrics, and socket ids derive
+   from their data, so two servers' documents of one input are the same
+   bytes, and their run records differ only in ids.
 
 ## Hostile input
 
@@ -317,6 +446,20 @@ most `--max-mib` of a file, bounds a part's stated properties while reading
 them, escapes every stored name it prints, refuses a symbolic link inside
 its store, and keeps its own files apart from the user's: an input inside
 the catalog, or an output into it, is refused.
+
+Over HTTP every input has a bound and a test that exceeds it: a request's
+head (64 KiB, read within 10 s), JSON bodies (1 MiB), uploads (128 MiB,
+streamed, cut when slower than 64 KiB/s or idle 30 s), socket documents
+(16 MiB, parsed four at a time), candidates per run, pages, connections,
+concurrent uploads and event streams per user, and requests per second
+per user and logins per address. Slow clients are cut by the header,
+chunk and write timeouts without delaying others. A path parameter is
+parsed into its type before any handler runs; no name a client gives
+becomes a path. A user reaches only their own uploads, assemblies,
+sockets, matches and jobs: another's is `404`, and bytes another user
+stored are answered exactly as new ones, so no answer or its time tells
+that they exist. No response holds a path, and no response or log a
+token or a password.
 
 ## Testing
 
@@ -334,9 +477,16 @@ the catalog, or an output into it, is refused.
 | Goldens | `crates/fitment/tests/golden` | The exact bytes of each unit part's `features` document, and of each unit assembly's `parts` and `socket` documents; on three operating systems, the determinism check |
 | Fixtures | `tools/fetch-fixtures.sh`, `fixtures/manifest.json`, `tests/fixtures.rs` | 45 public STEP files: pinned gate results and counts of planes, outlines, cylinders, holes and shafts; sockets pinned for chosen targets of the assemblies, and AS1's exports compared |
 | Oracle | `tools/verify-occt.py` | Open CASCADE 8.0.1, a kernel the generator does not use: `manifest` checks the construction; `features` checks fitment's planes, cylinders, holes and shafts; `socket` checks every socket against the solids, both ways (spans, seats, touchers, grips, floors, touching faces, occupied holes, conical seats' senses and ranges, zones' profiles, and cores clear of the part's own material where no requirement says otherwise), but s55's, which it skips by name (its 7,440-face plate takes Open CASCADE hours), with the fixtures' tallies pinned but the sampled count of touching faces; `mutations` edits fitment's sockets fourteen ways and requires each edit to meet a disagreement; `match` judges every corpus candidate with the built fitment and checks each document: every pass fits physically at the placement fitment states (KO3), every failure re-measured (KO4), placements rigid with their features on their requirements (KO5), each bad case but a mirror image disturbing only the neighbours its defect concerns (KO2), and ten mutations of the documents each met (KO6); with `--expect`, AS1's parts across its exports, the tallies pinned (KO8); `manifest` also places each candidate by its construction and requires the physics to agree with its truth (KO1; not `edge`, `refused`, originals read in place, or grip-only thickness changes) |
-
 | Catalog | `crates/fitment-catalog/tests`, `crates/fitment/tests/catalog_*.rs` | The store's invariants after every operation, faults at every file call and races between writers; every preimage field bound; reindex from catalogs written by older and newer builds, killed and resumed; on the generated corpus, every socket's catalog run equal to the file run restricted, and its exhaustive run to the file run, hostile parts included; a match with every stored file moved away; on Linux, macOS and Windows, the same catalog outputs |
 | Scale | `tools/scale-step.py`, `crates/fitment/tests/catalog_scale.rs` | Weekly at 10⁴ scaled corpus parts, by hand at 10⁵: every corpus socket's full run the exhaustive run restricted, no pass hidden, timings reported |
+| The scorer | `crates/fitment-corpus`, its `tests/scorer.rs` | One strict gate, rates, baseline and document checker for every path, with a control for each refusal; no test file keeps a scorer of its own |
+| Server layers | `crates/fitment-server/tests/{api,auth,isolation,hostile,slow,wire,errors,state,process,layout,leaks}.rs` | In process, over a bound socket and as the built binary: every operation against every principal (the permission matrix), each user's resources invisible to another, every limit exceeded, slow clients cut, every error code's document, configuration and startup refusals, the crate's layering, and no secret or path in any response or log |
+| Goldens and OpenAPI | `crates/fitment-server/tests/golden.rs`, `openapi.rs`, `tests/golden/api` | Every operation's requests and responses as exact bytes, every reachable error code produced, the same on three operating systems; the served OpenAPI document the committed one, its schemas validating every golden body |
+| Parity | `crates/fitment-server/tests/parity.rs` | Every document a job or route serves against the CLI's bytes and exit code for the same input (the library's for components): features, parts, sockets, reviews, imports, matches and every catalog command, on every OS; the corpus's assemblies and sockets in release |
+| Faults and concurrency | `crates/fitment-server/tests/{fault,concurrency,soak}.rs` | An abort at every hook point of each job kind, then a restart: each job ends once, the catalog consistent; cancels, deadlines, drains, a stuck call given up, a failing database, a CLI writing beside the server, many clients' runs alike; weekly, a restart soak of random kills and a full disk |
+| The exit | `crates/fitment-server/tests/exit.rs`, CI's `server-corpus` job | The built server as a child over loopback, in release: every corpus match case under both policies, file and component candidates, through upload, register, extract, review and match, each document the CLI's (or the library's), the strict gate, no false positive, the baseline's false negatives, and `api-report.json` equal to the library's `report.json`; the corpus ingested and every catalog run of the exit set under three policies the CLI's, `verify --deep` clean after |
+| The container | `deploy/Containerfile`, `deploy/smoke.sh`, CI's `container` job | The image built on every PR: no Python, uv or Open CASCADE, a non-root user, both binaries of one version, the crates' licences; a smoke run with a read-only root through the first admin, uploads, a socket and a match to the CLI's goldens, and a clean stop |
+| Fuzzing and load | `fuzz/`, `crates/fitment-server/src/fuzzing.rs`, `tests/scale.rs`, `fuzz.yml`, `scale.yml` | Weekly: arbitrary requests through the router and arbitrary bodies through every request type, seeded with the goldens' requests (no panic, no unexpected `5xx`, every error the error document); the 10⁴ scaled catalog through the API, sixteen clients at once, and 32 clients over the corpus |
 
 The test parts' answers come from the generator's arguments, never from
 reading a written file; the oracle catches a generator whose part is not
@@ -355,6 +505,9 @@ fitment's own tests.
   [research/m4-match.md](research/m4-match.md).
 - The catalog: store, index, identity, changes, re-indexing, properties
   and the catalog match: [research/m5-catalog.md](research/m5-catalog.md).
+- The REST API: resources, jobs, uploads, the server's state, errors,
+  authentication, hardening, deployment, the scorer and the exit:
+  [research/m6-api.md](research/m6-api.md).
 - Milestones, matching method and verdicts: [PLAN.md](PLAN.md).
 - stepq's reading of STEP: its own repository and
   [research/m1-stepq-read.md](research/m1-stepq-read.md).

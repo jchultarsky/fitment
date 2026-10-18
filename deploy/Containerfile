@@ -13,8 +13,11 @@
 # names, such as an orchestrator's service links, are ignored).
 #
 # Run it with a read-only root file system, both volumes on a local disk
-# (never a network or sync folder: OP10, CC5), and a stop grace period of
-# at least 45 s (SD1). The catalog volume must hold a catalog:
+# (never a network file system or a sync folder: SQLite's write-ahead log
+# needs one host's shared memory; OP10, CC5), one server per catalog (no
+# replicas), and a stop grace period of at least 45 s (SD1). The fitment
+# CLI may share the catalog with it. The catalog volume must hold a
+# catalog:
 #
 #   docker run --rm -v cat:/var/lib/fitment/catalog --entrypoint fitment \
 #     fitment-server catalog init -C /var/lib/fitment/catalog

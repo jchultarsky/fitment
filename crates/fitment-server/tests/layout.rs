@@ -388,6 +388,38 @@ fn the_image_is_built_as_op8_says() {
     assert!(manifest.contains("[package.metadata.dist]\ndist = false"));
 }
 
+/// A file's words, comment markers and line breaks aside, in lower case,
+/// so a sentence wrapped anywhere still reads as one.
+fn prose(text: &str) -> String {
+    text.lines()
+        .map(|l| l.trim().trim_start_matches('#').trim())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// OP10, CC5: one server per catalog, with both volumes on a local disk,
+/// never a network file system or a sync folder, as the README, the
+/// Containerfile and the image's configuration say; the CLI on the same
+/// catalog is `concurrency.rs::a_cli_ingest_beside_the_server_is_consistent`.
+#[test]
+fn one_replica_on_local_disks_as_op10_says() {
+    for file in [
+        "README.md",
+        "deploy/Containerfile",
+        "deploy/fitment-server.toml",
+    ] {
+        let text = prose(&std::fs::read_to_string(root().join(file)).unwrap());
+        for words in [
+            "one server per catalog",
+            "on a local disk",
+            "never a network file system or a sync folder",
+        ] {
+            assert!(text.contains(words), "{file} does not say {words:?}");
+        }
+    }
+}
+
 /// OP11: the seams exist under `test-support` only, which no default or
 /// release build turns on: the hooks module, fixed ids and time, and
 /// shutdown on stdin's end of file are each behind the feature.

@@ -576,17 +576,6 @@ static SCENARIOS: [Scenario; 164] = [
         "/v1/matches/{job}/candidates?limit=1", &[], b""),
 ];
 
-/// The codes whose routes come in a later PR of section 12, with that PR:
-/// each must be produced by a golden by then. Since PR 7 every route
-/// exists and every code a request can reach is produced. Section 7.12's
-/// job-only codes (HTTP "—") are not listed: no request answers one; the
-/// job goldens show them.
-const PENDING: [(&str, u32); 0] = [];
-
-/// The PR this tree builds (section 12): a pending code waits for a later
-/// one, at most the exit.
-const PR_NOW: u32 = 8;
-
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/api")
 }
@@ -1229,7 +1218,7 @@ fn compare(path: &Path, text: &str, failures: &mut Vec<String>) {
 
 /// VT6: every scenario's request and response equal their goldens, byte
 /// for byte; every operation has one; every error code is produced by
-/// one, or is job-only, or waits for a later PR (and not past the exit).
+/// one, or is job-only.
 #[tokio::test]
 async fn the_apis_documents_are_their_goldens() {
     let mut failures = Vec::new();
@@ -1281,28 +1270,14 @@ async fn the_apis_documents_are_their_goldens() {
             op.id
         );
     }
+    // Since PR 7 every route exists, and since M6's exit (PR 9) no code
+    // may wait for a later PR: every code a request can reach is produced
+    // by a golden. Section 7.12's job-only codes (HTTP "—") are answered by
+    // no request; the job goldens show them.
     for code in ErrorCode::ALL {
-        let name = code.name();
-        let job_only = code.status().is_none();
-        let pending = PENDING.iter().find(|(n, _)| *n == name);
-        match (produced.contains(name), pending) {
-            (true, Some(_)) => failures.push(format!("{name}: produced, yet listed as pending")),
-            (false, None) if !job_only => {
-                failures.push(format!("{name}: neither produced, job-only nor pending"));
-            }
-            (_, Some((_, pr))) if *pr <= PR_NOW || *pr > 9 => {
-                failures.push(format!(
-                    "{name}: pending for PR {pr}, not a later PR up to the exit"
-                ));
-            }
-            _ => {}
+        if code.status().is_some() && !produced.contains(code.name()) {
+            failures.push(format!("{}: neither produced nor job-only", code.name()));
         }
-    }
-    for (name, _) in PENDING {
-        assert!(
-            ErrorCode::ALL.iter().any(|c| c.name() == name),
-            "{name} is no code"
-        );
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }

@@ -319,7 +319,8 @@ fn every_variant_has_its_base_s_sockets() {
 /// `Y4.original_run` left it with M4's matcher (KH10); M4 closed with none
 /// of its own. M5 closed with these, each for its reason (CT19): CC3 and
 /// GT8 cannot be shown by a test, CL6, CL10 and ST8 hold by construction,
-/// SZ2 is a guard no input reaches, QR13 is M7's and VF5 the README's.
+/// SZ2 is a guard no input reaches, QR13 is M7's and VF5 the README's. M6
+/// closed with none of its own: every M6 rule has its tests (section 11.1).
 const DEFERRED: [&str; 12] = [
     "4.2#30", "F3", "Z7", "V1", "CC3", "CL6", "CL10", "GT8", "QR13", "ST8", "SZ2", "VF5",
 ];
@@ -358,9 +359,10 @@ const DESIGNS: [&str; 5] = [
     "docs/research/m6-api.md",
 ];
 
-/// M6's design, open: its rules may wait for the PR of its section 12
-/// that builds them (`"M6 PR n"`, section 11.1) until PR 9, M6's exit,
-/// removes this allowance.
+/// M6's design. Its rules waited for the PR of its section 12 that built
+/// them (`"M6 PR n"`, section 11.1) until PR 9, M6's exit, which removed
+/// the allowance: every M6 rule has its tests, and those of its three
+/// lists have them where the list says.
 const M6: &str = "docs/research/m6-api.md";
 
 /// M6's rules that bound an input (a size, a count, a time, a depth): each
@@ -437,7 +439,7 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         .map(|id| format!("{id}: in M6's lists, and not stated by {M6}"))
         .collect();
     for (id, entry) in rules {
-        failures.extend(rule_problems(id, entry, &root, &m6));
+        failures.extend(rule_problems(id, entry, &root));
         failures.extend(case_lists(id, entry, &by_id));
     }
     // Every rule the designs state in bold (`**G1.`, `**W7b.`, `**B8.`)
@@ -476,26 +478,6 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// The M6 PR this tree builds: a deferral names a later one. With PR 8
-/// (hardening, XH14 built) it is 8, and no rule waits for "M6 PR 8": OP10
-/// alone waits, for PR 9.
-const M6_PR_NOW: u32 = 8;
-
-/// The last M6 PR a rule may wait for: PR 9, M6's exit, removes the
-/// allowance (section 12; PR 10 is the release).
-const M6_PR_LAST: u32 = 9;
-
-/// True for a deferral M6's open design allows: one of its own rules,
-/// waiting for a later PR that builds it (`M6 PR n`, after this one and
-/// at most the exit's).
-fn m6_deferral(id: &str, reason: &str, m6: &[String]) -> bool {
-    m6.iter().any(|r| r == id)
-        && reason
-            .strip_prefix("M6 PR ")
-            .and_then(|n| n.parse::<u32>().ok())
-            .is_some_and(|n| n > M6_PR_NOW && n <= M6_PR_LAST)
-}
-
 /// M6's lists (section 11.1): a rule of one that is not deferred has a
 /// test in the files its list names; cases alone, or tests elsewhere, do
 /// not show a bound exceeded, a CLI's parity or a fault survived.
@@ -512,22 +494,20 @@ fn m6_list_problems(id: &str, tests: &[&str], deferred: bool) -> Vec<String> {
         .collect()
 }
 
-/// VT30's controls for M6's deferrals and lists: a deferral to this PR, an
-/// earlier one or past the exit, or of a rule not M6's, is refused; a
-/// listed rule shown by cases alone, or by a test elsewhere, is refused.
+/// VT30's controls for M6's deferrals and lists: since M6's exit no rule
+/// may wait for an M6 PR, whatever the PR, nor be cited by cases while it
+/// waits; a listed rule shown by cases alone, or by a test elsewhere, is
+/// refused.
 #[test]
 fn m6_deferrals_and_lists_hold() {
-    let m6 = vec!["UP2".to_owned()];
-    assert!(m6_deferral("UP2", "M6 PR 9", &m6));
-    assert!(!m6_deferral("UP2", "M6 PR 8", &m6), "a deferral to this PR");
-    assert!(
-        !m6_deferral("UP2", "M6 PR 7", &m6),
-        "a deferral to an earlier PR"
-    );
-    for reason in ["M6 PR 1", "M6 PR 0", "M6 PR 10", "M6 PR", "M5 PR 4"] {
-        assert!(!m6_deferral("UP2", reason, &m6), "{reason}");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for reason in ["M6 PR 9", "M6 PR 10", "M6 PR 1"] {
+        let entry = serde_json::json!({ "cases": [], "deferred": reason });
+        assert_eq!(rule_problems("UP2", &entry, &root).len(), 1, "{reason}");
+        let cited =
+            serde_json::json!({ "cases": ["m_review_s01_hole_waived"], "deferred": reason });
+        assert_eq!(rule_problems("XH1", &cited, &root).len(), 2, "{reason}");
     }
-    assert!(!m6_deferral("ST1", "M6 PR 9", &m6));
     let hostile = "crates/fitment-server/tests/hostile.rs::a_body_past_the_cap";
     let elsewhere = "crates/fitment-server/tests/api.rs::a_body_past_the_cap";
     assert_eq!(m6_list_problems("UP2", &[], false).len(), 1);
@@ -545,9 +525,9 @@ fn m6_deferrals_and_lists_hold() {
 
 /// One rule's entry: a case, a test that exists, an oracle check or a
 /// reason, and never a reason beside a case or test; a deferral only for
-/// a reason the closed milestones left or M6's open one allows; and each
-/// test where M6's lists want it.
-fn rule_problems(id: &str, entry: &Value, root: &Path, m6: &[String]) -> Vec<String> {
+/// a reason the closed milestones left; and each test where M6's lists
+/// want it.
+fn rule_problems(id: &str, entry: &Value, root: &Path) -> Vec<String> {
     let mut failures = Vec::new();
     let cases = entry["cases"].as_array().map_or(0, Vec::len);
     let strings = |key: &str| -> Vec<&str> {
@@ -566,22 +546,18 @@ fn rule_problems(id: &str, entry: &Value, root: &Path, m6: &[String]) -> Vec<Str
             "{id}: no case, no test, no oracle check and no reason"
         ));
     }
-    // While M6 is open, a rule waiting for its PR may be cited by cases
-    // that support it (XH1 by PR 1's review cases); a test still ends its
-    // wait.
-    let supporting = cases > 0 && m6_deferral(id, reason, m6);
-    if deferred && ((cases > 0 && !supporting) || !tests.is_empty() || !oracle.is_empty()) {
+    if deferred && (cases > 0 || !tests.is_empty() || !oracle.is_empty()) {
         failures.push(format!("{id}: deferred, yet a case or test covers it"));
     }
     failures.extend(oracle_problems(id, &oracle, root));
-    // M2 to M5 are closed: only these may wait, each for a reason outside
+    // M2 to M6 are closed: only these may wait, each for a reason outside
     // them (a bug's code, a withdrawn rule, a property of the construction,
     // a later milestone). M5's exit removed the allowance its rules had to
-    // wait for the PR that built them (CT19); M6's rules have it while M6
-    // is open.
-    if deferred && !DEFERRED.contains(&id) && !m6_deferral(id, reason, m6) {
+    // wait for the PR that built them (CT19), and M6's exit M6's (section
+    // 11.1): M6 closed with no deferral of its own.
+    if deferred && !DEFERRED.contains(&id) {
         failures.push(format!(
-            "{id}: deferred, and not among the deferrals M4 and M5 closed with, nor M6's to its PR"
+            "{id}: deferred, and not among the deferrals M4 and M5 closed with"
         ));
     }
     for test in &tests {
