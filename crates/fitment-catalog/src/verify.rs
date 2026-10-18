@@ -298,6 +298,11 @@ fn blob_rows(
             }
         }
     }
+    observer.progress(Progress::Verifying {
+        phase: "blobs",
+        done: total,
+        total,
+    });
     Ok(suspect)
 }
 
@@ -833,5 +838,10 @@ fn deep_check(
             );
         }
     }
+    observer.progress(Progress::Verifying {
+        phase: "deep",
+        done: total,
+        total,
+    });
     Ok(())
 }

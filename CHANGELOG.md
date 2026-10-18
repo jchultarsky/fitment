@@ -179,7 +179,8 @@ Until 1.0, minor versions may contain breaking changes.
   the library for the CLI and the server alike
   (`CatalogDocument::ingested`, `replaced`, `deleted`, `pruned`,
   `reindexed`), with keyset pages of entries (`Snapshot::list_page`,
-  `CatalogDocument::page`) and a cap set per run (`set_max_bytes`). All
+  `CatalogDocument::page`) and a size cap per call (`max_bytes` on
+  `ingest_inputs` and `replace_input`). All
   additions; the catalog's schema is unchanged.
 
 ### Changed

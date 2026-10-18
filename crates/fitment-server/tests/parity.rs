@@ -1145,7 +1145,7 @@ fn catalog_ingests_from_bytes_are_the_clis() {
         .iter()
         .map(|(bytes, input, name)| Input::new(bytes, input, name))
         .collect();
-    let run = catalog.ingest_inputs(&inputs, &NoObserver).unwrap();
+    let run = catalog.ingest_inputs(&inputs, None, &NoObserver).unwrap();
     let snapshot = catalog.snapshot().unwrap();
     let document = CatalogDocument::ingested(&snapshot, &run)
         .unwrap()
@@ -1170,7 +1170,7 @@ fn catalog_ingests_from_bytes_are_the_clis() {
     ];
     let (_, expected, _) = cli(&dirs.root, &args);
     let (mut one, _) = Catalog::init(&dirs.root.join("lib-one"), Options::default()).unwrap();
-    let run = one.ingest_inputs(&inputs[..1], &NoObserver).unwrap();
+    let run = one.ingest_inputs(&inputs[..1], None, &NoObserver).unwrap();
     let snapshot = one.snapshot().unwrap();
     let document = CatalogDocument::ingested(&snapshot, &run)
         .unwrap()
@@ -1178,6 +1178,95 @@ fn catalog_ingests_from_bytes_are_the_clis() {
     if let Some(diff) = fitment_corpus::parity::bytes("one", &expected, document.as_bytes()) {
         panic!("{diff}");
     }
+}
+
+/// Two catalogs of the same files, `root/cli` by the CLI and `root/lib` by
+/// the library: each file ingested alone, one batch, so both stand at one
+/// generation whatever DB3's second makes of a batch.
+fn twins(root: &Path) -> (Catalog, Vec<(Vec<u8>, String, String)>) {
+    let files = catalog_inputs(root);
+    cli(root, &["catalog", "init", "-C", "cli"]);
+    let (mut catalog, _) = Catalog::init(&root.join("lib"), Options::default()).unwrap();
+    for (bytes, input, name) in &files {
+        catalog_cli(root, &["ingest", input]);
+        let one = [Input::new(bytes, input, name)];
+        catalog.ingest_inputs(&one, None, &NoObserver).unwrap();
+    }
+    (catalog, files)
+}
+
+/// Writes `bytes` at `path` and marks it written long ago: abandoned, not
+/// in flight.
+fn abandoned(path: &Path, bytes: &[u8]) {
+    std::fs::write(path, bytes).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(86_400))
+        .unwrap();
+}
+
+/// CU2 on damaged catalogs (the review of PR 7a): the two catalogs
+/// damaged alike, a blob's bytes altered, an orphan and an old temporary
+/// file planted, the library's `fitment.verify`, plain and deep, and
+/// `fitment.gc` are the CLI's bytes, and so is verify after gc.
+#[test]
+fn catalog_verify_and_gc_of_damage_are_the_clis() {
+    let dirs = Dirs::bare();
+    let (mut catalog, files) = twins(&dirs.root);
+    let bracket = files.iter().find(|f| f.2 == "m_bracket.stp").unwrap();
+    let sha = fitment_core::sha256_hex(&bracket.0);
+    let orphan = fitment_core::sha256_hex(b"an orphan");
+    for side in ["cli", "lib"] {
+        let blobs = dirs.root.join(side).join("blobs/sha256");
+        let blob = blobs.join(&sha[..2]).join(&sha);
+        let mut writable = std::fs::metadata(&blob).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        writable.set_readonly(false);
+        std::fs::set_permissions(&blob, writable).unwrap();
+        std::fs::write(&blob, b"other").unwrap();
+        abandoned(&blobs.join(&orphan[..2]).join(&orphan), b"an orphan");
+        abandoned(&dirs.root.join(side).join("tmp/old.part"), b"abandoned");
+    }
+    let mut failures = Vec::new();
+    let mut same = |what: &str, cli: Vec<u8>, library: String| {
+        failures.extend(fitment_corpus::parity::bytes(
+            what,
+            &cli,
+            library.as_bytes(),
+        ));
+    };
+    for deep in [false, true] {
+        let args: &[&str] = if deep {
+            &["verify", "--deep"]
+        } else {
+            &["verify"]
+        };
+        let cli_doc = catalog_cli(&dirs.root, args);
+        let verified = catalog.verify_observed(deep, false, &NoObserver).unwrap();
+        assert_eq!(verified.problems.len(), 3, "{:?}", verified.problems);
+        same(
+            "verify",
+            cli_doc,
+            VerifyDocument::new(&verified, deep, false).to_json(),
+        );
+    }
+    let cli_doc = catalog_cli(&dirs.root, &["gc", "--versions"]);
+    let collected = catalog.gc(true, false).unwrap();
+    same(
+        "gc",
+        cli_doc,
+        GcDocument::new(&collected, true, false).to_json(),
+    );
+    let cli_doc = catalog_cli(&dirs.root, &["verify"]);
+    let verified = catalog.verify_observed(false, false, &NoObserver).unwrap();
+    same(
+        "verify after gc",
+        cli_doc,
+        VerifyDocument::new(&verified, false, false).to_json(),
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// CU1 and CU2 (`M6_PARITY`): the library's document of each change, the
@@ -1188,14 +1277,7 @@ fn catalog_ingests_from_bytes_are_the_clis() {
 #[test]
 fn catalog_documents_of_changes_are_the_clis() {
     let dirs = Dirs::bare();
-    let files = catalog_inputs(&dirs.root);
-    cli(&dirs.root, &["catalog", "init", "-C", "cli"]);
-    let (mut catalog, _) = Catalog::init(&dirs.root.join("lib"), Options::default()).unwrap();
-    for (bytes, input, name) in &files {
-        catalog_cli(&dirs.root, &["ingest", input]);
-        let one = [Input::new(bytes, input, name)];
-        catalog.ingest_inputs(&one, &NoObserver).unwrap();
-    }
+    let (mut catalog, files) = twins(&dirs.root);
     let mut failures = Vec::new();
     let mut same = |what: &str, cli: Vec<u8>, library: String| {
         failures.extend(fitment_corpus::parity::bytes(
@@ -1221,7 +1303,7 @@ fn catalog_documents_of_changes_are_the_clis() {
     let reference = Reference::parse("m_bracket").unwrap();
     let input = Input::new(&next, &given, "m_bracket.stp");
     let done = catalog
-        .replace_input(&reference, &input, &NoObserver)
+        .replace_input(&reference, &input, None, &NoObserver)
         .unwrap()
         .unwrap();
     let snapshot = catalog.snapshot().unwrap();

@@ -386,3 +386,44 @@ fn no_problem_names_an_absolute_path() {
         fs::set_permissions(&blob, fs::Permissions::from_mode(0o444)).unwrap();
     }
 }
+
+/// The review of PR 7a: what gc could not remove is listed in order,
+/// whatever order the directories give their files in, as what it removed
+/// is. Several orphans in a fan-out directory gc may not write.
+#[cfg(unix)]
+#[test]
+fn gc_failures_are_in_order() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (mut catalog, _) = one("gc-order");
+    let root = catalog.root().to_owned();
+    let fan = root.join("blobs/sha256/ee");
+    let mut names: Vec<String> = (0..12_u64)
+        .map(|n| {
+            format!(
+                "ee{:062x}",
+                n.wrapping_mul(0x9e37_79b9_7f4a_7c15) % 0xffff_ffff
+            )
+        })
+        .collect();
+    for name in &names {
+        fs::write(fan.join(name), b"orphan").unwrap();
+    }
+    fs::set_permissions(&fan, fs::Permissions::from_mode(0o555)).unwrap();
+    let collected = catalog.gc(false, false).unwrap();
+    fs::set_permissions(&fan, fs::Permissions::from_mode(0o755)).unwrap();
+    let document = fitment_catalog::document::GcDocument::new(&collected, false, false);
+    let json: serde_json::Value = serde_json::from_str(&document.to_json()).unwrap();
+    let failed: Vec<String> = json["failed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap().to_owned())
+        .collect();
+    names.sort();
+    let want: Vec<String> = names
+        .iter()
+        .map(|n| format!("{n}: io: permission denied"))
+        .collect();
+    assert_eq!(failed, want);
+    assert_eq!(json["cancelled"], false);
+}

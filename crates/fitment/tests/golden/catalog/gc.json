@@ -11,5 +11,6 @@
     "old.part"
   ],
   "old_rows": 0,
-  "failed": []
+  "failed": [],
+  "cancelled": false
 }

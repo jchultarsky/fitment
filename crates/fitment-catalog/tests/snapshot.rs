@@ -239,7 +239,7 @@ fn pages_are_the_list() {
     let id = fitment_catalog::Id::parse("ZZ_Upper").unwrap();
     let input = fitment_catalog::Input::new(&upper, "upper", "upper.stp").with_id(id);
     let run = catalog
-        .ingest_inputs(&[input], &fitment_catalog::NoObserver)
+        .ingest_inputs(&[input], None, &fitment_catalog::NoObserver)
         .unwrap();
     assert_eq!(run[0].outcome, fitment_catalog::Outcome::Added);
     let snapshot = catalog.snapshot().unwrap();
@@ -265,4 +265,71 @@ fn pages_are_the_list() {
         CatalogDocument::page(generation, &counts, entries()).to_json(),
         CatalogDocument::new(generation, &all, entries(), None).to_json()
     );
+}
+
+/// The review of PR 7a: a page is a search of `entry_live_id` from its
+/// cursor, never a scan from the index's start, so it costs its own
+/// entries; the first page reads the index from its start.
+#[test]
+fn a_page_searches_the_index_from_its_cursor() {
+    let dir = scratch("page-plan");
+    let mut catalog = catalog(&dir);
+    let snapshot = catalog.snapshot().unwrap();
+    let [first, after] = snapshot.list_page_plans().unwrap();
+    assert!(
+        first
+            .iter()
+            .any(|s| s.contains("USING INDEX entry_live_id")),
+        "{first:?}"
+    );
+    assert!(
+        after
+            .iter()
+            .any(|s| s.starts_with("SEARCH e USING INDEX entry_live_id (id_fold>?)")),
+        "{after:?}"
+    );
+}
+
+/// The review of PR 7a: the cursor is the folded id, so an entry deleted
+/// between two pages and added again under its id in another case is not
+/// listed twice.
+#[test]
+fn an_entry_added_again_in_another_case_is_listed_once() {
+    let dir = scratch("page-case");
+    let mut catalog = catalog(&dir);
+    let bracket = std::fs::read(common::core_tests().join("candidates/m_bracket.stp")).unwrap();
+    let blind = std::fs::read(common::core_tests().join("data/p03_blind_flat.stp")).unwrap();
+    let through = std::fs::read(common::core_tests().join("data/p01_through.stp")).unwrap();
+    let input = |bytes, id: &str| {
+        fitment_catalog::Input::new(bytes, "in", "in.stp")
+            .with_id(fitment_catalog::Id::parse(id).unwrap())
+    };
+    let none = fitment_catalog::NoObserver;
+    let inputs = [
+        input(&bracket, "A"),
+        input(&blind, "B"),
+        input(&through, "C"),
+    ];
+    catalog.ingest_inputs(&inputs, None, &none).unwrap();
+    let first: Vec<String> = {
+        let snapshot = catalog.snapshot().unwrap();
+        let page = snapshot.list_page(None, 2).unwrap();
+        page.into_iter().map(|l| l.id).collect()
+    };
+    assert_eq!(first, ["A", "B"]);
+    catalog
+        .delete(&[Reference::parse("B").unwrap()])
+        .unwrap()
+        .unwrap();
+    catalog
+        .ingest_inputs(&[input(&blind, "b")], None, &none)
+        .unwrap();
+    let snapshot = catalog.snapshot().unwrap();
+    let rest: Vec<String> = snapshot
+        .list_page(Some("B"), 2)
+        .unwrap()
+        .into_iter()
+        .map(|l| l.id)
+        .collect();
+    assert_eq!(rest, ["C"]);
 }

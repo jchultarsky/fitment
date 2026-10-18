@@ -63,6 +63,22 @@ runs() {
   run catalog init -C cat
   run catalog init -C cat
   run catalog init -C in/data
+  run catalog init -C multi
+  # A batch ends after 64 files or a second (DB3), so how many generations
+  # an ingest of many new files raises depends on its time: the catalog
+  # every later command reads is built one file to an ingest, the same in
+  # both runs, and an ingest of many files adds nothing to it, so raises
+  # no generation. A catalog of its own takes many new files at once; its
+  # generation is compared masked.
+  run catalog ingest -C multi in/data --format json
+  run catalog ingest -C multi in/candidates
+  local file
+  for file in in/data/*.stp in/candidates/*.stp in/assemblies/*.stp; do
+    run catalog ingest -C cat "$file" --format json
+  done
+  for file in in/corpus/*.stp; do
+    run catalog ingest -C cat "$file"
+  done
   run catalog ingest -C cat in/data --format json
   run catalog ingest -C cat in/candidates
   run catalog ingest -C cat in/assemblies --format json
@@ -158,11 +174,20 @@ runs old "$old"
 runs new "$new"
 total=$(find "$root/old/out" -name '*.code' | wc -l | tr -d ' ')
 differ=0
+# The many-file catalog's generations, masked: the batches' time decides
+# them (DB3), in either build.
+masked() {
+  if grep -q -- '-C multi' "$1.args"; then
+    sed -E 's/"generation": [0-9]+/"generation": _/' "$1.$2"
+  else
+    cat "$1.$2"
+  fi
+}
 for code in "$root"/old/out/*.code; do
   key=$(basename "$code" .code)
   same=1
   for part in code out err; do
-    cmp -s "$root/old/out/$key.$part" "$root/new/out/$key.$part" || same=0
+    cmp -s <(masked "$root/old/out/$key" "$part") <(masked "$root/new/out/$key" "$part") || same=0
   done
   if [ "$same" = 0 ]; then
     differ=$((differ + 1))

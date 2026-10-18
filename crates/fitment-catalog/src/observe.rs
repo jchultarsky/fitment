@@ -8,7 +8,8 @@
 //! match), between phases and before each blob read (verify), and between
 //! unlink batches (gc). [`Progress`] carries counts, each committed file's
 //! line and each batch's generation: never anything a result depends on,
-//! and never a verdict.
+//! and never a verdict. A panic of the observer's goes on to the caller,
+//! and leaves no blob of an ingest's batch behind.
 
 use crate::ingest::Ingested;
 
@@ -42,7 +43,9 @@ impl Observer for NoObserver {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum Progress<'a> {
-    /// Ingest: one file's line, once its batch committed.
+    /// Ingest: one file's line, once its batch was tried: committed, or
+    /// failed whole, its line then an error, so the stream sees every
+    /// outcome.
     Ingested(&'a Ingested),
     /// Ingest or reindex: a batch committed, at `generation` if it wrote a
     /// row; `done` of `total` files or entries are now settled.
@@ -61,7 +64,8 @@ pub enum Progress<'a> {
         /// Groups in all.
         total: usize,
     },
-    /// Verify: a phase begun, or `done` of its `total` blobs read.
+    /// Verify: a phase begun, or `done` of its `total` blobs read; a phase
+    /// that reads blobs ends with `done == total`.
     Verifying {
         /// `database`, `blobs`, `rows`, `files` or `deep`.
         phase: &'static str,
@@ -70,7 +74,8 @@ pub enum Progress<'a> {
         /// Blobs the phase reads, 0 for a phase that reads none.
         total: usize,
     },
-    /// gc: files looked at so far, of `total` candidates.
+    /// gc: files looked at so far, of `total` candidates, the last event
+    /// `done == total`.
     Unlinked {
         /// Candidates looked at.
         done: usize,

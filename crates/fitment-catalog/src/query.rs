@@ -632,9 +632,11 @@ fn judge(
 const MAX_JOBS: usize = 256;
 
 /// Each group's representative judged, on up to `jobs` threads, in order.
-/// A panic is caught per group, the same on one thread or many, so the
-/// result never depends on `jobs` (QR8). Each thread asks `observer`
-/// before each group it takes, and tells it of each judged (CA2).
+/// A judgment's panic is caught per group, the same on one thread or
+/// many, so the result never depends on `jobs` (QR8). Each thread asks
+/// `observer` before each group it takes, and tells it of each judged
+/// (CA2); a panic of the observer's goes on to the caller, on one thread
+/// or many.
 fn judge_representatives(
     matcher: &Matcher<'_>,
     groups: &[Vec<CheckedRow>],
@@ -669,19 +671,14 @@ fn judge_representatives(
     std::thread::scope(|scope| {
         let handles: Vec<_> = groups
             .chunks(chunk)
-            .map(|part| {
-                (
-                    part.len(),
-                    scope.spawn(move || part.iter().map(one).collect::<Vec<_>>()),
-                )
-            })
+            .map(|part| scope.spawn(move || part.iter().map(one).collect::<Vec<_>>()))
             .collect();
         handles
             .into_iter()
-            .flat_map(|(n, h)| {
-                h.join()
-                    .unwrap_or_else(|_| (0..n).map(|_| Judgment::Panicked).collect())
-            })
+            // A judgment's own panic is caught in `one`: what reaches the
+            // join is the observer's, which goes on as it does on one
+            // thread, never read as the groups' bugs.
+            .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect()
     })
 }

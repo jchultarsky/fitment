@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use common::{copy, scratch};
 use fitment_catalog::document::CatalogDocument;
 use fitment_catalog::{
-    Catalog, Content, Fs, FsRead, FsWrite, Id, Ingest, Input, NoObserver, Options, Outcome, Point,
-    Rebuilt, Scope, StdFs,
+    Catalog, Content, Fs, FsRead, FsWrite, Id, Ingest, Input, NoObserver, NotReplaced, Options,
+    Outcome, Point, Rebuilt, Reference, Replaced, Scope, StdFs,
 };
 
 /// C's prototype set (`C/proto/run.txt`): an exact stem, its copy under a
@@ -99,7 +99,7 @@ fn inputs_from_bytes_are_ingest_from_paths() {
     let mut bytes = Catalog::init(&dir.join("bytes"), Options::default())
         .unwrap()
         .0;
-    let by_bytes = bytes.ingest_inputs(&given, &NoObserver).unwrap();
+    let by_bytes = bytes.ingest_inputs(&given, None, &NoObserver).unwrap();
     assert_eq!(by_bytes.lines, by_path.lines);
     assert!(by_bytes.stopped.is_none());
     // DB3's batches end after a second too, so the generation an ingest
@@ -119,7 +119,7 @@ fn inputs_from_bytes_are_ingest_from_paths() {
     let mut named = Catalog::init(&dir.join("named"), Options::default())
         .unwrap()
         .0;
-    let run = named.ingest_inputs(&given, &NoObserver).unwrap();
+    let run = named.ingest_inputs(&given, None, &NoObserver).unwrap();
     let text = document(&mut named, &run) + &texts(&run);
     let root = dir.to_string_lossy();
     assert!(!text.contains(root.as_ref()), "{text}");
@@ -148,7 +148,7 @@ fn per_file_ids_order_with_the_exact_stems() {
         Input::new(&through, "z named", "z z.stp").with_id(Id::parse("ZZ").unwrap()),
         Input::new(&bracket, "q exact", "q.stp"),
     ];
-    let run = catalog.ingest_inputs(&given, &NoObserver).unwrap();
+    let run = catalog.ingest_inputs(&given, None, &NoObserver).unwrap();
     let order: Vec<(String, String)> = run
         .iter()
         .map(|l| {
@@ -300,25 +300,222 @@ fn a_failed_batch_line_holds_only_the_error_kind() {
     assert!(!text.contains("catalog.db"), "{text}");
 }
 
-/// A long-lived catalog takes each run's cap (SZ1): the server's one
-/// writer reads each ingest's `max_mib` without opening another.
+/// The review of PR 7a: a cap is one call's (SZ1). The server's one
+/// writer takes each ingest's or replace's `max_mib` with its call, and
+/// the next call, naming none, reads under the catalog's own.
 #[test]
-fn a_catalogs_cap_is_set_per_run() {
+fn a_cap_is_one_calls() {
     let dir = scratch("cap");
     let mut catalog = Catalog::init(&dir.join("cat"), Options::default())
         .unwrap()
         .0;
     let bytes = fs::read(common::core_tests().join("candidates/m_bracket.stp")).unwrap();
     let input = [Input::new(&bytes, "m_bracket.stp", "m_bracket.stp")];
-    catalog.set_max_bytes(1024);
-    let run = catalog.ingest_inputs(&input, &NoObserver).unwrap();
-    assert_eq!(
-        run[0].outcome,
-        Outcome::Refused {
-            reason: "larger than --max-mib 0: not added".into()
-        }
-    );
-    catalog.set_max_bytes(fitment_catalog::DEFAULT_MAX_BYTES);
-    let run = catalog.ingest_inputs(&input, &NoObserver).unwrap();
+    let too_large = Outcome::Refused {
+        reason: "larger than --max-mib 0: not added".into(),
+    };
+    let run = catalog
+        .ingest_inputs(&input, Some(1024), &NoObserver)
+        .unwrap();
+    assert_eq!(run[0].outcome, too_large);
+    let run = catalog.ingest_inputs(&input, None, &NoObserver).unwrap();
     assert_eq!(run[0].outcome, Outcome::Added);
+    // Replace likewise: refused under its cap, and the next call is not.
+    let next = String::from_utf8(bytes.clone())
+        .unwrap()
+        .replacen("FILE_NAME('", "FILE_NAME('next", 1)
+        .into_bytes();
+    let reference = Reference::parse("m_bracket").unwrap();
+    let input = Input::new(&next, "next.stp", "next.stp");
+    let refused = catalog
+        .replace_input(&reference, &input, Some(1024), &NoObserver)
+        .unwrap();
+    assert!(
+        matches!(&refused, Err(NotReplaced::File(line)) if line.outcome == too_large),
+        "{refused:?}"
+    );
+    let done = catalog
+        .replace_input(&reference, &input, None, &NoObserver)
+        .unwrap();
+    assert!(matches!(done, Ok(Replaced::Replaced { .. })), "{done:?}");
+}
+
+/// The review of PR 7a: a line's `input` is the path as given, byte for
+/// byte, as 0.2.0 kept it, for a path that is not Unicode too; an ingest's
+/// and a refused replace's alike. The paths need not exist: a file that
+/// cannot be read has its line.
+#[cfg(unix)]
+#[test]
+fn a_path_that_is_not_unicode_is_its_lines_input() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    let dir = scratch("not-unicode");
+    let mut catalog = Catalog::init(&dir.join("cat"), Options::default())
+        .unwrap()
+        .0;
+    let raw = dir.join(OsStr::from_bytes(b"caf\xe9.stp"));
+    let run = catalog.ingest(std::slice::from_ref(&raw), None).unwrap();
+    assert_eq!(
+        run[0].input.as_os_str().as_bytes(),
+        raw.as_os_str().as_bytes()
+    );
+    let bracket = common::copy("candidates/m_bracket.stp", &dir, "m_bracket.stp");
+    catalog.ingest(&[bracket], None).unwrap();
+    let reference = Reference::parse("m_bracket").unwrap();
+    match catalog.replace(&reference, &raw).unwrap() {
+        Err(NotReplaced::File(line)) => {
+            assert_eq!(
+                line.input.as_os_str().as_bytes(),
+                raw.as_os_str().as_bytes()
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A source that panics on its `n`th read, and counts them.
+struct Panicking {
+    bytes: Vec<u8>,
+    n: usize,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl fitment_catalog::InputBytes for Panicking {
+    fn read(&self, cap: u64) -> io::Result<Content> {
+        let k = self
+            .reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(k + 1 < self.n, "a source that fails");
+        self.bytes.read(cap)
+    }
+}
+
+/// An observer that panics when asked the `n`th time.
+struct PanicsAt(usize, std::sync::atomic::AtomicUsize);
+
+impl fitment_catalog::Observer for PanicsAt {
+    fn cancelled(&self) -> bool {
+        let k = self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(k + 1 < self.0, "an observer that fails");
+        false
+    }
+    fn progress(&self, _: fitment_catalog::Progress<'_>) {}
+}
+
+/// The files under `root/blobs`.
+fn blob_files(root: &Path) -> usize {
+    fs::read_dir(root.join("blobs/sha256"))
+        .unwrap()
+        .map(|fan| fs::read_dir(fan.unwrap().path()).unwrap().count())
+        .sum()
+}
+
+/// The review of PR 7a: a panic in an input's source, or in the observer,
+/// while a batch is built goes on, and leaves none of the batch's blobs
+/// behind, as a cancel leaves none (ST5).
+#[test]
+fn a_panic_while_a_batch_is_built_leaves_no_blob() {
+    let dir = scratch("panics");
+    let bracket = fs::read(common::core_tests().join("candidates/m_bracket.stp")).unwrap();
+    let variants: Vec<Vec<u8>> = (0..4)
+        .map(|n| {
+            String::from_utf8(bracket.clone())
+                .unwrap()
+                .replacen("FILE_NAME('", &format!("FILE_NAME('v{n}"), 1)
+                .into_bytes()
+        })
+        .collect();
+    let names: Vec<String> = (0..4).map(|n| format!("v{n}.stp")).collect();
+    let quiet = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    // The source: its third read panics, after two blobs are placed.
+    let root = dir.join("source");
+    let (mut catalog, _) = Catalog::init(&root, Options::default()).unwrap();
+    let sources: Vec<Panicking> = variants
+        .iter()
+        .map(|bytes| Panicking {
+            bytes: bytes.clone(),
+            n: 1,
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        })
+        .collect();
+    let mut inputs: Vec<Input<'_>> = variants
+        .iter()
+        .zip(&names)
+        .map(|(bytes, name)| Input::new(bytes, name, name))
+        .collect();
+    inputs[2] = Input::new(&sources[2], &names[2], &names[2]);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        catalog.ingest_inputs(&inputs, None, &NoObserver)
+    }));
+    assert!(caught.is_err());
+    assert_eq!(blob_files(&root), 0);
+    // The observer: asked before the fourth file, it panics.
+    let root = dir.join("observer");
+    let (mut catalog, _) = Catalog::init(&root, Options::default()).unwrap();
+    let inputs: Vec<Input<'_>> = variants
+        .iter()
+        .zip(&names)
+        .map(|(bytes, name)| Input::new(bytes, name, name))
+        .collect();
+    let observer = PanicsAt(4, std::sync::atomic::AtomicUsize::new(0));
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        catalog.ingest_inputs(&inputs, None, &observer)
+    }));
+    std::panic::set_hook(quiet);
+    assert!(caught.is_err());
+    assert_eq!(blob_files(&root), 0);
+    let rows: i64 = catalog
+        .connection()
+        .query_row("SELECT count(*) FROM blob", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+/// Cancels from its `k`th question on.
+struct StopAt(usize, std::sync::atomic::AtomicUsize);
+
+impl fitment_catalog::Observer for StopAt {
+    fn cancelled(&self) -> bool {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= self.0
+    }
+    fn progress(&self, _: fitment_catalog::Progress<'_>) {}
+}
+
+/// CA2 for `replace_input`: stopped before its file is read, and before
+/// its blob is put and its transaction begins, it changes nothing and
+/// leaves no file; asked twice, it replaces.
+#[test]
+fn replace_stops_at_both_its_points() {
+    let dir = scratch("replace-stops");
+    let bracket = fs::read(common::core_tests().join("candidates/m_bracket.stp")).unwrap();
+    let next = String::from_utf8(bracket.clone())
+        .unwrap()
+        .replacen("FILE_NAME('", "FILE_NAME('next", 1)
+        .into_bytes();
+    let reference = Reference::parse("m_bracket").unwrap();
+    for k in [0, 1, 2] {
+        let root = dir.join(format!("k{k}"));
+        let (mut catalog, _) = Catalog::init(&root, Options::default()).unwrap();
+        let first = [Input::new(&bracket, "m_bracket.stp", "m_bracket.stp")];
+        catalog.ingest_inputs(&first, None, &NoObserver).unwrap();
+        let generation = catalog.generation().unwrap();
+        let stop = StopAt(k, std::sync::atomic::AtomicUsize::new(0));
+        let input = Input::new(&next, "next.stp", "next.stp");
+        let outcome = catalog.replace_input(&reference, &input, None, &stop);
+        if k < 2 {
+            assert!(
+                matches!(outcome, Err(fitment_catalog::Error::Cancelled)),
+                "{k}"
+            );
+            assert_eq!(catalog.generation().unwrap(), generation, "{k}");
+            assert_eq!(blob_files(&root), 1, "{k}: only the bracket's");
+        } else {
+            assert!(matches!(outcome, Ok(Ok(Replaced::Replaced { .. }))), "{k}");
+        }
+        assert_eq!(
+            stop.1.load(std::sync::atomic::Ordering::Relaxed),
+            (k + 1).min(2)
+        );
+    }
 }

@@ -112,7 +112,7 @@ fn ingest_stops(dir: &Path) {
     let root = dir.join("ingest-all");
     let (mut catalog, _) = Catalog::init(&root, Options::default()).unwrap();
     let all = StopAt::new(usize::MAX);
-    let run = catalog.ingest_inputs(&inputs, &all).unwrap();
+    let run = catalog.ingest_inputs(&inputs, None, &all).unwrap();
     assert!(run.stopped.is_none());
     assert_eq!(run.lines.len(), 66);
     let batches = all.commits.lock().unwrap().len();
@@ -126,7 +126,7 @@ fn ingest_stops(dir: &Path) {
         let root = dir.join(format!("ingest-{k}"));
         let (mut catalog, _) = Catalog::init(&root, Options::default()).unwrap();
         let stop = StopAt::new(k);
-        let run = catalog.ingest_inputs(&inputs, &stop).unwrap();
+        let run = catalog.ingest_inputs(&inputs, None, &stop).unwrap();
         assert!(matches!(run.stopped, Some(Error::Cancelled)), "{k}");
         assert_eq!(stop.asked(), k + 1, "stopped at its question");
         let committed = stop.kept();
@@ -146,7 +146,7 @@ fn ingest_stops(dir: &Path) {
 fn stale(root: &Path, inputs: &[Input<'_>]) -> Catalog {
     let (mut catalog, _) = Catalog::init(root, Options::default()).unwrap();
     catalog
-        .ingest_inputs(inputs, &StopAt::new(usize::MAX))
+        .ingest_inputs(inputs, None, &StopAt::new(usize::MAX))
         .unwrap();
     catalog
         .connection()
@@ -263,6 +263,9 @@ fn gc_stops(dir: &Path) {
         }
         let collected = catalog.gc_observed(false, false, &StopAt::new(k)).unwrap();
         assert!(collected.cancelled, "{k}");
+        // Its document says so: it removed only what it lists.
+        let document = fitment_catalog::document::GcDocument::new(&collected, false, false);
+        assert!(document.to_json().contains("\"cancelled\": true"), "{k}");
         assert_eq!(collected.unlinked.len(), unlinked, "{k}");
         let (files, _) = {
             drop(catalog);
@@ -281,4 +284,108 @@ fn each_stop_point_stops() {
     match_stops(&dir);
     verify_stops(&dir);
     gc_stops(&dir);
+}
+
+/// Panics when told of its second judgment.
+struct PanicsWhenTold(AtomicUsize);
+
+impl Observer for PanicsWhenTold {
+    fn cancelled(&self) -> bool {
+        false
+    }
+
+    fn progress(&self, event: Progress<'_>) {
+        if let Progress::Judged { .. } = event {
+            let n = self.0.fetch_add(1, Ordering::Relaxed);
+            assert!(n == 0, "an observer that fails");
+        }
+    }
+}
+
+/// The review of PR 7a: an observer's panic during a catalog match goes
+/// on to the caller, on one thread and on four, and is never read as the
+/// groups' fitment bugs.
+#[test]
+fn an_observers_panic_goes_on_whatever_the_threads() {
+    let dir = scratch("observer-panic");
+    let (mut catalog, _) = Catalog::init(&dir.join("cat"), Options::default()).unwrap();
+    let inputs = [core_tests().join("candidates"), core_tests().join("data")];
+    catalog.ingest(&inputs, None).unwrap();
+    let bytes = fs::read(core_tests().join("assemblies/s01_bolted.stp")).unwrap();
+    let socket = SocketDocument::extract(&bytes, Some("BRACKET"), None).unwrap();
+    let matcher = Matcher::new(
+        &socket,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &NoFitVerifier,
+    )
+    .unwrap();
+    let snapshot = catalog.snapshot().unwrap();
+    let quiet = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcomes: Vec<bool> = [1, 4]
+        .into_iter()
+        .map(|jobs| {
+            let observer = PanicsWhenTold(AtomicUsize::new(0));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                snapshot.match_catalog_observed(&matcher, &Selection::Exhaustive, jobs, &observer)
+            }))
+            .is_err()
+        })
+        .collect();
+    std::panic::set_hook(quiet);
+    assert_eq!(outcomes, [true, true], "panicked on 1 and 4 threads");
+}
+
+/// Records every progress event's text.
+#[derive(Default)]
+struct Heard(Mutex<Vec<String>>);
+
+impl Observer for Heard {
+    fn cancelled(&self) -> bool {
+        false
+    }
+
+    fn progress(&self, event: Progress<'_>) {
+        self.0.lock().unwrap().push(format!("{event:?}"));
+    }
+}
+
+/// The review of PR 7a: a phase of verify that reads blobs, and gc's
+/// unlinking, each end with an event whose `done` is its `total`.
+#[test]
+fn progress_ends_at_its_total() {
+    let dir = scratch("progress-total");
+    let (mut catalog, _) = Catalog::init(&dir.join("cat"), Options::default()).unwrap();
+    catalog
+        .ingest(&[core_tests().join("candidates")], None)
+        .unwrap();
+    let blobs: i64 = catalog
+        .connection()
+        .query_row("SELECT count(*) FROM blob", [], |r| r.get(0))
+        .unwrap();
+    let blobs = usize::try_from(blobs).unwrap();
+    let heard = Heard::default();
+    catalog.verify_observed(true, false, &heard).unwrap();
+    catalog.gc_observed(false, false, &heard).unwrap();
+    let events = heard.0.lock().unwrap();
+    let last = |prefix: &str| {
+        events
+            .iter()
+            .rev()
+            .find(|e| e.starts_with(prefix))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let total = |n: usize| format!("done: {n}, total: {n} }}");
+    assert!(
+        last("Verifying { phase: \"blobs\"").ends_with(&total(blobs)),
+        "{events:?}"
+    );
+    assert!(
+        last("Verifying { phase: \"deep\"").ends_with(&total(blobs)),
+        "{events:?}"
+    );
+    // gc looks at every file of the store, each one named here.
+    assert!(last("Unlinked").ends_with(&total(blobs)), "{events:?}");
 }

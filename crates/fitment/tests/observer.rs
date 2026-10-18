@@ -124,7 +124,7 @@ fn documents(
     let mut out = Vec::new();
     for input in &inputs {
         let run = catalog
-            .ingest_inputs(std::slice::from_ref(input), observer)
+            .ingest_inputs(std::slice::from_ref(input), None, observer)
             .unwrap();
         assert!(run.stopped.is_none());
         let snapshot = catalog.snapshot().unwrap();
@@ -177,7 +177,20 @@ fn documents(
                     .match_catalog_observed(&matcher, &selection, 4, observer)
                     .unwrap();
                 out.push(match run {
-                    Ok(run) => MatchDocument::new(&matcher, run.results).to_json(),
+                    Ok(run) => {
+                        // The run's own facts, beside its document.
+                        let facts = format!(
+                            "{name}: generation {}, level 1 {:?}, selected {}, judged {}, \
+                             corrupt {:?}, bugs {:?}\n",
+                            run.generation,
+                            run.level_one,
+                            run.selected,
+                            run.judged,
+                            run.corrupt,
+                            run.bugs
+                        );
+                        facts + &MatchDocument::new(&matcher, run.results).to_json()
+                    }
                     Err(refused) => format!("{name}: {refused:?}"),
                 });
             }

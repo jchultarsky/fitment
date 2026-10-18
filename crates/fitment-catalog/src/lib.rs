@@ -265,7 +265,10 @@ fn io_at(path: &Path) -> impl FnOnce(io::Error) -> Error + '_ {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Checkpoint {
-    /// True when readers or a writer kept it from completing.
+    /// True when a `TRUNCATE` checkpoint was kept from completing by
+    /// readers or a writer, past the busy timeout. A `PASSIVE` one never
+    /// says so: readers pinning the log show as `checkpointed_pages`
+    /// below `log_pages`.
     pub busy: bool,
     /// Pages in the WAL, -1 when the database is not in WAL mode.
     pub log_pages: i64,
@@ -507,13 +510,6 @@ impl Catalog {
     /// The catalog's directory.
     pub fn root(&self) -> &Path {
         self.layout.root()
-    }
-
-    /// The largest file read from now on (SZ1): a long-lived catalog, the
-    /// server's one writer (CX1), takes each ingest's or replace's own cap
-    /// (`max_mib`) without opening another.
-    pub fn set_max_bytes(&mut self, max_bytes: u64) {
-        self.options.max_bytes = max_bytes;
     }
 
     /// The generation as it stands (DB8).

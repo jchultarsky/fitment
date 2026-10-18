@@ -112,6 +112,7 @@ impl Catalog {
             // Nothing was written: the transaction held the lock only.
             let _ = tx.rollback();
         }
+        observer.progress(Progress::Unlinked { done: total, total });
         (unlinked, failed, false)
     }
 
@@ -177,6 +178,8 @@ impl Catalog {
                 }
             }
         }
+        // In the order of their names, whatever the directories' order.
+        candidates.sort();
         let (unlinked, mut failed, cancelled) = self.unlink_unreferenced(&candidates, observer);
         let mut collected = Collected {
             unlinked,

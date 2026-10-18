@@ -8,6 +8,8 @@
 //! `fitment.catalog` is built here ([`CatalogDocument::ingested`] and its
 //! siblings), so the CLI and the server serve one document (CU1, DC1).
 
+use std::collections::BTreeSet;
+
 use fitment_core::{
     EXTRACTOR_VERSION, PROPERTIES_VERSION, PropertyMap, SIGNATURE_VERSION, StatedProperties,
 };
@@ -317,19 +319,61 @@ impl Change {
     }
 }
 
+/// Which live entries a change's document shows: those of these ids as
+/// stored, or of these ids case-folded (ID2). A set, so a document of many
+/// lines costs a look-up per entry, not a scan of the lines.
+enum Shown {
+    Ids(BTreeSet<String>),
+    Folds(BTreeSet<String>),
+}
+
+impl Shown {
+    fn shows(&self, id: &str) -> bool {
+        match self {
+            Self::Ids(ids) => ids.contains(id),
+            Self::Folds(folds) => folds.contains(&id.to_ascii_lowercase()),
+        }
+    }
+
+    /// An ingest's: the ids, folded, of the lines added or unchanged.
+    fn ingested(lines: &[Ingested]) -> Self {
+        Self::Folds(
+            lines
+                .iter()
+                .filter(|l| matches!(l.outcome, Outcome::Added | Outcome::Unchanged))
+                .filter_map(|l| l.id.as_ref().map(Id::fold))
+                .collect(),
+        )
+    }
+
+    /// A reindex's: the ids of its lines, as stored.
+    fn reindexed(run: &Reindex) -> Self {
+        Self::Ids(run.lines.iter().map(|l| l.id.clone()).collect())
+    }
+
+    /// A prune's: the ids of the revisions pruned, as stored.
+    fn pruned(pruned: &[Pruned]) -> Self {
+        Self::Ids(pruned.iter().map(|p| p.id.clone()).collect())
+    }
+
+    /// `all`'s entries it shows, in `all`'s order.
+    fn entries(&self, all: &[Listed]) -> Vec<Entry> {
+        all.iter()
+            .filter(|l| self.shows(&l.id))
+            .map(|l| Entry::of(l, None))
+            .collect()
+    }
+}
+
 /// The document of a change at `snapshot`'s generation: the live entries
-/// whose id, as stored, `shown` accepts, as they are now, and `changes`.
+/// `shown`, as they are now, and `changes`.
 fn of_change(
     snapshot: &Snapshot<'_>,
-    shown: impl Fn(&str) -> bool,
+    shown: &Shown,
     changes: Vec<Change>,
 ) -> Result<CatalogDocument, Error> {
     let all = snapshot.list()?;
-    let entries = all
-        .iter()
-        .filter(|l| shown(&l.id))
-        .map(|l| Entry::of(l, None))
-        .collect();
+    let entries = shown.entries(&all);
     Ok(CatalogDocument::new(
         snapshot.generation(),
         &all,
@@ -346,17 +390,8 @@ impl CatalogDocument {
     ///
     /// The database's.
     pub fn ingested(snapshot: &Snapshot<'_>, lines: &[Ingested]) -> Result<Self, Error> {
-        let kept: Vec<String> = lines
-            .iter()
-            .filter(|l| matches!(l.outcome, Outcome::Added | Outcome::Unchanged))
-            .filter_map(|l| l.id.as_ref().map(Id::fold))
-            .collect();
         let changes = lines.iter().map(Change::of).collect();
-        of_change(
-            snapshot,
-            |id| kept.iter().any(|k| *k == id.to_ascii_lowercase()),
-            changes,
-        )
+        of_change(snapshot, &Shown::ingested(lines), changes)
     }
 
     /// `replace --format json`: the entry as it is at `snapshot`, and the
@@ -387,7 +422,8 @@ impl CatalogDocument {
                 (change, id)
             }
         };
-        of_change(snapshot, |l| l.eq_ignore_ascii_case(id), vec![change])
+        let shown = Shown::Folds(BTreeSet::from([id.to_ascii_lowercase()]));
+        of_change(snapshot, &shown, vec![change])
     }
 
     /// `delete --format json` (CU1): each entry deleted as it is now, a
@@ -439,7 +475,6 @@ impl CatalogDocument {
     ///
     /// The database's.
     pub fn pruned(snapshot: &Snapshot<'_>, pruned: &[Pruned]) -> Result<Self, Error> {
-        let ids: Vec<&str> = pruned.iter().map(|p| p.id.as_str()).collect();
         let changes = pruned
             .iter()
             .map(|p| {
@@ -449,7 +484,7 @@ impl CatalogDocument {
                 Change::entry(&input, "pruned", &p.id, p.revision, sha256, detail)
             })
             .collect();
-        of_change(snapshot, |id| ids.contains(&id), changes)
+        of_change(snapshot, &Shown::pruned(pruned), changes)
     }
 
     /// `reindex --format json`: every entry processed as it is now, and a
@@ -459,7 +494,6 @@ impl CatalogDocument {
     ///
     /// The database's.
     pub fn reindexed(snapshot: &Snapshot<'_>, run: &Reindex) -> Result<Self, Error> {
-        let ids: Vec<&str> = run.lines.iter().map(|l| l.id.as_str()).collect();
         let changes = run
             .lines
             .iter()
@@ -474,7 +508,7 @@ impl CatalogDocument {
                 )
             })
             .collect();
-        of_change(snapshot, |id| ids.contains(&id), changes)
+        of_change(snapshot, &Shown::reindexed(run), changes)
     }
 
     /// A document at `generation`: `entries` as given, and the counts of
@@ -599,8 +633,9 @@ impl VerifyDocument {
 }
 
 /// A `fitment.gc` document (CA5): what `gc` removed, the SHA-256s and the
-/// temporary files' names in order, and what it could not, each with its
-/// error's kind (CA4).
+/// temporary files' names in order, what it could not, in order, each with
+/// its error's kind (CA4), and whether it was cancelled (CA2), so a
+/// stopped gc's document says it removed only what it lists.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
@@ -614,6 +649,7 @@ pub struct GcDocument {
     temporaries: Vec<String>,
     old_rows: usize,
     failed: Vec<String>,
+    cancelled: bool,
 }
 
 impl GcDocument {
@@ -634,12 +670,84 @@ impl GcDocument {
             unlinked,
             temporaries: collected.temporaries.clone(),
             old_rows: collected.old_rows,
-            failed: collected.failed.clone(),
+            failed: {
+                let mut failed = collected.failed.clone();
+                failed.sort();
+                failed
+            },
+            cancelled: collected.cancelled,
         }
     }
 
     /// Pretty JSON with a final newline (CL3).
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default() + "\n"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    use super::Shown;
+    use crate::hex::Sha256Hex;
+    use crate::ingest::{Ingested, Outcome};
+    use crate::reindex::{Rebuilt, Reindex, Reindexed};
+    use crate::snapshot::Listed;
+
+    /// The review of PR 7a: a change document of tens of thousands of
+    /// lines finds its entries by a set, a look-up each, where a scan of
+    /// the lines per entry made 1.6 billion comparisons here.
+    #[test]
+    fn many_lines_find_their_entries_by_set() {
+        const N: usize = 40_000;
+        let sha = Sha256Hex::of(b"x");
+        let ids: Vec<String> = (0..N).map(|n| format!("Part-{n:06}")).collect();
+        let all: Vec<Listed> = ids
+            .iter()
+            .map(|id| Listed {
+                id: id.clone(),
+                revision: 1,
+                current: true,
+                sha256: sha.clone(),
+                bytes: None,
+                file_name: None,
+                status: None,
+                product: (None, None),
+                versions: (None, None, None),
+                counts: None,
+                complete: None,
+                refusals: Vec::new(),
+            })
+            .collect();
+        let lines: Vec<Ingested> = ids
+            .iter()
+            .map(|id| Ingested {
+                id: crate::Id::parse(id).ok(),
+                ..Ingested::failed(PathBuf::from(id), None, Outcome::Added)
+            })
+            .collect();
+        let run = Reindex {
+            lines: ids
+                .iter()
+                .map(|id| Reindexed {
+                    id: id.clone(),
+                    revision: 1,
+                    sha256: sha.clone(),
+                    before: None,
+                    searched_before: false,
+                    after: None,
+                    rebuilt: Rebuilt::Current,
+                    first_refusal: None,
+                })
+                .collect(),
+            stopped: None,
+        };
+        let started = Instant::now();
+        assert_eq!(Shown::ingested(&lines).entries(&all).len(), N);
+        assert_eq!(Shown::reindexed(&run).entries(&all).len(), N);
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(5), "{took:?}");
     }
 }

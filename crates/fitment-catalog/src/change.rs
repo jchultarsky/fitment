@@ -246,13 +246,17 @@ impl Catalog {
             path: file.to_owned(),
         };
         let (input, name) = (file.to_string_lossy(), file_name(file));
-        self.replace_input(reference, &Input::new(&bytes, &input, &name), &NoObserver)
+        let input = Input::at(&bytes, &input, &name);
+        self.replace_input(reference, &input, None, &NoObserver)
     }
 
-    /// CA1: gives the entry `reference` names the bytes of `input` as a new
+    /// CA1: gives the entry `reference` names the bytes of `input`, at
+    /// most `max_bytes` of them (SZ1; `None` for the catalog's
+    /// [`Options`](crate::Options)), for this call alone, as a new
     /// revision, as [`Catalog::replace`] does; the input's own id, if any,
     /// is not read (the entry keeps its id). `observer` is asked before the
-    /// file is read and before the transaction (CA2).
+    /// file is read and before its blob is put and the transaction begins
+    /// (CA2), so a cancel leaves nothing.
     ///
     /// # Errors
     ///
@@ -263,6 +267,7 @@ impl Catalog {
         &mut self,
         reference: &Reference,
         input: &Input<'_>,
+        max_bytes: Option<u64>,
         observer: &dyn Observer,
     ) -> Result<Result<Replaced, NotReplaced>, Error> {
         // ID9 first: a reference that names no entry it may replace is
@@ -277,7 +282,8 @@ impl Catalog {
         // The file is read and gated outside the lock (DB3), and a refused
         // one changes nothing (CR4).
         let placeholder = Id::parse("x").map_err(|_| Error::Corrupt("an id"))?;
-        let mut prepared = match self.read_input(input, Some(&placeholder)) {
+        let cap = max_bytes.unwrap_or(self.options.max_bytes);
+        let mut prepared = match crate::ingest::read_input(input, Some(&placeholder), cap) {
             Ok(p) => p,
             Err(mut failed) => {
                 failed.id = None;
@@ -294,7 +300,7 @@ impl Catalog {
         }
         if prepared.status == Status::Refused {
             let mut failed = Ingested::failed(
-                input.input,
+                input.given(),
                 None,
                 Outcome::Refused {
                     reason: prepared
@@ -318,6 +324,9 @@ impl Catalog {
                 |r| r.get::<_, bool>(0),
             )
             .unwrap_or(true);
+        if observer.cancelled() {
+            return Err(Error::Cancelled);
+        }
         if likely {
             let placed = self
                 .blobs()
@@ -331,11 +340,7 @@ impl Catalog {
         // The old content stays held by its kept revision: nothing is
         // released. A refusal after the put leaves the new file unnamed,
         // and the inline gc unlinks it (CR4: nothing changed).
-        let outcome = if observer.cancelled() {
-            Err(Error::Cancelled)
-        } else {
-            self.replace_in(reference, &prepared)
-        };
+        let outcome = self.replace_in(reference, &prepared);
         if likely && !matches!(outcome, Ok(Ok(Replaced::Replaced { .. }))) {
             let size = u64::try_from(prepared.bytes.len()).unwrap_or(u64::MAX);
             let _ = self.unlink(&[(prepared.sha256.clone(), size)]);
