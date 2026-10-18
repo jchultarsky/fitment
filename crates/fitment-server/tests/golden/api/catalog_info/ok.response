@@ -1,0 +1,20 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.g2.a084b73cb5e5"
+repr-digest: sha-256=:qc3/VgEPGrLc4Sb2Sr+6J/HQUlD2lTxbOkwjJetokjc=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "generation": 2,
+  "entries": 3,
+  "indexed": 2,
+  "quarantined": 1,
+  "stale": 0,
+  "state": {
+    "stale": false,
+    "reindex": null,
+    "wal_barrier": false,
+    "queues_full": false
+  }
+}

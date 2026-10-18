@@ -1,0 +1,3 @@
+GET /v1/catalog/entries/m_blok02
+authorization: Bearer <ada's reader token>
+

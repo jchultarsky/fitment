@@ -1,0 +1,22 @@
+503
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:k51a9lAfWyeZ9oCG6DveJGRp26yrbnmdEG0y1EOoNQs=:
+retry-after: 1
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/catalog_busy",
+  "title": "The catalog is busy",
+  "status": 503,
+  "detail": "the catalog is busy",
+  "code": "catalog_busy",
+  "class": "error",
+  "exit_code": 1,
+  "retryable": true,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

@@ -12,6 +12,8 @@
 //! the job is queued), `job.dispatched` (running, before its blocking
 //! task), and those of the kinds' runs (`jobs/run.rs`).
 
+pub(crate) mod catalog;
+pub(crate) mod catalog_match;
 pub mod documents;
 pub(crate) mod events;
 pub(crate) mod matches;
@@ -116,7 +118,18 @@ pub struct Jobs {
     retention_ms: i64,
     deadline_extract_ms: AtomicU64,
     deadline_match_ms: AtomicU64,
+    deadline_verify_ms: AtomicU64,
     heartbeat_ms: AtomicU64,
+    /// CX6: query dispatch held by the WAL barrier.
+    barrier: AtomicBool,
+    /// CX6: when, in milliseconds since `epoch`, a barrier may be tried
+    /// again after one its readers outlasted.
+    barrier_next_ms: AtomicU64,
+    /// JS3: a catalog match's memory per entry its selection can judge,
+    /// in KiB (`jobs.match_entry_kib`).
+    match_entry_kib: u64,
+    /// VT45: the judgments catalog matches made, for the tests' readout.
+    pub(crate) catalog_judged: AtomicU64,
     /// JS1: a match's permits, `jobs.match_threads`.
     match_threads: u32,
     /// DC12, VT46: the match documents whose structure was scanned, once
@@ -162,7 +175,12 @@ impl Jobs {
                 jobs.deadline_extract_minutes.saturating_mul(60_000),
             ),
             deadline_match_ms: AtomicU64::new(jobs.deadline_match_minutes.saturating_mul(60_000)),
+            deadline_verify_ms: AtomicU64::new(jobs.deadline_verify_minutes.saturating_mul(60_000)),
             heartbeat_ms: AtomicU64::new(15_000),
+            barrier: AtomicBool::new(false),
+            barrier_next_ms: AtomicU64::new(0),
+            match_entry_kib: jobs.match_entry_kib,
+            catalog_judged: AtomicU64::new(0),
             match_threads: jobs.match_threads.max(1),
             indexed: AtomicU64::new(0),
         }
@@ -182,18 +200,64 @@ impl Jobs {
             Kind::Match => Some(Duration::from_millis(
                 self.deadline_match_ms.load(Ordering::SeqCst).max(1),
             )),
+            // JB7 (review F23): verify, plain or deep, under its own.
+            Kind::CatalogVerify => Some(Duration::from_millis(
+                self.deadline_verify_ms.load(Ordering::SeqCst).max(1),
+            )),
             _ => None,
         }
     }
 
-    /// OP11: the pure kinds' deadlines, the extractions' and the
-    /// matches', shortened for a test (JB7).
+    /// OP11: the pure kinds' deadlines, the extractions', the matches' and
+    /// verify's, shortened for a test (JB7).
     #[cfg(feature = "test-support")]
     pub fn set_deadline(&self, deadline: Duration) {
         self.deadline_extract_ms
             .store(millis(deadline), Ordering::SeqCst);
         self.deadline_match_ms
             .store(millis(deadline), Ordering::SeqCst);
+        self.deadline_verify_ms
+            .store(millis(deadline), Ordering::SeqCst);
+    }
+
+    /// OP11, VT45: the judgments catalog matches have made.
+    #[cfg(feature = "test-support")]
+    pub fn catalog_judgments(&self) -> u64 {
+        self.catalog_judged.load(Ordering::SeqCst)
+    }
+
+    /// CX6: holds query dispatch (true), or lets it go on.
+    pub(crate) fn set_barrier(&self, up: bool) {
+        self.barrier.store(up, Ordering::SeqCst);
+    }
+
+    /// CX6: whether a barrier may be tried now.
+    pub(crate) fn barrier_due(&self) -> bool {
+        let now = u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX);
+        now >= self.barrier_next_ms.load(Ordering::SeqCst)
+    }
+
+    /// CX6: a barrier its readers outlasted is tried again no sooner than
+    /// `bound` from now.
+    pub(crate) fn barrier_missed(&self, bound: Duration) {
+        let now = u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let next = now.saturating_add(u64::try_from(bound.as_millis()).unwrap_or(u64::MAX));
+        self.barrier_next_ms.store(next, Ordering::SeqCst);
+    }
+
+    /// JS3 (review F3): a catalog match's memory estimate, in MiB: 64 MiB
+    /// and `jobs.match_entry_kib` per entry its selection can judge, read
+    /// from the catalog's counts at dispatch: every live entry for an
+    /// exhaustive run (at most the cap, JS12), every searchable one for a
+    /// full run, the named ones for a named run.
+    pub(crate) fn catalog_estimate(&self, entries: u64) -> u32 {
+        let mib = entries
+            .saturating_mul(self.match_entry_kib)
+            .div_ceil(1024)
+            .saturating_add(64);
+        u32::try_from(mib)
+            .unwrap_or(u32::MAX)
+            .min(self.memory_total)
     }
 
     /// OP11: holds dispatch (true) or lets it go on (false), so a test sees
@@ -224,6 +288,11 @@ impl Jobs {
             .saturating_mul(u64::from(window))
             .div_ceil(MIB)
             .max(1);
+        let catalog = (row.kind == Kind::Match)
+            .then(|| serde_json::from_str::<request::MatchJob>(&row.request).ok())
+            .flatten()
+            .and_then(|job| job.catalog)
+            .map(|c| (c.selection, c.ids.len()));
         Entry {
             key: row.key,
             id: row.id.clone(),
@@ -233,6 +302,7 @@ impl Jobs {
             memory_mib: u32::try_from(estimate)
                 .unwrap_or(u32::MAX)
                 .min(self.memory_total),
+            catalog,
         }
     }
 
@@ -280,7 +350,7 @@ impl Jobs {
         }
         let picks = {
             let mut sched = lock(&self.sched);
-            let picks = sched.picks();
+            let picks = sched.picks(self.barrier.load(Ordering::SeqCst));
             for entry in &picks {
                 sched
                     .live
@@ -494,8 +564,11 @@ pub(crate) async fn hook(shared: &Shared, point: &str) {
 /// dispatch to return), its start, its deadline's timer, its run on the
 /// blocking pool, its end's events; then its slot back and the next
 /// dispatch.
-async fn dispatch(shared: Arc<Shared>, entry: Entry, control: Arc<Control>) {
+async fn dispatch(shared: Arc<Shared>, mut entry: Entry, control: Arc<Control>) {
     let jobs = &shared.jobs;
+    if let Some((selection, named)) = entry.catalog.clone() {
+        entry.memory_mib = catalog_memory(&shared, &selection, named).await;
+    }
     let cpu = Arc::clone(&jobs.cpu).acquire_many_owned(entry.cpu).await;
     let memory = Arc::clone(&jobs.memory)
         .acquire_many_owned(entry.memory_mib)
@@ -556,6 +629,25 @@ async fn dispatch(shared: Arc<Shared>, entry: Entry, control: Arc<Control>) {
     }
     jobs.done(&entry);
     shared.jobs.kick(&shared);
+}
+
+/// JS3: a catalog match's memory estimate from the catalog's counts at
+/// dispatch: a named run's count needs none.
+async fn catalog_memory(shared: &Arc<Shared>, selection: &str, named: usize) -> u32 {
+    let entries = if selection == "named" {
+        u64::try_from(named).unwrap_or(u64::MAX)
+    } else {
+        let reading = Arc::clone(shared);
+        let info = crate::http::blocking(move || reading.catalog.info()).await;
+        match (info, selection) {
+            (Ok(info), "exhaustive") => info
+                .entries
+                .min(shared.config.limits.max_catalog_candidates),
+            (Ok(info), _) => info.indexed,
+            (Err(_), _) => 0,
+        }
+    };
+    shared.jobs.catalog_estimate(entries)
 }
 
 /// The job's run on the blocking pool, its permits dropped when the
@@ -668,9 +760,12 @@ async fn expire(shared: Arc<Shared>, row: JobRow, deadline: Duration) {
 pub(crate) fn recover(shared: &Shared) -> Result<Vec<Recovered>, crate::state::DbError> {
     let now = shared.ids.now_ms();
     let retention = shared.jobs.retention_ms();
+    // JB6: the catalog's generation now, for an interrupted write job.
+    let recovery = crate::catalog::generation(&shared.catalog).ok();
+    let interrupted = |row: &JobRow| documents::interrupted_at(row, recovery);
     let recovered = shared.db.recover_jobs(
         &documents::stopped(Kind::Features),
-        &documents::interrupted,
+        &interrupted,
         now,
         retention,
         &documents::end_data,
@@ -689,6 +784,106 @@ pub(crate) fn recover(shared: &Shared) -> Result<Vec<Recovered>, crate::state::D
         let _ = sched.push(shared.jobs.entry(row, *bytes));
     }
     Ok(recovered)
+}
+
+/// SD3 (8), M6-28, M6-56: with `jobs.reindex_on_start`, a catalog with a
+/// stale entry (RX2) gets a reindex job on the write lane, owned by the
+/// `system` user, unless one is queued or running already; catalog
+/// matches are refused as stale until it ends (RX3, CX5), and
+/// `fitment.info` says so. Blocking: at `build`, after recovery.
+///
+/// # Errors
+///
+/// `server.db`'s.
+pub(crate) fn reindex_on_start(shared: &Shared) -> Result<(), crate::state::DbError> {
+    let stale = match shared.catalog.info() {
+        Ok(info) => info.stale,
+        Err(error) => {
+            tracing::warn!(
+                code = error.code().name(),
+                "the catalog's staleness is unknown"
+            );
+            return Ok(());
+        }
+    };
+    if stale == 0 {
+        return Ok(());
+    }
+    let request = request::normalized(&request::ReindexJob {
+        refs: Vec::new(),
+        all: false,
+    });
+    if let Some(row) = queue_system(shared, Kind::CatalogReindex, &request)? {
+        tracing::info!(job = row.id, stale, "a stale catalog's reindex was queued");
+    }
+    Ok(())
+}
+
+/// JS9, M6-56, CX8: the daily catalog gc (`jobs.catalog_gc_at`), without
+/// `versions` or `vacuum`, owned by the `system` user, unless one is
+/// queued or running already. Blocking.
+///
+/// # Errors
+///
+/// `server.db`'s.
+pub(crate) fn queue_daily_gc(shared: &Shared) -> Result<Option<JobRow>, crate::state::DbError> {
+    let request = request::normalized(&request::GcJob {
+        versions: false,
+        vacuum: false,
+    });
+    let queued = queue_system(shared, Kind::CatalogGc, &request)?;
+    if let Some(row) = &queued {
+        tracing::info!(job = row.id, "the daily catalog gc was queued");
+    }
+    Ok(queued)
+}
+
+/// M6-56: a job of `kind` the server queues for itself, owned by the
+/// `system` user, unless one of its kind is queued or running: written
+/// (JS11) and queued; the dispatcher's next kick runs it.
+fn queue_system(
+    shared: &Shared,
+    kind: Kind,
+    (request, request_sha256): &(String, String),
+) -> Result<Option<JobRow>, crate::state::DbError> {
+    if shared.db.active_of(kind)?.is_some() {
+        return Ok(None);
+    }
+    let (id, request_id) = (shared.ids.id("j"), shared.ids.id("r"));
+    let new = crate::state::NewJob {
+        id: &id,
+        owner: shared.db.system_key()?,
+        kind,
+        request,
+        request_sha256,
+        idempotency: None,
+        request_id: &request_id,
+        created_ms: shared.ids.now_ms(),
+        inputs: &[],
+        cites: &[],
+    };
+    Ok(match shared.db.submit_job(&new)? {
+        crate::state::Submitted::New(row, event) => {
+            shared.jobs.publish(&row.id, std::slice::from_ref(&event));
+            let _ = lock(&shared.jobs.sched).push(shared.jobs.entry(&row, 0));
+            Some(row)
+        }
+        _ => None,
+    })
+}
+
+/// JS9: the milliseconds from `now_ms` to the next `minute` of a UTC day
+/// (`jobs.catalog_gc_at`), at least one.
+pub(crate) fn until_minute(now_ms: i64, minute: u32) -> u64 {
+    const DAY: i64 = 86_400_000;
+    let at = i64::from(minute) * 60_000;
+    let today = now_ms.rem_euclid(DAY);
+    let wait = if at > today {
+        at - today
+    } else {
+        DAY - today + at
+    };
+    u64::try_from(wait.max(1)).unwrap_or(1)
 }
 
 /// JB11: waits up to `limit` for job `row` to end, or for the drain:
@@ -750,6 +945,15 @@ pub(crate) fn progress(shared: &Shared, row: &JobRow) -> Option<Progress> {
 mod tests {
     use super::*;
 
+    /// JS9: the daily gc's wait runs to the next `HH:MM` of a UTC day.
+    #[test]
+    fn the_daily_gc_waits_for_its_minute() {
+        let minute = 3 * 60 + 30;
+        assert_eq!(until_minute(0, minute), 12_600_000);
+        assert_eq!(until_minute(12_600_000, minute), 86_400_000, "a day later");
+        assert_eq!(until_minute(86_400_000 + 12_599_000, minute), 1_000);
+    }
+
     /// JS2, JS3: a job takes one CPU permit and 21 times its largest
     /// input in MiB, at least one (review S13 of PR 5); an estimate above
     /// the budget takes the whole budget, so it waits for it and runs
@@ -789,6 +993,7 @@ mod tests {
             last_seq: 1,
             index_sha256: None,
             run: None,
+            catalog_generation: None,
         };
         assert_eq!(jobs.entry(&row(1), 0).memory_mib, 1);
         assert_eq!(jobs.entry(&row(1), 40_000).memory_mib, 1);
@@ -874,6 +1079,7 @@ mod tests {
             last_seq: 1,
             index_sha256: None,
             run: None,
+            catalog_generation: None,
         }
     }
 }

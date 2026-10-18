@@ -94,12 +94,16 @@ async fn blocking_work_past_its_time_is_cut() {
     assert_eq!(reply.code(), "request_timeout");
 }
 
-/// Open question 2 of PR 2's review: at most four `/v1/info` requests
-/// read the catalog at once until PR 7's reader pool; a fifth waits for a
-/// slot within the handler's time.
+/// Open question 2 of PR 2's review, and CX1 since PR 7: a request's
+/// catalog reads, `/v1/info`'s among them, take a reader of the pool behind
+/// the read slots, `limits.read_concurrency` at once; a fifth of four waits
+/// for a slot within the handler's time.
 #[tokio::test(flavor = "multi_thread")]
 async fn info_reads_the_catalog_four_at_a_time() {
-    let server = std::sync::Arc::new(TestServer::fresh());
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.limits.read_concurrency = 4;
+    let server = std::sync::Arc::new(TestServer::in_process(dirs, config));
     server
         .server()
         .seams()
@@ -121,7 +125,6 @@ async fn info_reads_the_catalog_four_at_a_time() {
         elapsed >= Duration::from_millis(1600),
         "five ran at once: {elapsed:?}"
     );
-    assert_eq!(fitment_server::INFO_CONCURRENCY, 4);
 }
 
 /// AU1, fix 7: a password is 12 to 256 characters (not bytes), at most
@@ -2034,4 +2037,241 @@ async fn hostile_parts_through_the_api_are_the_clis() {
         assert_eq!(server.document(&job).await.body, stdout, "{id}");
     }
     assert!(seen >= 4, "{seen} hostile cases");
+}
+
+// ------------------------------------------------------------- catalog
+
+/// A server of `config` whose catalog holds `m_block02`,
+/// `m_block02_cb_deep` and a quarantined `junk`, ingested through the API,
+/// and `s02_cbore`'s `BLOCK` extracted; a reader's and a writer's token,
+/// and the socket's revision.
+async fn catalog_world(
+    config: impl FnOnce(&mut fitment_server::Config),
+) -> (TestServer, String, String, String) {
+    let dirs = Dirs::new();
+    let mut c = dirs.config();
+    config(&mut c);
+    let server = TestServer::in_process(dirs, c);
+    let mut files: Vec<(Vec<u8>, String)> = ["m_block02.stp", "m_block02_cb_deep.stp"]
+        .iter()
+        .map(|n| (support::candidate(n), (*n).to_owned()))
+        .collect();
+    files.push((b"not STEP".to_vec(), "junk.stp".into()));
+    server.ingest(&files).await;
+    let mut tokens = Vec::new();
+    for (name, role) in [("ada", Role::Reader), ("wes", Role::Writer)] {
+        let user = seed_user(server.server(), name, role, None);
+        tokens.push(seed_token(server.server(), &user, role, 60).1);
+    }
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let writer = tokens.pop().unwrap();
+    let reader = tokens.pop().unwrap();
+    (server, reader, writer, socket)
+}
+
+/// JS12, AU5, M6-60 (VT45): an exhaustive run and a verify are a
+/// writer's, `403 forbidden` to a reader before any job; with
+/// `limits.max_catalog_candidates` below the catalog's live entries an
+/// exhaustive run ends `refused`, `too_large`, exit 3, before anything is
+/// judged (no judgment made), while a full run on the same catalog runs.
+#[tokio::test]
+async fn an_exhaustive_run_is_a_writers_and_bounded() {
+    let (server, reader, writer, socket) =
+        catalog_world(|c| c.limits.max_catalog_candidates = 2).await;
+    let exhaustive =
+        json!({ "socket": socket, "candidates": { "catalog": { "selection": "exhaustive" } } });
+    // The reader extracted no socket of hers: the role is refused before
+    // the socket is looked up (AU5's field before references).
+    let refused = server.send(post("/v1/matches", &reader, &exhaustive)).await;
+    assert_eq!(
+        (refused.status.as_u16(), refused.code()),
+        (403, "forbidden".into())
+    );
+    let verify = server
+        .send(post("/v1/catalog/verify", &reader, &json!({})))
+        .await;
+    assert_eq!(
+        (verify.status.as_u16(), verify.code()),
+        (403, "forbidden".into())
+    );
+    let seams = server.server().seams();
+    let before = seams.jobs.catalog_judgments();
+    let job = server.run_match(&exhaustive).await;
+    assert_eq!(
+        (
+            job["state"].as_str(),
+            job["exit_code"].as_i64(),
+            job["error"]["code"].as_str()
+        ),
+        (Some("refused"), Some(3), Some("too_large")),
+        "{job}"
+    );
+    assert_eq!(job["error"]["details"]["limit"], "max_catalog_candidates");
+    assert_eq!(job["error"]["details"]["entries"], 3);
+    assert!(job["document"].is_null() && job["outcome"].is_null());
+    assert_eq!(seams.jobs.catalog_judgments(), before, "nothing judged");
+    let full = server
+        .run_match(&json!({ "socket": socket, "candidates": { "catalog": {} } }))
+        .await;
+    assert_eq!(full["state"], "succeeded", "{full}");
+    assert!(seams.jobs.catalog_judgments() > before);
+    let verify = server
+        .send(post("/v1/catalog/verify", &writer, &json!({})))
+        .await;
+    assert_eq!(verify.status, 202, "a writer verifies");
+}
+
+/// HX2, JS12: a named run names at most `limits.max_candidates` entries
+/// (`400 invalid_parameter`), each a well formed reference; files beside
+/// a catalog, or ids with an exhaustive selection, `400 options_conflict`.
+#[tokio::test]
+async fn a_named_run_is_bounded_as_a_file_run() {
+    let (server, _, _, socket) = catalog_world(|c| c.limits.max_candidates = 3).await;
+    let ids =
+        |ids: Vec<&str>| json!({ "socket": socket, "candidates": { "catalog": { "ids": ids } } });
+    let over = server
+        .send(support::waiting(
+            "/v1/matches",
+            &ids(vec!["a", "b", "c", "d"]),
+        ))
+        .await;
+    assert_eq!(over.code(), "invalid_parameter");
+    assert_eq!(over.json()["details"]["limit"], "max_candidates");
+    let bad = server
+        .send(support::waiting("/v1/matches", &ids(vec!["m_block02@r01"])))
+        .await;
+    assert_eq!(bad.code(), "invalid_reference");
+    for conflict in [
+        json!({ "socket": socket, "candidates": { "catalog": {}, "files": [{ "upload": format!("sha256:{}", "0".repeat(64)), "label": "x" }] } }),
+        json!({ "socket": socket, "candidates": { "catalog": { "selection": "exhaustive", "ids": ["junk"] } } }),
+    ] {
+        let reply = server
+            .send(support::waiting("/v1/matches", &conflict))
+            .await;
+        assert_eq!(reply.code(), "options_conflict");
+    }
+    let job = server.run_match(&ids(vec!["m_block02", "junk"])).await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+}
+
+/// HX8, VN3 (VT45): a `limit=all` listing is built whole in one snapshot,
+/// at most `limits.list_all_concurrency` at once: a third while two are
+/// built is `429 too_many_streams`, retryable, without waiting; one built
+/// and unread holds no snapshot (a `TRUNCATE` checkpoint completes
+/// meanwhile). A page's `limit` is 1 to `limits.page_max`; `all` takes no
+/// cursor.
+#[tokio::test(flavor = "multi_thread")]
+async fn whole_listings_are_built_two_at_a_time() {
+    let (server, ..) = catalog_world(|c| c.limits.list_all_concurrency = 2).await;
+    let server = std::sync::Arc::new(server);
+    let gate = Gate::new();
+    let seams = server.server().seams();
+    seams.hooks.set("catalog.list", Action::Pause(gate.clone()));
+    let mut held = Vec::new();
+    for _ in 0..2 {
+        let server = std::sync::Arc::clone(&server);
+        held.push(tokio::spawn(async move {
+            server.get("/v1/catalog/entries?limit=all").await
+        }));
+    }
+    assert!(gate.arrived(2, Duration::from_secs(30)).await);
+    let third = server.get("/v1/catalog/entries?limit=all").await;
+    assert_eq!(
+        (third.status.as_u16(), third.code()),
+        (429, "too_many_streams".into())
+    );
+    assert_eq!(third.json()["details"]["limit"], "list_all_concurrency");
+    assert_eq!(third.json()["retryable"], true);
+    assert!(third.header("retry-after").is_some());
+    gate.open();
+    seams.hooks.clear("catalog.list");
+    for listing in held {
+        let reply = listing.await.unwrap();
+        assert_eq!(reply.status, 200);
+        assert_eq!(reply.json()["counts"]["entries"], 3);
+    }
+    // Built, sent from memory: an unread body holds no read transaction.
+    let unread = server
+        .open(Call::get("/v1/catalog/entries?limit=all"))
+        .await;
+    assert_eq!(unread.status(), 200);
+    let catalog = fitment_catalog::Catalog::open(
+        &server.dirs.catalog,
+        fitment_catalog::Options::default().with_busy_timeout_ms(500),
+    )
+    .unwrap();
+    assert!(
+        !catalog.checkpoint_truncate().unwrap().busy,
+        "no snapshot held"
+    );
+    drop(unread);
+    for (query, code) in [
+        ("limit=0", "invalid_parameter"),
+        ("limit=1001", "invalid_parameter"),
+        ("limit=all&after=YQ", "invalid_parameter"),
+        ("status=fresh", "invalid_parameter"),
+    ] {
+        let reply = server.get(&format!("/v1/catalog/entries?{query}")).await;
+        assert_eq!(reply.code(), code, "{query}");
+    }
+}
+
+/// JS3 (review F3, VT45): a catalog match takes the memory permits its
+/// selection implies, read from the catalog's counts at dispatch: 64 MiB
+/// and `jobs.match_entry_kib` per entry it can judge (every searchable
+/// one for a full run, every live one for an exhaustive run, the named
+/// ones for a named run), held while it runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_catalog_match_takes_the_memory_its_selection_implies() {
+    let (server, _, _, socket) = catalog_world(|c| {
+        c.jobs.match_entry_kib = 1024;
+        c.jobs.memory_mib = 4096;
+    })
+    .await;
+    let seams = server.server().seams();
+    let total = seams.jobs.memory_free().1;
+    for (selection, entries) in [
+        (json!({}), 2),
+        (json!({ "selection": "exhaustive" }), 3),
+        (json!({ "ids": ["junk"] }), 1),
+    ] {
+        let gate = Gate::new();
+        seams.hooks.set("job.read", Action::Pause(gate.clone()));
+        let body = json!({ "socket": socket, "candidates": { "catalog": selection } });
+        let job = server.submit("/v1/matches", &body).await;
+        assert!(gate.arrived(1, Duration::from_secs(30)).await);
+        let free = usize::try_from(total).unwrap() - (64 + entries);
+        assert_eq!(seams.jobs.memory_free().0, free, "{selection}");
+        gate.open();
+        seams.hooks.clear("job.read");
+        let done = server
+            .finished_job(job["id"].as_str().unwrap(), Duration::from_secs(60))
+            .await;
+        assert_eq!(done["state"], "succeeded", "{done}");
+    }
+}
+
+/// JB7 (review F23, VT45): `verify`, plain or `deep`, runs under
+/// `jobs.deadline_verify_minutes`; past it the job ends `failed`,
+/// `deadline_exceeded`, with no document.
+#[tokio::test]
+async fn a_verify_past_its_deadline_fails_with_no_document() {
+    let (server, ..) = catalog_world(|_| {}).await;
+    let seams = server.server().seams();
+    seams.jobs.set_deadline(Duration::from_millis(200));
+    seams
+        .hooks
+        .set("job.read", Action::Delay(Duration::from_millis(600)));
+    for body in [json!({}), json!({ "deep": true })] {
+        let job = server.submit("/v1/catalog/verify", &body).await;
+        let job = server
+            .finished_job(job["id"].as_str().unwrap(), Duration::from_secs(60))
+            .await;
+        assert_eq!(
+            (job["state"].as_str(), job["error"]["code"].as_str()),
+            (Some("failed"), Some("deadline_exceeded")),
+            "{job}"
+        );
+        assert!(job["document"].is_null() && job["exit_code"].is_null());
+    }
 }

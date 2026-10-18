@@ -69,21 +69,36 @@ pub(super) async fn info(
             planted,
         )));
     }
-    let Ok(_slot) = shared.info_slots.acquire().await else {
-        return Err(ApiError::internal());
-    };
-    let read = Arc::clone(&shared);
-    let catalog = blocking(move || {
-        #[cfg(feature = "test-support")]
-        read.hooks.blocking("info.blocking");
-        read.catalog.info()
-    })
-    .await?;
-    let mut catalog = catalog;
-    catalog.state.queues_full = shared.jobs.queues_full();
+    let catalog = catalog_info(&shared).await?;
     let kernel = crate::matching::kernel(&shared.verifier());
     let document = crate::info::info(&shared.config, kernel, catalog);
     Ok(json::document(INFO_FORMAT, INFO_FORMAT_VERSION, &document))
+}
+
+/// DC11: the catalog's generation, counts and flags, read on a pooled
+/// reader behind a read slot (CX1), with whether a reindex is queued or
+/// running (M6-28) and whether a lane's queue is full (JS5).
+///
+/// # Errors
+///
+/// The catalog's, mapped (CX7); `server.db`'s.
+pub(super) async fn catalog_info(
+    shared: &Arc<Shared>,
+) -> Result<crate::catalog::CatalogInfo, ApiError> {
+    let read = Arc::clone(shared);
+    let mut catalog = crate::http::catalog_read(shared, move || {
+        #[cfg(feature = "test-support")]
+        read.hooks.blocking("info.blocking");
+        let mut info = read.catalog.info()?;
+        info.state.reindex = read
+            .db
+            .active_reindex()
+            .map_err(|e| crate::http::db_error(&e))?;
+        Ok(info)
+    })
+    .await?;
+    catalog.state.queues_full = shared.jobs.queues_full();
+    Ok(catalog)
 }
 
 /// VN7: the committed OpenAPI document, the bytes compiled in.

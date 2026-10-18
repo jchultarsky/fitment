@@ -1,0 +1,5 @@
+POST /v1/catalog/delete
+authorization: Bearer <root's admin token>
+content-type: application/json
+
+{"ids": ["junk", "m_block02@r1", "junk"]}

@@ -49,7 +49,11 @@ pub(crate) fn hook(shared: &Shared, point: &str) {
 
 /// Runs job `row` to its end (JS6). `Err` is `server.db`'s failure; the
 /// dispatcher then ends the job `failed`, `internal`.
-pub(crate) fn execute(shared: &Shared, row: &JobRow, control: &Control) -> Result<Ran, DbError> {
+pub(crate) fn execute(
+    shared: &std::sync::Arc<Shared>,
+    row: &JobRow,
+    control: &Control,
+) -> Result<Ran, DbError> {
     control.progress(shared, reading(0));
     let finished = match row.kind {
         Kind::Features => features(shared, row, control),
@@ -57,10 +61,7 @@ pub(crate) fn execute(shared: &Shared, row: &JobRow, control: &Control) -> Resul
         Kind::SocketExtract => return super::socket::extract(shared, row, control),
         Kind::SocketImport => return super::socket::import(shared, row, control),
         Kind::Match => return super::matches::run(shared, row, control),
-        _ => {
-            let ending = internal(row.kind, "this build runs no job of this kind");
-            end(shared, row, control, &ending, None, &Rows::None)
-        }
+        _ => return super::catalog::run(shared, row, control),
     }?;
     conclude(shared, row, control, finished)
 }
@@ -165,7 +166,11 @@ pub(crate) fn read_input(shared: &Shared, kind: Kind, sha256: &str) -> Result<Ve
     })
 }
 
-fn read_streamed(shared: &Shared, sha256: &str, bytes: u64) -> Result<Vec<u8>, ObjectError> {
+pub(crate) fn read_streamed(
+    shared: &Shared,
+    sha256: &str,
+    bytes: u64,
+) -> Result<Vec<u8>, ObjectError> {
     let mut reader = shared.objects.open_checked(sha256, bytes)?;
     let mut out = Vec::with_capacity(usize::try_from(bytes).unwrap_or(0));
     let mut buf = vec![0_u8; 1024 * 1024];
@@ -340,6 +345,36 @@ fn finish(
     staged: Vec<Synced>,
     rows: &Rows<'_>,
 ) -> Result<Finished, DbError> {
+    finish_rows(
+        shared,
+        row,
+        ending,
+        &documents::stopped(row.kind),
+        staged,
+        rows,
+    )
+}
+
+/// [`finish`] with the ends a stop that committed first holds the job to:
+/// a write job's cancel keeps its committed changes' document (JB5).
+pub(crate) fn finish_with(
+    shared: &Shared,
+    row: &JobRow,
+    ending: &End,
+    stopped: &crate::state::Stopped,
+    staged: Vec<Synced>,
+) -> Result<Finished, DbError> {
+    finish_rows(shared, row, ending, stopped, staged, &Rows::None)
+}
+
+fn finish_rows(
+    shared: &Shared,
+    row: &JobRow,
+    ending: &End,
+    stopped: &crate::state::Stopped,
+    staged: Vec<Synced>,
+    rows: &Rows<'_>,
+) -> Result<Finished, DbError> {
     hook(shared, "job.committing");
     let placed = Cell::new(false);
     let mut place = || {
@@ -349,12 +384,11 @@ fn finish(
         placed.set(!staged.is_empty());
         Ok(())
     };
-    let stopped = documents::stopped(row.kind);
     let (now, retention) = (shared.ids.now_ms(), shared.jobs.retention_ms());
     let finished = shared.db.finish_job(
         row.key,
         ending,
-        &stopped,
+        stopped,
         &mut place,
         rows,
         now,
@@ -380,7 +414,7 @@ fn finish(
                 .finish_job(
                     row.key,
                     &ending,
-                    &stopped,
+                    stopped,
                     &mut none,
                     &Rows::None,
                     now,

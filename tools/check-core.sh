@@ -83,11 +83,12 @@ check "fitment-server does not say publish = false" \
   sh -c "! grep -qx 'publish = false' $server/Cargo.toml"
 check "fitment-server does not say dist = false" \
   sh -c "! grep -A1 -x '\[package.metadata.dist\]' $server/Cargo.toml | grep -qx 'dist = false'"
-# SV4: catalog.rs is the only module naming fitment_catalog, matching.rs the
-# only one building a Matcher or a MatchDocument (the OpenAPI generator
-# names the document's type for its schema only).
-check "names fitment_catalog outside fitment-server's catalog.rs" \
-  sh -c "grep -rlE '\bfitment_catalog\b' $server/src | grep -vx '$server/src/catalog.rs' | grep ."
+# SV4: catalog.rs is the only module naming fitment_catalog (with its
+# submodules under catalog/, as SV6 reads state::db), matching.rs the only
+# one building a Matcher or a MatchDocument (the OpenAPI generator names the
+# document's type for its schema only).
+check "names fitment_catalog outside fitment-server's catalog.rs and catalog/" \
+  sh -c "grep -rlE '\bfitment_catalog\b' $server/src | grep -vx '$server/src/catalog.rs' | grep -v '^$server/src/catalog/' | grep ."
 check "builds a Matcher or a MatchDocument outside fitment-server's matching.rs" \
   sh -c "grep -rlE '\b(Matcher|MatchDocument)::' $server/src | grep -vx '$server/src/matching.rs' | grep ."
 # SV6: server.db is opened by the module state::db alone (state/db.rs and

@@ -1,0 +1,4 @@
+GET /v1/catalog/entries?limit=2
+authorization: Bearer <ada's reader token>
+if-match: "another.g1.000000000000"
+

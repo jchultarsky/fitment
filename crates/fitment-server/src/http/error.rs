@@ -476,6 +476,21 @@ impl ApiError {
         self.code
     }
 
+    /// The CLI's exit code in the same situation (ER2).
+    pub fn exit_code(&self) -> Option<u8> {
+        self.exit_code
+    }
+
+    /// The sentence (ER3).
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    /// The values (ER3).
+    pub fn details(&self) -> &Map<String, Value> {
+        &self.details
+    }
+
     /// The document, with `request_id` (DC9's key order: `format` and
     /// `format_version` first).
     pub fn document(&self, method: &Method, request_id: &str) -> Problem {

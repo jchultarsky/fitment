@@ -1515,6 +1515,68 @@ M6_PR7A = {
 for rule, tests in M6_PR7A.items():
     assert RULES[rule] == {"deferred": "M6 PR 7"}, rule
     RULES[rule] = {"tests": tests}
+# 7b builds the catalog through the API (section 12, item 7): the catalog's routes, the reader pool, the job writer
+# and a synchronous delete's writer (RA1, RA2, CX1 to CX8, M6-50); the catalog's jobs and catalog match jobs, full,
+# named and exhaustive, the writer role and the cap for exhaustive runs (JS12, M6-60), the run record's generation
+# and counts (SN10, M6-25); `limit=all` built in its snapshot (HX8's second half); pages and their generation
+# (VN4); JS8 and XH12 for the catalog's kinds; and the exit's catalog half (XH8). RA2 and SN10 are M6_PARITY's,
+# HX8 and JS12 M6_LIMITS's, JS8, CX3, CX4 and CX6 M6_FAULT's. M6_PR_NOW rises to 7: no rule waits for "M6 PR 7".
+M6_PR7B = {
+    "RA1": [f"{S_API}::the_catalog_is_one_and_shared",
+            f"{S_AUTH}::every_operation_answers_each_principal_as_its_role_says"],
+    "RA2": [f"{S_PAR}::catalog_jobs_are_the_clis", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "CX1": [f"{S_CONC}::many_clients_run_catalog_matches_alike",
+            f"{S_HOST}::info_reads_the_catalog_four_at_a_time",
+            f"{S_API}::a_newer_catalog_is_unavailable_with_exit_3"],
+    "CX2": [f"{S_API}::catalog_pages_are_total_and_stable",
+            f"{S_CONC}::writes_during_matches_are_the_replayed_catalog",
+            f"{S_API}::a_catalog_run_records_its_generation_and_counts"],
+    "CX3": [f"{S_FAULT}::a_busy_catalog_is_waited_for_then_refused",
+            f"{S_CONC}::a_cli_ingest_beside_the_server_is_consistent", f"{S_PAR}::catalog_jobs_are_the_clis"],
+    "CX4": [f"{S_FAULT}::a_busy_catalog_is_waited_for_then_refused", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "CX5": [f"{S_CONC}::writes_during_matches_are_the_replayed_catalog",
+            f"{S_API}::a_stale_catalog_refuses_until_reindexed"],
+    "CX6": [f"{S_FAULT}::the_wal_barrier_is_bounded"],
+    "CX7": [f"{S_GOLD}::the_apis_documents_are_their_goldens", f"{S_API}::a_newer_catalog_is_unavailable_with_exit_3",
+            f"{S_FAULT}::a_busy_catalog_is_waited_for_then_refused", f"{S_PAR}::catalog_jobs_are_the_clis"],
+    "CX8": [f"{S_API}::a_stale_catalog_refuses_until_reindexed",
+            f"{S_CONC}::writes_during_matches_are_the_replayed_catalog"],
+    "VN4": [f"{S_API}::catalog_views_are_tagged_by_instance_and_generation",
+            f"{S_API}::catalog_pages_are_total_and_stable", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "HX8": [f"{S_HOST}::whole_listings_are_built_two_at_a_time", f"{S_HOST}::socket_documents_parse_four_at_a_time",
+            f"{S_HOST}::a_dropped_request_keeps_its_parse_slot"],
+    "JS8": [f"{S_FAULT}::catalog_jobs_stop_where_js8_says", f"{S_FAULT}::a_cancelled_catalog_match_leaves_nothing",
+            f"{S_FAULT}::a_cancel_stops_a_job_where_it_may_stop", f"{S_FAULT}::a_cancelled_match_leaves_nothing"],
+    "JS12": [f"{S_HOST}::an_exhaustive_run_is_a_writers_and_bounded", f"{S_HOST}::a_named_run_is_bounded_as_a_file_run",
+             f"{S_AUTH}::a_field_raises_the_role_as_au5_says"],
+    "SN10": [f"{S_PAR}::catalog_matches_are_the_clis", f"{S_EXIT}::the_corpus_through_the_apis_catalog_is_the_cli_run",
+             f"{S_API}::a_catalog_run_records_its_generation_and_counts"],
+    "XH8": [f"{S_EXIT}::the_corpus_through_the_apis_catalog_is_the_cli_run",
+            f"{S_EXIT}::hostile_parts_through_the_apis_catalog"],
+    "XH12": [f"{S_FAULT}::catalog_jobs_stop_where_js8_says", f"{S_FAULT}::an_aborted_ingest_is_interrupted_and_converges",
+             f"{S_FAULT}::no_job_that_did_not_succeed_states_a_verdict",
+             f"{S_FAULT}::an_abort_at_every_hook_point_leaves_each_job_ending_once"],
+}
+for rule, tests in M6_PR7B.items():
+    assert RULES[rule] == {"deferred": "M6 PR 7"}, rule
+    RULES[rule] = {"tests": tests}
+assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 7"}], "a PR 7 rule is still deferred"
+# Rules of earlier PRs that 7b's tests show for the catalog's kinds too.
+for rule, tests in {
+    "VN3": [f"{S_HOST}::whole_listings_are_built_two_at_a_time", f"{S_API}::catalog_pages_are_total_and_stable"],
+    "VN5": [f"{S_API}::catalog_views_are_tagged_by_instance_and_generation"],
+    "CA8": [f"{S_API}::catalog_views_are_tagged_by_instance_and_generation"],
+    "JB5": [f"{S_FAULT}::catalog_jobs_stop_where_js8_says"],
+    "JB6": [f"{S_FAULT}::an_aborted_ingest_is_interrupted_and_converges"],
+    "JB7": [f"{S_HOST}::a_verify_past_its_deadline_fails_with_no_document"],
+    "JS3": [f"{S_HOST}::a_catalog_match_takes_the_memory_its_selection_implies"],
+    "DC10": [f"{S_API}::a_catalog_run_records_its_generation_and_counts"],
+    "SD3": [f"{S_API}::a_stale_catalog_refuses_until_reindexed"],
+    "SD1": [f"{S_FAULT}::a_drained_ingest_is_interrupted_with_its_committed_lines"],
+    "JS1": [f"{S_CONC}::a_deep_verify_runs_beside_a_running_ingest"],
+    "JS9": [f"{S_API}::the_daily_gc_is_the_system_users", f"{S_JOBS}/mod.rs::the_daily_gc_waits_for_its_minute"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],

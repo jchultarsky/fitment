@@ -1,0 +1,26 @@
+404
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:FRACPGyHAK2mYmcS2Ajd88Xoq3y4DC7K/luUbEvxR+s=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/entry_not_found",
+  "title": "No catalog entry has this name",
+  "status": 404,
+  "detail": "no catalog entry has that id or content",
+  "code": "entry_not_found",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "suggestions": [],
+    "unknown": [
+      "nothing-here"
+    ]
+  },
+  "request_id": "r_00000000000000000000000004"
+}

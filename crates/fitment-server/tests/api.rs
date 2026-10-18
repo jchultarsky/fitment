@@ -2411,3 +2411,317 @@ async fn the_floor_tightens_and_is_recorded() {
         assert_eq!(run["options"]["require_reviewed_by"], by);
     }
 }
+
+/// The catalog's ETag of a reply, as its views carry it (VN5).
+fn view_etag(reply: &support::Reply) -> String {
+    reply
+        .header("etag")
+        .expect("a catalog view's ETag")
+        .to_owned()
+}
+
+/// RA1: one server, one catalog, shared by every user: what a writer
+/// ingests a reader lists and gets; nothing in a request names a
+/// directory (a field naming one is refused as unknown).
+#[tokio::test]
+async fn the_catalog_is_one_and_shared() {
+    let server = TestServer::fresh();
+    let job = server
+        .ingest(&[(support::candidate("m_block02.stp"), "m_block02.stp".into())])
+        .await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    let reader = support::seed_user(
+        server.server(),
+        "ada",
+        fitment_server::auth::Role::Reader,
+        None,
+    );
+    let (_, token) = support::seed_token(
+        server.server(),
+        &reader,
+        fitment_server::auth::Role::Reader,
+        30,
+    );
+    let listed = server
+        .send(Call::get("/v1/catalog/entries?limit=all").bearer(&token))
+        .await;
+    assert_eq!(listed.json()["counts"]["entries"], 1);
+    let got = server
+        .send(Call::get("/v1/catalog/entries/m_block02").bearer(&token))
+        .await;
+    assert_eq!(got.json()["entries"][0]["id"], "m_block02");
+    let body = serde_json::json!({ "files": [], "catalog": "/elsewhere" });
+    let reply = server
+        .send(Call::json(Method::POST, "/v1/catalog/entries", &body))
+        .await;
+    assert_eq!(reply.code(), "bad_request");
+}
+
+/// VN5, M6-63, CA8, VN4: a catalog view's ETag is the instance's, the
+/// generation's and the build's: two catalogs at one generation never
+/// share one; `If-None-Match` answers `304`; a change gives another, and
+/// a page asked under the first page's ETag is then `412
+/// precondition_failed`. Derived documents are `no-cache`; stored bytes
+/// named exactly `immutable`.
+#[tokio::test]
+async fn catalog_views_are_tagged_by_instance_and_generation() {
+    let one = TestServer::fresh();
+    let two = TestServer::fresh();
+    let file = (
+        support::candidate("m_block02.stp"),
+        "m_block02.stp".to_owned(),
+    );
+    for server in [&one, &two] {
+        server.ingest(std::slice::from_ref(&file)).await;
+    }
+    let (a, b) = (
+        one.get("/v1/catalog/entries?limit=all").await,
+        two.get("/v1/catalog/entries?limit=all").await,
+    );
+    assert_eq!(a.json()["generation"], b.json()["generation"]);
+    assert_eq!(a.body, b.body, "the same catalog state, the same bytes");
+    assert_ne!(view_etag(&a), view_etag(&b), "two instances, two tags");
+    let etag = view_etag(&a);
+    let instance = one.server().seams().catalog.instance().to_owned();
+    assert!(etag.starts_with(&format!("\"{instance}.g")), "{etag}");
+    let again = one
+        .send(Call::get("/v1/catalog/entries?limit=1").header("if-none-match", &etag))
+        .await;
+    assert_eq!(again.status, 304);
+    let info = one.get("/v1/catalog").await;
+    assert_eq!(
+        view_etag(&info),
+        etag,
+        "the catalog's view and its list agree"
+    );
+    one.ingest(&[(
+        support::candidate("m_block02_cb_deep.stp"),
+        "deep.stp".into(),
+    )])
+    .await;
+    let moved = one.get("/v1/catalog/entries?limit=1").await;
+    assert_ne!(view_etag(&moved), etag);
+    let stale = one
+        .send(Call::get("/v1/catalog/entries?limit=1").header("if-match", &etag))
+        .await;
+    assert_eq!(stale.code(), "precondition_failed");
+    let fresh = one
+        .send(Call::get("/v1/catalog/entries?limit=1").header("if-match", &view_etag(&moved)))
+        .await;
+    assert_eq!(fresh.status, 200);
+    let features = one.get("/v1/catalog/entries/m_block02/features").await;
+    assert_eq!(features.header("cache-control"), Some("no-cache"));
+    let bare = one.get("/v1/catalog/entries/m_block02/step").await;
+    assert_eq!(bare.header("cache-control"), Some("no-cache"));
+    let exact = one.get("/v1/catalog/entries/m_block02@r1/step").await;
+    assert_eq!(
+        exact.header("cache-control"),
+        Some("private, max-age=31536000, immutable")
+    );
+    assert_eq!(exact.body, support::candidate("m_block02.stp"));
+}
+
+/// VN3, VN4: keyset pages are total and stable: 250 entries in pages of
+/// 100 are `limit=all`'s entries exactly, each once, every page at one
+/// generation and its next in `Link`; a filtered page holds only its
+/// status, read on until full.
+#[tokio::test]
+async fn catalog_pages_are_total_and_stable() {
+    let server = TestServer::fresh();
+    let mut files = support::junk_files(249);
+    files.push((support::candidate("m_block02.stp"), "m_block02.stp".into()));
+    let job = server.ingest(&files).await;
+    assert_eq!(job["exit_code"], 3, "junk is quarantined");
+    let all = server.get("/v1/catalog/entries?limit=all").await.json();
+    let mut paged = Vec::new();
+    let mut next = Some("/v1/catalog/entries?limit=100".to_owned());
+    let mut count = 0;
+    while let Some(url) = next {
+        let reply = server.get(&url).await;
+        assert_eq!(
+            reply.json()["counts"],
+            all["counts"],
+            "the whole catalog's counts"
+        );
+        assert_eq!(reply.json()["generation"], all["generation"]);
+        paged.extend(reply.json()["entries"].as_array().unwrap().clone());
+        next = reply.header("link").map(|l| {
+            l.trim_start_matches('<')
+                .split('>')
+                .next()
+                .unwrap()
+                .to_owned()
+        });
+        count += 1;
+    }
+    assert_eq!(count, 3);
+    assert_eq!(&paged, all["entries"].as_array().unwrap());
+    let indexed = server
+        .get("/v1/catalog/entries?limit=1&status=indexed")
+        .await;
+    let entries = indexed.json()["entries"].as_array().unwrap().clone();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["id"], "m_block02");
+    assert!(indexed.header("link").is_none(), "the only indexed entry");
+}
+
+/// VT32's catalog half (CX5, RX3, M6-28, M6-56): a catalog an older build
+/// read refuses a full run, `refused`, `catalog_stale`, with the counts,
+/// until a reindex job ends; the run then is a fresh catalog's. With
+/// `jobs.reindex_on_start`, a start on a stale catalog queues the reindex
+/// as the `system` user and `fitment.info` says so.
+#[tokio::test]
+async fn a_stale_catalog_refuses_until_reindexed() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.jobs.reindex_on_start = false;
+    let server = TestServer::in_process(dirs, config.clone());
+    let files: Vec<(Vec<u8>, String)> = ["m_block02.stp", "m_block02_cb_deep.stp"]
+        .iter()
+        .map(|n| (support::candidate(n), (*n).to_owned()))
+        .collect();
+    server.ingest(&files).await;
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let full = serde_json::json!({ "socket": socket, "candidates": { "catalog": {} } });
+    let fresh = server.run_match(&full).await;
+    assert_eq!(fresh["state"], "succeeded", "{fresh}");
+    let fresh_doc = server.document(&fresh).await.body;
+    support::stale_catalog(&server.dirs.catalog, fitment_core::EXTRACTOR_VERSION - 1);
+    let refused = server.run_match(&full).await;
+    assert_eq!(
+        (refused["state"].as_str(), refused["exit_code"].as_i64()),
+        (Some("refused"), Some(3))
+    );
+    assert_eq!(refused["error"]["code"], "catalog_stale");
+    assert_eq!(refused["error"]["details"]["count"], 2);
+    assert!(refused["document"].is_null());
+    let info = server.get("/v1/info").await.json();
+    assert_eq!(info["catalog"]["state"]["stale"], true);
+    // A restart with the reindex on start, the dispatcher held: queued as
+    // the system user, and said so.
+    config.jobs.reindex_on_start = true;
+    let server = server.restart(config);
+    server.server().hold_jobs();
+    let info = server.get("/v1/info").await.json();
+    assert_eq!(info["catalog"]["state"]["reindex"], "queued", "{info}");
+    let system = server.server().seams().db.system_user().unwrap();
+    let queued = server
+        .get(&format!("/v1/jobs?kind=catalog_reindex&owner={system}"))
+        .await
+        .json();
+    let job = queued["items"][0].clone();
+    assert_eq!(job["owner"], system.as_str());
+    server.server().resume_jobs();
+    let reindexed = server
+        .finished_job(
+            job["id"].as_str().unwrap(),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
+    assert_eq!(reindexed["state"], "succeeded", "{reindexed}");
+    let again = server.run_match(&full).await;
+    assert_eq!(again["state"], "succeeded", "{again}");
+    assert_eq!(
+        server.document(&again).await.body,
+        fresh_doc,
+        "a fresh catalog's run"
+    );
+    assert_eq!(support::verified(&server.dirs.catalog), Some(0));
+}
+
+/// M6-25, DC10, SN10: a catalog run's record states its snapshot's
+/// generation and CM8's counts, never in the document (M5-2): a full
+/// run's searched, quarantined and level 1's survivors; a named run's
+/// count; each candidate labelled `catalog:<id>@r<n>`, and the API's
+/// download of that reference the bytes its `source` states (ST11).
+#[tokio::test]
+async fn a_catalog_run_records_its_generation_and_counts() {
+    let server = TestServer::fresh();
+    let mut files: Vec<(Vec<u8>, String)> = ["m_block02.stp", "m_block02_cb_deep.stp"]
+        .iter()
+        .map(|n| (support::candidate(n), (*n).to_owned()))
+        .collect();
+    files.push((b"not STEP".to_vec(), "junk.stp".into()));
+    server.ingest(&files).await;
+    let generation = server.get("/v1/catalog").await.json()["generation"].clone();
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let job = server
+        .run_match(&serde_json::json!({ "socket": socket, "candidates": { "catalog": {} } }))
+        .await;
+    let run = server
+        .get(&format!("/v1/matches/{}", job["id"].as_str().unwrap()))
+        .await
+        .json();
+    let c = &run["candidates"];
+    assert_eq!(c["kind"], "catalog");
+    assert_eq!(c["selection"], "full");
+    assert_eq!(c["generation"], generation);
+    assert_eq!(
+        (c["entries"].as_i64(), c["searched"].as_i64()),
+        (Some(3), Some(2))
+    );
+    assert_eq!(c["quarantined_not_searched"], 1);
+    assert_eq!(c["named"], serde_json::Value::Null);
+    let doc: serde_json::Value = serde_json::from_slice(&server.document(&job).await.body).unwrap();
+    for candidate in doc["candidates"].as_array().unwrap() {
+        let label = candidate["labels"][0].as_str().unwrap();
+        let reference = label.strip_prefix("catalog:").expect("a catalog label");
+        let bytes = server
+            .get(&format!("/v1/catalog/entries/{reference}/step"))
+            .await
+            .body;
+        assert_eq!(
+            fitment_core::sha256_hex(&bytes),
+            candidate["source"]["sha256"].as_str().unwrap(),
+            "{label}"
+        );
+    }
+    let named = server
+        .run_match(&serde_json::json!({ "socket": socket, "candidates": { "catalog": { "ids": ["m_block02"] } } }))
+        .await;
+    let run = server
+        .get(&format!("/v1/matches/{}", named["id"].as_str().unwrap()))
+        .await
+        .json();
+    assert_eq!(run["candidates"]["selection"], "named");
+    assert_eq!(run["candidates"]["named"], 1);
+    let unknown = server
+        .run_match(&serde_json::json!({ "socket": socket, "candidates": { "catalog": { "ids": ["nothing"] } } }))
+        .await;
+    assert_eq!(
+        (unknown["state"].as_str(), unknown["exit_code"].as_i64()),
+        (Some("refused"), Some(2))
+    );
+    assert_eq!(unknown["error"]["code"], "entry_not_found");
+}
+
+/// JS9, M6-56, CX8: the daily catalog gc (`jobs.catalog_gc_at`, `HH:MM`
+/// UTC, off by default) is a write-lane job of the `system` user, without
+/// `versions` or `vacuum`, queued once while one is queued; an admin
+/// lists it. A time that is no `HH:MM` refuses the start.
+#[tokio::test]
+async fn the_daily_gc_is_the_system_users() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.jobs.catalog_gc_at = "25:00".into();
+    assert!(config.validate().is_err(), "no such time");
+    config.jobs.catalog_gc_at = "03:30".into();
+    assert_eq!(config.jobs.catalog_gc_minute(), Some(210));
+    let server = TestServer::in_process(dirs, config);
+    server.server().hold_jobs();
+    let queued = server.server().queue_daily_gc().unwrap().expect("queued");
+    assert_eq!(server.server().queue_daily_gc().unwrap(), None, "once");
+    let system = server.server().seams().db.system_user().unwrap();
+    let job = server.get(&format!("/v1/jobs/{queued}")).await.json();
+    assert_eq!(job["owner"], system.as_str());
+    assert_eq!(job["kind"], "catalog_gc");
+    assert_eq!(
+        job["request"],
+        serde_json::json!({ "versions": false, "vacuum": false })
+    );
+    server.server().resume_jobs();
+    let done = server
+        .finished_job(&queued, std::time::Duration::from_secs(60))
+        .await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+}

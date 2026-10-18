@@ -5,7 +5,9 @@
 //! its document's exact bytes and a page of its candidates, sliced from
 //! those bytes. Everything that needs no STEP parse is checked before the
 //! job exists (JB1), the socket gate among them (JB2), in the CLI's order
-//! (ER5); the catalog's runs come with PR 7. A match's id is its job's.
+//! (ER5). A catalog run (SN10) names the server's catalog (RA1) and its
+//! selection; QR1's checks run in the job's own snapshot (JB2). A match's
+//! id is its job's.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -25,8 +27,8 @@ use crate::http::json::{self, Sent};
 use crate::http::{blocking, db_error, query};
 use crate::jobs::model::Kind;
 use crate::jobs::request::{
-    self, CandidatesRequest, ComponentJob, FileJob, MatchJob, MatchRequest, OptionsJob, PolicyJob,
-    SocketFrom, SocketRef,
+    self, CandidatesRequest, CatalogJob, ComponentJob, FileJob, MatchJob, MatchRequest, OptionsJob,
+    PolicyJob, SelectionRequest, SocketFrom, SocketRef,
 };
 use crate::matching::{self, ClearanceName};
 use crate::runs::{self, Asked, RunDocument, RunOptions, RunSocket};
@@ -103,6 +105,96 @@ fn options_of(shared: &Shared, body: &MatchRequest) -> OptionsJob {
             None
         },
     }
+}
+
+/// CM1, CM2, CM3, AU5, JS12, HX2, RA2: a catalog run's selection: files
+/// or components beside it are `400 options_conflict`, as `ids` with
+/// `exhaustive` are; an exhaustive run needs the writer role (`403
+/// forbidden` below it, before any job); a named run names at most
+/// `limits.max_candidates` well formed references.
+fn catalog_of(
+    shared: &Shared,
+    caller: &Principal,
+    candidates: &CandidatesRequest,
+) -> Result<Option<CatalogJob>, ApiError> {
+    let Some(catalog) = &candidates.catalog else {
+        return Ok(None);
+    };
+    let others = candidates.files.as_ref().is_some_and(|f| !f.is_empty())
+        || candidates
+            .components
+            .as_ref()
+            .is_some_and(|c| !c.is_empty());
+    let conflict = |what: &str| {
+        ApiError::new(
+            ErrorCode::OptionsConflict,
+            format!("{what} exclude each other, as the CLI's flags do"),
+        )
+    };
+    if others {
+        return Err(conflict("files or components and a catalog"));
+    }
+    let ids = catalog.ids.clone();
+    let (selection, ids) = match (&catalog.selection, ids) {
+        (Some(SelectionRequest::Ids { .. }), Some(_)) => {
+            return Err(conflict("a selection of ids and ids"));
+        }
+        (Some(SelectionRequest::Ids { ids }), None) => ("named", ids.clone()),
+        (Some(SelectionRequest::Named(name)), ids) if name == "exhaustive" => {
+            if ids.is_some() {
+                return Err(conflict("ids and exhaustive"));
+            }
+            ("exhaustive", Vec::new())
+        }
+        (Some(SelectionRequest::Named(name)), Some(ids)) if name == "full" => ("named", ids),
+        (None, Some(ids)) => ("named", ids),
+        (Some(SelectionRequest::Named(name)), None) if name == "full" => ("full", Vec::new()),
+        (None, None) => ("full", Vec::new()),
+        _ => {
+            return Err(ApiError::new(
+                ErrorCode::InvalidParameter,
+                "a catalog's selection is full, exhaustive or {\"ids\": […]}",
+            )
+            .with("parameter", "candidates.catalog.selection"));
+        }
+    };
+    if selection == "exhaustive"
+        && !caller
+            .effective
+            .permits(crate::http::operations::Role::Writer)
+    {
+        return Err(crate::http::extract::forbidden(
+            crate::http::operations::Role::Writer,
+            caller.effective,
+        ));
+    }
+    if selection == "named" {
+        if ids.is_empty() {
+            return Err(ApiError::new(
+                ErrorCode::NoCandidates,
+                "a named catalog run names at least one entry",
+            ));
+        }
+        let count = u64::try_from(ids.len()).unwrap_or(u64::MAX);
+        if count > shared.config.limits.max_candidates {
+            return Err(ApiError::new(
+                ErrorCode::InvalidParameter,
+                format!(
+                    "a named run names at most {} entries",
+                    shared.config.limits.max_candidates
+                ),
+            )
+            .with("parameter", "candidates.catalog.ids")
+            .with("limit", "max_candidates"));
+        }
+        for id in &ids {
+            crate::catalog::check_reference(id)?;
+        }
+    }
+    Ok(Some(CatalogJob {
+        selection: selection.to_owned(),
+        ids,
+    }))
 }
 
 /// CM1, HX2, RA8: the candidates' shape: at least one, at most
@@ -258,7 +350,12 @@ pub(super) async fn create(
         return Ok(replayed);
     }
     let policy = policy_of(&body)?;
-    let (files, components) = candidates_of(&shared, &body.candidates)?;
+    let catalog = catalog_of(&shared, &caller, &body.candidates)?;
+    let (files, components) = if catalog.is_some() {
+        (Vec::new(), Vec::new())
+    } else {
+        candidates_of(&shared, &body.candidates)?
+    };
     let options = options_of(&shared, &body);
     let owner = caller.user.key;
     let (socket, document, document_bytes, revision) =
@@ -293,6 +390,7 @@ pub(super) async fn create(
         policy,
         options,
         original,
+        catalog,
     });
     let submission = Submission {
         kind: Kind::Match,
@@ -369,6 +467,7 @@ async fn asked(shared: &Arc<Shared>, row: &JobRow) -> Result<Asked, ApiError> {
             require_reviewed_by: job.options.require_reviewed_by,
         },
         original: job.original,
+        catalog: job.catalog.map(|c| (c.selection, c.ids.len())),
     })
 }
 

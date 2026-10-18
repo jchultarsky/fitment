@@ -294,3 +294,349 @@ async fn many_clients_extract_the_same_sockets() {
         refusals.load(std::sync::atomic::Ordering::Relaxed)
     );
 }
+
+// ------------------------------------------------------------- catalog
+
+/// The committed parts and candidates, by file name: VT15's pool.
+fn pool() -> Vec<(Vec<u8>, String)> {
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests");
+    let mut out: Vec<(Vec<u8>, String)> = ["data", "candidates"]
+        .iter()
+        .flat_map(|d| std::fs::read_dir(core.join(d)).unwrap())
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "stp"))
+        .map(|p| {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            (std::fs::read(&p).unwrap(), name)
+        })
+        .collect();
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    out
+}
+
+/// `bytes`, a STEP file's header naming another file: other bytes, the
+/// same part (a replace's new revision).
+fn renamed(bytes: &[u8]) -> Vec<u8> {
+    String::from_utf8_lossy(bytes)
+        .replacen("FILE_NAME('", "FILE_NAME('v2", 1)
+        .into_bytes()
+}
+
+/// VT15's oracle: the catalog's `op` rows replayed to `generation`: each
+/// live entry's content, by entry.
+fn live_at(
+    ops: &[(i64, String, i64, Option<String>)],
+    generation: i64,
+) -> std::collections::BTreeMap<i64, String> {
+    let mut live = std::collections::BTreeMap::new();
+    for (g, kind, entry, sha) in ops.iter().filter(|o| o.0 <= generation) {
+        let _ = g;
+        match (kind.as_str(), sha) {
+            ("ingest" | "replace", Some(sha)) => {
+                live.insert(*entry, sha.clone());
+            }
+            ("delete", _) => {
+                live.remove(entry);
+            }
+            _ => {}
+        }
+    }
+    live
+}
+
+/// The catalog's `op` rows that change what is live, in order.
+fn ops(catalog: &std::path::Path) -> Vec<(i64, String, i64, Option<String>)> {
+    let conn = rusqlite::Connection::open(catalog.join("catalog.db")).unwrap();
+    conn.prepare(
+        "SELECT generation, kind, entry, sha256 FROM op
+         WHERE entry IS NOT NULL ORDER BY generation, n",
+    )
+    .unwrap()
+    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+    .unwrap()
+    .collect::<Result<_, _>>()
+    .unwrap()
+}
+
+/// VT15's writes: `rest` ingested four at a time, then of `all`'s first
+/// six, three replaced by their renamed bytes and three deleted, then a
+/// reindex of every entry.
+async fn writes(
+    writing: std::sync::Arc<TestServer>,
+    rest: Vec<(Vec<u8>, String)>,
+    all: Vec<(Vec<u8>, String)>,
+) {
+    for chunk in rest.chunks(4) {
+        writing.ingest(chunk).await;
+    }
+    for (n, (bytes, name)) in all.iter().take(6).enumerate() {
+        let stem = name.trim_end_matches(".stp");
+        if n % 2 == 0 {
+            let sha = writing.upload(&renamed(bytes)).await;
+            let body = serde_json::json!({ "upload": format!("sha256:{sha}"), "file_name": name });
+            let call = support::Call::json(
+                axum::http::Method::PUT,
+                &format!("/v1/catalog/entries/{stem}"),
+                &body,
+            )
+            .header("prefer", "wait=30");
+            writing.send(call).await;
+        } else {
+            let call = support::Call::new(
+                axum::http::Method::DELETE,
+                &format!("/v1/catalog/entries/{stem}"),
+            );
+            let _ = writing.send(call).await;
+        }
+    }
+    let reindex = writing
+        .submit("/v1/catalog/reindex", &serde_json::json!({ "all": true }))
+        .await;
+    writing
+        .finished_job(reindex["id"].as_str().unwrap(), Duration::from_secs(120))
+        .await;
+}
+
+/// VT15 (CX2, CX5, CR7, CT14 through the API): while ingests, replaces,
+/// deletes and a reindex run over a pool of the committed files, catalog
+/// match jobs run in a loop. Each succeeded exhaustive run's document has
+/// the digest of the file run over exactly the files live at the
+/// generation its `fitment.run` records, the files replayed from the
+/// catalog's `op` rows (CT2): no document mixes two generations. A
+/// replace, then a named run, shows the new revision (nothing cached,
+/// GT9).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn writes_during_matches_are_the_replayed_catalog() {
+    use fitment_core::{MatchDocument, MatchOptions, MatchPolicy, Matcher, NoFitVerifier};
+    let dirs = Dirs::new();
+    let config = dirs.config();
+    let server = std::sync::Arc::new(TestServer::bound(dirs, config).await);
+    let files = pool();
+    let (first, rest) = files.split_at(files.len() / 2);
+    server.ingest(first).await;
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let writer = tokio::spawn(writes(
+        std::sync::Arc::clone(&server),
+        rest.to_vec(),
+        files.clone(),
+    ));
+    let exhaustive = serde_json::json!({ "socket": socket, "candidates": { "catalog": { "selection": "exhaustive" } } });
+    let mut runs = Vec::new();
+    while !writer.is_finished() || runs.len() < 3 {
+        let job = server.run_match(&exhaustive).await;
+        assert_eq!(job["state"], "succeeded", "{job}");
+        let run = server
+            .get(&format!("/v1/matches/{}", job["id"].as_str().unwrap()))
+            .await
+            .json();
+        runs.push((
+            run["candidates"]["generation"].as_i64().unwrap(),
+            run["document"]["digest"].clone(),
+        ));
+    }
+    writer.await.unwrap();
+    let ops = ops(&server.dirs.catalog);
+    let bytes: std::collections::BTreeMap<String, Vec<u8>> = files
+        .iter()
+        .flat_map(|(b, _)| [b.clone(), renamed(b)])
+        .map(|b| (fitment_core::sha256_hex(&b), b))
+        .collect();
+    let document = server.get(&format!("/v1/sockets/{socket}")).await.body;
+    let document =
+        fitment_core::SocketDocument::from_json(&String::from_utf8(document).unwrap()).unwrap();
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &NoFitVerifier,
+    )
+    .unwrap();
+    let mut judged = std::collections::BTreeMap::new();
+    let generations: std::collections::BTreeSet<i64> = runs.iter().map(|r| r.0).collect();
+    assert!(
+        generations.len() >= 2,
+        "matches ran at {generations:?} only"
+    );
+    for (generation, digest) in &runs {
+        let live = live_at(&ops, *generation);
+        let results = live
+            .values()
+            .map(|sha| {
+                let result = judged
+                    .entry(sha.clone())
+                    .or_insert_with(|| matcher.judge_step(&bytes[sha]))
+                    .clone();
+                (result, vec![format!("catalog:{sha}")])
+            })
+            .collect();
+        let expected = MatchDocument::new(&matcher, results);
+        assert_eq!(
+            digest.as_str(),
+            Some(expected.digest()),
+            "generation {generation}"
+        );
+    }
+    let stem = files[0].1.trim_end_matches(".stp");
+    let named = server
+        .run_match(&serde_json::json!({ "socket": socket, "candidates": { "catalog": { "ids": [stem] } } }))
+        .await;
+    let doc: serde_json::Value =
+        serde_json::from_slice(&server.document(&named).await.body).unwrap();
+    assert_eq!(
+        doc["candidates"][0]["labels"][0],
+        format!("catalog:{stem}@r2"),
+        "GT9"
+    );
+    assert_eq!(support::verified(&server.dirs.catalog), Some(0));
+}
+
+/// VT16, CX3, OP10: a `fitment catalog ingest` process beside the running
+/// server, on its catalog, while the server ingests other files: both
+/// sides' writes stand (IN1 to IN9: `verify --deep` clean, through the
+/// API and the CLI), and the server sees the CLI's at its next snapshot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cli_ingest_beside_the_server_is_consistent() {
+    let dirs = Dirs::new();
+    let config = dirs.config();
+    let server = TestServer::bound(dirs, config).await;
+    let files = pool();
+    let (mine, theirs) = files.split_at(files.len() / 2);
+    let dir = server.dirs.root.join("cli-in");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (bytes, name) in theirs {
+        std::fs::write(dir.join(name), bytes).unwrap();
+    }
+    let catalog = server.dirs.catalog.display().to_string();
+    let cli_dir = dir.display().to_string();
+    let cli = std::thread::spawn(move || {
+        support::cli(
+            std::path::Path::new("."),
+            &["catalog", "ingest", "-C", &catalog, &cli_dir],
+        )
+    });
+    let job = server.ingest(mine).await;
+    assert!(matches!(job["exit_code"].as_i64(), Some(0 | 3)), "{job}");
+    let (code, _, stderr) = cli.join().unwrap();
+    assert!(matches!(code, Some(0 | 3)), "{stderr}");
+    let listed = server.get("/v1/catalog/entries?limit=all").await.json();
+    assert_eq!(listed["counts"]["entries"], files.len());
+    let verify = server
+        .submit("/v1/catalog/verify", &serde_json::json!({ "deep": true }))
+        .await;
+    let verify = server
+        .finished_job(verify["id"].as_str().unwrap(), Duration::from_secs(300))
+        .await;
+    assert_eq!(
+        (verify["state"].as_str(), verify["exit_code"].as_i64()),
+        (Some("succeeded"), Some(0)),
+        "{verify}"
+    );
+    assert_eq!(support::verified(&server.dirs.catalog), Some(0));
+}
+
+/// VT14 on catalog matches (JS1 to JS3, CX1, QR8): eight clients, each its
+/// own user with its own socket of the same bytes, running full and
+/// exhaustive catalog matches at once over the bound socket: every
+/// document is the same bytes, whatever the permits each ran with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn many_clients_run_catalog_matches_alike() {
+    use fitment_server::auth::Role;
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.jobs.cpu = 4;
+    let server = std::sync::Arc::new(TestServer::bound(dirs, config).await);
+    server.ingest(&pool()).await;
+    let refusals = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut clients = Vec::new();
+    for n in 0..8 {
+        let user = support::seed_user(server.server(), &format!("client{n}"), Role::Writer, None);
+        let token = support::seed_token(server.server(), &user, Role::Writer, 30).1;
+        let (server, refusals) = (
+            std::sync::Arc::clone(&server),
+            std::sync::Arc::clone(&refusals),
+        );
+        clients.push(tokio::spawn(async move {
+            let bytes = support::assembly("s02_cbore.stp");
+            let put = support::put_upload(&bytes).bearer(&token);
+            assert!(patient(&server, put, &refusals).await.status.is_success());
+            let sha = fitment_core::sha256_hex(&bytes);
+            let body = serde_json::json!({ "upload": format!("sha256:{sha}") });
+            patient(&server, support::waiting("/v1/assemblies", &body).bearer(&token), &refusals).await;
+            let body = serde_json::json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK" });
+            let job = patient(&server, support::waiting("/v1/sockets", &body).bearer(&token), &refusals)
+                .await
+                .json();
+            let socket = job["result"]["href"].as_str().unwrap().trim_start_matches("/v1/sockets/").to_owned();
+            let mut documents = Vec::new();
+            for selection in ["full", "exhaustive"] {
+                let body = serde_json::json!({ "socket": socket, "candidates": { "catalog": { "selection": selection } } });
+                let job = patient(&server, support::waiting("/v1/matches", &body).bearer(&token), &refusals)
+                    .await
+                    .json();
+                let id = job["id"].as_str().unwrap().to_owned();
+                let job = server.finished_job(&id, Duration::from_secs(300)).await;
+                assert_eq!(job["state"], "succeeded", "{job}");
+                let document = server
+                    .send(Call::get(&format!("/v1/matches/{id}/document")).bearer(&token))
+                    .await;
+                documents.push(document.body);
+            }
+            documents
+        }));
+    }
+    let mut first: Option<Vec<Vec<u8>>> = None;
+    for client in clients {
+        let documents = client.await.unwrap();
+        match &first {
+            Some(first) => assert_eq!(first, &documents, "the same bytes"),
+            None => first = Some(documents),
+        }
+    }
+}
+
+/// JS1, CX6 (VT45): `verify --deep` is the maintenance lane's, a reader
+/// under its deadline: it runs, and ends, beside an ingest the write lane
+/// runs, taking no barrier.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deep_verify_runs_beside_a_running_ingest() {
+    use fitment_server::hooks::{Action, Gate};
+    let server = TestServer::fresh();
+    server.ingest(&pool()[..4]).await;
+    let seams = server.server().seams();
+    let gate = Gate::new();
+    seams
+        .hooks
+        .set("catalog.batch", Action::Pause(gate.clone()));
+    let files: Vec<serde_json::Value> = {
+        let mut out = Vec::new();
+        for (bytes, name) in support::junk_files(3) {
+            let sha = server.upload(&bytes).await;
+            out.push(serde_json::json!({ "upload": format!("sha256:{sha}"), "file_name": name }));
+        }
+        out
+    };
+    let ingest = server
+        .submit(
+            "/v1/catalog/entries",
+            &serde_json::json!({ "files": files }),
+        )
+        .await;
+    assert!(gate.arrived(1, Duration::from_secs(60)).await);
+    let verify = server
+        .submit("/v1/catalog/verify", &serde_json::json!({ "deep": true }))
+        .await;
+    let verify = server
+        .finished_job(verify["id"].as_str().unwrap(), Duration::from_secs(120))
+        .await;
+    assert_eq!(
+        verify["state"], "succeeded",
+        "beside a running ingest: {verify}"
+    );
+    assert!(!seams.catalog.barrier());
+    gate.open();
+    seams.hooks.clear("catalog.batch");
+    let ingest = server
+        .finished_job(ingest["id"].as_str().unwrap(), Duration::from_secs(60))
+        .await;
+    assert_eq!(ingest["exit_code"], 3, "{ingest}");
+}

@@ -1754,3 +1754,455 @@ async fn a_reference_swept_while_its_request_waits_is_not_found() {
         "only the registration's job: nothing queued"
     );
 }
+
+// ------------------------------------------------------------- catalog
+
+/// XH12 for a catalog job that ended: one terminal state, which a reread
+/// keeps; no verdict unless it succeeded; and the catalog consistent
+/// (`fitment catalog verify` clean), however it ended.
+async fn catalog_xh12(server: &TestServer, job: &Value) {
+    let id = job["id"].as_str().unwrap();
+    let again = server.get(&format!("/v1/jobs/{id}")).await.json();
+    assert_eq!(again["state"], job["state"], "XH12: one terminal state");
+    assert!(
+        !["queued", "running", "cancelling"].contains(&job["state"].as_str().unwrap()),
+        "{job}"
+    );
+    no_verdict(job);
+    if job["state"] != "succeeded" {
+        assert!(job["outcome"].is_null(), "{job}");
+    }
+    assert_eq!(
+        support::verified(&server.dirs.catalog),
+        Some(0),
+        "XH12: {job}"
+    );
+}
+
+/// The persisted events of job `id`, by type.
+async fn events_of(server: &TestServer, id: &str) -> Vec<Value> {
+    let body = server
+        .open(Call::get(&format!("/v1/jobs/{id}/events")))
+        .await;
+    let mut body = body.into_body();
+    support::lines(&mut body, Duration::from_secs(30), |e| e["type"] == "end").await
+}
+
+/// Cancels job `id` as the harness's admin: the answer.
+async fn cancel(server: &TestServer, id: &str) -> support::Reply {
+    server
+        .send(Call::new(Method::POST, &format!("/v1/jobs/{id}/cancel")))
+        .await
+}
+
+/// JS8, JB5, JB8, VT41, XH12: a cancel reaches each catalog kind where JS8
+/// says it may stop. An ingest of 70 files stopped after its first batch
+/// of 64 (CA2's check before each file) keeps that batch, its document
+/// listing exactly those lines, `exit_code` null, its `change` and
+/// `batch` events persisted; a reindex likewise; a gc asked before it
+/// began unlinks nothing and says so; a verify and a catalog match leave
+/// nothing; a running replace or prune is one transaction, `409
+/// job_finished`, and ends as it ran; a queued job is `cancelled` at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn catalog_jobs_stop_where_js8_says() {
+    let server = TestServer::fresh();
+    let seams = server.server().seams();
+    let files = support::junk_files(70);
+    let mut listed = Vec::new();
+    for (bytes, name) in &files {
+        let sha = server.upload(bytes).await;
+        listed.push(json!({ "upload": format!("sha256:{sha}"), "file_name": name }));
+    }
+    let gate = Gate::new();
+    seams
+        .hooks
+        .set("catalog.batch", Action::Pause(gate.clone()));
+    let job = server
+        .submit("/v1/catalog/entries", &json!({ "files": listed }))
+        .await;
+    let id = job["id"].as_str().unwrap().to_owned();
+    assert!(gate.arrived(1, Duration::from_secs(60)).await);
+    assert_eq!(cancel(&server, &id).await.status, 202);
+    gate.open();
+    seams.hooks.clear("catalog.batch");
+    let ended = server.finished_job(&id, Duration::from_secs(60)).await;
+    assert_eq!(ended["state"], "cancelled", "{ended}");
+    assert!(ended["exit_code"].is_null());
+    let document: Value = serde_json::from_slice(&server.document(&ended).await.body).unwrap();
+    assert_eq!(
+        document["changes"].as_array().unwrap().len(),
+        64,
+        "its committed batch"
+    );
+    assert_eq!(document["counts"]["entries"], 64);
+    let events = events_of(&server, &id).await;
+    let changes = events.iter().filter(|e| e["type"] == "change").count();
+    let batches: Vec<&Value> = events.iter().filter(|e| e["type"] == "batch").collect();
+    assert_eq!((changes, batches.len()), (64, 1));
+    assert_eq!(batches[0]["lines"], 64);
+    catalog_xh12(&server, &ended).await;
+    // A reindex of the 64, stale, stopped after its first batch.
+    support::stale_catalog(&server.dirs.catalog, fitment_core::EXTRACTOR_VERSION - 1);
+    let reindexed = stopped_at_batch(&server, "/v1/catalog/reindex", &json!({ "all": true })).await;
+    assert_eq!(reindexed["state"], "cancelled", "{reindexed}");
+    let document: Value = serde_json::from_slice(&server.document(&reindexed).await.body).unwrap();
+    let changes = document["changes"].as_array().unwrap();
+    assert_ne!(changes.len(), 0, "its committed batch's lines");
+    catalog_xh12(&server, &reindexed).await;
+    for (path, body, kept) in [
+        ("/v1/catalog/gc", json!({}), true),
+        ("/v1/catalog/verify", json!({ "deep": true }), false),
+    ] {
+        let ended = stopped_at_read(&server, path, &body).await;
+        assert_eq!(ended["state"], "cancelled", "{path}: {ended}");
+        assert_eq!(ended["document"].is_null(), !kept, "{path}: {ended}");
+        catalog_xh12(&server, &ended).await;
+    }
+    let p01 = server.upload(&support::part("p01_through.stp")).await;
+    let replace = json!({ "upload": format!("sha256:{p01}"), "file_name": "p01_through.stp" });
+    for (method, path, body) in [
+        (Method::PUT, "/v1/catalog/entries/junk0000", replace),
+        (
+            Method::POST,
+            "/v1/catalog/prune",
+            json!({ "revisions": true }),
+        ),
+    ] {
+        let gate = Gate::new();
+        seams.hooks.set("job.read", Action::Pause(gate.clone()));
+        let job = server.send(Call::json(method, path, &body)).await.json();
+        let id = job["id"].as_str().unwrap().to_owned();
+        assert!(gate.arrived(1, Duration::from_secs(30)).await);
+        let refused = cancel(&server, &id).await;
+        assert_eq!(refused.code(), "job_finished", "{path}: one transaction");
+        gate.open();
+        seams.hooks.clear("job.read");
+        let ended = server.finished_job(&id, Duration::from_secs(60)).await;
+        assert_eq!(ended["state"], "succeeded", "{path}: {ended}");
+        catalog_xh12(&server, &ended).await;
+    }
+    server.server().hold_jobs();
+    let queued = server.submit("/v1/catalog/gc", &json!({})).await;
+    let id = queued["id"].as_str().unwrap();
+    assert_eq!(cancel(&server, id).await.json()["state"], "cancelled");
+    server.server().resume_jobs();
+}
+
+/// The job at `path`, its flag set while it waits after its first batch:
+/// the job as it ended.
+async fn stopped_at_batch(server: &TestServer, path: &str, body: &Value) -> Value {
+    let seams = server.server().seams();
+    let gate = Gate::new();
+    seams
+        .hooks
+        .set("catalog.batch", Action::Pause(gate.clone()));
+    let job = server.submit(path, body).await;
+    let id = job["id"].as_str().unwrap().to_owned();
+    assert!(gate.arrived(1, Duration::from_secs(60)).await);
+    assert_eq!(cancel(server, &id).await.status, 202);
+    gate.open();
+    seams.hooks.clear("catalog.batch");
+    server.finished_job(&id, Duration::from_secs(60)).await
+}
+
+/// The job at `path`, its flag set before its first catalog call.
+async fn stopped_at_read(server: &TestServer, path: &str, body: &Value) -> Value {
+    let seams = server.server().seams();
+    let gate = Gate::new();
+    seams.hooks.set("job.read", Action::Pause(gate.clone()));
+    let job = server.submit(path, body).await;
+    let id = job["id"].as_str().unwrap().to_owned();
+    assert!(gate.arrived(1, Duration::from_secs(30)).await);
+    assert_eq!(cancel(server, &id).await.status, 202);
+    gate.open();
+    seams.hooks.clear("job.read");
+    server.finished_job(&id, Duration::from_secs(60)).await
+}
+
+/// JS8, SN7, VT41: a catalog match cancelled while it judges (CA2: before
+/// each group a judging thread takes) leaves no document and no run's
+/// facts; one stopped by its deadline likewise, `failed`,
+/// `deadline_exceeded`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_catalog_match_leaves_nothing() {
+    let server = TestServer::fresh();
+    let files: Vec<(Vec<u8>, String)> = ["m_block02.stp", "m_block02_cb_deep.stp", "m_bracket.stp"]
+        .iter()
+        .map(|n| (support::candidate(n), (*n).to_owned()))
+        .collect();
+    server.ingest(&files).await;
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let seams = server.server().seams();
+    let gate = Gate::new();
+    seams
+        .hooks
+        .set("catalog.judge", Action::Pause(gate.clone()));
+    let body =
+        json!({ "socket": socket, "candidates": { "catalog": { "selection": "exhaustive" } } });
+    let job = server.submit("/v1/matches", &body).await;
+    let id = job["id"].as_str().unwrap().to_owned();
+    assert!(gate.arrived(1, Duration::from_secs(60)).await);
+    assert_eq!(cancel(&server, &id).await.status, 202);
+    gate.open();
+    seams.hooks.clear("catalog.judge");
+    let ended = server.finished_job(&id, Duration::from_secs(60)).await;
+    assert_eq!(ended["state"], "cancelled", "{ended}");
+    states_no_verdict(&server, &id, false).await;
+    let run = server.get(&format!("/v1/matches/{id}")).await.json();
+    assert!(run["candidates"]["generation"].is_null(), "{run}");
+    seams.jobs.set_deadline(Duration::from_millis(200));
+    seams
+        .hooks
+        .set("catalog.judge", Action::Delay(Duration::from_millis(400)));
+    let late = server.run_match(&body).await;
+    assert_eq!(
+        (late["state"].as_str(), late["error"]["code"].as_str()),
+        (Some("failed"), Some("deadline_exceeded")),
+        "{late}"
+    );
+    assert!(late["document"].is_null());
+}
+
+/// CX3, CX4, M6-50, VT12: a connection holding the catalog's write lock
+/// (`BEGIN IMMEDIATE`, as a CLI's ingest or a backup tool may): an ingest
+/// job waits `catalog.write_busy_ms`, then fails `catalog_busy`,
+/// retryable, changing nothing; a synchronous delete waits
+/// `catalog.delete_busy_ms`, then answers `503 catalog_busy`; readers
+/// under WAL go on: a catalog match runs and lists read. Once the lock is
+/// released, the ingest submitted again and the delete succeed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_busy_catalog_is_waited_for_then_refused() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.catalog.write_busy_ms = 300;
+    config.catalog.delete_busy_ms = 300;
+    let server = TestServer::in_process(dirs, config);
+    let first = [(
+        support::candidate("m_block02.stp"),
+        "m_block02.stp".to_owned(),
+    )];
+    server.ingest(&first).await;
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let generation = server.get("/v1/catalog").await.json()["generation"].clone();
+    let holder = rusqlite::Connection::open(server.dirs.catalog.join("catalog.db")).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let more = [(
+        support::candidate("m_block02_cb_deep.stp"),
+        "deep.stp".to_owned(),
+    )];
+    let busy = server.ingest(&more).await;
+    assert_eq!(
+        (busy["state"].as_str(), busy["error"]["code"].as_str()),
+        (Some("failed"), Some("catalog_busy")),
+        "{busy}"
+    );
+    assert_eq!(busy["error"]["retryable"], true);
+    let deleted = server
+        .send(Call::new(Method::DELETE, "/v1/catalog/entries/m_block02"))
+        .await;
+    assert_eq!(
+        (deleted.status.as_u16(), deleted.code()),
+        (503, "catalog_busy".into())
+    );
+    assert!(deleted.header("retry-after").is_some());
+    let matched = server
+        .run_match(&json!({ "socket": socket, "candidates": { "catalog": {} } }))
+        .await;
+    assert_eq!(matched["state"], "succeeded", "readers go on: {matched}");
+    let info = server.get("/v1/catalog").await.json();
+    assert_eq!(info["generation"], generation, "nothing changed");
+    holder.execute_batch("ROLLBACK").unwrap();
+    drop(holder);
+    let again = server.ingest(&more).await;
+    assert_eq!(again["state"], "succeeded", "{again}");
+    let deleted = server
+        .send(Call::new(Method::DELETE, "/v1/catalog/entries/m_block02"))
+        .await;
+    assert_eq!(deleted.status, 200);
+    catalog_xh12(&server, &again).await;
+}
+
+/// CX6 (VT45): the WAL barrier. With `catalog.wal_barrier_mib` 0 and a
+/// catalog match holding its snapshot (readers pinning the log), a
+/// write's batch raises the barrier: query dispatch stops, the running
+/// match is given `catalog.barrier_max_seconds`, then dispatch resumes
+/// without the truncate, `fitment.info`'s `wal_barrier` set, and a gc
+/// with `vacuum`, which needs the barrier, fails `catalog_busy`,
+/// retryable. Once the match ends, the next write's barrier is taken:
+/// the log is truncated and the flag cleared.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_wal_barrier_is_bounded() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.catalog.wal_barrier_mib = 0;
+    config.catalog.barrier_max_seconds = 1;
+    let server = TestServer::in_process(dirs, config);
+    let files: Vec<(Vec<u8>, String)> = ["m_block02.stp", "m_block02_cb_deep.stp"]
+        .iter()
+        .map(|n| (support::candidate(n), (*n).to_owned()))
+        .collect();
+    server.ingest(&files).await;
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let seams = server.server().seams();
+    let gate = Gate::new();
+    seams
+        .hooks
+        .set("catalog.judge", Action::Pause(gate.clone()));
+    let body =
+        json!({ "socket": socket, "candidates": { "catalog": { "selection": "exhaustive" } } });
+    let held = server.submit("/v1/matches", &body).await;
+    assert!(gate.arrived(1, Duration::from_secs(60)).await);
+    let started = std::time::Instant::now();
+    let write = server.ingest(&support::junk_files(1)).await;
+    assert_eq!(write["exit_code"], 3, "{write}");
+    assert!(started.elapsed() < Duration::from_secs(10), "bounded");
+    let info = server.get("/v1/info").await.json();
+    assert_eq!(info["catalog"]["state"]["wal_barrier"], true, "{info}");
+    let vacuum = server
+        .submit("/v1/catalog/gc", &json!({ "vacuum": true }))
+        .await;
+    let vacuum = server
+        .finished_job(vacuum["id"].as_str().unwrap(), Duration::from_secs(60))
+        .await;
+    assert_eq!(
+        (vacuum["state"].as_str(), vacuum["error"]["code"].as_str()),
+        (Some("failed"), Some("catalog_busy")),
+        "{vacuum}"
+    );
+    assert_eq!(vacuum["error"]["retryable"], true);
+    gate.open();
+    seams.hooks.clear("catalog.judge");
+    let held = server
+        .finished_job(held["id"].as_str().unwrap(), Duration::from_secs(60))
+        .await;
+    assert_eq!(held["state"], "succeeded", "{held}");
+    let vacuum = server
+        .submit("/v1/catalog/gc", &json!({ "vacuum": true }))
+        .await;
+    let vacuum = server
+        .finished_job(vacuum["id"].as_str().unwrap(), Duration::from_secs(60))
+        .await;
+    assert_eq!(vacuum["state"], "succeeded", "{vacuum}");
+    assert!(!seams.catalog.barrier(), "the barrier lowered");
+    catalog_xh12(&server, &vacuum).await;
+}
+
+/// VT10, JB6, SD4, XH12, JB9: the built binary aborted after an ingest's
+/// first committed batch (`catalog.batch`), then started again: the job
+/// is `interrupted`, `job_interrupted`, retryable, with no document and
+/// the catalog's generation when it started and at recovery; its batch
+/// stays (RX7), the catalog consistent; its key is released, and the
+/// same request submitted again does exactly what is missing: the
+/// catalog then is an uninterrupted ingest's (its entries equal).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_aborted_ingest_is_interrupted_and_converges() {
+    const RESTART: &str = "[test]\nlease_stale_ms = 1\n";
+    let mut server = TestServer::process(Dirs::new(), RESTART);
+    let files = support::junk_files(70);
+    let mut listed = Vec::new();
+    for (bytes, name) in &files {
+        let sha = server.upload(bytes).await;
+        listed.push(json!({ "upload": format!("sha256:{sha}"), "file_name": name }));
+    }
+    let body = json!({ "files": listed });
+    let call = support::waiting("/v1/catalog/entries", &body).header("idempotency-key", "ingest");
+    let hooks = format!("{RESTART}hooks = {{ \"catalog.batch\" = \"abort\" }}\n");
+    server.restart_process(&hooks);
+    assert!(
+        server.try_send(call.clone()).await.is_none(),
+        "the abort answered"
+    );
+    server.restart_process(RESTART);
+    let jobs = server.get("/v1/jobs?kind=catalog_ingest").await.json();
+    let job = jobs["items"][0].clone();
+    assert_eq!(
+        (job["state"].as_str(), job["error"]["code"].as_str()),
+        (Some("interrupted"), Some("job_interrupted")),
+        "{job}"
+    );
+    assert_eq!(job["error"]["retryable"], true);
+    assert!(job["document"].is_null() && job["outcome"].is_null());
+    let details = &job["error"]["details"];
+    assert!(details["generation_at_start"].is_i64(), "{details}");
+    assert!(
+        details["generation_at_recovery"].as_i64() > details["generation_at_start"].as_i64(),
+        "{details}"
+    );
+    let listed_now = server.get("/v1/catalog").await.json();
+    assert_eq!(listed_now["entries"], 64, "its committed batch stays");
+    assert_eq!(support::verified(&server.dirs.catalog), Some(0));
+    let again = server.send(call).await.json();
+    assert_ne!(again["id"], job["id"], "the key was released");
+    let again = server
+        .finished_job(again["id"].as_str().unwrap(), Duration::from_secs(120))
+        .await;
+    assert_eq!(again["exit_code"], 3, "{again}");
+    let reference = TestServer::fresh();
+    reference.ingest(&files).await;
+    let entries = |reply: support::Reply| reply.json()["entries"].clone();
+    assert_eq!(
+        entries(server.get("/v1/catalog/entries?limit=all").await),
+        entries(reference.get("/v1/catalog/entries?limit=all").await),
+        "an uninterrupted ingest's catalog"
+    );
+}
+
+/// SD1, JB6, JB5, XH12: a graceful stop while an ingest runs: given
+/// `jobs.drain_seconds`, its flag is set; the ingest stops before its next
+/// file (CA2) and is `interrupted`, `job_interrupted`, keeping its
+/// committed batch's document and stating the generation it started at
+/// (a write job is never queued again); the process exits 0, the catalog
+/// consistent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_drained_ingest_is_interrupted_with_its_committed_lines() {
+    let config =
+        "[jobs]\ndrain_seconds = 1\n[test]\nhooks = { \"catalog.batch\" = \"delay:3000\" }\n";
+    let mut server = TestServer::process(Dirs::new(), config);
+    let files = support::junk_files(70);
+    let mut listed = Vec::new();
+    for (bytes, name) in &files {
+        let sha = server.upload(bytes).await;
+        listed.push(json!({ "upload": format!("sha256:{sha}"), "file_name": name }));
+    }
+    let job = server
+        .send(Call::json(
+            Method::POST,
+            "/v1/catalog/entries",
+            &json!({ "files": listed }),
+        ))
+        .await
+        .json();
+    let id = job["id"].as_str().unwrap().to_owned();
+    let token = server.token().to_owned();
+    let mut stream = support::wire_open(
+        server.addr(),
+        &Call::get(&format!("/v1/jobs/{id}/events")).bearer(&token),
+    )
+    .await
+    .into_body();
+    let seen = support::lines(&mut stream, Duration::from_secs(60), |e| {
+        e["type"] == "batch"
+    })
+    .await;
+    assert_eq!(seen.last().unwrap()["lines"], 64, "{seen:?}");
+    let child = server.child.take().unwrap();
+    let (code, _, stderr) = tokio::task::spawn_blocking(move || child.stop())
+        .await
+        .unwrap();
+    assert_eq!(code, Some(0), "{stderr}");
+    server.restart_process("");
+    let job = server.get(&format!("/v1/jobs/{id}")).await.json();
+    assert_eq!(
+        (job["state"].as_str(), job["error"]["code"].as_str()),
+        (Some("interrupted"), Some("job_interrupted")),
+        "{job}"
+    );
+    assert!(
+        job["error"]["details"]["generation_at_start"].is_i64(),
+        "{job}"
+    );
+    let document: Value = serde_json::from_slice(&server.document(&job).await.body).unwrap();
+    assert_eq!(document["changes"].as_array().unwrap().len(), 64);
+    assert_eq!(server.get("/v1/catalog").await.json()["entries"], 64);
+    catalog_xh12(&server, &job).await;
+}

@@ -115,6 +115,28 @@ enum Setup {
     JobPanic,
     /// As `Queued`, one stream a user at most, and one open.
     Streaming,
+    /// The catalog holds `m_block02`, `m_block02_cb_deep` and `junk`
+    /// (quarantined), ingested through the library at generation 1.
+    Catalog,
+    /// As `Catalog`, and an entry `twin` whose content shares
+    /// `m_block02`'s first 12 hex digits: `reference_ambiguous`.
+    CatalogTwin,
+    /// As `Catalog`, then `m_block02` replaced by `p01_through.stp`'s
+    /// bytes, its r1 pruned, and `m_block02_cb_deep` deleted.
+    CatalogChanged,
+    /// As `Catalog`, `m_block02`'s features row of an older extractor.
+    CatalogStale,
+    /// As `Catalog`, `m_block02`'s features row damaged.
+    CatalogDamaged,
+    /// As `Catalog`, a connection holding the catalog's write lock, and a
+    /// 100 ms delete wait: `catalog_busy`.
+    CatalogBusy,
+    /// As `Catalog`, and `root` holds an upload of `p01_through.stp`.
+    CatalogUpload,
+    /// As `Catalog`, and `ada` extracted `s02_cbore.stp`'s `BLOCK`.
+    CatalogMatch,
+    /// As `CatalogMatch`, and a full catalog match of hers finished.
+    CatalogMatched,
     /// As `Extracted`, and `@r1` reviewed: `@r2` is current.
     Reviewed,
     /// `ada` registered `s03_dowels.stp` and extracted `DOWEL`, whose
@@ -220,6 +242,11 @@ const SAME_STEP: &[(&str, &str)] = &[(
 )];
 const SAME_JOB: &[(&str, &str)] = &[("if-none-match", "W/\"j4.succeeded\"")];
 const TEXT: &[(&str, &str)] = &[("content-type", "text/plain")];
+const IF_MATCH_OTHER: &[(&str, &str)] = &[("if-match", "\"another.g1.000000000000\"")];
+
+/// A catalog match of `ada`'s socket (PR 7).
+const CATALOG_MATCH: &[u8] =
+    br#"{"socket": "sk_4c08cde1bddb3df26f3b@r1", "candidates": {"catalog": {"selection": "full"}}}"#;
 
 /// The candidates of the match scenarios, by their SHA-256s.
 const MATCH_BODY: &[u8] = br#"{"socket": "sk_4c08cde1bddb3df26f3b@r1", "candidates": {"files": [
@@ -232,7 +259,7 @@ use Setup as S;
 /// Every scenario: at least one per operation of `OPERATIONS` (XH14), and
 /// one per error code a request can reach in this build.
 #[rustfmt::skip]
-const SCENARIOS: [Scenario; 126] = [
+static SCENARIOS: [Scenario; 164] = [
     scenario("health", "ok", S::None, P::None, Method::GET, "/v1/health", &[], b""),
     scenario("ready", "ok", S::None, P::None, Method::GET, "/v1/ready", &[], b""),
     scenario("ready", "catalog_unavailable", S::NoCatalog, P::None, Method::GET, "/v1/ready", &[], b""),
@@ -464,6 +491,81 @@ const SCENARIOS: [Scenario; 126] = [
         br#"{"socket": {"upload": "sha256:3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d"},
              "candidates": {"files": [{"upload": "sha256:3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d",
                                        "label": "the socket file.stp"}]}, "original": true}"#),
+    scenario("matches_create", "catalog", S::CatalogMatch, P::Reader, Method::POST, "/v1/matches", WAIT,
+        CATALOG_MATCH),
+    scenario("matches_create", "options_conflict", S::CatalogMatch, P::Reader, Method::POST, "/v1/matches", WAIT,
+        br#"{"socket": "sk_4c08cde1bddb3df26f3b@r1", "candidates": {"catalog": {"selection": "exhaustive", "ids": ["junk"]}}}"#),
+    scenario("matches_create", "forbidden", S::CatalogMatch, P::Reader, Method::POST, "/v1/matches", WAIT,
+        br#"{"socket": "sk_4c08cde1bddb3df26f3b@r1", "candidates": {"catalog": {"selection": "exhaustive"}}}"#),
+    scenario("matches_get", "catalog", S::CatalogMatched, P::Reader, Method::GET, "/v1/matches/{job}", &[], b""),
+    scenario("catalog_info", "ok", S::Catalog, P::Reader, Method::GET, "/v1/catalog", &[], b""),
+    scenario("catalog_list", "ok", S::Catalog, P::Reader, Method::GET, "/v1/catalog/entries?limit=2", &[], b""),
+    scenario("catalog_list", "all", S::Catalog, P::Reader, Method::GET,
+        "/v1/catalog/entries?limit=all&status=quarantined", &[], b""),
+    scenario("catalog_list", "precondition_failed", S::Catalog, P::Reader, Method::GET,
+        "/v1/catalog/entries?limit=2", IF_MATCH_OTHER, b""),
+    scenario("catalog_list", "invalid_parameter", S::Catalog, P::Reader, Method::GET,
+        "/v1/catalog/entries?status=fresh", &[], b""),
+    scenario("catalog_get", "ok", S::Catalog, P::Reader, Method::GET, "/v1/catalog/entries/M_BLOCK02", &[], b""),
+    scenario("catalog_get", "entry_not_found", S::Catalog, P::Reader, Method::GET,
+        "/v1/catalog/entries/m_blok02", &[], b""),
+    scenario("catalog_get", "reference_ambiguous", S::CatalogTwin, P::Reader, Method::GET,
+        "/v1/catalog/entries/sha256:1f021de7913c", &[], b""),
+    scenario("catalog_get", "invalid_reference", S::Catalog, P::Reader, Method::GET,
+        "/v1/catalog/entries/m_block02@r01", &[], b""),
+    scenario("catalog_features", "ok", S::Catalog, P::Reader, Method::GET,
+        "/v1/catalog/entries/m_block02/features", &[], b""),
+    scenario("catalog_features", "quarantined", S::Catalog, P::Reader, Method::GET,
+        "/v1/catalog/entries/junk/features", &[], b""),
+    scenario("catalog_features", "derived_rows_gone", S::CatalogChanged, P::Reader, Method::GET,
+        "/v1/catalog/entries/m_block02@r1/features", &[], b""),
+    scenario("catalog_features", "entry_stale", S::CatalogStale, P::Reader, Method::GET,
+        "/v1/catalog/entries/m_block02/features", &[], b""),
+    scenario("catalog_features", "catalog_damaged", S::CatalogDamaged, P::Reader, Method::GET,
+        "/v1/catalog/entries/m_block02/features", &[], b""),
+    scenario("catalog_step", "ok", S::Catalog, P::Reader, Method::GET,
+        "/v1/catalog/entries/junk@r1/step", &[], b""),
+    scenario("catalog_step", "bytes_not_kept", S::CatalogChanged, P::Reader, Method::GET,
+        "/v1/catalog/entries/m_block02@r1/step", &[], b""),
+    scenario("catalog_ingest", "succeeded", S::CatalogUpload, P::Admin, Method::POST, "/v1/catalog/entries", WAIT,
+        br#"{"files": [{"upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945",
+             "file_name": "p01_through.stp", "input": "parts/p01_through.stp"}]}"#),
+    scenario("catalog_ingest", "name_invalid", S::CatalogUpload, P::Admin, Method::POST, "/v1/catalog/entries", WAIT,
+        br#"{"files": [{"upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945",
+             "file_name": "parts/p01_through.stp"}]}"#),
+    scenario("catalog_ingest", "forbidden", S::Catalog, P::Reader, Method::POST, "/v1/catalog/entries", WAIT,
+        br#"{"files": [{"upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945",
+             "file_name": "p01_through.stp"}]}"#),
+    scenario("catalog_replace", "succeeded", S::CatalogUpload, P::Admin, Method::PUT,
+        "/v1/catalog/entries/m_block02", WAIT,
+        br#"{"upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945",
+             "file_name": "p01_through.stp"}"#),
+    scenario("catalog_delete", "ok", S::Catalog, P::Admin, Method::DELETE, "/v1/catalog/entries/JUNK", &[], b""),
+    scenario("catalog_delete", "not_an_id", S::Catalog, P::Admin, Method::DELETE,
+        "/v1/catalog/entries/sha256:1f021de7913c", &[], b""),
+    scenario("catalog_delete", "entry_deleted", S::CatalogChanged, P::Admin, Method::DELETE,
+        "/v1/catalog/entries/m_block02_cb_deep", &[], b""),
+    scenario("catalog_delete", "revision_not_current", S::CatalogChanged, P::Admin, Method::DELETE,
+        "/v1/catalog/entries/m_block02@r1", &[], b""),
+    scenario("catalog_delete", "catalog_busy", S::CatalogBusy, P::Admin, Method::DELETE,
+        "/v1/catalog/entries/junk", &[], b""),
+    scenario("catalog_delete_many", "ok", S::Catalog, P::Admin, Method::POST, "/v1/catalog/delete", JSON,
+        br#"{"ids": ["junk", "m_block02@r1", "junk"]}"#),
+    scenario("catalog_delete_many", "entry_not_found", S::Catalog, P::Admin, Method::POST, "/v1/catalog/delete",
+        JSON, br#"{"ids": ["junk", "nothing-here"]}"#),
+    scenario("catalog_reindex", "succeeded", S::CatalogStale, P::Admin, Method::POST, "/v1/catalog/reindex", WAIT,
+        b"{}"),
+    scenario("catalog_reindex", "options_conflict", S::Catalog, P::Admin, Method::POST, "/v1/catalog/reindex",
+        WAIT, br#"{"refs": ["junk"], "all": true}"#),
+    scenario("catalog_verify", "succeeded", S::Catalog, P::Admin, Method::POST, "/v1/catalog/verify", WAIT,
+        br#"{"deep": true}"#),
+    scenario("catalog_gc", "succeeded", S::CatalogChanged, P::Admin, Method::POST, "/v1/catalog/gc", WAIT,
+        br#"{"versions": true}"#),
+    scenario("catalog_gc", "forbidden", S::Catalog, P::Reader, Method::POST, "/v1/catalog/gc", WAIT, b"{}"),
+    scenario("catalog_prune", "succeeded", S::Catalog, P::Admin, Method::POST, "/v1/catalog/prune", WAIT,
+        br#"{"revisions": true}"#),
+    scenario("catalog_prune", "invalid_parameter", S::Catalog, P::Admin, Method::POST, "/v1/catalog/prune", WAIT,
+        b"{}"),
     scenario("matches_list", "ok", S::Matched, P::Reader, Method::GET, "/v1/matches", &[], b""),
     scenario("matches_get", "ok", S::Matched, P::Reader, Method::GET, "/v1/matches/{job}", &[], b""),
     scenario("matches_get", "not_found", S::None, P::Reader, Method::GET,
@@ -475,28 +577,15 @@ const SCENARIOS: [Scenario; 126] = [
 ];
 
 /// The codes whose routes come in a later PR of section 12, with that PR:
-/// each must be produced by a golden by then. `catalog_busy` and
-/// `catalog_damaged` are reachable by `/v1/info` today, but only through a
-/// fault no golden stages without the seams of PR 7 (a busy holder, a
-/// damaged row). Section 7.12's job-only codes (HTTP "—")
-/// are not listed: no request answers one; the job goldens show them.
-const PENDING: [(&str, u32); 11] = [
-    ("not_an_id", 7),
-    ("options_conflict", 7),
-    ("entry_not_found", 7),
-    ("reference_ambiguous", 7),
-    ("entry_deleted", 7),
-    ("bytes_not_kept", 7),
-    ("derived_rows_gone", 7),
-    ("precondition_failed", 7),
-    ("entry_stale", 7),
-    ("catalog_busy", 7),
-    ("catalog_damaged", 7),
-];
+/// each must be produced by a golden by then. Since PR 7 every route
+/// exists and every code a request can reach is produced. Section 7.12's
+/// job-only codes (HTTP "—") are not listed: no request answers one; the
+/// job goldens show them.
+const PENDING: [(&str, u32); 0] = [];
 
 /// The PR this tree builds (section 12): a pending code waits for a later
 /// one, at most the exit.
-const PR_NOW: u32 = 6;
+const PR_NOW: u32 = 7;
 
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/api")
@@ -551,8 +640,14 @@ fn seed(
 /// and body sent, the setup's names filled in.
 async fn run(scenario: &Scenario) -> (Reply, String, Vec<u8>) {
     let dirs = Dirs::new();
+    // VN5, CA8: a fixed instance id, so a catalog view's ETag is exact.
+    fitment_catalog::Catalog::open(&dirs.catalog, fitment_catalog::Options::default())
+        .unwrap()
+        .instance(|| [0x5a; 16])
+        .unwrap();
     let mut config = dirs.config();
     match scenario.setup {
+        S::CatalogBusy => config.catalog.delete_busy_ms = 100,
         S::SlowHandler => config.server.handler_timeout_seconds = 1,
         S::LoginOnce => config.auth.login_per_minute = 1,
         S::OneToken => config.auth.max_live_tokens = 1,
@@ -610,6 +705,7 @@ async fn run(scenario: &Scenario) -> (Reply, String, Vec<u8>) {
     }
     let (mut job, _kept) = jobs_setup(&server, scenario.setup, token.as_deref()).await;
     let seeded = match_setup(&server, scenario.setup, token.as_deref(), &mut job).await;
+    let _holder = catalog_setup(&server, scenario.setup, token.as_deref(), &mut job).await;
     if scenario.setup == S::LoginOnce {
         let login = br#"{"username": "ada", "password": "correct horse battery staple"}"#;
         let first = Call::new(Method::POST, "/v1/auth/login")
@@ -633,6 +729,132 @@ async fn run(scenario: &Scenario) -> (Reply, String, Vec<u8>) {
         call = call.bearer(&token);
     }
     (server.send(call).await, path, body)
+}
+
+/// `CatalogChanged`'s, `CatalogTwin`'s, `CatalogStale`'s and
+/// `CatalogDamaged`'s edits of the catalog `catalog_setup` ingested.
+fn edit_catalog(catalog: &mut fitment_catalog::Catalog, setup: Setup) {
+    use S::{CatalogChanged, CatalogDamaged, CatalogStale, CatalogTwin};
+    let block = "1f021de7913c486df1f45d44bc6306c39f1b7374d9eccb818e27fbc6990db4ea";
+    match setup {
+        CatalogChanged => {
+            let p01 = p01();
+            let input = fitment_catalog::Input::new(&p01, "p01_through.stp", "p01_through.stp");
+            let reference = fitment_catalog::Reference::parse("m_block02").unwrap();
+            catalog
+                .replace_input(&reference, &input, None, &fitment_catalog::NoObserver)
+                .unwrap()
+                .unwrap();
+            catalog.prune_revisions().unwrap();
+            let deep = fitment_catalog::Reference::parse("m_block02_cb_deep").unwrap();
+            catalog.delete(&[deep]).unwrap().unwrap();
+        }
+        CatalogTwin => {
+            let twin = format!("{}{}", &block[..12], "0".repeat(52));
+            catalog
+                .connection()
+                .execute_batch(&format!(
+                    "INSERT INTO name (id_fold, last_revision) VALUES ('twin', 1);
+                     INSERT INTO entry (id, id_fold, created_generation) VALUES ('twin', 'twin', 1);
+                     INSERT INTO revision (entry, id_fold, revision, sha256, file_name, added_generation)
+                       VALUES (last_insert_rowid(), 'twin', 1, '{twin}', 'twin.stp', 1);"
+                ))
+                .unwrap();
+        }
+        CatalogStale | CatalogDamaged => {
+            let edit = if setup == CatalogStale {
+                "extractor_version = extractor_version - 1"
+            } else {
+                "doc_sha256 = '0000000000000000000000000000000000000000000000000000000000000000'"
+            };
+            catalog
+                .connection()
+                .execute_batch(&format!(
+                    "DROP TRIGGER features_immutable; PRAGMA foreign_keys = OFF;
+                     UPDATE features SET {edit} WHERE sha256 = '{block}';"
+                ))
+                .unwrap();
+        }
+        _ => {}
+    }
+}
+
+/// PR 7's setups: the catalog's entries, through the library on a
+/// connection of the test's own (the server's sees them at its next
+/// snapshot), then what `setup` does to them; a connection holding the
+/// write lock for `CatalogBusy`.
+async fn catalog_setup(
+    server: &TestServer,
+    setup: Setup,
+    token: Option<&str>,
+    job: &mut String,
+) -> Option<rusqlite::Connection> {
+    use S::{
+        Catalog, CatalogBusy, CatalogChanged, CatalogDamaged, CatalogMatch, CatalogMatched,
+        CatalogStale, CatalogTwin, CatalogUpload,
+    };
+    if !matches!(
+        setup,
+        Catalog
+            | CatalogTwin
+            | CatalogChanged
+            | CatalogStale
+            | CatalogDamaged
+            | CatalogBusy
+            | CatalogUpload
+            | CatalogMatch
+            | CatalogMatched
+    ) {
+        return None;
+    }
+    let root = &server.dirs.catalog;
+    let mut catalog =
+        fitment_catalog::Catalog::open(root, fitment_catalog::Options::default()).unwrap();
+    let files: Vec<(Vec<u8>, &str)> = vec![
+        (support::candidate("m_block02.stp"), "m_block02.stp"),
+        (
+            support::candidate("m_block02_cb_deep.stp"),
+            "m_block02_cb_deep.stp",
+        ),
+        (b"not STEP".to_vec(), "junk.stp"),
+    ];
+    let inputs: Vec<fitment_catalog::Input<'_>> = files
+        .iter()
+        .map(|(bytes, name)| fitment_catalog::Input::new(bytes, name, name))
+        .collect();
+    catalog
+        .ingest_inputs(&inputs, None, &fitment_catalog::NoObserver)
+        .unwrap();
+    edit_catalog(&mut catalog, setup);
+    match setup {
+        CatalogUpload => {
+            let seams = server.server().seams();
+            let root_user = seams.db.user_by_fold("root").unwrap().unwrap();
+            support::seed_upload(server.server(), root_user.key, &p01());
+        }
+        CatalogMatch | CatalogMatched => {
+            let seams = server.server().seams();
+            let ada = seams.db.user_by_fold("ada").unwrap().unwrap();
+            let ada_token = token.unwrap().to_owned();
+            assembly_setup(server, S::Extracted, &ada_token, ada.key).await;
+            if setup == CatalogMatched {
+                let call = Call::new(Method::POST, "/v1/matches")
+                    .header("content-type", "application/json")
+                    .header("prefer", "wait=30")
+                    .body(CATALOG_MATCH)
+                    .bearer(&ada_token);
+                let reply = server.send(call).await;
+                reply.json()["id"].as_str().unwrap().clone_into(job);
+            }
+        }
+        _ => {}
+    }
+    drop(catalog);
+    (setup == CatalogBusy).then(|| {
+        let holder = rusqlite::Connection::open(root.join("catalog.db")).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        holder
+    })
 }
 
 /// The CLI's socket golden of `name`, edited by `edit`, as pretty JSON.

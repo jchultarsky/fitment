@@ -298,6 +298,37 @@ pub(crate) async fn stored<T: Send + 'static>(
     .await
 }
 
+/// CX1, CX2: a catalog read a request makes (a page, a whole list, an
+/// entry, its bytes) on the blocking pool behind one of
+/// `limits.read_concurrency` slots, as stored bytes' reads are; past the
+/// wait, `503 request_timeout`, `details.limit = "read_concurrency"`.
+///
+/// # Errors
+///
+/// `request_timeout`, or `work`'s.
+pub(crate) async fn catalog_read<T: Send + 'static>(
+    shared: &Arc<Shared>,
+    work: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    let slots = Arc::clone(&shared.read_slots);
+    let slot = tokio::time::timeout(crate::gate::slot_wait(shared), slots.acquire_owned())
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                ErrorCode::RequestTimeout,
+                "the server is busy reading the catalog: try again later",
+            )
+            .with("limit", "read_concurrency")
+        })?
+        .map_err(|_| ApiError::internal())?;
+    blocking(move || {
+        let result = work();
+        drop(slot);
+        result
+    })
+    .await
+}
+
 /// `500 io_error` for a `server.db` failure, logged, never sent (ER3).
 pub(crate) fn db_error(error: &crate::state::DbError) -> ApiError {
     tracing::error!(error = %error, "server.db failed");

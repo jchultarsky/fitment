@@ -121,9 +121,12 @@ jobs:
 
   server-corpus:
     name: the corpus through the API
-    # VT1, VT3 (docs/research/m6-api.md, XH1 to XH11, M6-36): the exit's
-    # file half through the built server, a child over loopback, in
-    # release; the API's report must equal the library's, byte for byte.
+    # VT1, VT2, VT3 (docs/research/m6-api.md, XH1 to XH11, M6-36): the
+    # exit's file half and its catalog half (XH8: the corpus ingested, its
+    # full, exhaustive and named runs under three policies the CLI's on the
+    # server's catalog, `verify --deep` clean after) through the built
+    # server, a child over loopback, in release; the API's report must
+    # equal the library's, byte for byte.
     needs: corpus
     runs-on: ubuntu-latest
     steps:

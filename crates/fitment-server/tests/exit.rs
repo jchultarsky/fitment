@@ -937,3 +937,459 @@ async fn every_original_through_the_api() {
     assert!(runs > 50, "{runs} originals");
     assert!(half.problems.is_empty(), "{}", half.problems.join("\n"));
 }
+
+// ------------------------------------------------------- the catalog half
+
+/// The CLI's run of `fitment match S --catalog DIR …` in `scratch`.
+fn cli_catalog_match(
+    scratch: &Path,
+    socket: &Path,
+    dir: &Path,
+    extra: &[&str],
+) -> (Option<i32>, Vec<u8>, String) {
+    let (socket, dir) = (socket.display().to_string(), dir.display().to_string());
+    let mut args = vec!["match", socket.as_str(), "--catalog", dir.as_str()];
+    args.extend(extra.iter().copied());
+    args.extend(["--format", "json"]);
+    cli(scratch, &args)
+}
+
+/// What the catalog half found: its runs' counts and problems.
+#[derive(Default)]
+struct CatalogHalf {
+    problems: Vec<String>,
+    counted: BTreeMap<&'static str, usize>,
+    /// The labels whose bytes were downloaded and checked (XH8.4).
+    labels: BTreeSet<String>,
+}
+
+impl CatalogHalf {
+    fn count(&mut self, what: &'static str) {
+        *self.counted.entry(what).or_default() += 1;
+    }
+}
+
+/// XH8.1: `files` uploaded and ingested in one job, in sorted name order,
+/// and by the CLI into `cli`, a fresh catalog, in the same order: each
+/// line and entry the CLI's, the generation masked (DB3's batches end by
+/// time too). The entries' content to id, for the named runs.
+async fn ingested(
+    server: &TestServer,
+    corpus: &Corpus,
+    cli_catalog: &Path,
+    half: &mut CatalogHalf,
+) -> BTreeMap<String, String> {
+    let names: Vec<String> = corpus
+        .part_files()
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    let mut files = Vec::with_capacity(names.len());
+    for name in &names {
+        let sha = server
+            .upload(&std::fs::read(corpus.dir().join(name)).unwrap())
+            .await;
+        files.push(json!({ "upload": format!("sha256:{sha}"), "file_name": name }));
+    }
+    let job = server
+        .send(waiting("/v1/catalog/entries", &json!({ "files": files })))
+        .await
+        .json();
+    let job = server
+        .finished_job(job["id"].as_str().unwrap(), Duration::from_secs(1800))
+        .await;
+    let shown = cli_catalog.display().to_string();
+    assert_eq!(
+        cli_in(corpus, &["catalog", "init", "-C", &shown]).0,
+        Some(0)
+    );
+    let mut args = vec![
+        "catalog",
+        "ingest",
+        "-C",
+        shown.as_str(),
+        "--format",
+        "json",
+    ];
+    args.extend(names.iter().map(String::as_str));
+    let (code, stdout, _) = cli_in(corpus, &args);
+    if job["exit_code"].as_i64() != code.map(i64::from) {
+        half.problems.push(format!(
+            "ingest: exit {} and the CLI's {code:?}",
+            job["exit_code"]
+        ));
+    }
+    let got = server.document(&job).await.body;
+    half.problems
+        .extend(parity::bytes("ingest", &masked(&stdout), &masked(&got)));
+    half.count("files ingested");
+    let listed = server.get("/v1/catalog/entries?limit=all").await.json();
+    listed["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["sha256"].as_str().unwrap().to_owned(),
+                e["id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// A `fitment.catalog` document's bytes with its generation written `_`.
+fn masked(document: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(document);
+    text.lines()
+        .map(|l| {
+            if l.starts_with("  \"generation\": ") {
+                "  \"generation\": _,".to_owned()
+            } else {
+                l.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .into_bytes()
+}
+
+/// XH8.4: every label of a catalog run's document is `catalog:<id>@r<n>`,
+/// and the API's download of it returns the bytes its `source` states.
+async fn labels_download(server: &TestServer, doc: &Value, what: &str, half: &mut CatalogHalf) {
+    for candidate in doc["candidates"].as_array().into_iter().flatten() {
+        let label = candidate["labels"][0].as_str().unwrap_or("").to_owned();
+        let Some(reference) = label.strip_prefix("catalog:") else {
+            half.problems.push(format!("{what}: the label {label}"));
+            continue;
+        };
+        if !half.labels.insert(label.clone()) {
+            continue;
+        }
+        let bytes = server
+            .get(&format!("/v1/catalog/entries/{reference}/step"))
+            .await
+            .body;
+        if candidate["source"]["sha256"] != fitment_core::sha256_hex(&bytes).as_str() {
+            half.problems
+                .push(format!("{what}: {label}'s bytes are not its source's"));
+        }
+    }
+}
+
+/// XH8.2: one socket's full and exhaustive runs under `policy`, each the
+/// CLI's `fitment match S --catalog <the server's catalog>` byte for byte,
+/// the full run's digest the CLI's on the CLI-built catalog too; a blocked
+/// socket refused (`socket_blocked`, exit 3), as the CLI refuses it.
+async fn catalog_runs(
+    server: &TestServer,
+    (revision, socket_file): (&str, &Path),
+    cli_catalog: &Path,
+    policy: Policy,
+    half: &mut CatalogHalf,
+) {
+    let scratch = socket_file.parent().unwrap();
+    for (selection, flags) in [("full", vec![]), ("exhaustive", vec!["--exhaustive"])] {
+        let body = json!({ "socket": revision, "policy": policy.request(),
+                           "candidates": { "catalog": { "selection": selection } } });
+        let job = server.run_match(&body).await;
+        let mut extra = flags.clone();
+        extra.extend(policy.cli_args().iter().copied());
+        let (code, stdout, _) =
+            cli_catalog_match(scratch, socket_file, &server.dirs.catalog, &extra);
+        let what = format!("{revision} {selection} {}", policy.name());
+        if job["exit_code"].as_i64() != code.map(i64::from) {
+            half.problems.push(format!(
+                "{what}: exit {} and the CLI's {code:?}",
+                job["exit_code"]
+            ));
+        }
+        if stdout.is_empty() {
+            if !job["document"].is_null() {
+                half.problems
+                    .push(format!("{what}: a document where the CLI printed none"));
+            }
+            if job["error"]["code"] == "socket_blocked" {
+                half.count("full runs blocked");
+            }
+            continue;
+        }
+        let got = server.document(&job).await.body;
+        half.problems.extend(parity::bytes(&what, &stdout, &got));
+        let doc: Value = serde_json::from_slice(&got).unwrap();
+        half.problems.extend(
+            checker::problems(&doc)
+                .into_iter()
+                .map(|p| format!("{what}: {p}")),
+        );
+        if selection == "full" {
+            let (_, twin, _) = cli_catalog_match(scratch, socket_file, cli_catalog, &extra);
+            let twin: Value = serde_json::from_slice(&twin).unwrap_or(Value::Null);
+            if twin["digest"] != doc["digest"] {
+                half.problems.push(format!(
+                    "{what}: another digest than the CLI-built catalog's"
+                ));
+            }
+            labels_download(server, &doc, &what, half).await;
+        }
+        half.count(if selection == "full" {
+            "full runs"
+        } else {
+            "exhaustive runs"
+        });
+    }
+}
+
+/// XH8.3: each case's file candidate as a named run under the case's
+/// policies: its digest the file run's over that file (the library's, the
+/// same labels aside: MF7), its entry held to the strict gate (XH5).
+#[allow(clippy::too_many_arguments)] // one key's named runs
+async fn named_runs(
+    server: &TestServer,
+    corpus: &Corpus,
+    (revision, bytes): (&str, &[u8]),
+    sockets: &[Socket],
+    group: &[Case<'_>],
+    ids: &BTreeMap<String, String>,
+    half: &mut CatalogHalf,
+) {
+    let document = SocketDocument::from_json(&String::from_utf8_lossy(bytes)).unwrap();
+    for case in group {
+        let CandidateRef::File(file) = case.candidate() else {
+            continue;
+        };
+        let content = std::fs::read(corpus.dir().join(&file)).unwrap();
+        let sha = fitment_core::sha256_hex(&content);
+        let Some(id) = ids.get(&sha) else {
+            half.problems
+                .push(format!("{}: {file} is no entry", case.id()));
+            continue;
+        };
+        for policy in Policy::M4 {
+            let body = json!({ "socket": revision, "policy": policy.request(),
+                               "candidates": { "catalog": { "ids": [id] } } });
+            let job = server.run_match(&body).await;
+            let what = format!("{} named {}", case.id(), policy.name());
+            let Ok(doc) = serde_json::from_slice::<Value>(&server.document(&job).await.body) else {
+                half.problems.push(format!("{what}: no document: {job}"));
+                continue;
+            };
+            let matcher = Matcher::new(
+                &document,
+                policy.match_policy(),
+                MatchOptions::default(),
+                &NoFitVerifier,
+            )
+            .unwrap();
+            let expected = MatchDocument::new(
+                &matcher,
+                vec![(matcher.judge_step(&content), vec![file.clone()])],
+            );
+            if doc["digest"] != expected.digest() {
+                half.problems
+                    .push(format!("{what}: another digest than the file run's"));
+            }
+            match Outcome::find(&doc, &sha) {
+                Ok(outcome) => half.problems.extend(case.gate(policy, sockets, &outcome)),
+                Err(e) => half.problems.push(format!("{what}: {e}")),
+            }
+            half.count("named runs");
+        }
+    }
+}
+
+/// VT2, XH8, XH1.5, XH2, SN10, M6-36: the corpus through the API's
+/// catalog: every part file but the hostile ones ingested, each line the
+/// CLI's; for every socket of the exit set and each of three policies
+/// (`default`, `functional`, `tolerance_mm` 0.05, as CT1), the full and the
+/// exhaustive run the CLI's `fitment match S --catalog <the server's
+/// catalog>` byte for byte, the full run's digest the CLI-built catalog's,
+/// a blocked socket refused as M5 refuses it; each case's file a named
+/// run whose digest is the file run's and whose entry passes the strict
+/// gate; every label downloads to its source's bytes; and afterwards,
+/// the server idle, `fitment catalog verify --deep` on its catalog
+/// reports nothing. Through the built server over loopback (XH2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_corpus_through_the_apis_catalog_is_the_cli_run() {
+    let Some(corpus) = corpus() else {
+        return;
+    };
+    let server = process("[limits]\nmax_candidates = 100000\n");
+    let scratch = server.dirs.root.join("exit-catalog");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let cli_catalog = scratch.join("cli");
+    let mut half = CatalogHalf::default();
+    let ids = ingested(&server, &corpus, &cli_catalog, &mut half).await;
+    let mut file_half_problems = FileHalf::default();
+    let mut registered = BTreeSet::new();
+    let groups = corpus.socket_groups();
+    for (key, group) in &groups {
+        let group: Vec<Case<'_>> = group.iter().copied().filter(|c| !c.socket_gate()).collect();
+        let Some(first) = group.first().copied() else {
+            continue;
+        };
+        register(
+            &server,
+            &corpus,
+            &key.source,
+            &mut registered,
+            &mut file_half_problems,
+        )
+        .await;
+        let Some((revision, bytes, sockets)) = socket_of(
+            &server,
+            &corpus,
+            &scratch,
+            key,
+            first,
+            &mut file_half_problems,
+        )
+        .await
+        else {
+            continue;
+        };
+        let socket_file = scratch.join(format!(
+            "C-{}.json",
+            fitment_core::sha256_hex(revision.as_bytes())
+        ));
+        std::fs::write(&socket_file, &bytes).unwrap();
+        for policy in [Policy::Default, Policy::Functional, Policy::Tolerance005] {
+            catalog_runs(
+                &server,
+                (&revision, &socket_file),
+                &cli_catalog,
+                policy,
+                &mut half,
+            )
+            .await;
+        }
+        named_runs(
+            &server,
+            &corpus,
+            (&revision, &bytes),
+            &sockets,
+            &group,
+            &ids,
+            &mut half,
+        )
+        .await;
+    }
+    half.problems.extend(file_half_problems.problems);
+    eprintln!("the exit's catalog half: {:?}", half.counted);
+    let deep = cli(
+        &scratch,
+        &[
+            "catalog",
+            "verify",
+            "-C",
+            &server.dirs.catalog.display().to_string(),
+            "--deep",
+        ],
+    );
+    assert_eq!(deep.0, Some(0), "XH8.5: verify --deep: {}", deep.2);
+    let file_cases = corpus
+        .match_cases()
+        .iter()
+        .filter(|c| !c.socket_gate() && matches!(c.candidate(), CandidateRef::File(_)))
+        .count();
+    assert!(
+        half.counted.get("named runs").copied().unwrap_or(0) >= file_cases * 2,
+        "XH10: {:?}",
+        half.counted
+    );
+    assert!(
+        half.counted.get("full runs").copied().unwrap_or(0)
+            + half.counted.get("full runs blocked").copied().unwrap_or(0)
+            >= 60
+    );
+    assert!(
+        half.problems.is_empty(),
+        "{} problems:\n{}",
+        half.problems.len(),
+        half.problems.join("\n")
+    );
+}
+
+/// VT2, CT10, QR9: a catalog of the corpus's four hostile parts (`h_*`)
+/// alone, every corpus socket run against it, full and exhaustive: each
+/// run within M4's hostile bound of 30 s and its job's deadline, each the
+/// CLI's `fitment match S --catalog` byte for byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hostile_parts_through_the_apis_catalog() {
+    let Some(corpus) = corpus() else {
+        return;
+    };
+    let server = process("");
+    let scratch = server.dirs.root.join("exit-hostile");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let hostile: Vec<(Vec<u8>, String)> = std::fs::read_dir(corpus.dir())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("h_"))
+        .filter(|p| p.extension().is_some_and(|e| e == "stp"))
+        .map(|p| {
+            (
+                std::fs::read(&p).unwrap(),
+                p.file_name().unwrap().to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(hostile.len(), 4, "the four h_ parts");
+    server.ingest(&hostile).await;
+    let mut file_half = FileHalf::default();
+    let mut registered = BTreeSet::new();
+    let mut problems = Vec::new();
+    let mut checked = 0;
+    for (key, group) in &corpus.socket_groups() {
+        let Some(first) = group.iter().copied().find(|c| !c.socket_gate()) else {
+            continue;
+        };
+        register(
+            &server,
+            &corpus,
+            &key.source,
+            &mut registered,
+            &mut file_half,
+        )
+        .await;
+        let Some((revision, bytes, _)) =
+            socket_of(&server, &corpus, &scratch, key, first, &mut file_half).await
+        else {
+            continue;
+        };
+        let socket_file = scratch.join(format!(
+            "H-{}.json",
+            fitment_core::sha256_hex(revision.as_bytes())
+        ));
+        std::fs::write(&socket_file, &bytes).unwrap();
+        for (selection, flags) in [("full", vec![]), ("exhaustive", vec!["--exhaustive"])] {
+            let started = std::time::Instant::now();
+            let job = server
+                .run_match(&json!({ "socket": revision, "candidates": { "catalog": { "selection": selection } } }))
+                .await;
+            let took = started.elapsed();
+            if took > Duration::from_secs(30) {
+                problems.push(format!("{revision} {selection}: {took:?}, past M4's bound"));
+            }
+            let (code, stdout, _) =
+                cli_catalog_match(&scratch, &socket_file, &server.dirs.catalog, &flags);
+            if job["exit_code"].as_i64() != code.map(i64::from) {
+                problems.push(format!(
+                    "{revision} {selection}: exit {} and {code:?}",
+                    job["exit_code"]
+                ));
+            }
+            if !stdout.is_empty() {
+                let got = server.document(&job).await.body;
+                problems.extend(parity::bytes(
+                    &format!("{revision} {selection}"),
+                    &stdout,
+                    &got,
+                ));
+            }
+            checked += 1;
+        }
+    }
+    problems.extend(file_half.problems);
+    assert!(checked > 40, "{checked} runs");
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}

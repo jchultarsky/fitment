@@ -1,0 +1,21 @@
+500
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:55vehUSg/TbWdG4OraAZuGHuMussVcpUAPU6SvOjpCs=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/catalog_damaged",
+  "title": "The catalog holds a damaged row",
+  "status": 500,
+  "detail": "the catalog holds a damaged row: run a verify job (POST /v1/catalog/verify)",
+  "code": "catalog_damaged",
+  "class": "error",
+  "exit_code": 1,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

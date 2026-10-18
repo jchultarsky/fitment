@@ -227,6 +227,33 @@ pub(crate) async fn object(
     Ok(response)
 }
 
+/// Bytes already read and checked (a catalog file re-hashed, ST11; a
+/// derived document): sent as [`object`] sends a small object, `304` for
+/// its ETag, gzipped when the client asks and they are within
+/// [`SEND_BUFFER_MAX`] (DC6).
+pub(crate) fn memory(request: &HeaderMap, served: &Served, body: Vec<u8>) -> Response {
+    let small = served.bytes <= SEND_BUFFER_MAX;
+    let zipped = (small && wants_gzip(request))
+        .then(|| gzip(&body).ok())
+        .flatten();
+    let (body, gz) = match zipped {
+        Some(zipped) => (zipped, true),
+        None => (body, false),
+    };
+    let etag = if gz {
+        format!("\"sha256:{}-gz\"", served.sha256)
+    } else {
+        format!("\"sha256:{}\"", served.sha256)
+    };
+    if not_modified(request, &etag) {
+        return not_modified_response(&etag, served.cache.value());
+    }
+    let digest = json::repr_digest(&body);
+    let mut response = (StatusCode::OK, Body::from(Bytes::from(body))).into_response();
+    headers(&mut response, served, &etag, &digest, gz);
+    response
+}
+
 /// OB3's two passes, the second fed to the body by an async task: each
 /// chunk is read in its own short blocking call and sent outside it, so no
 /// blocking thread ever waits for a client (review R of PR 5); a client

@@ -1,0 +1,21 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:dHCg9lotVpju/qpeo8TdgVaSPWh0tGZ7kXUi+MSwhp4=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/options_conflict",
+  "title": "Two options exclude each other",
+  "status": 400,
+  "detail": "ids and exhaustive exclude each other, as the CLI's flags do",
+  "code": "options_conflict",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000008"
+}

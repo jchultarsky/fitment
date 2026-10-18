@@ -1,0 +1,23 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:Z7CuHtAOugJE7ZT1+659M8lCn6xcU9Mf6s67ebKF4lM=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/entry_stale",
+  "title": "The entry was read by older rules",
+  "status": 409,
+  "detail": "m_block02 was read by another fitment (extractor 5): reindex it (POST /v1/catalog/reindex)",
+  "code": "entry_stale",
+  "class": "refused",
+  "exit_code": 3,
+  "retryable": false,
+  "details": {
+    "extractor_version": 5
+  },
+  "request_id": "r_00000000000000000000000004"
+}

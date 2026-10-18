@@ -1,0 +1,85 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.g2.a084b73cb5e5"
+fitment-exit-code: 0
+fitment-format: fitment.catalog/1
+repr-digest: sha-256=:J1K8e3FHjox5lhaIKh509EkHx8iMawSnoH47unTzSKY=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.catalog",
+  "format_version": 1,
+  "schema_version": 1,
+  "generation": 2,
+  "build": {
+    "extractor_version": 6,
+    "signature_version": 2,
+    "properties_version": 1
+  },
+  "counts": {
+    "entries": 3,
+    "indexed": 2,
+    "quarantined": 1,
+    "stale": 0
+  },
+  "entries": [
+    {
+      "id": "junk",
+      "revision": 1,
+      "status": "quarantined",
+      "sha256": "fd76cc99c903f60264665da57143b57311324f2e47cd403fa49443227e9f8161",
+      "bytes": 8,
+      "file_name": "junk.stp",
+      "product": {
+        "id": null,
+        "name": null
+      },
+      "versions": {
+        "extractor_version": 6,
+        "signature_version": null,
+        "properties_version": null
+      },
+      "complete": null,
+      "features": null,
+      "refusals": [
+        {
+          "code": "unparseable",
+          "message": "the file is not ISO 10303-21: syntax error at line 1, column 1: expected ISO-10303-21, found 'not'",
+          "instance": null
+        }
+      ],
+      "properties": null,
+      "history": null
+    },
+    {
+      "id": "m_block02",
+      "revision": 1,
+      "status": "indexed",
+      "sha256": "1f021de7913c486df1f45d44bc6306c39f1b7374d9eccb818e27fbc6990db4ea",
+      "bytes": 10419,
+      "file_name": "m_block02.stp",
+      "product": {
+        "id": "m_block02",
+        "name": "m_block02"
+      },
+      "versions": {
+        "extractor_version": 6,
+        "signature_version": 2,
+        "properties_version": 1
+      },
+      "complete": true,
+      "features": {
+        "planes": 7,
+        "holes": 1,
+        "shafts": 0,
+        "cones": 0,
+        "other_faces": 0
+      },
+      "refusals": [],
+      "properties": null,
+      "history": null
+    }
+  ],
+  "changes": null
+}

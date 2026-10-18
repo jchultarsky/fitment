@@ -74,6 +74,9 @@ pub struct JobRow {
     pub index_sha256: Option<String>,
     /// A match's run facts, as JSON (DC10).
     pub run: Option<String>,
+    /// M6-25, JB6: the catalog's generation a write job started at
+    /// (recorded at dispatch), or a catalog match's snapshot's.
+    pub catalog_generation: Option<i64>,
 }
 
 /// A persisted event (JB8).
@@ -314,7 +317,8 @@ const COLUMNS: &str = "j.key, j.id, j.owner, u.id, j.kind, j.state, CAST(j.reque
     j.deadline_ms, j.cancel_requested, j.exit, j.outcome, j.error_code, j.error_details,
     j.result_sha256, (SELECT o.bytes FROM object o WHERE o.sha256 = j.result_sha256),
     j.result_format, j.result, j.notes, j.pinned, j.expires_ms,
-    (SELECT coalesce(max(e.seq), 0) FROM job_event e WHERE e.job = j.key), j.index_sha256, j.run";
+    (SELECT coalesce(max(e.seq), 0) FROM job_event e WHERE e.job = j.key), j.index_sha256, j.run,
+    j.catalog_generation";
 
 fn job_row(row: &Row<'_>) -> rusqlite::Result<JobRow> {
     let kind: String = row.get(4)?;
@@ -354,6 +358,7 @@ fn job_row(row: &Row<'_>) -> rusqlite::Result<JobRow> {
         last_seq: row.get(26)?,
         index_sha256: row.get(27)?,
         run: row.get(28)?,
+        catalog_generation: row.get(29)?,
     })
 }
 
@@ -555,7 +560,7 @@ impl Db {
                      JOIN user u ON u.key = j.owner WHERE j.owner = ?1 AND j.idempotency_key = ?2"
                 ),
                 params![owner, key],
-                |r| Ok((job_row(r)?, r.get(29)?)),
+                |r| Ok((job_row(r)?, r.get(30)?)),
             )
             .optional()
         })
@@ -711,6 +716,11 @@ impl Db {
                 tx.commit()?;
                 Ok(Cancelled::Ended(row, events))
             }
+            // JB5: a replace or a prune is one transaction, not
+            // cancellable once running.
+            State::Running if matches!(row.kind, Kind::CatalogReplace | Kind::CatalogPrune) => {
+                Ok(Cancelled::Finished(row))
+            }
             State::Running => {
                 tx.execute("UPDATE job SET cancel_requested = 1 WHERE key = ?1", [key])?;
                 let event = set_state(&tx, key, State::Cancelling, row.attempt, now_ms)?;
@@ -810,42 +820,129 @@ impl Db {
         let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let row = by_key(&tx, key)?;
-        let ending = match row.state {
+        let (mut ending, result) = match row.state {
             s if s.terminal() => return Ok(Finished::Already(row)),
-            State::Cancelling if row.cancel_requested => stopped.cancelled.clone(),
-            State::Cancelling => stopped.deadline.clone(),
-            _ => {
-                let mut ending = ending.clone();
-                // The object before the rows that name it (OB5); a rename
-                // a rollback leaves behind is an orphan the sweep unlinks.
-                if ending.document.is_some() || ending.index.is_some() {
-                    place().map_err(StoreError::Place)?;
-                }
-                let objects = ending.document.iter().map(|(s, b, _)| (s, b));
-                for (sha256, bytes) in objects.chain(ending.index.iter().map(|(s, b)| (s, b))) {
-                    tx.execute(
-                        "INSERT INTO object (sha256, bytes, added_ms) VALUES (?1, ?2, ?3)
-                         ON CONFLICT (sha256) DO NOTHING",
-                        params![sha256, i64::try_from(*bytes).unwrap_or(i64::MAX), now_ms],
-                    )?;
-                }
-                match rows {
-                    Rows::None => {}
-                    Rows::Assembly(a) => super::assemblies::register(&tx, a, row.key, now_ms)?,
-                    Rows::Socket(s) => match super::assemblies::revise(&tx, s, row.key, now_ms)? {
-                        super::assemblies::Revised::Retry => return Ok(Finished::Retry),
-                        super::assemblies::Revised::Collision => return Ok(Finished::Collision),
-                        super::assemblies::Revised::Gone => return Ok(Finished::Gone),
-                        super::assemblies::Revised::Made(href) => ending.result = Some(href),
-                    },
-                }
-                ending
-            }
+            State::Cancelling if row.cancel_requested => (stopped.cancelled.clone(), false),
+            State::Cancelling => (stopped.deadline.clone(), false),
+            _ => (ending.clone(), true),
         };
+        // The object before the rows that name it (OB5); a rename a
+        // rollback leaves behind is an orphan the sweep unlinks. A stop's
+        // end may keep one too: a cancelled ingest's committed lines (JB5).
+        if ending.document.is_some() || ending.index.is_some() {
+            place().map_err(StoreError::Place)?;
+        }
+        let objects = ending.document.iter().map(|(s, b, _)| (s, b));
+        for (sha256, bytes) in objects.chain(ending.index.iter().map(|(s, b)| (s, b))) {
+            tx.execute(
+                "INSERT INTO object (sha256, bytes, added_ms) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (sha256) DO NOTHING",
+                params![sha256, i64::try_from(*bytes).unwrap_or(i64::MAX), now_ms],
+            )?;
+        }
+        if result {
+            match rows {
+                Rows::None => {}
+                Rows::Assembly(a) => super::assemblies::register(&tx, a, row.key, now_ms)?,
+                Rows::Socket(s) => match super::assemblies::revise(&tx, s, row.key, now_ms)? {
+                    super::assemblies::Revised::Retry => return Ok(Finished::Retry),
+                    super::assemblies::Revised::Collision => return Ok(Finished::Collision),
+                    super::assemblies::Revised::Gone => return Ok(Finished::Gone),
+                    super::assemblies::Revised::Made(href) => ending.result = Some(href),
+                },
+            }
+        }
         let events = write_end(&tx, &row, &ending, now_ms, retention_ms, end)?;
         let row = by_key(&tx, key)?;
         tx.commit()?;
         Ok(Finished::Ended(row, events))
+    }
+
+    /// JB6, M6-25: records the catalog's generation a write job starts at
+    /// (its `generation_at_start`), or a catalog match's snapshot's, with
+    /// its counts as JSON.
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn set_catalog_facts(
+        &self,
+        key: i64,
+        generation: i64,
+        counts: Option<&str>,
+    ) -> Result<(), DbError> {
+        let mut conn = self.writer();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE job SET catalog_generation = ?2, catalog_counts = coalesce(?3, catalog_counts)
+             WHERE key = ?1",
+            params![key, generation, counts],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// JB8: a persisted event of a running job, its `seq` the next: a
+    /// catalog job's `batch` or `change`.
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn append_event(
+        &self,
+        key: i64,
+        kind: &str,
+        data: &str,
+        now_ms: i64,
+    ) -> Result<EventRow, DbError> {
+        let mut conn = self.writer();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let event = append(&tx, key, now_ms, kind, data)?;
+        tx.commit()?;
+        Ok(event)
+    }
+
+    /// DC11, M6-28: the state of the newest reindex job that has not
+    /// ended, if one has not: `queued`, `running` or `cancelling`.
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn active_reindex(&self) -> Result<Option<String>, DbError> {
+        self.active_of(Kind::CatalogReindex)
+    }
+
+    /// The state of the newest job of `kind` that has not ended, if one
+    /// has not (M6-28, JS9: a job the server queues for itself is queued
+    /// once).
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn active_of(&self, kind: Kind) -> Result<Option<String>, DbError> {
+        self.read(|conn| {
+            conn.query_row(
+                "SELECT state FROM job WHERE kind = ?1
+                   AND state IN ('queued', 'running', 'cancelling') ORDER BY key DESC LIMIT 1",
+                [kind.name()],
+                |r| r.get(0),
+            )
+            .optional()
+        })
+    }
+
+    /// M6-56: the `system` user's key, which owns the jobs nobody
+    /// submitted (`reindex_on_start`, the daily gc).
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn system_key(&self) -> Result<i64, DbError> {
+        self.read(|conn| {
+            conn.query_row("SELECT key FROM user WHERE kind = 'system'", [], |r| {
+                r.get(0)
+            })
+        })
     }
 
     /// SD4, JB6, JS13: settles the jobs a stopped process left `running`
@@ -919,7 +1016,7 @@ impl Db {
             ))?;
             statement
                 .query_map([], |r| {
-                    let bytes: i64 = r.get(29)?;
+                    let bytes: i64 = r.get(30)?;
                     Ok((job_row(r)?, u64::try_from(bytes).unwrap_or(0)))
                 })?
                 .collect()

@@ -53,10 +53,6 @@ use tokio::net::TcpListener;
 
 pub use config::{Config, ConfigError, Flags};
 
-/// How many `/v1/info` requests read the catalog at once; the others wait
-/// within the handler's timeout (HX3), until PR 7's reader pool (CX1).
-pub const INFO_CONCURRENCY: usize = 4;
-
 /// The committed OpenAPI document, served as these bytes (VN7).
 pub const OPENAPI: &[u8] = include_bytes!("../openapi.json");
 
@@ -172,9 +168,9 @@ pub(crate) struct Shared {
     pub(crate) lease_ok: AtomicBool,
     /// Set once the lease is given up.
     pub(crate) released: AtomicBool,
-    /// `/v1/info`'s catalog reads at once ([`INFO_CONCURRENCY`]): it needs
-    /// no authentication until PR 3.
-    pub(crate) info_slots: tokio::sync::Semaphore,
+    /// HX8: the `limit=all` listings built at once,
+    /// `limits.list_all_concurrency`.
+    pub(crate) list_all_slots: Arc<tokio::sync::Semaphore>,
     /// How often the lease is renewed, in milliseconds (SD6; a
     /// `test-support` seam shortens it).
     pub(crate) lease_renewal_ms: std::sync::atomic::AtomicU64,
@@ -279,10 +275,11 @@ impl std::fmt::Debug for Server {
 impl Server {
     /// Opens what the server needs, in SD3's order: (2) the nesting check
     /// (SV6), (3) `server.db`, made on the first start (OB1), (4) the
-    /// lease (SD6), (5) the catalog, refusing a newer schema (SV5). Jobs'
-    /// recovery, the reader pool, a stale catalog's reindex and the
-    /// dispatcher (steps 6 to 9) come with the PRs that build them; the
-    /// caller binds the listener and announces it last (step 10).
+    /// lease (SD6), (5) the catalog's job writer, refusing a newer schema
+    /// (SV5), and its instance id (CA8), (6) jobs' recovery (SD4), (7) the
+    /// reader pool's size (CX1), (8) a stale catalog's reindex if
+    /// configured (M6-28); `serve` starts the dispatcher and the sweep (9),
+    /// and the caller binds the listener and announces it last (step 10).
     ///
     /// Blocking: call it before the runtime, or on the blocking pool.
     ///
@@ -327,8 +324,19 @@ impl Server {
         }
         db.take_lease(&holder, ids.now_ms())
             .map_err(|e| StartError::State(e.into()))?;
+        // SD3 (5), (7): the catalog's job writer first, its instance id
+        // read or set (CA8), and the reader pool's size (CX1).
         let catalog = catalog::CatalogDir::new(&config.paths.catalog, &config.catalog);
-        if let Err(unavailable) = catalog.open() {
+        let pool = usize::try_from(
+            config
+                .jobs
+                .query_slots()
+                .saturating_add(config.limits.read_concurrency)
+                .saturating_add(1),
+        )
+        .unwrap_or(1);
+        let mint = || ids::Ids::random_bits().to_be_bytes();
+        if let Err(unavailable) = catalog.start(pool, mint) {
             // Not ours to keep: a refused start leaves the lease free.
             let _ = db.release_lease(&holder);
             return Err(StartError::Catalog(unavailable));
@@ -341,6 +349,8 @@ impl Server {
         let verifier = matching::verifier(&config.fit);
         let parse_slots = usize::try_from(config.limits.parse_concurrency.max(1)).unwrap_or(1);
         let read_slots = usize::try_from(config.limits.read_concurrency.max(1)).unwrap_or(1);
+        let list_all_slots =
+            usize::try_from(config.limits.list_all_concurrency.max(1)).unwrap_or(1);
         let objects = state::Objects::new(&config.paths.state, fs);
         // SD2: no upload survives its connection, so a start finds only
         // abandoned temporary files.
@@ -374,7 +384,7 @@ impl Server {
                 forwarded_warned_ms: std::sync::atomic::AtomicI64::new(0),
                 lease_ok: AtomicBool::new(true),
                 released: AtomicBool::new(false),
-                info_slots: tokio::sync::Semaphore::new(INFO_CONCURRENCY),
+                list_all_slots: Arc::new(tokio::sync::Semaphore::new(list_all_slots)),
                 lease_renewal_ms: std::sync::atomic::AtomicU64::new(
                     u64::try_from(net::LEASE_RENEWAL.as_millis()).unwrap_or(10_000),
                 ),
@@ -389,6 +399,10 @@ impl Server {
             .configure(&server.shared.config.test.hooks);
         // SD3 (6), SD4: recovery, before any request is answered.
         jobs::recover(&server.shared).map_err(|e| StartError::State(e.into()))?;
+        // SD3 (8), M6-28: a stale catalog's reindex, if configured.
+        if server.shared.config.jobs.reindex_on_start {
+            jobs::reindex_on_start(&server.shared).map_err(|e| StartError::State(e.into()))?;
+        }
         Ok(server)
     }
 
@@ -435,6 +449,7 @@ impl Server {
             objects: &self.shared.objects,
             uploads: &self.shared.uploads,
             jobs: &self.shared.jobs,
+            catalog: &self.shared.catalog,
         }
     }
 
@@ -500,6 +515,18 @@ impl Server {
         self.shared.rules_shift.store(shift, Ordering::SeqCst);
     }
 
+    /// OP11, JS9: queues the daily catalog gc now, as `jobs.catalog_gc_at`
+    /// does at its time: its job, or `None` when one is queued or running.
+    /// Blocking.
+    ///
+    /// # Errors
+    ///
+    /// `server.db`'s.
+    #[cfg(feature = "test-support")]
+    pub fn queue_daily_gc(&self) -> Result<Option<String>, state::DbError> {
+        jobs::queue_daily_gc(&self.shared).map(|row| row.map(|r| r.id))
+    }
+
     /// OP11: lets a held dispatcher go on, starting what may run.
     #[cfg(feature = "test-support")]
     pub fn resume_jobs(&self) {
@@ -541,4 +568,6 @@ pub struct Seams<'a> {
     pub uploads: &'a uploads::Uploads,
     /// The job system: its deadline and heartbeat seams, its counts.
     pub jobs: &'a jobs::Jobs,
+    /// The catalog: its instance id (CA8), its barrier's flag (CX6).
+    pub catalog: &'a catalog::CatalogDir,
 }

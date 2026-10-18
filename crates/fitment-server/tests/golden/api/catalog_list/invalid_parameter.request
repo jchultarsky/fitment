@@ -1,0 +1,3 @@
+GET /v1/catalog/entries?status=fresh
+authorization: Bearer <ada's reader token>
+

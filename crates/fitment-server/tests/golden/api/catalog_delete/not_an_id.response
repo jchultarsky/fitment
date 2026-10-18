@@ -1,0 +1,21 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:SPrSoGObFj5wqn/mGGvFDjnDwB296kV9DjEa1kU/U0I=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/not_an_id",
+  "title": "Only an id is accepted here",
+  "status": 400,
+  "detail": "a delete names ids, or their current ID@rN, never a content reference",
+  "code": "not_an_id",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

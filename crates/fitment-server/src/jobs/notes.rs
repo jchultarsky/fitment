@@ -283,5 +283,18 @@ fn match_note(note: &MatchNote) -> (&'static str, String, Map<String, Value>) {
             ),
             Map::new(),
         ),
+        MatchNote::CatalogCorrupt(id) => {
+            let mut fields = Map::new();
+            fields.insert("id".into(), json!(id));
+            (
+                "catalog_corrupt",
+                format!(
+                    "{}: its stored rows are damaged: not judged: run a verify job (POST /v1/catalog/verify)",
+                    printable(id)
+                ),
+                fields,
+            )
+        }
+        MatchNote::CatalogSearched(line) => ("catalog_searched", line.clone(), Map::new()),
     }
 }

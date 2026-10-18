@@ -1,0 +1,79 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: W/"j7.succeeded"
+fitment-format: fitment.job/1
+location: /v1/jobs/j_00000000000000000000000009
+preference-applied: wait=30
+repr-digest: sha-256=:D4EZFReM1lzxtQSVES2l0zGsChFDgGddutumUF9PUhM=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.job",
+  "format_version": 1,
+  "id": "j_00000000000000000000000009",
+  "kind": "match",
+  "owner": "u_00000000000000000000000001",
+  "state": "succeeded",
+  "attempt": 1,
+  "request": {
+    "catalog": {
+      "ids": [],
+      "selection": "full"
+    },
+    "components": [],
+    "files": [],
+    "options": {
+      "require_fit": false,
+      "require_reviewed": false,
+      "require_reviewed_by": null
+    },
+    "original": null,
+    "policy": {
+      "clearance": "strict",
+      "tolerance_deg": 0.01,
+      "tolerance_mm": 0.01
+    },
+    "socket": "sk_4c08cde1bddb3df26f3b@r1",
+    "socket_document": "sha256:3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d"
+  },
+  "request_sha256": "487a077a820ec4be33fcac540909cf2fb27d9e3252a133b02cc9b4c554966ba7",
+  "queue_position": null,
+  "progress": null,
+  "cancel_requested": false,
+  "exit_code": 4,
+  "outcome": "interface_match",
+  "result": {
+    "href": "/v1/matches/j_00000000000000000000000009",
+    "format": "fitment.run"
+  },
+  "document": {
+    "href": "/v1/jobs/j_00000000000000000000000009/document",
+    "format": "fitment.match",
+    "sha256": "c5dd31af3e30586f824d36aabab7b233de1000c039fb42e2d4b6570f7098094b",
+    "bytes": 24811
+  },
+  "error": null,
+  "notes": [
+    {
+      "code": "catalog_searched",
+      "message": "catalog  generation 2  entries 3: 2 searched, 1 quarantined, not searched (GET /v1/catalog/entries?status=quarantined)  level 1 kept 2"
+    },
+    {
+      "code": "summary",
+      "message": "2 candidates: 0 match, 1 interface match, 1 reject; fit not checked (no fit verifier in this build)"
+    },
+    {
+      "code": "unreviewed_requirements",
+      "count": 4,
+      "message": "4 requirements are unreviewed"
+    }
+  ],
+  "pinned": false,
+  "times": {
+    "created": "2026-09-21T14:13:20Z",
+    "started": "2026-09-21T14:13:20Z",
+    "finished": "2026-09-21T14:13:20Z",
+    "expires": "2026-10-21T14:13:20Z"
+  }
+}

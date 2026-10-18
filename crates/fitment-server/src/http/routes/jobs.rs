@@ -472,7 +472,7 @@ pub(super) async fn list(
         let (ms, id) = after.split_once(' ').ok_or_else(|| bad("after"))?;
         Some((ms.parse::<i64>().map_err(|_| bad("after"))?, id.to_owned()))
     };
-    let (owner, mut extra) = super::owner(&shared, &caller, &params).await?;
+    let (owner, mut extra) = super::owner_of(&shared, &caller, &params, true).await?;
     for (name, value) in [("kind", params.get("kind")), ("state", params.get("state"))] {
         if let Some(value) = value {
             let _ = write!(extra, "&{name}={value}");

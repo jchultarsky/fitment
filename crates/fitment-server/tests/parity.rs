@@ -14,6 +14,8 @@ mod support;
 
 use std::path::Path;
 
+use axum::http::Method;
+
 use fitment_catalog::document::{CatalogDocument, GcDocument, VerifyDocument};
 use fitment_catalog::{Catalog, Input, NoObserver, Options, Reference, Scope};
 use serde_json::{Value, json};
@@ -1360,5 +1362,423 @@ fn catalog_documents_of_changes_are_the_clis() {
         cli_doc,
         GcDocument::new(&collected, true, false).to_json(),
     );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A catalog job of `body` at `method path`, as the harness's admin,
+/// waited for: the job.
+async fn catalog_job(server: &TestServer, method: Method, path: &str, body: &Value) -> Value {
+    let call = support::Call::json(method, path, body).header("prefer", "wait=30");
+    let reply = server.send(call).await;
+    assert!(
+        reply.status.is_success(),
+        "{path}: {}",
+        String::from_utf8_lossy(&reply.body)
+    );
+    let id = reply.json()["id"].as_str().unwrap().to_owned();
+    server
+        .finished_job(&id, std::time::Duration::from_secs(120))
+        .await
+}
+
+/// `fitment catalog ARGS -C cli --format json` in `root`: its run.
+fn catalog_run(root: &Path, args: &[&str]) -> (Option<i32>, Vec<u8>, String) {
+    let args = [&["catalog"], args, &["-C", "cli", "--format", "json"]].concat();
+    cli(root, &args)
+}
+
+/// A synchronous catalog answer and the CLI's run: the body the CLI's
+/// stdout, `Fitment-Exit-Code` its exit code, or for a refusal the code
+/// the CLI's exit code maps to (section 7.13).
+fn same_answer(
+    what: &str,
+    reply: &support::Reply,
+    run: &(Option<i32>, Vec<u8>, String),
+    failures: &mut Vec<String>,
+) {
+    let code = run.0.unwrap_or(-1);
+    if run.1.is_empty() {
+        if reply.status.is_success() || reply.json()["exit_code"] != json!(code) {
+            failures.push(format!(
+                "{what}: {} {}, the CLI exit {code} printing nothing",
+                reply.status,
+                String::from_utf8_lossy(&reply.body)
+            ));
+        }
+        return;
+    }
+    failures.extend(fitment_corpus::parity::bytes(what, &run.1, &reply.body));
+    if reply.header("fitment-exit-code") != Some(code.to_string().as_str()) {
+        failures.push(format!(
+            "{what}: Fitment-Exit-Code {:?}, the CLI's {code}",
+            reply.header("fitment-exit-code")
+        ));
+    }
+}
+
+/// VT7's catalog rows (CA1, CU1, CU2, DC1, DC3, JB4, RA2): a catalog
+/// through the API and one through the CLI, changed alike, each file
+/// ingested alone so both stand at one generation (DB3's second makes no
+/// difference): every ingest's, replace's, reindex's, prune's, delete's,
+/// verify's and gc's `fitment.catalog`, `fitment.verify` or `fitment.gc`
+/// the CLI's `--format json` bytes, its job's state and exit code the
+/// CLI's exit code's (JB3); `list`, `get` in its forms and the stored
+/// bytes the CLI's too, unknown and malformed references refused as the
+/// CLI refuses them, and a write naming a revision no longer current
+/// refused, nothing changed (RA2, ID9).
+#[tokio::test]
+async fn catalog_jobs_are_the_clis() {
+    let server = TestServer::fresh();
+    let root = server.dirs.root.clone();
+    let files = catalog_inputs(&root);
+    cli(&root, &["catalog", "init", "-C", "cli"]);
+    let mut failures = Vec::new();
+    for (bytes, input, name) in &files {
+        let run = catalog_run(&root, &["ingest", input]);
+        let sha = server.upload(bytes).await;
+        let body = json!({ "files": [{ "upload": format!("sha256:{sha}"), "file_name": name, "input": input }] });
+        let job = catalog_job(&server, Method::POST, "/v1/catalog/entries", &body).await;
+        same(
+            &server,
+            &format!("ingest {input}"),
+            &job,
+            (run.0, run.1, String::new()),
+            &mut failures,
+        )
+        .await;
+    }
+    changes_are_the_clis(&server, &root, &mut failures).await;
+    reads_are_the_clis(&server, &root, &mut failures).await;
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// `catalog_jobs_are_the_clis`'s changes: a replace (its bytes another
+/// bracket's), a reindex of all, a prune, a delete, a deep verify, a gc.
+async fn changes_are_the_clis(server: &TestServer, root: &Path, failures: &mut Vec<String>) {
+    let bracket = support::candidate("m_bracket.stp");
+    let text = String::from_utf8(bracket).unwrap();
+    let next = text
+        .replacen("FILE_NAME('", "FILE_NAME('next", 1)
+        .into_bytes();
+    std::fs::create_dir_all(root.join("next")).unwrap();
+    std::fs::write(root.join("next/m_bracket.stp"), &next).unwrap();
+    let given = Path::new("next")
+        .join("m_bracket.stp")
+        .to_string_lossy()
+        .into_owned();
+    let run = catalog_run(root, &["replace", "m_bracket", &given]);
+    let sha = server.upload(&next).await;
+    let body =
+        json!({ "upload": format!("sha256:{sha}"), "file_name": "m_bracket.stp", "input": given });
+    let job = catalog_job(server, Method::PUT, "/v1/catalog/entries/m_bracket", &body).await;
+    same(
+        server,
+        "replace",
+        &job,
+        (run.0, run.1, String::new()),
+        failures,
+    )
+    .await;
+    // RA2, ID9: r1 is no longer current: a write naming it is refused,
+    // nothing changed, as the CLI refuses it (exit 2).
+    let run = catalog_run(root, &["replace", "m_bracket@r1", &given]);
+    let stale = catalog_job(
+        server,
+        Method::PUT,
+        "/v1/catalog/entries/m_bracket@r1",
+        &body,
+    )
+    .await;
+    same(
+        server,
+        "replace @r1",
+        &stale,
+        (run.0, run.1, String::new()),
+        failures,
+    )
+    .await;
+    assert_eq!(stale["error"]["code"], "revision_not_current", "{stale}");
+    maintenance_is_the_clis(server, root, failures).await;
+    deletes_are_the_clis(server, root, failures).await;
+}
+
+/// `changes_are_the_clis`'s reindex, prune, verify and gc.
+async fn maintenance_is_the_clis(server: &TestServer, root: &Path, failures: &mut Vec<String>) {
+    let steps: [(&str, Method, &str, Value, Vec<&str>); 5] = [
+        (
+            "reindex",
+            Method::POST,
+            "/v1/catalog/reindex",
+            json!({ "all": true }),
+            vec!["reindex", "--all"],
+        ),
+        (
+            "prune",
+            Method::POST,
+            "/v1/catalog/prune",
+            json!({ "revisions": true }),
+            vec!["prune", "--revisions"],
+        ),
+        (
+            "verify",
+            Method::POST,
+            "/v1/catalog/verify",
+            json!({ "deep": true }),
+            vec!["verify", "--deep"],
+        ),
+        (
+            "gc",
+            Method::POST,
+            "/v1/catalog/gc",
+            json!({ "versions": true }),
+            vec!["gc", "--versions"],
+        ),
+        (
+            "verify again",
+            Method::POST,
+            "/v1/catalog/verify",
+            json!({}),
+            vec!["verify"],
+        ),
+    ];
+    for (what, method, path, body, args) in steps {
+        let run = catalog_run(root, &args);
+        let job = catalog_job(server, method, path, &body).await;
+        same(server, what, &job, (run.0, run.1, String::new()), failures).await;
+    }
+}
+
+/// `changes_are_the_clis`'s deletes, all or none (CR2), and their
+/// refusals.
+async fn deletes_are_the_clis(server: &TestServer, root: &Path, failures: &mut Vec<String>) {
+    let named = ["junk", "M_BRACKET@r2", "junk"];
+    let run = catalog_run(root, &[&["delete"], &named[..]].concat());
+    let reply = server
+        .send(support::Call::json(
+            Method::POST,
+            "/v1/catalog/delete",
+            &json!({ "ids": named }),
+        ))
+        .await;
+    same_answer("delete", &reply, &run, failures);
+    // CR2: an unknown id deletes nothing: 404 listing it, the CLI exit 2.
+    let run = catalog_run(root, &["delete", "m_block02", "nothing-here"]);
+    let body = json!({ "ids": ["m_block02", "nothing-here"] });
+    let reply = server
+        .send(support::Call::json(
+            Method::POST,
+            "/v1/catalog/delete",
+            &body,
+        ))
+        .await;
+    same_answer("delete unknown", &reply, &run, failures);
+    assert_eq!(reply.code(), "entry_not_found");
+    assert_eq!(reply.json()["details"]["unknown"], json!(["nothing-here"]));
+    let reply = server
+        .send(support::Call::new(
+            Method::DELETE,
+            "/v1/catalog/entries/sha256:0123456789ab",
+        ))
+        .await;
+    assert_eq!(reply.code(), "not_an_id");
+}
+
+/// `catalog_jobs_are_the_clis`'s reads: `list` whole and by status,
+/// `get` in its forms, refusals of references.
+async fn reads_are_the_clis(server: &TestServer, root: &Path, failures: &mut Vec<String>) {
+    for (path, args) in [
+        ("/v1/catalog/entries?limit=all", vec!["list"]),
+        (
+            "/v1/catalog/entries?limit=all&status=quarantined",
+            vec!["list", "--status", "quarantined"],
+        ),
+        ("/v1/catalog/entries/m_block02", vec!["get", "m_block02"]),
+        (
+            "/v1/catalog/entries/M_BLOCK02@r1",
+            vec!["get", "M_BLOCK02@r1"],
+        ),
+        (
+            "/v1/catalog/entries/m_bracket@r1",
+            vec!["get", "m_bracket@r1"],
+        ),
+        ("/v1/catalog/entries/junk", vec!["get", "junk"]),
+        (
+            "/v1/catalog/entries/nothing-here",
+            vec!["get", "nothing-here"],
+        ),
+        (
+            "/v1/catalog/entries/m_block02@R1",
+            vec!["get", "m_block02@R1"],
+        ),
+        (
+            "/v1/catalog/entries/m_block02@r01",
+            vec!["get", "m_block02@r01"],
+        ),
+    ] {
+        let run = catalog_run(root, &args);
+        let reply = server.get(path).await;
+        same_answer(path, &reply, &run, failures);
+    }
+    let folded = server.get("/v1/catalog/entries/M_BLOCK02").await;
+    assert_eq!(
+        folded.header("content-location"),
+        Some("/v1/catalog/entries/m_block02")
+    );
+    let unknown = server.get("/v1/catalog/entries/m_blok02").await;
+    assert_eq!(unknown.code(), "entry_not_found");
+    assert_eq!(
+        unknown.json()["details"]["suggestions"],
+        json!(["m_block02", "m_block02_cb_deep"])
+    );
+    // A current entry, a quarantined one (exit 3, the refused document),
+    // a deleted one (no stored document: exit 2).
+    for reference in ["m_block02", "r03_two_solids", "junk"] {
+        let args = [
+            "catalog", "get", "-C", "cli", reference, "--format", "features",
+        ];
+        let run = cli(root, &args);
+        let reply = server
+            .get(&format!("/v1/catalog/entries/{reference}/features"))
+            .await;
+        same_answer(&format!("{reference} features"), &reply, &run, failures);
+        if reply.status.is_success() {
+            assert_eq!(reply.header("cache-control"), Some("no-cache"));
+        }
+    }
+    let out = root.join("out.stp");
+    let args = [
+        "catalog",
+        "get",
+        "-C",
+        "cli",
+        "m_block02",
+        "--format",
+        "step",
+        "-o",
+    ];
+    let out_arg = out.display().to_string();
+    let run = cli(root, &[&args[..], &[out_arg.as_str()]].concat());
+    assert_eq!(run.0, Some(0), "{}", run.2);
+    let reply = server.get("/v1/catalog/entries/m_block02/step").await;
+    if reply.body != std::fs::read(&out).unwrap() {
+        failures.push("step: other bytes than the CLI's".into());
+    }
+    assert_eq!(
+        reply.header("content-disposition"),
+        Some("attachment; filename=\"m_block02_r1.stp\"")
+    );
+    let gone = server.get("/v1/catalog/entries/m_bracket@r1/step").await;
+    assert_eq!(gone.code(), "bytes_not_kept");
+}
+
+/// The committed sockets of the candidates' manifest and their files, and
+/// every committed part and candidate ingested into the server's catalog
+/// in one job (no generation is in a `fitment.match`).
+async fn catalog_of_committed(server: &TestServer) -> Vec<(String, String, Vec<String>)> {
+    let mut files = Vec::new();
+    for (bytes, input, name) in catalog_inputs(&server.dirs.root) {
+        let sha = server.upload(&bytes).await;
+        files.push(json!({ "upload": format!("sha256:{sha}"), "file_name": name, "input": input }));
+    }
+    let job = catalog_job(
+        server,
+        Method::POST,
+        "/v1/catalog/entries",
+        &json!({ "files": files }),
+    )
+    .await;
+    assert_eq!(job["exit_code"], 3, "a junk file is quarantined: {job}");
+    support::candidates_by_socket()
+        .into_iter()
+        .map(|((case, part), files)| (case, part, files))
+        .collect()
+}
+
+/// VT7's catalog `match` row (SN10, DC1, DC3, DC7, JB4, XH7): `fitment
+/// match S --catalog <the server's catalog> [--id ID | --exhaustive]
+/// --format json` under three policies, and the job `match` over the
+/// catalog with the same selection and policy: the document byte for
+/// byte, the state and exit code the CLI's exit code maps to; an empty
+/// catalog is refused, exit 3, nothing printed, `catalog_empty`, as a
+/// blocked socket is (`socket_blocked`). The CLI reads the server's
+/// catalog while the server is idle (XH2).
+#[tokio::test]
+async fn catalog_matches_are_the_clis() {
+    let server = TestServer::fresh();
+    let catalog_dir = server.dirs.catalog.display().to_string();
+    let scratch = server.dirs.root.join("cli");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let doc = server.get(&format!("/v1/sockets/{socket}")).await.body;
+    let socket_file = scratch.join("s02_cbore--BLOCK.json");
+    std::fs::write(&socket_file, &doc).unwrap();
+    let socket_arg = socket_file.display().to_string();
+    let empty = server
+        .run_match(&json!({ "socket": socket, "candidates": { "catalog": {} } }))
+        .await;
+    let run = cli(
+        &scratch,
+        &[
+            "match",
+            &socket_arg,
+            "--catalog",
+            &catalog_dir,
+            "--format",
+            "json",
+        ],
+    );
+    let mut failures = Vec::new();
+    same(
+        &server,
+        "empty",
+        &empty,
+        (run.0, run.1, String::new()),
+        &mut failures,
+    )
+    .await;
+    assert_eq!(empty["error"]["code"], "catalog_empty", "{empty}");
+    let sockets = catalog_of_committed(&server).await;
+    let mut runs = 0;
+    for (case, part, files) in sockets {
+        let socket = server.socket_of(&case, &part).await;
+        let doc = server.get(&format!("/v1/sockets/{socket}")).await.body;
+        let socket_file = scratch.join(format!("{case}--{part}.json"));
+        std::fs::write(&socket_file, &doc).unwrap();
+        let socket_arg = socket_file.display().to_string();
+        let stem = files[0].trim_end_matches(".stp").to_owned();
+        let selections = [
+            (json!({}), vec![]),
+            (json!({ "selection": "exhaustive" }), vec!["--exhaustive"]),
+            (json!({ "ids": [stem] }), vec!["--id", stem.as_str()]),
+        ];
+        for (selection, flags) in &selections {
+            let policies = variants()
+                .into_iter()
+                .filter(|(name, ..)| ["default", "functional", "0.05 mm"].contains(name));
+            for (policy, extra, policy_flags) in policies {
+                let mut body = json!({ "socket": socket, "candidates": { "catalog": selection } });
+                for (key, value) in extra.as_object().unwrap() {
+                    body[key] = value.clone();
+                }
+                let job = server.run_match(&body).await;
+                let mut args = vec!["match", socket_arg.as_str(), "--catalog", &catalog_dir];
+                args.extend(flags.iter().copied());
+                args.extend(["--format", "json"]);
+                args.extend(policy_flags.iter().copied());
+                let run = cli(&scratch, &args);
+                let what = format!("{case} {part} {selection} {policy}");
+                same(
+                    &server,
+                    &what,
+                    &job,
+                    (run.0, run.1, String::new()),
+                    &mut failures,
+                )
+                .await;
+                runs += 1;
+            }
+        }
+    }
+    assert!(runs >= 27, "{runs} runs");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -1,0 +1,7 @@
+PUT /v1/catalog/entries/m_block02
+authorization: Bearer <root's admin token>
+content-type: application/json
+prefer: wait=30
+
+{"upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945",
+             "file_name": "p01_through.stp"}

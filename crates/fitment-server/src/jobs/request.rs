@@ -227,7 +227,8 @@ pub struct MatchRequest {
     pub original: Option<bool>,
 }
 
-/// A match's candidates: files and components, at least one (CM1).
+/// A match's candidates: files and components, or the catalog, at least
+/// one (CM1).
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -238,6 +239,70 @@ pub struct CandidatesRequest {
     /// Leaves of the caller's registered assemblies (CO5).
     #[serde(default)]
     pub components: Option<Vec<ComponentCandidate>>,
+    /// The server's catalog (RA1, SN10): `fitment match S --catalog DIR`;
+    /// with files or components, `400 options_conflict` (CM1).
+    #[serde(default)]
+    pub catalog: Option<CatalogCandidates>,
+}
+
+/// A catalog run's candidates (CM2, CM3): level 1's survivors (`full`, the
+/// default), every live entry (`exhaustive`, a writer's: AU5, JS12), or
+/// the entries named (`{"ids": […]}`, or `ids` beside a `full`
+/// selection).
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct CatalogCandidates {
+    /// `"full"`, `"exhaustive"` or `{"ids": […]}`.
+    #[serde(default)]
+    pub selection: Option<SelectionRequest>,
+    /// The entries named, as `--id` names them: ID, or its current ID@rN.
+    #[serde(default)]
+    pub ids: Option<Vec<String>>,
+}
+
+/// A catalog selection as a request names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(untagged))]
+pub enum SelectionRequest {
+    /// `"full"` or `"exhaustive"`.
+    Named(String),
+    /// The entries named.
+    Ids {
+        /// ID, or its current ID@rN.
+        ids: Vec<String>,
+    },
+}
+
+impl<'de> Deserialize<'de> for SelectionRequest {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Of;
+        impl<'de> Visitor<'de> for Of {
+            type Value = SelectionRequest;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(r#""full", "exhaustive" or {"ids": […]}"#)
+            }
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(SelectionRequest::Named(value.to_owned()))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut ids: Option<Vec<String>> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key != "ids" {
+                        return Err(de::Error::unknown_field(&key, &["ids"]));
+                    }
+                    if ids.is_some() {
+                        return Err(de::Error::duplicate_field("ids"));
+                    }
+                    ids = Some(map.next_value()?);
+                }
+                ids.map(|ids| SelectionRequest::Ids { ids })
+                    .ok_or_else(|| de::Error::missing_field("ids"))
+            }
+        }
+        deserializer.deserialize_any(Of)
+    }
 }
 
 /// A file candidate.
@@ -297,6 +362,115 @@ pub struct OptionsRequest {
     /// `--require-reviewed`; the operator's floor may force it (SN3).
     #[serde(default)]
     pub require_reviewed: Option<bool>,
+}
+
+/// One file of an ingest (section 7.4, RA8, CA1).
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct IngestFileRequest {
+    /// `sha256:HEX`, an upload of the caller's (UP3).
+    pub upload: String,
+    /// What ID3 builds a default id from and the entry shows as its file
+    /// (RA8): display text, a final name, never a path.
+    pub file_name: String,
+    /// `changes[].input`, the CLI's argument as given; `file_name` when
+    /// null.
+    #[serde(default)]
+    pub input: Option<String>,
+    /// ID1's id for this file's entry, as `--id` names it.
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// `POST /v1/catalog/entries` (section 7.4): `catalog ingest FILE…`.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct IngestRequest {
+    /// The files, at least one.
+    pub files: Vec<IngestFileRequest>,
+    /// `--max-mib`: at most the upload cap (SZ1); the cap when null.
+    #[serde(default)]
+    pub max_mib: Option<u64>,
+}
+
+/// `PUT /v1/catalog/entries/{entry}` (section 7.4): `catalog replace REF
+/// FILE`.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceRequest {
+    /// `sha256:HEX`, an upload of the caller's (UP3).
+    pub upload: String,
+    /// The new revision's file name (RA8).
+    pub file_name: String,
+    /// `changes[].input`; `file_name` when null.
+    #[serde(default)]
+    pub input: Option<String>,
+    /// `--max-mib`: at most the upload cap (SZ1).
+    #[serde(default)]
+    pub max_mib: Option<u64>,
+}
+
+/// `POST /v1/catalog/reindex` (RX4 to RX9): neither field, every stale
+/// entry.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ReindexRequest {
+    /// The entries: ID, ID@rN (the current revision) or sha256:HEX.
+    #[serde(default)]
+    pub refs: Option<Vec<String>>,
+    /// `--all`: every live entry.
+    #[serde(default)]
+    pub all: Option<bool>,
+}
+
+/// `POST /v1/catalog/verify` (CU2).
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct VerifyRequest {
+    /// `--deep`: every live part extracted again.
+    #[serde(default)]
+    pub deep: Option<bool>,
+    /// `--full`: the database's whole integrity check, not its quick one.
+    #[serde(default)]
+    pub full: Option<bool>,
+}
+
+/// `POST /v1/catalog/gc` (CU2).
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct GcRequest {
+    /// `--versions`: older versions' rows where this build's exist.
+    #[serde(default)]
+    pub versions: Option<bool>,
+    /// `--vacuum`: takes the WAL barrier (CX6).
+    #[serde(default)]
+    pub vacuum: Option<bool>,
+}
+
+/// `POST /v1/catalog/prune` (CR11): `{"revisions": true}` is required, as
+/// the flag is.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PruneRequest {
+    /// `--revisions`.
+    #[serde(default)]
+    pub revisions: Option<bool>,
+}
+
+/// `POST /v1/catalog/delete` (CR2): `catalog delete ID…`, all or none.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DeleteRequest {
+    /// Ids, or their current ID@rN; at least one.
+    pub ids: Vec<String>,
 }
 
 /// HX5, UP1: `sha256:` and 64 hex digits, either case, written lower-case;
@@ -581,8 +755,91 @@ pub struct OptionsJob {
     pub require_reviewed_by: Option<String>,
 }
 
+/// A catalog run as a match job records it (RA9): its selection's name
+/// and the references named, as given (resolved in the job's snapshot,
+/// JB2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogJob {
+    /// `full`, `exhaustive` or `named`.
+    pub selection: String,
+    /// A named run's references.
+    pub ids: Vec<String>,
+}
+
+/// An ingested file as a job records it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestFileJob {
+    /// `sha256:HEX`.
+    pub upload: String,
+    #[allow(missing_docs)]
+    pub file_name: String,
+    /// `file_name` filled in when null.
+    pub input: String,
+    #[allow(missing_docs)]
+    pub id: Option<String>,
+}
+
+/// `catalog_ingest`'s normalized request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestJob {
+    #[allow(missing_docs)]
+    pub files: Vec<IngestFileJob>,
+    /// Null: the upload cap.
+    pub max_mib: Option<u64>,
+}
+
+/// `catalog_replace`'s normalized request: the entry as named.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplaceJob {
+    /// The reference, as given (RA2).
+    pub entry: String,
+    #[allow(missing_docs)]
+    pub upload: String,
+    #[allow(missing_docs)]
+    pub file_name: String,
+    #[allow(missing_docs)]
+    pub input: String,
+    #[allow(missing_docs)]
+    pub max_mib: Option<u64>,
+}
+
+/// `catalog_reindex`'s normalized request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReindexJob {
+    #[allow(missing_docs)]
+    pub refs: Vec<String>,
+    #[allow(missing_docs)]
+    pub all: bool,
+}
+
+/// `catalog_verify`'s normalized request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyJob {
+    #[allow(missing_docs)]
+    pub deep: bool,
+    #[allow(missing_docs)]
+    pub full: bool,
+}
+
+/// `catalog_gc`'s normalized request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcJob {
+    #[allow(missing_docs)]
+    pub versions: bool,
+    #[allow(missing_docs)]
+    pub vacuum: bool,
+}
+
+/// `catalog_prune`'s normalized request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PruneJob {
+    #[allow(missing_docs)]
+    pub revisions: bool,
+}
+
 /// `match`'s normalized request (RA9): the socket an exact revision or an
-/// upload, with its document's object; every candidate by its SHA-256.
+/// upload, with its document's object; every candidate by its SHA-256, or
+/// the catalog's selection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchJob {
     /// `"sk_…@rN"` or `{"upload": "sha256:…"}`.
@@ -600,11 +857,19 @@ pub struct MatchJob {
     /// The socket's own assembly, `sha256:HEX`, when the original is
     /// judged (SN9).
     pub original: Option<String>,
+    /// A catalog run's selection (SN10); absent for a file run, whose
+    /// record is as PR 6 wrote it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<CatalogJob>,
 }
 
 impl MatchJob {
-    /// How many candidates it names, files and components (JS2's window).
+    /// How many candidates it names, files and components (JS2's window);
+    /// a catalog run's are its catalog's, unknown before its snapshot.
     pub fn candidates(&self) -> usize {
+        if self.catalog.is_some() {
+            return usize::MAX;
+        }
         self.files.len() + self.components.len()
     }
 }

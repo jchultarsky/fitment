@@ -279,6 +279,18 @@ impl Jobs {
     pub fn query_slots(&self) -> u32 {
         (self.cpu_budget() / self.match_threads.max(1)).max(1)
     }
+
+    /// JS9: `catalog_gc_at`, `HH:MM` of a UTC day, as minutes after
+    /// midnight; `None` when empty (off) or not such a time.
+    pub fn catalog_gc_minute(&self) -> Option<u32> {
+        let (hours, minutes) = self.catalog_gc_at.split_once(':')?;
+        let ok = |t: &str| t.len() == 2 && t.bytes().all(|b| b.is_ascii_digit());
+        if !ok(hours) || !ok(minutes) {
+            return None;
+        }
+        let (h, m): (u32, u32) = (hours.parse().ok()?, minutes.parse().ok()?);
+        (h < 24 && m < 60).then_some(h * 60 + m)
+    }
 }
 
 /// `[catalog]` (CX3, CX4, CX6, SZ5).
@@ -676,6 +688,12 @@ impl Config {
                     "exact origins only, such as https://app.example.org; never a wildcard",
                 ));
             }
+        }
+        if !self.jobs.catalog_gc_at.is_empty() && self.jobs.catalog_gc_minute().is_none() {
+            return Err(value_error(
+                "jobs.catalog_gc_at",
+                "a UTC time of day, HH:MM, or empty for none (JS9)",
+            ));
         }
         if !matches!(self.log.format.as_str(), "json" | "text") {
             return Err(value_error("log.format", "json or text"));

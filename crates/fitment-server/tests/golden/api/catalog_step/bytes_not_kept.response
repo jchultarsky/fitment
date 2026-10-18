@@ -1,0 +1,21 @@
+410
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:MzEuKWUzSnaQ8Wsj1rw+xjwFiEl77vEj3sdB755p7NE=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/bytes_not_kept",
+  "title": "The bytes are no longer kept",
+  "status": 410,
+  "detail": "m_block02 r1's bytes are no longer kept",
+  "code": "bytes_not_kept",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

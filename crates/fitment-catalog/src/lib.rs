@@ -512,6 +512,28 @@ impl Catalog {
         self.layout.root()
     }
 
+    /// The schema of the database this catalog holds open, read through
+    /// its connection, the log's pages included, which
+    /// [`Catalog::inspect`]'s header does not see (`docs/research/
+    /// m6-api.md`, CX1): a server keeping catalogs open checks it before
+    /// each use, so a catalog another build migrated meanwhile is refused
+    /// as [`Error::Newer`] is at open (VT33).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Newer`] for a newer schema, [`Error::NotACatalog`] for a
+    /// database that is no longer a catalog; the database's.
+    pub fn check_schema(&self) -> Result<(), Error> {
+        match schema::kind(&self.conn)? {
+            schema::Kind::Newer(found) => Err(Error::Newer {
+                found,
+                ours: schema::SCHEMA_VERSION,
+            }),
+            schema::Kind::Foreign => Err(Error::NotACatalog(self.root().to_owned())),
+            _ => Ok(()),
+        }
+    }
+
     /// The generation as it stands (DB8).
     ///
     /// # Errors
