@@ -11,7 +11,8 @@ use std::time::{Duration, SystemTime};
 use rusqlite::TransactionBehavior;
 
 use crate::hex::Sha256Hex;
-use crate::{Catalog, Error};
+use crate::observe::{NoObserver, Observer, Progress};
+use crate::{Catalog, Error, io_kind, schema};
 
 /// At most this many files unlinked per transaction, so writers wait at most
 /// one batch (ST5).
@@ -28,10 +29,16 @@ pub struct Collected {
     pub unlinked: Vec<Sha256Hex>,
     /// Old temporary files removed, by name.
     pub temporaries: Vec<String>,
-    /// Files it could not remove, with why.
+    /// Files it could not remove, with why: an error by its kind alone
+    /// (CA4, `docs/research/m6-api.md`).
     pub failed: Vec<String>,
     /// With `versions`, the older versions' derived rows deleted (RX8).
     pub old_rows: usize,
+    /// The generation after it (DB8): only `versions`' rows raise it.
+    pub generation: i64,
+    /// True when its observer stopped it (CA2): what it unlinked stays
+    /// unlinked, and neither the WAL's truncation nor `VACUUM` ran.
+    pub cancelled: bool,
 }
 
 impl Catalog {
@@ -39,23 +46,37 @@ impl Catalog {
     /// checked under the write lock. Returns, for people, the files left.
     pub(crate) fn unlink(&mut self, contents: &[(Sha256Hex, u64)]) -> Vec<String> {
         let shas: Vec<Sha256Hex> = contents.iter().map(|(s, _)| s.clone()).collect();
-        let (_, failed) = self.unlink_unreferenced(&shas);
+        let (_, failed, _) = self.unlink_unreferenced(&shas, &NoObserver);
         failed
     }
 
     /// The files of `shas` no row names, unlinked in batches under the lock;
-    /// returns those unlinked and, for people, those left.
-    fn unlink_unreferenced(&mut self, shas: &[Sha256Hex]) -> (Vec<Sha256Hex>, Vec<String>) {
+    /// returns those unlinked, for people those left, and whether
+    /// `observer` stopped it between batches (CA2).
+    fn unlink_unreferenced(
+        &mut self,
+        shas: &[Sha256Hex],
+        observer: &dyn Observer,
+    ) -> (Vec<Sha256Hex>, Vec<String>, bool) {
         let mut unlinked = Vec::new();
         let mut failed = Vec::new();
-        for batch in shas.chunks(UNLINK_BATCH) {
+        let total = shas.len();
+        for (n, batch) in shas.chunks(UNLINK_BATCH).enumerate() {
+            if observer.cancelled() {
+                return (unlinked, failed, true);
+            }
+            observer.progress(Progress::Unlinked {
+                done: n * UNLINK_BATCH,
+                total,
+            });
             let tx = match self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
             {
                 Ok(tx) => tx,
                 Err(e) => {
-                    failed.extend(batch.iter().map(|s| format!("{s}: {e}")));
+                    let kind = Error::from(e).kind_name();
+                    failed.extend(batch.iter().map(|s| format!("{s}: {kind}")));
                     continue;
                 }
             };
@@ -75,7 +96,7 @@ impl Catalog {
                     Ok(meta) => meta.is_file(),
                     Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                     Err(e) => {
-                        failed.push(format!("{sha}: {e}"));
+                        failed.push(format!("{sha}: {}", io_kind(&e)));
                         continue;
                     }
                 };
@@ -85,13 +106,13 @@ impl Catalog {
                 }
                 match self.fs.remove_file(&path) {
                     Ok(()) => unlinked.push(sha.clone()),
-                    Err(e) => failed.push(format!("{sha}: {e}")),
+                    Err(e) => failed.push(format!("{sha}: {}", io_kind(&e))),
                 }
             }
             // Nothing was written: the transaction held the lock only.
             let _ = tx.rollback();
         }
-        (unlinked, failed)
+        (unlinked, failed, false)
     }
 
     /// `fitment catalog gc`: unlinks orphan blobs and temporary files over
@@ -106,9 +127,32 @@ impl Catalog {
     /// [`Error::Linked`] for a planted link (PH2, checked again before any
     /// unlink); the file system's or the database's.
     pub fn gc(&mut self, versions: bool, vacuum: bool) -> Result<Collected, Error> {
+        self.gc_observed(versions, vacuum, &NoObserver)
+    }
+
+    /// [`Catalog::gc`], `observer` asked before its rows, between unlink
+    /// batches, and before the WAL's truncation and `VACUUM` (CA2): a
+    /// cancelled gc keeps what it removed, [`Collected::cancelled`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Catalog::gc`].
+    pub fn gc_observed(
+        &mut self,
+        versions: bool,
+        vacuum: bool,
+        observer: &dyn Observer,
+    ) -> Result<Collected, Error> {
         self.layout
             .check_links(self.fs.as_ref())
             .map_err(|linked| Error::Linked(linked.0))?;
+        if observer.cancelled() {
+            return Ok(Collected {
+                generation: schema::generation(&self.conn)?,
+                cancelled: true,
+                ..Collected::default()
+            });
+        }
         let old_rows = if versions {
             crate::reindex::drop_old_versions(&mut self.conn)?
         } else {
@@ -133,19 +177,32 @@ impl Catalog {
                 }
             }
         }
-        let (unlinked, mut failed) = self.unlink_unreferenced(&candidates);
-        let temporaries = self.old_temporaries(&mut failed)?;
+        let (unlinked, mut failed, cancelled) = self.unlink_unreferenced(&candidates, observer);
+        let mut collected = Collected {
+            unlinked,
+            temporaries: Vec::new(),
+            failed: Vec::new(),
+            old_rows,
+            generation: schema::generation(&self.conn)?,
+            cancelled: false,
+        };
+        if cancelled {
+            collected.failed = failed;
+            collected.cancelled = true;
+            return Ok(collected);
+        }
+        collected.temporaries = self.old_temporaries(&mut failed)?;
+        collected.failed = failed;
+        if observer.cancelled() {
+            collected.cancelled = true;
+            return Ok(collected);
+        }
         self.conn
             .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         if vacuum {
             self.conn.execute_batch("VACUUM")?;
         }
-        Ok(Collected {
-            unlinked,
-            temporaries,
-            failed,
-            old_rows,
-        })
+        Ok(collected)
     }
 
     /// ST7: temporary files over an hour old, removed. The age decides only
@@ -179,7 +236,7 @@ impl Catalog {
                 .unwrap_or_default();
             match self.fs.remove_file(&path) {
                 Ok(()) => removed.push(name),
-                Err(e) => failed.push(format!("tmp/{name}: {e}")),
+                Err(e) => failed.push(format!("tmp/{name}: {}", io_kind(&e))),
             }
         }
         removed.sort();

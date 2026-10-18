@@ -1,13 +1,16 @@
 //! `fitment catalog replace`, `delete` and `prune`
-//! (`docs/research/m5-catalog.md`, sections 7.5, 7.6 and 7.10).
+//! (`docs/research/m5-catalog.md`, sections 7.5, 7.6 and 7.10). `delete`
+//! and `prune` print `fitment.catalog` with `--format json` (CU1,
+//! `docs/research/m6-api.md`).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use fitment_catalog::document::{CatalogDocument, Change, Entry};
+use fitment_catalog::document::{CatalogDocument, released};
 use fitment_catalog::{
-    Catalog, Error, Ingested, NotReplaced, Options, Outcome, Reference, Released, Replaced, Summary,
+    Catalog, Deletion, Error, Ingested, NotReplaced, Options, Outcome, Pruned, Reference, Released,
+    Replaced, Summary,
 };
 
 use super::{ERROR, Format, REFUSED, USAGE, emit, fail, shown};
@@ -41,6 +44,9 @@ pub struct DeleteArgs {
     /// The entries to delete: ids, or their current ID@rN; all or none.
     #[arg(required = true, value_name = "ID")]
     ids: Vec<String>,
+    /// How to print the result.
+    #[arg(long, value_enum, default_value_t = Format::Table)]
+    format: Format,
 }
 
 #[derive(clap::Args)]
@@ -48,6 +54,9 @@ pub struct PruneArgs {
     /// Release the bytes of every superseded revision replace kept.
     #[arg(long)]
     revisions: bool,
+    /// How to print the result.
+    #[arg(long, value_enum, default_value_t = Format::Table)]
+    format: Format,
 }
 
 /// A reference, or exit 2 with why.
@@ -85,16 +94,26 @@ fn orphans(dir: &Path, released: &Released) {
 
 /// The `fitment.catalog` document of a replace: the entry as it is now,
 /// and the change.
-fn replace_document(catalog: &mut Catalog, change: Change, id: &str) -> Result<String, Error> {
+fn replace_document(catalog: &mut Catalog, input: &str, done: &Replaced) -> Result<String, Error> {
     let snapshot = catalog.snapshot()?;
-    let all = snapshot.list()?;
-    let entries = all
-        .iter()
-        .filter(|l| l.id.eq_ignore_ascii_case(id))
-        .map(|l| Entry::of(l, None))
-        .collect();
-    let document = CatalogDocument::new(snapshot.generation(), &all, entries, Some(vec![change]));
-    Ok(document.to_json())
+    Ok(CatalogDocument::replaced(&snapshot, input, done)?.to_json())
+}
+
+/// The `fitment.catalog` document of a delete (CU1).
+fn delete_document(
+    catalog: &mut Catalog,
+    ids: &[String],
+    done: &Deletion,
+) -> Result<String, Error> {
+    let inputs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let snapshot = catalog.snapshot()?;
+    Ok(CatalogDocument::deleted(&snapshot, &inputs, done)?.to_json())
+}
+
+/// The `fitment.catalog` document of a prune (CU1).
+fn prune_document(catalog: &mut Catalog, pruned: &[Pruned]) -> Result<String, Error> {
+    let snapshot = catalog.snapshot()?;
+    Ok(CatalogDocument::pruned(&snapshot, pruned)?.to_json())
 }
 
 /// A refused replace on stderr, and its code: a gate's refusal is 3, an
@@ -118,6 +137,15 @@ fn refused(dir: &Path, file: &Path, line: &Ingested) -> u8 {
     code
 }
 
+/// An outcome a newer library has and this build cannot report: exit 1.
+fn cannot_report(dir: &Path, outcome: &dyn std::fmt::Debug) -> ExitCode {
+    note(&format!(
+        "fitment: {}: an outcome this build cannot report: {outcome:?}",
+        shown(dir)
+    ));
+    ExitCode::from(ERROR)
+}
+
 pub(super) fn replace(args: &ReplaceArgs, dir: &Path, catalog: &mut Catalog) -> ExitCode {
     let reference = match parse(&args.reference) {
         Ok(r) => r,
@@ -127,43 +155,8 @@ pub(super) fn replace(args: &ReplaceArgs, dir: &Path, catalog: &mut Catalog) -> 
         Ok(outcome) => outcome,
         Err(error) => return fail(dir, &error),
     };
-    let input = args.file.display().to_string();
-    let (line, change, id) = match outcome {
-        Ok(Replaced::Replaced {
-            id,
-            from,
-            to,
-            summary,
-        }) => {
-            let detail = format!("was r{} {}, bytes kept", from.0, from.1.short(8));
-            note(&format!(
-                "fitment: {}: {id} replaced: r{} is now r{}",
-                shown(dir),
-                from.0,
-                to.0
-            ));
-            let line = format!(
-                "replaced     {id}  r{}  {}  {}   ({detail})",
-                to.0,
-                to.1.short(8),
-                features(&summary),
-            );
-            let change = Change::entry(&input, "replaced", &id, to.0, to.1.as_str(), Some(detail));
-            (line, change, id)
-        }
-        Ok(Replaced::Unchanged {
-            id,
-            revision,
-            sha256,
-        }) => {
-            note(&format!(
-                "fitment: {}: {id} unchanged: the file is r{revision}'s bytes",
-                shown(dir)
-            ));
-            let line = format!("unchanged    {id}  r{revision}  {}", sha256.short(8));
-            let change = Change::entry(&input, "unchanged", &id, revision, sha256.as_str(), None);
-            (line, change, id)
-        }
+    let done = match outcome {
+        Ok(done) => done,
         Err(NotReplaced::Unnamed(why)) => {
             note(&format!(
                 "fitment: {}: {}",
@@ -180,17 +173,47 @@ pub(super) fn replace(args: &ReplaceArgs, dir: &Path, catalog: &mut Catalog) -> 
             return ExitCode::from(USAGE);
         }
         Err(NotReplaced::File(line)) => return ExitCode::from(refused(dir, &args.file, &line)),
-        other => {
+        Err(other) => return cannot_report(dir, &other),
+    };
+    let line = match &done {
+        Replaced::Replaced {
+            id,
+            from,
+            to,
+            summary,
+        } => {
             note(&format!(
-                "fitment: {}: an outcome this build cannot report: {other:?}",
+                "fitment: {}: {id} replaced: r{} is now r{}",
+                shown(dir),
+                from.0,
+                to.0
+            ));
+            format!(
+                "replaced     {id}  r{}  {}  {}   (was r{} {}, bytes kept)",
+                to.0,
+                to.1.short(8),
+                features(summary),
+                from.0,
+                from.1.short(8),
+            )
+        }
+        Replaced::Unchanged {
+            id,
+            revision,
+            sha256,
+        } => {
+            note(&format!(
+                "fitment: {}: {id} unchanged: the file is r{revision}'s bytes",
                 shown(dir)
             ));
-            return ExitCode::from(ERROR);
+            format!("unchanged    {id}  r{revision}  {}", sha256.short(8))
         }
+        other => return cannot_report(dir, other),
     };
+    let input = args.file.display().to_string();
     match args.format {
         Format::Table => emit(&format!("{line}\n"), 0),
-        Format::Json => match replace_document(catalog, change, &id) {
+        Format::Json => match replace_document(catalog, &input, &done) {
             Ok(text) => emit(&text, 0),
             Err(error) => fail(dir, &error),
         },
@@ -237,7 +260,13 @@ pub(super) fn delete(args: &DeleteArgs, dir: &Path, catalog: &mut Catalog) -> Ex
         if n == 1 { "entry" } else { "entries" }
     ));
     orphans(dir, &deletion.released);
-    emit(&out, 0)
+    match args.format {
+        Format::Table => emit(&out, 0),
+        Format::Json => match delete_document(catalog, &args.ids, &deletion) {
+            Ok(text) => emit(&text, 0),
+            Err(error) => fail(dir, &error),
+        },
+    }
 }
 
 pub(super) fn prune(args: &PruneArgs, dir: &Path, catalog: &mut Catalog) -> ExitCode {
@@ -245,16 +274,13 @@ pub(super) fn prune(args: &PruneArgs, dir: &Path, catalog: &mut Catalog) -> Exit
         note("error: prune what? --revisions releases the bytes of superseded revisions");
         return ExitCode::from(USAGE);
     }
-    let (pruned, released) = match catalog.prune_revisions() {
+    let (pruned, freed) = match catalog.prune_revisions() {
         Ok(done) => done,
         Err(error) => return fail(dir, &error),
     };
     let mut out = String::new();
     for p in &pruned {
-        let bytes = p.released.map_or_else(
-            || "bytes released with another revision, or still held".to_owned(),
-            |b| format!("{b} bytes"),
-        );
+        let bytes = released(p.released);
         let _ = writeln!(
             out,
             "pruned       {}  r{}  {}  {bytes}",
@@ -263,13 +289,19 @@ pub(super) fn prune(args: &PruneArgs, dir: &Path, catalog: &mut Catalog) -> Exit
             p.sha256.short(8)
         );
     }
-    let total: u64 = released.contents.iter().map(|(_, b)| *b).sum();
+    let total: u64 = freed.contents.iter().map(|(_, b)| *b).sum();
     let n = pruned.len();
     note(&format!(
         "fitment: {}: {n} {} pruned, {total} bytes released",
         shown(dir),
         if n == 1 { "revision" } else { "revisions" }
     ));
-    orphans(dir, &released);
-    emit(&out, 0)
+    orphans(dir, &freed);
+    match args.format {
+        Format::Table => emit(&out, 0),
+        Format::Json => match prune_document(catalog, &pruned) {
+            Ok(text) => emit(&text, 0),
+            Err(error) => fail(dir, &error),
+        },
+    }
 }

@@ -38,6 +38,7 @@ pub mod hex;
 pub mod ids;
 mod ingest;
 pub mod layout;
+mod observe;
 pub mod preimage;
 mod query;
 mod reindex;
@@ -45,8 +46,10 @@ pub mod schema;
 mod snapshot;
 mod verify;
 
+use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rusqlite::{Connection, OpenFlags};
 
@@ -56,7 +59,8 @@ pub use fs::{Content, Fs, FsRead, FsWrite, Point, StdFs};
 pub use gc::Collected;
 pub use hex::{NotHex, Sha256Hex};
 pub use ids::{BadReference, Id, Reference};
-pub use ingest::{Counts, Ingest, Ingested, Outcome, Summary};
+pub use ingest::{Counts, Ingest, Ingested, Input, InputBytes, Outcome, Summary};
+pub use observe::{NoObserver, Observer, Progress};
 pub use preimage::Status;
 pub use query::{CatalogRun, NotRun, Selection};
 pub use reindex::{Rebuilt, Reindex, Reindexed, Scope};
@@ -64,7 +68,7 @@ pub use snapshot::{
     BadName, BadRow, EntryStatus, HistoryStep, Listed, Named, Snapshot, StatusCounts,
     StoredRefusal, has_internal,
 };
-pub use verify::{Kind as ProblemKind, Problem};
+pub use verify::{Kind as ProblemKind, Problem, Verified};
 
 use layout::{INIT_NAMES, Layout, MARKER_TEXT};
 
@@ -170,6 +174,73 @@ pub enum Error {
     /// A row holds what no build writes (exit 1): run `verify`.
     #[error("the catalog's database holds a damaged row ({0}): run fitment catalog verify")]
     Corrupt(&'static str),
+    /// The [`Observer`] asked the work to stop (CA2,
+    /// `docs/research/m6-api.md`): what was committed before stays.
+    #[error("cancelled")]
+    Cancelled,
+}
+
+impl Error {
+    /// CA4 (`docs/research/m6-api.md`): the error's kind, the only text of
+    /// it a catalog document or a line holds (`io: not found`, `database:
+    /// busy`, `storage full`), never its `Display`, which for an I/O or a
+    /// SQLite error can carry a path or a statement.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Busy => "database: busy",
+            Self::Database(error) => database_kind(error),
+            Self::Io { source, .. } => io_kind(source),
+            Self::Corrupt(_) => "database: corrupt",
+            Self::Cancelled => "cancelled",
+            Self::Newer { .. } => "catalog: newer schema",
+            Self::NotACatalog(_) | Self::NotEmpty(_) | Self::Linked(_) | Self::NotUnicode(_) => {
+                "catalog: unavailable"
+            }
+            Self::InsideCatalog(_) | Self::IdNeedsOneFile(_) => "usage",
+        }
+    }
+}
+
+/// CA4: an I/O error's kind, as a line writes it.
+pub(crate) fn io_kind(error: &io::Error) -> &'static str {
+    use io::ErrorKind as K;
+    match error.kind() {
+        K::NotFound => "io: not found",
+        K::PermissionDenied => "io: permission denied",
+        K::AlreadyExists => "io: already exists",
+        K::InvalidInput => "io: invalid input",
+        K::InvalidData => "io: invalid data",
+        K::UnexpectedEof => "io: unexpected end of file",
+        K::TimedOut => "io: timed out",
+        K::Interrupted => "io: interrupted",
+        K::WriteZero => "io: write zero",
+        K::Unsupported => "io: unsupported",
+        K::OutOfMemory => "io: out of memory",
+        K::StorageFull => "storage full",
+        K::ReadOnlyFilesystem => "io: read-only file system",
+        K::IsADirectory => "io: is a directory",
+        K::NotADirectory => "io: not a directory",
+        K::FileTooLarge => "io: file too large",
+        K::ResourceBusy => "io: resource busy",
+        _ => "io: other",
+    }
+}
+
+/// CA4: a SQLite error's kind, as a line writes it.
+fn database_kind(error: &rusqlite::Error) -> &'static str {
+    use rusqlite::ErrorCode as C;
+    match error.sqlite_error_code() {
+        Some(C::DatabaseBusy | C::DatabaseLocked) => "database: busy",
+        Some(C::DatabaseCorrupt | C::NotADatabase) => "database: corrupt",
+        Some(C::DiskFull) => "storage full",
+        Some(C::ReadOnly) => "database: read only",
+        Some(C::PermissionDenied) => "database: permission denied",
+        Some(C::SystemIoFailure) => "database: io",
+        Some(C::CannotOpen) => "database: cannot open",
+        Some(C::OutOfMemory) => "database: out of memory",
+        Some(C::ConstraintViolation) => "database: constraint",
+        _ => "database: error",
+    }
 }
 
 impl From<rusqlite::Error> for Error {
@@ -190,6 +261,23 @@ fn io_at(path: &Path) -> impl FnOnce(io::Error) -> Error + '_ {
     }
 }
 
+/// What a WAL checkpoint did (CA3): SQLite's `wal_checkpoint` row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Checkpoint {
+    /// True when readers or a writer kept it from completing.
+    pub busy: bool,
+    /// Pages in the WAL, -1 when the database is not in WAL mode.
+    pub log_pages: i64,
+    /// Pages of it folded back into the database.
+    pub checkpointed_pages: i64,
+}
+
+/// CA8's form of an instance id: 32 lower-case hex digits.
+fn is_instance(text: &str) -> bool {
+    text.len() == 32 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// What `init` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Init {
@@ -203,7 +291,8 @@ pub enum Init {
 pub struct Catalog {
     layout: Layout,
     conn: Connection,
-    fs: Box<dyn Fs>,
+    /// Shared with the inputs read through it ([`Catalog::ingest`]).
+    fs: Arc<dyn Fs>,
     options: Options,
 }
 
@@ -364,7 +453,7 @@ impl Catalog {
         Ok(Self {
             layout,
             conn,
-            fs,
+            fs: Arc::from(fs),
             options,
         })
     }
@@ -420,6 +509,13 @@ impl Catalog {
         self.layout.root()
     }
 
+    /// The largest file read from now on (SZ1): a long-lived catalog, the
+    /// server's one writer (CX1), takes each ingest's or replace's own cap
+    /// (`max_mib`) without opening another.
+    pub fn set_max_bytes(&mut self, max_bytes: u64) {
+        self.options.max_bytes = max_bytes;
+    }
+
     /// The generation as it stands (DB8).
     ///
     /// # Errors
@@ -435,6 +531,88 @@ impl Catalog {
         let _ = self
             .conn
             .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
+    }
+
+    /// CA3 (`docs/research/m6-api.md`): [`Catalog::checkpoint`]'s
+    /// `wal_checkpoint(PASSIVE)`, with what SQLite says of it, so the
+    /// server sees readers pinning the WAL (CX6) without reading the
+    /// catalog's files.
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    pub fn checkpoint_passive(&self) -> Result<Checkpoint, Error> {
+        self.wal_checkpoint("PRAGMA wal_checkpoint(PASSIVE)")
+    }
+
+    /// CA3: `wal_checkpoint(TRUNCATE)`, which waits within the busy
+    /// timeout for the readers pinning the WAL, then empties it; `busy`
+    /// when they still held it. The barrier's (CX6) and `gc`'s.
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    pub fn checkpoint_truncate(&self) -> Result<Checkpoint, Error> {
+        self.wal_checkpoint("PRAGMA wal_checkpoint(TRUNCATE)")
+    }
+
+    fn wal_checkpoint(&self, pragma: &str) -> Result<Checkpoint, Error> {
+        let (busy, log, done): (i64, i64, i64) = self
+            .conn
+            .query_row(pragma, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(Checkpoint {
+            busy: busy != 0,
+            log_pages: log,
+            checkpointed_pages: done,
+        })
+    }
+
+    /// CA8 (`docs/research/m6-api.md`): the catalog's instance id, 32
+    /// lower-case hex digits, read from the `meta` row `instance`; or,
+    /// when there is none, made from `mint`'s 16 bytes and inserted, in
+    /// one `BEGIN IMMEDIATE`, so two callers at once agree on one. The row
+    /// is not an `op` and raises no generation; schema 1 is unchanged, and
+    /// `verify` does not read it. The catalog has no random source: the
+    /// server mints, and keeps the value for VN5's entity tags.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Corrupt`] for a stored value that is not 32 lower-case hex
+    /// digits; the database's or the lock's.
+    pub fn instance(&mut self, mint: impl FnOnce() -> [u8; 16]) -> Result<String, Error> {
+        let read = |conn: &Connection| -> Result<Option<String>, Error> {
+            let value: Option<String> = rusqlite::OptionalExtension::optional(conn.query_row(
+                "SELECT value FROM meta WHERE key = 'instance'",
+                [],
+                |r| r.get(0),
+            ))?;
+            match value {
+                Some(v) if is_instance(&v) => Ok(Some(v)),
+                Some(_) => Err(Error::Corrupt("the catalog's instance id")),
+                None => Ok(None),
+            }
+        };
+        if let Some(found) = read(&self.conn)? {
+            return Ok(found);
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some(found) = read(&tx)? {
+            return Ok(found);
+        }
+        let made = mint()
+            .iter()
+            .fold(String::with_capacity(32), |mut text, b| {
+                let _ = write!(text, "{b:02x}");
+                text
+            });
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('instance', ?1)",
+            [&made],
+        )?;
+        tx.commit()?;
+        Ok(made)
     }
 
     /// The database connection, for the tests' raw edits.

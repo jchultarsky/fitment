@@ -1,0 +1,28 @@
+{
+  "format": "fitment.catalog",
+  "format_version": 1,
+  "schema_version": 1,
+  "generation": 1,
+  "build": {
+    "extractor_version": 6,
+    "signature_version": 2,
+    "properties_version": 1
+  },
+  "counts": {
+    "entries": 0,
+    "indexed": 0,
+    "quarantined": 0,
+    "stale": 0
+  },
+  "entries": [],
+  "changes": [
+    {
+      "input": "nowhere.stp",
+      "result": "error",
+      "id": "nowhere",
+      "revision": null,
+      "sha256": null,
+      "detail": "cannot read nowhere.stp: io: not found"
+    }
+  ]
+}

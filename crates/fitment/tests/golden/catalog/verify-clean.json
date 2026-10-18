@@ -1,0 +1,9 @@
+{
+  "format": "fitment.verify",
+  "format_version": 1,
+  "generation": 3,
+  "deep": false,
+  "full": false,
+  "consistent": true,
+  "problems": []
+}

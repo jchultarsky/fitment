@@ -1,0 +1,22 @@
+{
+  "format": "fitment.verify",
+  "format_version": 1,
+  "generation": 3,
+  "deep": false,
+  "full": false,
+  "consistent": false,
+  "problems": [
+    {
+      "kind": "damaged",
+      "id": "BRKT",
+      "what": "1b77ea9724e67c4bdc709a871a00a05580dfebb36e4109f3c027d84afe826c33",
+      "detail": "the file's SHA-256 is not its name"
+    },
+    {
+      "kind": "temporary",
+      "id": null,
+      "what": "tmp/old.part",
+      "detail": "over an hour old: fitment catalog gc removes it"
+    }
+  ]
+}

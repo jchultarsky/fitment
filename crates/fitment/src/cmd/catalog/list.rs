@@ -52,21 +52,11 @@ fn wanted(which: Which, status: Option<EntryStatus>) -> bool {
     )
 }
 
-/// RX2's status as people read it: which version made it stale.
-pub(super) fn status_name(status: EntryStatus) -> String {
-    match status {
-        EntryStatus::StaleExtractor(v) => format!("stale (extractor {v})"),
-        EntryStatus::StaleSignature(v) => format!("stale (signature {v})"),
-        EntryStatus::StaleProperties(_) => "stale (properties)".into(),
-        status => status.name().into(),
-    }
-}
-
 /// The status column: RX2's status, and `*` for an incomplete part (VD11).
 pub(super) fn status_text(listed: &Listed) -> String {
     match listed.status {
         Some(EntryStatus::Indexed) if listed.complete == Some(false) => "indexed*".into(),
-        Some(status) => status_name(status),
+        Some(status) => status.text(),
         None => "-".into(),
     }
 }

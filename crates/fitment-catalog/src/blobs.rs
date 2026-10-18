@@ -36,6 +36,16 @@ pub enum BadBlob {
     Io(#[from] io::Error),
 }
 
+impl BadBlob {
+    /// What a line says of it: an I/O error by its kind alone (CA4).
+    pub(crate) fn kind_text(&self) -> String {
+        match self {
+            Self::Io(e) => format!("cannot read the file: {}", crate::io_kind(e)),
+            other => other.to_string(),
+        }
+    }
+}
+
 /// The blobs of one catalog.
 pub(crate) struct Blobs<'a> {
     pub(crate) layout: &'a Layout,

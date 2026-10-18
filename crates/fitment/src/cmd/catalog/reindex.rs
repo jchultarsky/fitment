@@ -3,14 +3,12 @@
 //! entry processed with its transition, a summary on stderr, and RX6's
 //! lines for each part that leaves the search.
 
-use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
-use fitment_catalog::document::{CatalogDocument, Change, Entry};
+use fitment_catalog::document::CatalogDocument;
 use fitment_catalog::{Catalog, EntryStatus, Error, Rebuilt, Reference, Reindex, Reindexed, Scope};
 
-use super::list::status_name;
 use super::{ERROR, Format, REFUSED, USAGE, emit, fail, shown, worst};
 use crate::cmd::text::{note, printable};
 
@@ -28,52 +26,15 @@ pub struct Args {
     format: Format,
 }
 
-/// The first word of a line: the status after, or what went wrong.
-fn result(line: &Reindexed) -> &'static str {
-    match &line.rebuilt {
-        Rebuilt::Damaged(_) => "damaged",
-        Rebuilt::TooLarge => "too_large",
-        Rebuilt::Changed => "changed",
-        Rebuilt::Failed(_) => "failed",
-        Rebuilt::Current | Rebuilt::Written { .. } => line.after.map_or("-", EntryStatus::name),
-        _ => "-",
-    }
-}
-
-/// What a line says after its transition.
-fn detail(line: &Reindexed) -> String {
-    let status = |s: Option<EntryStatus>| s.map_or_else(|| "-".to_owned(), status_name);
-    let mut text = format!("{} -> {}", status(line.before), status(line.after));
-    match &line.rebuilt {
-        Rebuilt::Damaged(why) => return format!("{}: {why}", status(line.before)),
-        Rebuilt::TooLarge => {
-            return "derived_too_large: its features document is too large to store".into();
-        }
-        Rebuilt::Changed => return "replaced or deleted while reindex ran".into(),
-        Rebuilt::Failed(why) => return why.clone(),
-        Rebuilt::Current => return text + " (nothing missing)",
-        _ => {}
-    }
-    if let (Some(EntryStatus::Quarantined), Some(first)) = (line.after, &line.first_refusal) {
-        let _ = write!(text, ": {first}");
-    }
-    if line.left_search() {
-        text.push_str(" (no longer searched)");
-    } else if line.joined_search() {
-        text.push_str(" (now searched)");
-    }
-    text
-}
-
 /// One table line (section 7.7).
 fn row(line: &Reindexed) -> String {
     format!(
         "{:<12} {:<25} r{:<3} {}  {}",
-        result(line),
+        line.result(),
         printable(&line.id),
         line.revision,
         line.sha256.short(8),
-        printable(&detail(line))
+        printable(&line.detail())
     )
 }
 
@@ -148,30 +109,7 @@ fn summary(dir: &Path, run: &Reindex) {
 /// The document: every entry processed as it is now, and every line.
 fn document(catalog: &mut Catalog, run: &Reindex) -> Result<String, Error> {
     let snapshot = catalog.snapshot()?;
-    let all = snapshot.list()?;
-    let processed: std::collections::BTreeSet<&str> =
-        run.lines.iter().map(|l| l.id.as_str()).collect();
-    let entries = all
-        .iter()
-        .filter(|l| processed.contains(l.id.as_str()))
-        .map(|l| Entry::of(l, None))
-        .collect();
-    let changes = run
-        .lines
-        .iter()
-        .map(|line| {
-            Change::entry(
-                &line.id,
-                result(line),
-                &line.id,
-                line.revision,
-                line.sha256.as_str(),
-                Some(detail(line)),
-            )
-        })
-        .collect();
-    let document = CatalogDocument::new(snapshot.generation(), &all, entries, Some(changes));
-    Ok(document.to_json())
+    Ok(CatalogDocument::reindexed(&snapshot, run)?.to_json())
 }
 
 pub(super) fn run(args: &Args, dir: &Path, catalog: &mut Catalog) -> ExitCode {

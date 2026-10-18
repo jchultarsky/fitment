@@ -44,6 +44,17 @@ impl EntryStatus {
             Self::StaleExtractor(_) | Self::StaleSignature(_) | Self::StaleProperties(_) => "stale",
         }
     }
+
+    /// RX2's status as people read it: which version made it stale
+    /// (`stale (extractor 6)`), as `list`'s table and a reindex line show it.
+    pub fn text(self) -> String {
+        match self {
+            Self::StaleExtractor(v) => format!("stale (extractor {v})"),
+            Self::StaleSignature(v) => format!("stale (signature {v})"),
+            Self::StaleProperties(_) => "stale (properties)".into(),
+            status => status.name().into(),
+        }
+    }
 }
 
 /// A refusal as stored: its code, message and `#id` (VD10).
@@ -324,6 +335,43 @@ impl Snapshot<'_> {
         )?;
         let rows: Vec<Row> = stmt
             .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        rows.into_iter().map(|row| self.listed(row, true)).collect()
+    }
+
+    /// One page of [`Snapshot::list`] (`docs/research/m6-api.md`, VN3): at
+    /// most `limit` live entries after the entry whose id, as stored, is
+    /// `after`, in `list`'s order (id case-folded, then by its bytes). The
+    /// pages, each read from where the last ended, are `list` whole; each
+    /// costs its own entries, not the catalog's.
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    pub fn list_page(&self, after: Option<&str>, limit: usize) -> Result<Vec<Listed>, Error> {
+        let (fold, id) = after.map_or((String::new(), String::new()), |a| {
+            (a.to_ascii_lowercase(), a.to_owned())
+        });
+        let mut stmt = self.tx.prepare(
+            "SELECT e.id, r.revision, r.sha256, r.file_name, e.deleted_generation,
+                    r.superseded_generation, r.pruned_generation
+             FROM entry e JOIN revision r ON r.entry = e.key AND r.superseded_generation IS NULL
+             WHERE e.deleted_generation IS NULL AND (?1 = 0 OR (e.id_fold, e.id) > (?2, ?3))
+             ORDER BY e.id_fold, e.id LIMIT ?4",
+        )?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows: Vec<Row> = stmt
+            .query_map(params![after.is_some(), fold, id, limit], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,

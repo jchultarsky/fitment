@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use fitment_catalog::document::{CatalogDocument, Change, Entry, detail, result};
+use fitment_catalog::document::{CatalogDocument, detail, result};
 use fitment_catalog::{Catalog, Id, Ingested, Options, Outcome, Status};
 
 use super::{ERROR, Format, REFUSED, USAGE, emit, fail, shown, worst};
@@ -141,22 +141,7 @@ fn report(dir: &Path, lines: &[Ingested]) {
 /// The document: the entries added or unchanged, and every line.
 fn document(catalog: &mut Catalog, lines: &[Ingested]) -> Result<String, fitment_catalog::Error> {
     let snapshot = catalog.snapshot()?;
-    let all = snapshot.list()?;
-    let changed: Vec<Entry> = all
-        .iter()
-        .filter(|l| {
-            lines.iter().any(|line| {
-                matches!(line.outcome, Outcome::Added | Outcome::Unchanged)
-                    && line
-                        .id
-                        .as_ref()
-                        .is_some_and(|id| id.fold() == l.id.to_ascii_lowercase())
-            })
-        })
-        .map(|l| Entry::of(l, None))
-        .collect();
-    let every = lines.iter().map(Change::of).collect();
-    Ok(CatalogDocument::new(snapshot.generation(), &all, changed, Some(every)).to_json())
+    Ok(CatalogDocument::ingested(&snapshot, lines)?.to_json())
 }
 
 pub(super) fn run(args: &Args, dir: &Path, catalog: &mut Catalog) -> ExitCode {

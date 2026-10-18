@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
@@ -13,9 +14,11 @@ use crate::fs::{Fs, Point};
 use crate::hex::Sha256Hex;
 use crate::ids::{Id, Reference};
 use crate::ingest::{
-    Ingested, Outcome, Prepared, Summary, insert_features, insert_properties, insert_tokens,
+    Ingested, Input, Outcome, PathBytes, Prepared, Summary, file_name, insert_features,
+    insert_properties, insert_tokens,
 };
 use crate::layout::Layout;
+use crate::observe::{NoObserver, Observer};
 use crate::preimage::Status;
 use crate::snapshot::{BadName, Named, Reader};
 use crate::{Catalog, Error, schema};
@@ -92,6 +95,9 @@ pub enum NotReplaced {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Deleted {
+    /// The place, among the references `delete` was given, of the first
+    /// that named it: its change's `input` (CU1).
+    pub named: usize,
     /// Its id.
     pub id: String,
     /// The revision it was at.
@@ -217,11 +223,14 @@ impl Catalog {
     /// `fitment catalog replace`: gives the entry `reference` names the
     /// bytes of `file` as a new revision, in one transaction (CR3). The old
     /// content's derived rows go; its bytes are kept for `get ID@rN` until
-    /// `prune --revisions` (CR11).
+    /// `prune --revisions` (CR11). The path is an [`Input`] named by the
+    /// path as given and its final component, read through the catalog's
+    /// seam (CU3): one path with [`Catalog::replace_input`].
     ///
     /// # Errors
     ///
-    /// The database's, the lock's or a blob's; a refusal is the inner
+    /// [`Error::InsideCatalog`] for a file of the catalog's own (ST10); the
+    /// database's, the lock's or a blob's; a refusal is the inner
     /// [`NotReplaced`], and nothing changed.
     pub fn replace(
         &mut self,
@@ -232,16 +241,43 @@ impl Catalog {
         if crate::ingest::inside(self.root(), file) {
             return Err(Error::InsideCatalog(file.to_owned()));
         }
+        let bytes = PathBytes {
+            fs: Arc::clone(&self.fs),
+            path: file.to_owned(),
+        };
+        let (input, name) = (file.to_string_lossy(), file_name(file));
+        self.replace_input(reference, &Input::new(&bytes, &input, &name), &NoObserver)
+    }
+
+    /// CA1: gives the entry `reference` names the bytes of `input` as a new
+    /// revision, as [`Catalog::replace`] does; the input's own id, if any,
+    /// is not read (the entry keeps its id). `observer` is asked before the
+    /// file is read and before the transaction (CA2).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Cancelled`] when the observer stops it, nothing changed;
+    /// the database's, the lock's or a blob's; a refusal is the inner
+    /// [`NotReplaced`], and nothing changed.
+    pub fn replace_input(
+        &mut self,
+        reference: &Reference,
+        input: &Input<'_>,
+        observer: &dyn Observer,
+    ) -> Result<Result<Replaced, NotReplaced>, Error> {
         // ID9 first: a reference that names no entry it may replace is
         // refused before the file is read; the transaction checks again.
         let named = match live_entry(&self.conn, reference)? {
             Ok(named) => named,
             Err(unnamed) => return Ok(Err(NotReplaced::Unnamed(unnamed))),
         };
+        if observer.cancelled() {
+            return Err(Error::Cancelled);
+        }
         // The file is read and gated outside the lock (DB3), and a refused
         // one changes nothing (CR4).
         let placeholder = Id::parse("x").map_err(|_| Error::Corrupt("an id"))?;
-        let mut prepared = match self.read_file(file, Some(&placeholder)) {
+        let mut prepared = match self.read_input(input, Some(&placeholder)) {
             Ok(p) => p,
             Err(mut failed) => {
                 failed.id = None;
@@ -258,7 +294,7 @@ impl Catalog {
         }
         if prepared.status == Status::Refused {
             let mut failed = Ingested::failed(
-                file,
+                input.input,
                 None,
                 Outcome::Refused {
                     reason: prepared
@@ -295,7 +331,11 @@ impl Catalog {
         // The old content stays held by its kept revision: nothing is
         // released. A refusal after the put leaves the new file unnamed,
         // and the inline gc unlinks it (CR4: nothing changed).
-        let outcome = self.replace_in(reference, &prepared);
+        let outcome = if observer.cancelled() {
+            Err(Error::Cancelled)
+        } else {
+            self.replace_in(reference, &prepared)
+        };
         if likely && !matches!(outcome, Ok(Ok(Replaced::Replaced { .. }))) {
             let size = u64::try_from(prepared.bytes.len()).unwrap_or(u64::MAX);
             let _ = self.unlink(&[(prepared.sha256.clone(), size)]);
@@ -393,15 +433,15 @@ impl Catalog {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut named = Vec::new();
+        let mut named: Vec<(usize, Named)> = Vec::new();
         let mut unnamed = Vec::new();
-        for reference in references {
+        for (at, reference) in references.iter().enumerate() {
             if let Reference::Sha256(prefix) = reference {
                 unnamed.push(Unnamed::NotAnId(format!("sha256:{prefix}")));
                 continue;
             }
             match live_entry(&tx, reference)? {
-                Ok(n) if !named.iter().any(|m: &Named| m.sha256 == n.sha256) => named.push(n),
+                Ok(n) if !named.iter().any(|(_, m)| m.sha256 == n.sha256) => named.push((at, n)),
                 Ok(_) => {}
                 Err(u) => unnamed.push(u),
             }
@@ -418,7 +458,7 @@ impl Catalog {
         let g = schema::next_generation(&tx)?;
         let mut contents = BTreeSet::new();
         let mut deleted = Vec::new();
-        for (n, entry) in (0_i64..).zip(&named) {
+        for (n, (at, entry)) in (0_i64..).zip(&named) {
             let key = tombstone(&tx, entry, g)?;
             let mut stmt = tx.prepare("SELECT DISTINCT sha256 FROM revision WHERE entry = ?1")?;
             let held: Vec<String> = stmt
@@ -427,6 +467,7 @@ impl Catalog {
             contents.extend(held);
             op(&tx, g, n, "delete", key, entry.sha256.as_str())?;
             deleted.push(Deleted {
+                named: *at,
                 id: entry.id.clone(),
                 revision: entry.revision,
                 sha256: entry.sha256.clone(),

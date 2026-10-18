@@ -8,6 +8,7 @@ mod common;
 use std::path::Path;
 
 use common::{catalog, copy, scratch};
+use fitment_catalog::document::{CatalogDocument, Entry};
 use fitment_catalog::{BadName, BadRow, Catalog, Error, Reference, Sha256Hex};
 use rusqlite::{Connection, params};
 
@@ -213,4 +214,55 @@ fn a_deleted_entrys_revision_is_shown_as_deleted() {
         ("M_Bracket", 2, Some(2))
     );
     assert!(snapshot.entry(&now).unwrap().bytes.is_some());
+}
+
+/// VN3's keyset pages, for PR 7b's entry lists (`docs/research/m6-api.md`):
+/// the pages of any size, each read from where the last ended, are `list`
+/// whole and in its order, mixed-case ids among them; and a page's
+/// document states the whole catalog's counts, as one over every entry
+/// does.
+#[test]
+fn pages_are_the_list() {
+    let dir = scratch("pages");
+    let mut catalog = catalog(&dir);
+    let inputs = [
+        common::core_tests().join("candidates"),
+        common::core_tests().join("data"),
+    ];
+    catalog.ingest(&inputs, None).unwrap();
+    // A mixed-case id, its bytes a bracket whose header names another file.
+    let bracket = std::fs::read_to_string(common::core_tests().join("candidates/m_bracket.stp"));
+    let upper = bracket
+        .unwrap()
+        .replacen("FILE_NAME('", "FILE_NAME('upper", 1);
+    let upper = upper.into_bytes();
+    let id = fitment_catalog::Id::parse("ZZ_Upper").unwrap();
+    let input = fitment_catalog::Input::new(&upper, "upper", "upper.stp").with_id(id);
+    let run = catalog
+        .ingest_inputs(&[input], &fitment_catalog::NoObserver)
+        .unwrap();
+    assert_eq!(run[0].outcome, fitment_catalog::Outcome::Added);
+    let snapshot = catalog.snapshot().unwrap();
+    let all = snapshot.list().unwrap();
+    assert!(all.len() > 20);
+    for limit in [1, 3, 7, 1000] {
+        let mut paged = Vec::new();
+        loop {
+            let after = paged.last().map(|l: &fitment_catalog::Listed| l.id.clone());
+            let page = snapshot.list_page(after.as_deref(), limit).unwrap();
+            assert!(page.len() <= limit);
+            if page.is_empty() {
+                break;
+            }
+            paged.extend(page);
+        }
+        assert_eq!(paged, all, "pages of {limit}");
+    }
+    let generation = snapshot.generation();
+    let entries = || all.iter().take(2).map(|l| Entry::of(l, None)).collect();
+    let counts = snapshot.status_counts().unwrap();
+    assert_eq!(
+        CatalogDocument::page(generation, &counts, entries()).to_json(),
+        CatalogDocument::new(generation, &all, entries(), None).to_json()
+    );
 }

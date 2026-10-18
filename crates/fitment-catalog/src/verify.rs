@@ -1,6 +1,8 @@
 //! `fitment catalog verify` (`docs/research/m5-catalog.md`, VF1 to VF4,
 //! IN1 to IN9, CC4): every check in one snapshot, every problem one line;
-//! nothing repaired.
+//! nothing repaired. No problem names an absolute path or a library
+//! error's text (CA4, `docs/research/m6-api.md`): a path is the catalog
+//! root's own (`blobs/sha256/ab`), an error its kind.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
@@ -13,8 +15,9 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 
 use crate::blobs::{BadBlob, Blobs};
 use crate::hex::Sha256Hex;
+use crate::observe::{NoObserver, Observer, Progress};
 use crate::preimage::{self, Status};
-use crate::{Catalog, Error};
+use crate::{Catalog, Error, schema};
 
 /// What kind of problem (VF3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -62,6 +65,17 @@ pub struct Problem {
     pub detail: String,
 }
 
+/// What `verify` found, and the generation it read (CA5's
+/// `fitment.verify`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Verified {
+    /// The generation of the snapshot it checked (DB8).
+    pub generation: i64,
+    /// The problems, in a stable order; none for a consistent catalog.
+    pub problems: Vec<Problem>,
+}
+
 /// A temporary file this old is reported (ST7).
 const TEMPORARY_AGE: Duration = Duration::from_secs(3600);
 
@@ -95,11 +109,29 @@ impl Catalog {
     ///
     /// The database's, if `verify` itself cannot run.
     pub fn verify(&mut self, deep: bool, full: bool) -> Result<Vec<Problem>, Error> {
+        self.verify_observed(deep, full, &NoObserver)
+            .map(|verified| verified.problems)
+    }
+
+    /// [`Catalog::verify`], with the generation it read, `observer` asked
+    /// between phases and before each blob read and told of each (CA2).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Cancelled`] when the observer stops it; the database's, if
+    /// `verify` itself cannot run.
+    pub fn verify_observed(
+        &mut self,
+        deep: bool,
+        full: bool,
+        observer: &dyn Observer,
+    ) -> Result<Verified, Error> {
         let blobs = Blobs {
             layout: &self.layout,
             fs: self.fs.as_ref(),
         };
         let tx = self.conn.transaction()?;
+        let generation = schema::generation(&tx)?;
         let ids: BTreeMap<String, String> = tx
             .prepare("SELECT sha256, id FROM live")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -108,23 +140,50 @@ impl Catalog {
             ids,
             problems: Vec::new(),
         };
+        phase(observer, "database")?;
         sqlite_checks(&tx, full, &mut found)?;
-        let suspect = blob_rows(&tx, &blobs, &mut found)?;
+        let suspect = blob_rows(&tx, &blobs, &mut found, observer)?;
+        phase(observer, "rows")?;
         held(&tx, &mut found)?;
         features_rows(&tx, &mut found)?;
         tokens_rows(&tx, &mut found)?;
         properties_rows(&tx, &mut found)?;
         clock(&tx, &mut found)?;
-        files(&tx, &blobs, &mut found)?;
+        phase(observer, "files")?;
+        files(&tx, &blobs, &mut found, observer)?;
         if deep {
-            deep_check(&tx, &blobs, &mut found)?;
+            deep_check(&tx, &blobs, &mut found, observer)?;
         }
         drop(tx);
+        stop(observer)?;
         recheck(&mut self.conn, &blobs, &suspect, &mut found)?;
         found.problems.sort();
         found.problems.dedup();
-        Ok(found.problems)
+        Ok(Verified {
+            generation,
+            problems: found.problems,
+        })
     }
+}
+
+/// CA2: [`Error::Cancelled`] once the observer asks verify to stop.
+fn stop(observer: &dyn Observer) -> Result<(), Error> {
+    if observer.cancelled() {
+        Err(Error::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+/// CA2: a phase that reads no blob begins, unless verify is to stop.
+fn phase(observer: &dyn Observer, phase: &'static str) -> Result<(), Error> {
+    stop(observer)?;
+    observer.progress(Progress::Verifying {
+        phase,
+        done: 0,
+        total: 0,
+    });
+    Ok(())
 }
 
 /// CC4: what a concurrent change may have caused is checked again in a
@@ -191,13 +250,21 @@ fn blob_rows(
     conn: &Connection,
     blobs: &Blobs<'_>,
     found: &mut Found,
+    observer: &dyn Observer,
 ) -> Result<BTreeSet<String>, Error> {
     let mut stmt = conn.prepare("SELECT sha256, bytes FROM blob ORDER BY sha256")?;
     let all: Vec<(String, i64)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<Result<_, _>>()?;
     let mut suspect = BTreeSet::new();
-    for (text, bytes) in all {
+    let total = all.len();
+    for (done, (text, bytes)) in all.into_iter().enumerate() {
+        stop(observer)?;
+        observer.progress(Progress::Verifying {
+            phase: "blobs",
+            done,
+            total,
+        });
         // PH1: a path is built from a checked SHA-256 only.
         let Ok(sha) = Sha256Hex::parse(&text) else {
             found.add(
@@ -226,7 +293,7 @@ fn blob_rows(
                 suspect.insert(text);
             }
             Err(e) => {
-                found.add(Kind::Damaged, &text, e.to_string());
+                found.add(Kind::Damaged, &text, e.kind_text());
                 suspect.insert(text);
             }
         }
@@ -616,7 +683,12 @@ fn older_than_an_hour(blobs: &Blobs<'_>, path: &std::path::Path, now: SystemTime
 /// IN2 and ST7: every file under `blobs/` over an hour old hashes to a name
 /// a row holds (a younger one may be an ingest in flight); no temporary
 /// file is over an hour old.
-fn files(conn: &Connection, blobs: &Blobs<'_>, found: &mut Found) -> Result<(), Error> {
+fn files(
+    conn: &Connection,
+    blobs: &Blobs<'_>,
+    found: &mut Found,
+    observer: &dyn Observer,
+) -> Result<(), Error> {
     let rowed: BTreeSet<String> = rows::<String>(conn, "SELECT sha256 FROM blob")?
         .into_iter()
         .collect();
@@ -624,10 +696,16 @@ fn files(conn: &Connection, blobs: &Blobs<'_>, found: &mut Found) -> Result<(), 
     #[allow(clippy::disallowed_methods)]
     let now = SystemTime::now();
     for fan in blobs.layout.fan_outs() {
+        stop(observer)?;
         let Ok(entries) = blobs.fs.read_dir(&fan) else {
+            // CA4: the directory as the catalog's root names it.
+            let name = fan
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             found.add(
                 Kind::Missing,
-                &fan.display().to_string(),
+                &format!("blobs/sha256/{name}"),
                 "a fan-out directory",
             );
             continue;
@@ -679,8 +757,21 @@ fn files(conn: &Connection, blobs: &Blobs<'_>, found: &mut Found) -> Result<(), 
 
 /// VF2: every live content extracted again from its checked bytes, its
 /// stored document, part digest and tokens required equal, byte for byte.
-fn deep_check(conn: &Connection, blobs: &Blobs<'_>, found: &mut Found) -> Result<(), Error> {
-    for text in rows::<String>(conn, "SELECT DISTINCT sha256 FROM live ORDER BY sha256")? {
+fn deep_check(
+    conn: &Connection,
+    blobs: &Blobs<'_>,
+    found: &mut Found,
+    observer: &dyn Observer,
+) -> Result<(), Error> {
+    let live = rows::<String>(conn, "SELECT DISTINCT sha256 FROM live ORDER BY sha256")?;
+    let total = live.len();
+    for (done, text) in live.into_iter().enumerate() {
+        stop(observer)?;
+        observer.progress(Progress::Verifying {
+            phase: "deep",
+            done,
+            total,
+        });
         let Ok(sha) = Sha256Hex::parse(&text) else {
             continue;
         };

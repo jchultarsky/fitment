@@ -336,3 +336,53 @@ fn a_key_that_is_no_sha256_builds_no_path() {
         "{found:?}"
     );
 }
+
+/// CA4 (`docs/research/m6-api.md`, VT38): no problem names an absolute
+/// path or a library error's text. A missing fan-out directory is named
+/// as the catalog's root names it (`blobs/sha256/ab`, absolute before);
+/// a blob that cannot be read says its error's kind.
+#[test]
+fn no_problem_names_an_absolute_path() {
+    let (mut catalog, sha) = one("absolute");
+    let root = catalog.root().to_owned();
+    let fan = if sha.fan_out() == "00" { "01" } else { "00" };
+    fs::remove_dir(root.join("blobs/sha256").join(fan)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let blob = root
+            .join("blobs/sha256")
+            .join(sha.fan_out())
+            .join(sha.as_str());
+        fs::set_permissions(&blob, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    let problems = catalog.verify(false, false).unwrap();
+    let absolute = root.to_string_lossy();
+    let parent = root.parent().unwrap().to_string_lossy();
+    for p in &problems {
+        let text = format!("{} {}", p.what, p.detail);
+        assert!(!text.contains(absolute.as_ref()), "{p:?}");
+        assert!(!text.contains(parent.as_ref()), "{p:?}");
+    }
+    let missing: Vec<&str> = problems
+        .iter()
+        .filter(|p| p.kind == ProblemKind::Missing)
+        .map(|p| p.what.as_str())
+        .collect();
+    assert_eq!(missing, [format!("blobs/sha256/{fan}")]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let unreadable: Vec<&str> = problems
+            .iter()
+            .filter(|p| p.what == sha.as_str())
+            .map(|p| p.detail.as_str())
+            .collect();
+        assert_eq!(unreadable, ["cannot read the file: io: permission denied"]);
+        let blob = root
+            .join("blobs/sha256")
+            .join(sha.fan_out())
+            .join(sha.as_str());
+        fs::set_permissions(&blob, fs::Permissions::from_mode(0o444)).unwrap();
+    }
+}

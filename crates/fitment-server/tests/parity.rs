@@ -5,11 +5,17 @@
 //! selection error, the CLI's exit 2, is the job `refused`, exit 2, with
 //! no document. On the committed unit parts and assemblies, every OS,
 //! debug. The CLI is the built `fitment` (`support::cli`).
+//!
+//! The catalog's documents (CA1, CU1, CU2): the library's, which the API
+//! serves (PR 7b), are the CLI's `--format json` byte for byte, for an
+//! ingest from bytes and for each change.
 
 mod support;
 
 use std::path::Path;
 
+use fitment_catalog::document::{CatalogDocument, GcDocument, VerifyDocument};
+use fitment_catalog::{Catalog, Input, NoObserver, Options, Reference, Scope};
 use serde_json::{Value, json};
 use support::{Dirs, TestServer, cli, waiting};
 
@@ -1069,4 +1075,208 @@ async fn no_field_overrides_a_refusal() {
                        "options": { "require_reviewed": false, "require_fit": false } });
     let reply = server.send(waiting("/v1/matches", &body)).await;
     assert_eq!(reply.code(), "socket_stale");
+}
+
+/// The committed unit parts and candidates and a file that is no STEP
+/// file, written to `root/in/` for the CLI: each one's bytes, its path as
+/// the CLI's expansion of `in` names it, and its name.
+fn catalog_inputs(root: &Path) -> Vec<(Vec<u8>, String, String)> {
+    let core = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests");
+    let dir = root.join("in");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut files: Vec<(Vec<u8>, String, String)> = ["data", "candidates"]
+        .iter()
+        .flat_map(|d| std::fs::read_dir(core.join(d)).unwrap())
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "stp"))
+        .map(|p| {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            (std::fs::read(&p).unwrap(), name)
+        })
+        .chain([(b"not STEP".to_vec(), "junk.stp".to_owned())])
+        .map(|(bytes, name)| {
+            std::fs::write(dir.join(&name), &bytes).unwrap();
+            let input = Path::new("in").join(&name).to_string_lossy().into_owned();
+            (bytes, input, name)
+        })
+        .collect();
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files
+}
+
+/// `fitment catalog ARGS -C cli --format json` in `root`: its stdout,
+/// exit 0 or 3 (a quarantined file, a problem found).
+fn catalog_cli(root: &Path, args: &[&str]) -> Vec<u8> {
+    let args = [&["catalog"], args, &["-C", "cli", "--format", "json"]].concat();
+    let (code, stdout, stderr) = cli(root, &args);
+    assert!(matches!(code, Some(0 | 3)), "{args:?}: {code:?} {stderr}");
+    stdout
+}
+
+/// `document` with its generation written as `_`: DB3's batches end after
+/// a second as well as after 64 files, so how many generations an ingest
+/// of many files raises depends on its time, in the CLI as in the library.
+fn without_generation(document: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8(document.to_vec()).unwrap();
+    let mut lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
+    if let Some(line) = lines
+        .iter_mut()
+        .find(|l| l.starts_with("  \"generation\": "))
+    {
+        "  \"generation\": _,".clone_into(line);
+    }
+    lines.join("\n").into_bytes()
+}
+
+/// CA1 (`M6_PARITY`): an ingest from bytes, read as the server reads its
+/// objects and named as the CLI was given them, prints the CLI's
+/// `fitment.catalog` byte for byte: ids, order, lines and entries, its
+/// generation aside, which the batches' time decides; and one file's, one
+/// batch, whole.
+#[test]
+fn catalog_ingests_from_bytes_are_the_clis() {
+    let dirs = Dirs::bare();
+    let files = catalog_inputs(&dirs.root);
+    assert!(files.len() > 20);
+    cli(&dirs.root, &["catalog", "init", "-C", "cli"]);
+    let expected = catalog_cli(&dirs.root, &["ingest", "in"]);
+    let (mut catalog, _) = Catalog::init(&dirs.root.join("lib"), Options::default()).unwrap();
+    let inputs: Vec<Input<'_>> = files
+        .iter()
+        .map(|(bytes, input, name)| Input::new(bytes, input, name))
+        .collect();
+    let run = catalog.ingest_inputs(&inputs, &NoObserver).unwrap();
+    let snapshot = catalog.snapshot().unwrap();
+    let document = CatalogDocument::ingested(&snapshot, &run)
+        .unwrap()
+        .to_json();
+    let (expected, document) = (
+        without_generation(&expected),
+        without_generation(document.as_bytes()),
+    );
+    if let Some(diff) = fitment_corpus::parity::bytes("ingest", &expected, &document) {
+        panic!("{diff}");
+    }
+    // One file, one batch: the generation too.
+    cli(&dirs.root, &["catalog", "init", "-C", "one"]);
+    let args = [
+        "catalog",
+        "ingest",
+        "-C",
+        "one",
+        &files[0].1,
+        "--format",
+        "json",
+    ];
+    let (_, expected, _) = cli(&dirs.root, &args);
+    let (mut one, _) = Catalog::init(&dirs.root.join("lib-one"), Options::default()).unwrap();
+    let run = one.ingest_inputs(&inputs[..1], &NoObserver).unwrap();
+    let snapshot = one.snapshot().unwrap();
+    let document = CatalogDocument::ingested(&snapshot, &run)
+        .unwrap()
+        .to_json();
+    if let Some(diff) = fitment_corpus::parity::bytes("one", &expected, document.as_bytes()) {
+        panic!("{diff}");
+    }
+}
+
+/// CU1 and CU2 (`M6_PARITY`): the library's document of each change, the
+/// one the API serves, is the CLI's `--format json` byte for byte, for a
+/// replace, a reindex, `prune --revisions`, a delete, `verify --deep` and
+/// `gc --versions`, the two catalogs changed alike: each file ingested
+/// alone, one batch, so both stand at one generation.
+#[test]
+fn catalog_documents_of_changes_are_the_clis() {
+    let dirs = Dirs::bare();
+    let files = catalog_inputs(&dirs.root);
+    cli(&dirs.root, &["catalog", "init", "-C", "cli"]);
+    let (mut catalog, _) = Catalog::init(&dirs.root.join("lib"), Options::default()).unwrap();
+    for (bytes, input, name) in &files {
+        catalog_cli(&dirs.root, &["ingest", input]);
+        let one = [Input::new(bytes, input, name)];
+        catalog.ingest_inputs(&one, &NoObserver).unwrap();
+    }
+    let mut failures = Vec::new();
+    let mut same = |what: &str, cli: Vec<u8>, library: String| {
+        failures.extend(fitment_corpus::parity::bytes(
+            what,
+            &cli,
+            library.as_bytes(),
+        ));
+    };
+    // A replace: the bracket's bytes become another bracket's, its header
+    // naming another file.
+    let bracket = files.iter().find(|f| f.2 == "m_bracket.stp").unwrap();
+    let text = String::from_utf8(bracket.0.clone()).unwrap();
+    let next = text
+        .replacen("FILE_NAME('", "FILE_NAME('next", 1)
+        .into_bytes();
+    std::fs::create_dir_all(dirs.root.join("next")).unwrap();
+    std::fs::write(dirs.root.join("next/m_bracket.stp"), &next).unwrap();
+    let given = Path::new("next")
+        .join("m_bracket.stp")
+        .to_string_lossy()
+        .into_owned();
+    let cli_doc = catalog_cli(&dirs.root, &["replace", "m_bracket", &given]);
+    let reference = Reference::parse("m_bracket").unwrap();
+    let input = Input::new(&next, &given, "m_bracket.stp");
+    let done = catalog
+        .replace_input(&reference, &input, &NoObserver)
+        .unwrap()
+        .unwrap();
+    let snapshot = catalog.snapshot().unwrap();
+    let document = CatalogDocument::replaced(&snapshot, &given, &done).unwrap();
+    same("replace", cli_doc, document.to_json());
+    drop(snapshot);
+    let cli_doc = catalog_cli(&dirs.root, &["reindex", "--all"]);
+    let run = catalog.reindex(&Scope::All).unwrap().unwrap();
+    let snapshot = catalog.snapshot().unwrap();
+    same(
+        "reindex",
+        cli_doc,
+        CatalogDocument::reindexed(&snapshot, &run)
+            .unwrap()
+            .to_json(),
+    );
+    drop(snapshot);
+    let cli_doc = catalog_cli(&dirs.root, &["prune", "--revisions"]);
+    let (pruned, _) = catalog.prune_revisions().unwrap();
+    assert_eq!(pruned.len(), 1);
+    let snapshot = catalog.snapshot().unwrap();
+    same(
+        "prune",
+        cli_doc,
+        CatalogDocument::pruned(&snapshot, &pruned)
+            .unwrap()
+            .to_json(),
+    );
+    drop(snapshot);
+    let named = ["junk", "M_BRACKET@r2", "junk"];
+    let cli_doc = catalog_cli(&dirs.root, &[&["delete"], &named[..]].concat());
+    let references: Vec<Reference> = named.iter().map(|n| Reference::parse(n).unwrap()).collect();
+    let deletion = catalog.delete(&references).unwrap().unwrap();
+    let snapshot = catalog.snapshot().unwrap();
+    same(
+        "delete",
+        cli_doc,
+        CatalogDocument::deleted(&snapshot, &named, &deletion)
+            .unwrap()
+            .to_json(),
+    );
+    drop(snapshot);
+    let cli_doc = catalog_cli(&dirs.root, &["verify", "--deep"]);
+    let verified = catalog.verify_observed(true, false, &NoObserver).unwrap();
+    same(
+        "verify",
+        cli_doc,
+        VerifyDocument::new(&verified, true, false).to_json(),
+    );
+    let cli_doc = catalog_cli(&dirs.root, &["gc", "--versions"]);
+    let collected = catalog.gc(true, false).unwrap();
+    same(
+        "gc",
+        cli_doc,
+        GcDocument::new(&collected, true, false).to_json(),
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

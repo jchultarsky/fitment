@@ -1472,6 +1472,39 @@ for rule, tests in M6_PR6.items():
     assert RULES[rule] == {"deferred": "M6 PR 6"}, rule
     RULES[rule] = {"tests": tests}
 assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 6"}], "a PR 6 rule is still deferred"
+# PR 7 lands in two parts (section 12, item 7). 7a builds the catalog's library and CLI for the API: inputs from bytes
+# with their own names and ids (CA1), the observer (CA2), WAL pressure (CA3), no path or library text in a document
+# (CA4), fitment.verify and fitment.gc (CA5), the instance id (CA8), and the CLI's new formats and shared paths (CU1
+# to CU3). CA1, CU1 and CU2 are M6_PARITY's: their parity tests compare the library's documents, the ones the API
+# serves, with the CLI's. The rest of PR 7's rules wait for 7b, the API, still deferred to "M6 PR 7"; so M6_PR_NOW
+# stays 6 until 7b (crates/fitment/tests/corpus.rs), or they could not wait.
+CAT_TESTS, CLI_TESTS = "crates/fitment-catalog/tests", "crates/fitment/tests"
+M6_PR7A = {
+    "CA1": [f"{S_PAR}::catalog_ingests_from_bytes_are_the_clis",
+            f"{CAT_TESTS}/ingest.rs::inputs_from_bytes_are_ingest_from_paths",
+            f"{CAT_TESTS}/ingest.rs::per_file_ids_order_with_the_exact_stems"],
+    "CA2": [f"{CLI_TESTS}/observer.rs::an_observer_changes_no_document",
+            f"{CAT_TESTS}/observer.rs::each_stop_point_stops"],
+    "CA3": [f"{CAT_TESTS}/checkpoint.rs::a_reader_pinning_the_wal_is_seen"],
+    "CA4": [f"{CAT_TESTS}/verify.rs::no_problem_names_an_absolute_path",
+            f"{CAT_TESTS}/ingest.rs::a_failed_batch_line_holds_only_the_error_kind",
+            f"{CLI_TESTS}/catalog_cli.rs::an_unreadable_file_says_its_errors_kind"],
+    "CA5": [f"{CLI_TESTS}/catalog_cli.rs::verify_and_gc_print_their_documents",
+            f"{S_PAR}::catalog_documents_of_changes_are_the_clis"],
+    "CA8": [f"{CAT_TESTS}/meta.rs::the_instance_is_minted_once",
+            f"{CAT_TESTS}/meta.rs::callers_at_once_agree_on_one_instance"],
+    "CU1": [f"{S_PAR}::catalog_documents_of_changes_are_the_clis",
+            f"{CLI_TESTS}/catalog_cli.rs::delete_and_prune_print_their_documents"],
+    "CU2": [f"{S_PAR}::catalog_documents_of_changes_are_the_clis",
+            f"{CLI_TESTS}/catalog_cli.rs::verify_and_gc_print_their_documents"],
+    "CU3": [f"{CAT_TESTS}/ingest.rs::inputs_from_bytes_are_ingest_from_paths",
+            f"{CLI_TESTS}/catalog_cli.rs::ingest_reports_each_file_and_exits_by_the_worst",
+            f"{CLI_TESTS}/catalog_cli.rs::replace_refuses_without_changing_the_entry",
+            f"{M6_MATCHING}::exit_codes_are_the_clis"],
+}
+for rule, tests in M6_PR7A.items():
+    assert RULES[rule] == {"deferred": "M6 PR 7"}, rule
+    RULES[rule] = {"tests": tests}
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],

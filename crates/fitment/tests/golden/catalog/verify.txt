@@ -1,0 +1,2 @@
+damaged    BRKT                 1b77ea9724e6  the file's SHA-256 is not its name
+temporary  -                    tmp/old.part  over an hour old: fitment catalog gc removes it
