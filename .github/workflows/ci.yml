@@ -93,6 +93,11 @@ jobs:
         env:
           FITMENT_REQUIRE_CORPUS: "1"
           FITMENT_REQUIRE_FIXTURES: "1"
+      # Every corpus file uploads under the SHA-256 the test computes
+      # (docs/research/m6-api.md, PR 4's "done when"; UP2, CO1).
+      - run: cargo test --release -p fitment-server --test api --locked every_corpus_file_uploads_with_its_sha256
+        env:
+          FITMENT_REQUIRE_CORPUS: "1"
       - uses: actions/upload-artifact@v7
         with:
           name: corpus

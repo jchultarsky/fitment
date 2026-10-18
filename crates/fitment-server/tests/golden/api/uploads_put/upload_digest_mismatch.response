@@ -1,0 +1,24 @@
+422
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:DOZ8kzx3uJv8XWrGntYW4GMy1cPf3FPS+KuIIyqSvXc=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/upload_digest_mismatch",
+  "title": "The bytes do not hash to the name given",
+  "status": 422,
+  "detail": "the bytes' SHA-256 is not the name given: nothing was kept",
+  "code": "upload_digest_mismatch",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {
+    "expected": "953c8fe2df5fddd23a7174397482e83630d540574340fbcb5ffac147e2ee1cf8",
+    "sha256": "62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff"
+  },
+  "request_id": "r_00000000000000000000000004"
+}

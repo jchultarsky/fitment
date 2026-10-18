@@ -1,0 +1,5 @@
+PUT /v1/uploads/sha256:62048CE1D1D48E0786D0A9E001AB0C72354BB9FAA408A4984F9CEB2B9F73CCFF
+authorization: Bearer <ada's reader token>
+content-type: application/octet-stream
+
+a bracket's bytes

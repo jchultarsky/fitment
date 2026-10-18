@@ -1,0 +1,21 @@
+507
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:I/hTsZKOAY4+WNlJlSlBXhUuRQxsvuZo/wOqKL0dGzA=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/storage_full",
+  "title": "The storage is full",
+  "status": 507,
+  "detail": "the server's storage is full: nothing was kept",
+  "code": "storage_full",
+  "class": "error",
+  "exit_code": 1,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

@@ -132,7 +132,8 @@ fn documents(reply: &Reply) -> Vec<String> {
     let json = reply
         .header("content-type")
         .is_some_and(|c| c.starts_with("application/json"));
-    if !json {
+    // A HEAD's answer carries the headers of a body it does not send.
+    if !json || reply.body.is_empty() {
         return Vec::new();
     }
     let Ok(text) = std::str::from_utf8(&reply.body) else {

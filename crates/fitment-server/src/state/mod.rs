@@ -5,19 +5,22 @@
 //! <state>/
 //!   FITMENT-SERVER-STATE      marker, "fitment.server 1\n", written last by the first start
 //!   server.db                 SQLite, WAL (+ -wal, -shm)
-//!   objects/sha256/           uploads, assemblies and stored documents (PR 4)
+//!   objects/sha256/           uploads, assemblies and stored documents (OB2)
 //!   tmp/                      uploads and documents in flight
 //! ```
 
 pub mod db;
+pub mod objects;
+pub mod sweep;
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 pub use db::{
-    CreateUserError, Db, DbError, Kind, MintError, MintFrom, NewToken, PasswordSet, Presented,
-    TokenRow, UpdateUserError, UserRow,
+    CreateUserError, Db, DbError, Deleted, Holding, Kind, MintError, MintFrom, NewToken,
+    PasswordSet, Presented, StoreError, Stored, TokenRow, UpdateUserError, UserRow,
 };
+pub use objects::{ObjectError, Objects, Staged, Synced};
 
 /// The marker's name.
 pub const MARKER: &str = "FITMENT-SERVER-STATE";

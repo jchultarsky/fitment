@@ -605,3 +605,364 @@ async fn minting_is_limited_per_user() {
         .await;
     assert_eq!(reply.status, 201);
 }
+
+/// UP2, VT17: the upload cap. A declared `Content-Length` past it is `413
+/// too_large` before a byte is read (no chunk of the body taken); a body
+/// at the cap is kept; one streamed 100 times past it without a length
+/// is cut after the cap and one chunk, its temporary file removed and
+/// nothing kept.
+#[tokio::test]
+async fn an_upload_past_the_cap_is_refused_before_or_as_it_streams() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.limits.max_upload_mib = 1;
+    let server = TestServer::in_process(dirs, config);
+    let cap = 1024 * 1024;
+    let at_cap = vec![b'c'; cap];
+    let sha256 = fitment_core::sha256_hex(&at_cap);
+    let path = format!("/v1/uploads/sha256:{sha256}");
+    let declared = Call::new(Method::PUT, &path)
+        .header("content-type", "application/octet-stream")
+        .header("content-length", &(cap + 1).to_string());
+    let (body, taken) = support::endless(100, 64 * 1024);
+    let reply = server.send_body(declared, body).await;
+    assert_eq!(
+        (reply.status.as_u16(), reply.code()),
+        (413, "too_large".into())
+    );
+    assert_eq!(reply.json()["details"]["max_bytes"], cap);
+    assert_eq!(
+        taken.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "no byte read"
+    );
+    assert_eq!(server.send(support::put_upload(&at_cap)).await.status, 201);
+    let chunk = 64 * 1024;
+    let (body, taken) = support::endless(100 * cap / chunk, chunk);
+    let streamed =
+        Call::new(Method::POST, "/v1/uploads").header("content-type", "application/octet-stream");
+    let reply = server.send_body(streamed, body).await;
+    assert_eq!(reply.code(), "too_large");
+    let read = taken.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(read, cap / chunk + 1, "the cap and one chunk, then cut");
+    assert!(
+        server.temporaries().is_empty(),
+        "the temporary file is removed"
+    );
+    assert_eq!(server.object_files(), [sha256], "nothing else kept");
+    // An upload route takes no JSON cap: a 2 MiB JSON body under a 3 MiB
+    // upload cap is bytes.
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.limits.max_upload_mib = 3;
+    config.limits.max_json_kib = 1;
+    let server = TestServer::in_process(dirs, config);
+    let json = format!("[{}0]", "0,".repeat(1024 * 1024));
+    let reply = server
+        .send(support::put_upload(json.as_bytes()).header("content-type", "application/json"))
+        .await;
+    assert_eq!(reply.status, 201);
+}
+
+/// UP4, VT24's per-user upload cases: at most
+/// `limits.upload_concurrency_per_user` uploads at once per user, over
+/// all their tokens, and `limits.upload_concurrency` per server: past
+/// either `429 too_many_streams`, before a byte is read, retryable; a
+/// slot is free again when its upload ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn uploads_at_once_are_capped_per_user_and_per_server() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.limits.upload_concurrency = 3;
+    config.limits.upload_concurrency_per_user = 2;
+    let server = std::sync::Arc::new(TestServer::in_process(dirs, config));
+    let ada = seed_user(server.server(), "ada", Role::Reader, None);
+    let bob = seed_user(server.server(), "bob", Role::Reader, None);
+    let eve = seed_user(server.server(), "eve", Role::Reader, None);
+    let tokens: Vec<String> = (0..3)
+        .map(|_| seed_token(server.server(), &ada, Role::Reader, 30).1)
+        .collect();
+    let (_, bob_token) = seed_token(server.server(), &bob, Role::Reader, 30);
+    let (_, eve_token) = seed_token(server.server(), &eve, Role::Reader, 30);
+    let start = |token: String| {
+        let (body, tx, _) = support::fed();
+        let server = std::sync::Arc::clone(&server);
+        let call = Call::new(Method::POST, "/v1/uploads")
+            .header("content-type", "model/step")
+            .bearer(&token);
+        let task = tokio::spawn(async move { server.send_body(call, body).await });
+        (task, tx)
+    };
+    let running = |user: i64| server.server().seams().uploads.running(user);
+    let wait_for = |user: i64, n: usize| async move {
+        let started = Instant::now();
+        while running(user).1 < n {
+            assert!(started.elapsed() < Duration::from_secs(10), "no slot taken");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let first = start(tokens[0].clone());
+    let second = start(tokens[1].clone());
+    wait_for(ada.key, 2).await;
+    let third = Call::new(Method::POST, "/v1/uploads")
+        .header("content-type", "model/step")
+        .body(b"x")
+        .bearer(&tokens[2]);
+    let refused = server.send(third.clone()).await;
+    assert_eq!(
+        (refused.status.as_u16(), refused.code()),
+        (429, "too_many_streams".into())
+    );
+    assert_eq!(
+        refused.json()["details"]["limit"],
+        "upload_concurrency_per_user"
+    );
+    assert_eq!(refused.json()["retryable"], true);
+    assert!(refused.header("retry-after").is_some());
+    let bobs = start(bob_token.clone());
+    wait_for(bob.key, 1).await;
+    let eves = Call::new(Method::POST, "/v1/uploads")
+        .header("content-type", "model/step")
+        .body(b"y")
+        .bearer(&eve_token);
+    let full = server.send(eves.clone()).await;
+    assert_eq!(full.json()["details"]["limit"], "upload_concurrency");
+    for (task, tx) in [first, second, bobs] {
+        tx.send(axum::body::Bytes::from_static(b"some bytes"))
+            .await
+            .unwrap();
+        drop(tx);
+        assert!(task.await.unwrap().status.is_success());
+    }
+    assert_eq!(running(ada.key), (0, 0));
+    assert_eq!(server.send(third).await.status, 201);
+    assert_eq!(server.send(eves).await.status, 201);
+}
+
+/// UP4: the per-user quota counts the caller's held bytes, before a byte
+/// is read for a declared length and as the body streams without one;
+/// the staging quota counts the bytes of open temporary files the same
+/// two ways; past either, `507 quota_exceeded`, nothing kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quotas_are_checked_before_bytes_and_as_they_stream() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.limits.max_upload_mib = 4096;
+    config.limits.user_quota_gib = 1;
+    config.limits.staging_gib = 1;
+    let server = std::sync::Arc::new(TestServer::in_process(dirs, config));
+    let ada = seed_user(server.server(), "ada", Role::Reader, None);
+    let bob = seed_user(server.server(), "bob", Role::Reader, None);
+    let (_, ada_token) = seed_token(server.server(), &ada, Role::Reader, 30);
+    let (_, bob_token) = seed_token(server.server(), &bob, Role::Reader, 30);
+    let gib: u64 = 1024 * 1024 * 1024;
+    // Ada holds a GiB but 10 bytes: a row standing for bytes she uploaded.
+    let conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    conn.execute(
+        "INSERT INTO object (sha256, bytes, added_ms) VALUES (?1, ?2, 0)",
+        rusqlite::params!["a".repeat(64), i64::try_from(gib - 10).unwrap()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO upload (owner, sha256, created_ms, expires_ms) VALUES (?1, ?2, 0, ?3)",
+        rusqlite::params![ada.key, "a".repeat(64), i64::MAX],
+    )
+    .unwrap();
+    let post = |token: &str| {
+        Call::new(Method::POST, "/v1/uploads")
+            .header("content-type", "application/octet-stream")
+            .bearer(token)
+    };
+    let declared = post(&ada_token).header("content-length", "20");
+    let (body, taken) = support::endless(1, 20);
+    let reply = server.send_body(declared, body).await;
+    assert_eq!(
+        (reply.status.as_u16(), reply.code()),
+        (507, "quota_exceeded".into())
+    );
+    assert_eq!(reply.json()["details"]["limit"], "user_quota_gib");
+    assert_eq!(
+        taken.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "before a byte"
+    );
+    let (body, _) = support::endless(2, 8);
+    let streamed = server.send_body(post(&ada_token), body).await;
+    assert_eq!(
+        streamed.json()["details"]["limit"],
+        "user_quota_gib",
+        "as it streams"
+    );
+    assert_eq!(
+        server
+            .send(post(&bob_token).body(b"bob's twenty bytes!!"))
+            .await
+            .status,
+        201
+    );
+    // Staging: an upload declaring a GiB but 10 holds its bytes while it
+    // runs; another user's 20 declared bytes, or 32 streamed, pass the
+    // quota.
+    let dan = seed_user(server.server(), "dan", Role::Reader, None);
+    let (_, dan_token) = seed_token(server.server(), &dan, Role::Reader, 30);
+    let (body, tx, _) = support::fed();
+    let holder = {
+        let server = std::sync::Arc::clone(&server);
+        let call = post(&dan_token).header("content-length", &(gib - 10).to_string());
+        tokio::spawn(async move { server.send_body(call, body).await })
+    };
+    let started = Instant::now();
+    while server.server().seams().uploads.staged() < gib - 10 {
+        assert!(started.elapsed() < Duration::from_secs(10));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let cara = seed_user(server.server(), "cara", Role::Reader, None);
+    let (_, cara_token) = seed_token(server.server(), &cara, Role::Reader, 30);
+    let declared = server.send(post(&cara_token).body(&[b'z'; 20])).await;
+    assert_eq!(declared.json()["details"]["limit"], "staging_gib");
+    let (body, _) = support::endless(4, 8);
+    let streamed = server.send_body(post(&cara_token), body).await;
+    assert_eq!(
+        streamed.json()["details"]["limit"],
+        "staging_gib",
+        "as it streams"
+    );
+    drop(tx);
+    let _ = holder.await.unwrap();
+    assert_eq!(server.server().seams().uploads.staged(), 0, "released");
+    assert_eq!(server.temporaries(), Vec::<std::path::PathBuf>::new());
+    assert_eq!(
+        server
+            .send(post(&cara_token).body(&[b'z'; 20]))
+            .await
+            .status,
+        201
+    );
+}
+
+/// VN3, VT42's pages for uploads: keyset by SHA-256, every upload once
+/// across the pages, each page's `next` and `Link` the same URL; `limit`
+/// 1 to `limits.page_max` (past it, or 0, `400 invalid_parameter`), and
+/// a cursor this list did not write `400` too.
+#[tokio::test]
+async fn upload_pages_are_keyset_and_bounded() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.limits.page_max = 5;
+    let server = TestServer::in_process(dirs, config);
+    let mut all = Vec::new();
+    for i in 0..7 {
+        let bytes = format!("part {i}");
+        all.push(fitment_core::sha256_hex(bytes.as_bytes()));
+        assert_eq!(
+            server
+                .send(support::put_upload(bytes.as_bytes()))
+                .await
+                .status,
+            201
+        );
+    }
+    all.sort();
+    let mut seen = Vec::new();
+    let mut next = Some("/v1/uploads?limit=3".to_owned());
+    while let Some(url) = next {
+        let reply = server.get(&url).await;
+        assert_eq!(reply.status, 200, "{url}");
+        let page = reply.json();
+        assert_eq!(page["kind"], "fitment.upload");
+        for item in page["items"].as_array().unwrap() {
+            seen.push(item["sha256"].as_str().unwrap().to_owned());
+        }
+        next = page["next"].as_str().map(str::to_owned);
+        let link = reply.header("link").map(str::to_owned);
+        assert_eq!(link, next.as_ref().map(|n| format!("<{n}>; rel=\"next\"")));
+    }
+    assert_eq!(seen, all, "every upload once, by SHA-256");
+    assert_eq!(
+        server.get("/v1/uploads?limit=5").await.json()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+    for bad in [
+        "/v1/uploads?limit=6",
+        "/v1/uploads?limit=0",
+        "/v1/uploads?limit=x",
+        "/v1/uploads?after=not-a-cursor",
+        "/v1/uploads?after=YWJj",
+        "/v1/uploads?nope=1",
+    ] {
+        let reply = server.get(bad).await;
+        assert_eq!(reply.code(), "invalid_parameter", "{bad}");
+    }
+}
+
+/// VT20 for uploads (HX5, RA8): a name is `sha256:` and 64 hex digits,
+/// either case, written lower-case, its colon percent-encoded or not;
+/// anything else is `400 invalid_reference` on every method, never a
+/// path and never echoed; hostile segments are `404` or `400`, never a
+/// `500`, and the state directory holds nothing but its own layout after.
+#[tokio::test]
+async fn upload_names_are_strict() {
+    let server = TestServer::fresh();
+    let bytes = b"a strict name";
+    let sha256 = fitment_core::sha256_hex(bytes);
+    assert_eq!(server.send(support::put_upload(bytes)).await.status, 201);
+    for name in [
+        format!("sha256%3A{sha256}"),
+        format!("sha256:{}", sha256.to_ascii_uppercase()),
+    ] {
+        let reply = server.get(&format!("/v1/uploads/{name}")).await;
+        assert_eq!(reply.status, 200, "{name}");
+        assert_eq!(reply.json()["sha256"], sha256.as_str());
+    }
+    let long = "a".repeat(64 * 1024 - 32);
+    for name in [
+        format!("sha256:{}", &sha256[..12]),
+        format!("sha256:{sha256}0"),
+        format!("SHA256:{sha256}"),
+        sha256.clone(),
+        format!("sha256:{}g", &sha256[..63]),
+        "sha256:..".to_owned(),
+        "%2e%2e".to_owned(),
+        "sha256:%00".to_owned(),
+        "sha256:%2f".to_owned(),
+        "C:%5Cx.stp".to_owned(),
+        "sha256:%E2%80%AE".to_owned(),
+        long,
+    ] {
+        for method in [Method::GET, Method::HEAD, Method::DELETE, Method::PUT] {
+            let mut call = Call::new(method.clone(), &format!("/v1/uploads/{name}"));
+            if method == Method::PUT {
+                call = call.header("content-type", "model/step").body(bytes);
+            }
+            let reply = server.send(call).await;
+            assert!(
+                matches!(reply.status.as_u16(), 400 | 404),
+                "{method} {}: {}",
+                &name[..name.len().min(40)],
+                reply.status
+            );
+            if method != Method::HEAD {
+                assert!(
+                    matches!(reply.code().as_str(), "invalid_reference" | "not_found"),
+                    "{method}"
+                );
+                let text = String::from_utf8_lossy(&reply.body);
+                assert!(!text.contains("x.stp") && !text.contains(".."), "echoed");
+            }
+        }
+    }
+    let mut names: Vec<String> = std::fs::read_dir(&server.dirs.state)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names.retain(|n| !n.starts_with("server.db-"));
+    assert_eq!(
+        names,
+        ["FITMENT-SERVER-STATE", "objects", "server.db", "tmp"]
+    );
+    assert_eq!(server.object_files(), [sha256]);
+}

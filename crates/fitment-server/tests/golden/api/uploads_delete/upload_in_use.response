@@ -1,0 +1,21 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:TLYJmmNkhGkLVq2VYxUBmelC1/7fmIMqVeUPeIQ5JDQ=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/upload_in_use",
+  "title": "A running job names the upload",
+  "status": 409,
+  "detail": "a job that has not ended names these bytes: cancel it or wait for it",
+  "code": "upload_in_use",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

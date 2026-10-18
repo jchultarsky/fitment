@@ -258,8 +258,18 @@ pub struct TestServer {
 impl TestServer {
     /// In process, with fixed ids and time (OP11), so bodies are exact.
     pub fn in_process(dirs: Dirs, config: Config) -> Self {
+        Self::in_process_with_fs(dirs, config, Arc::new(fitment_catalog::StdFs))
+    }
+
+    /// [`TestServer::in_process`] with the object store on `fs`, a
+    /// `CountingFs` that records or fails its file calls (OP11, VT11).
+    pub fn in_process_with_fs(
+        dirs: Dirs,
+        config: Config,
+        fs: Arc<dyn fitment_catalog::Fs>,
+    ) -> Self {
         logs::capture();
-        let server = Server::build(config).expect("the server builds");
+        let server = Server::build_with_fs(config, fs).expect("the server builds");
         server.seams().ids.fix_ids();
         server.seams().ids.fix_time(1_790_000_000_000);
         let router = server.router();
@@ -724,4 +734,216 @@ pub fn seed_token(
 /// A JSON body's call with a token.
 pub fn post(path: &str, token: &str, body: &serde_json::Value) -> Call {
     Call::json(Method::POST, path, body).bearer(token)
+}
+
+/// An upload of `bytes` by `owner`, stored through the server's own store
+/// and clock as an upload route stores one (UP2, UP8), living a day:
+/// returns its SHA-256.
+pub fn seed_upload(server: &Server, owner: i64, bytes: &[u8]) -> String {
+    let seams = server.seams();
+    let mut staged = seams.objects.stage().unwrap();
+    staged.write(bytes).unwrap();
+    let synced = staged.finish().unwrap();
+    let now = seams.ids.now_ms();
+    let sha256 = synced.sha256.clone();
+    seams
+        .db
+        .store_upload(owner, &sha256, synced.bytes, now, now + 86_400_000, |row| {
+            seams.objects.place(&synced, row)
+        })
+        .unwrap();
+    synced.kept();
+    sha256
+}
+
+/// A `PUT /v1/uploads/sha256:<its hash>` of `bytes`.
+pub fn put_upload(bytes: &[u8]) -> Call {
+    let sha256 = fitment_core::sha256_hex(bytes);
+    Call::new(Method::PUT, &format!("/v1/uploads/sha256:{sha256}"))
+        .header("content-type", "application/octet-stream")
+        .body(bytes)
+}
+
+/// A request body the test feeds chunk by chunk (VT13, VT17, VT24): it
+/// ends when its sender drops, and counts the chunks the server took.
+pub struct Fed {
+    rx: tokio::sync::mpsc::Receiver<axum::body::Bytes>,
+    taken: Arc<AtomicUsize>,
+}
+
+impl hyper::body::Body for Fed {
+    type Data = axum::body::Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        match self.rx.poll_recv(cx) {
+            std::task::Poll::Ready(Some(chunk)) => {
+                self.taken.fetch_add(1, Ordering::SeqCst);
+                std::task::Poll::Ready(Some(Ok(hyper::body::Frame::data(chunk))))
+            }
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+/// A fed body, its sender and its count of chunks taken.
+pub fn fed() -> (
+    Body,
+    tokio::sync::mpsc::Sender<axum::body::Bytes>,
+    Arc<AtomicUsize>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let taken = Arc::new(AtomicUsize::new(0));
+    let body = Body::new(Fed {
+        rx,
+        taken: Arc::clone(&taken),
+    });
+    (body, tx, taken)
+}
+
+/// A body of `chunks` chunks of `size` bytes each, made as the server
+/// asks for them, counting those it took (VT17's "streamed 100 times past
+/// it").
+pub struct Endless {
+    chunk: axum::body::Bytes,
+    left: usize,
+    taken: Arc<AtomicUsize>,
+}
+
+impl hyper::body::Body for Endless {
+    type Data = axum::body::Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        if self.left == 0 {
+            return std::task::Poll::Ready(None);
+        }
+        self.left -= 1;
+        self.taken.fetch_add(1, Ordering::SeqCst);
+        std::task::Poll::Ready(Some(Ok(hyper::body::Frame::data(self.chunk.clone()))))
+    }
+}
+
+/// An endless body and its count.
+pub fn endless(chunks: usize, size: usize) -> (Body, Arc<AtomicUsize>) {
+    let taken = Arc::new(AtomicUsize::new(0));
+    let body = Body::new(Endless {
+        chunk: axum::body::Bytes::from(vec![b'x'; size]),
+        left: chunks,
+        taken: Arc::clone(&taken),
+    });
+    (body, taken)
+}
+
+impl TestServer {
+    /// Sends `call` in process with `body` instead of its own (a fed or
+    /// endless one); the response passes the scan.
+    pub async fn send_body(&self, call: Call, body: Body) -> Reply {
+        let call = if call.names_credentials() {
+            call
+        } else {
+            let token = self.token().to_owned();
+            call.bearer(&token)
+        };
+        let Transport::InProcess(router) = &self.transport else {
+            panic!("send_body is in process only");
+        };
+        let (parts, _) = call.request(None).into_parts();
+        let request = Request::from_parts(parts, body);
+        let response = router.clone().oneshot(request).await.unwrap();
+        let (parts, body) = response.into_parts();
+        let body = body.collect().await.unwrap().to_bytes().to_vec();
+        let reply = Reply {
+            status: parts.status,
+            headers: parts.headers,
+            body,
+        };
+        let problems = scan::response(&reply, &self.dirs.roots());
+        assert!(problems.is_empty(), "the response leaks: {problems:?}");
+        reply
+    }
+
+    /// The files under the state's `tmp/`.
+    pub fn temporaries(&self) -> Vec<PathBuf> {
+        std::fs::read_dir(self.dirs.state.join("tmp"))
+            .map(|d| d.map(|e| e.unwrap().path()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The files under the state's `objects/sha256/`, by name.
+    pub fn object_files(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let Ok(fans) = std::fs::read_dir(self.dirs.state.join("objects/sha256")) else {
+            return out;
+        };
+        for fan in fans {
+            for file in std::fs::read_dir(fan.unwrap().path()).unwrap() {
+                out.push(file.unwrap().file_name().to_string_lossy().into_owned());
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// OB2's promise: every object row has its file, of its length and
+    /// SHA-256; the problems found.
+    pub fn store_problems(&self) -> Vec<String> {
+        let seams = self.server().seams();
+        let mut problems = Vec::new();
+        for (sha256, bytes) in seams.db.objects().unwrap() {
+            match seams.objects.read(&sha256, bytes) {
+                Ok(read) if u64::try_from(read.len()).unwrap() == bytes => {}
+                Ok(_) => problems.push(format!("{sha256}: the wrong length")),
+                Err(error) => problems.push(format!("{sha256}: {error}")),
+            }
+        }
+        problems
+    }
+}
+
+/// A job row of `owner` of `kind` in `state` holding `sha256` as its input,
+/// as PR 5's submission writes one (JS11, OB4): straight into `server.db`,
+/// since no route makes a job yet. Returns its id.
+pub fn seed_job_input(
+    server: &TestServer,
+    owner: i64,
+    sha256: &str,
+    kind: &str,
+    state: &str,
+) -> String {
+    let conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT count(*) FROM job", [], |r| r.get(0))
+        .unwrap();
+    let id = format!("j_{:026}", n + 1);
+    conn.execute(
+        "INSERT INTO job (id, owner, kind, lane, state, request, request_sha256, request_id,
+                          created_ms)
+         VALUES (?1, ?2, ?3, 'query', ?4, x'7b7d', ?5, 'r_seeded', 0)",
+        rusqlite::params![id, owner, kind, state, "0".repeat(64)],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO job_input (job, n, sha256) SELECT key, 0, ?2 FROM job WHERE id = ?1",
+        rusqlite::params![id, sha256],
+    )
+    .unwrap();
+    id
+}
+
+/// Sets a seeded job's state.
+pub fn set_job_state(server: &TestServer, id: &str, state: &str) {
+    let conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    conn.execute(
+        "UPDATE job SET state = ?2 WHERE id = ?1",
+        rusqlite::params![id, state],
+    )
+    .unwrap();
 }

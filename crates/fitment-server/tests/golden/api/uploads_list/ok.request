@@ -1,0 +1,3 @@
+GET /v1/uploads?limit=1
+authorization: Bearer <ada's reader token>
+

@@ -127,52 +127,237 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     }
 }
 
-/// The SHA-256 digest of `bytes`.
-pub fn sha256(bytes: &[u8]) -> [u8; 32] {
-    let mut state = H0;
-    let mut blocks = bytes.chunks_exact(64);
-    for block in blocks.by_ref() {
-        let mut full = [0u8; 64];
-        full.copy_from_slice(block);
-        compress(&mut state, &full);
-    }
-    // The rest, a 1 bit, zeros, and the length in bits: one block or two.
-    let rest = blocks.remainder();
-    let mut tail = [0u8; 128];
-    tail[..rest.len()].copy_from_slice(rest);
-    tail[rest.len()] = 0x80;
-    let blocks_left = if rest.len() < 56 { 1 } else { 2 };
-    let end = blocks_left * 64;
-    // The length of a slice in bytes fits in u64 on every target Rust
-    // supports, and the bit count wraps as FIPS 180-4 specifies modulo 2⁶⁴.
-    let bits = (bytes.len() as u64).wrapping_mul(8);
-    tail[end - 8..end].copy_from_slice(&bits.to_be_bytes());
-    for block in tail[..end].chunks_exact(64) {
-        let mut full = [0u8; 64];
-        full.copy_from_slice(block);
-        compress(&mut state, &full);
-    }
-    let mut digest = [0u8; 32];
-    for (out, word) in digest.chunks_exact_mut(4).zip(state) {
-        out.copy_from_slice(&word.to_be_bytes());
-    }
-    digest
+/// An incremental SHA-256 (docs/research/m6-api.md, CO1): bytes fed in
+/// pieces of any size give the digest of their concatenation, through the
+/// same compression function as [`sha256`], so every content name in
+/// fitment (blobs, objects, uploads, documents, tokens' stored hashes)
+/// comes from one implementation.
+#[derive(Clone)]
+pub struct Sha256 {
+    state: [u32; 8],
+    /// The bytes of a block not yet full.
+    block: [u8; 64],
+    /// How many of `block` are filled: always below 64.
+    filled: usize,
+    /// Every byte fed, modulo 2⁶⁴ (FIPS 180-4 counts bits modulo 2⁶⁴).
+    length: u64,
 }
 
-/// The SHA-256 digest of `bytes` as 64 lower-case hexadecimal digits.
-pub fn sha256_hex(bytes: &[u8]) -> String {
+impl std::fmt::Debug for Sha256 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sha256")
+            .field("length", &self.length)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for Sha256 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sha256 {
+    /// A hash of nothing yet.
+    pub fn new() -> Self {
+        Self {
+            state: H0,
+            block: [0; 64],
+            filled: 0,
+            length: 0,
+        }
+    }
+
+    /// Feeds `bytes`: each block folds in as soon as it is full, so the
+    /// hasher holds at most 63 bytes.
+    pub fn update(&mut self, mut bytes: &[u8]) {
+        // A slice's length fits in u64 on every target Rust supports.
+        self.length = self.length.wrapping_add(bytes.len() as u64);
+        if self.filled > 0 {
+            let take = (64 - self.filled).min(bytes.len());
+            self.block[self.filled..self.filled + take].copy_from_slice(&bytes[..take]);
+            self.filled += take;
+            bytes = &bytes[take..];
+            if self.filled < 64 {
+                return;
+            }
+            let block = self.block;
+            compress(&mut self.state, &block);
+            self.filled = 0;
+        }
+        let mut blocks = bytes.chunks_exact(64);
+        for block in blocks.by_ref() {
+            let mut full = [0u8; 64];
+            full.copy_from_slice(block);
+            compress(&mut self.state, &full);
+        }
+        let rest = blocks.remainder();
+        self.block[..rest.len()].copy_from_slice(rest);
+        self.filled = rest.len();
+    }
+
+    /// The digest of everything fed: the rest, a 1 bit, zeros and the
+    /// length in bits, in one block or two.
+    pub fn finish(mut self) -> [u8; 32] {
+        let mut tail = [0u8; 128];
+        tail[..self.filled].copy_from_slice(&self.block[..self.filled]);
+        tail[self.filled] = 0x80;
+        let end = if self.filled < 56 { 64 } else { 128 };
+        let bits = self.length.wrapping_mul(8);
+        tail[end - 8..end].copy_from_slice(&bits.to_be_bytes());
+        for block in tail[..end].chunks_exact(64) {
+            let mut full = [0u8; 64];
+            full.copy_from_slice(block);
+            compress(&mut self.state, &full);
+        }
+        let mut digest = [0u8; 32];
+        for (out, word) in digest.chunks_exact_mut(4).zip(self.state) {
+            out.copy_from_slice(&word.to_be_bytes());
+        }
+        digest
+    }
+
+    /// [`Sha256::finish`] as 64 lower-case hexadecimal digits.
+    pub fn finish_hex(self) -> String {
+        hex(&self.finish())
+    }
+}
+
+/// `digest` as lower-case hexadecimal digits.
+fn hex(digest: &[u8; 32]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut text = String::with_capacity(64);
-    for byte in sha256(bytes) {
+    for byte in digest {
         text.push(char::from(DIGITS[usize::from(byte >> 4)]));
         text.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     text
 }
 
+/// The SHA-256 digest of `bytes`: [`Sha256`] fed once.
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.finish()
+}
+
+/// The SHA-256 digest of `bytes` as 64 lower-case hexadecimal digits.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&sha256(bytes))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::sha256_hex;
+    use super::{H0, Sha256, compress, sha256, sha256_hex};
+
+    /// The one-shot function as it was before CO1, kept as the oracle the
+    /// incremental hasher is held to.
+    fn one_shot(bytes: &[u8]) -> [u8; 32] {
+        let mut state = H0;
+        let mut blocks = bytes.chunks_exact(64);
+        for block in blocks.by_ref() {
+            let mut full = [0u8; 64];
+            full.copy_from_slice(block);
+            compress(&mut state, &full);
+        }
+        let rest = blocks.remainder();
+        let mut tail = [0u8; 128];
+        tail[..rest.len()].copy_from_slice(rest);
+        tail[rest.len()] = 0x80;
+        let end = if rest.len() < 56 { 64 } else { 128 };
+        let bits = (bytes.len() as u64).wrapping_mul(8);
+        tail[end - 8..end].copy_from_slice(&bits.to_be_bytes());
+        for block in tail[..end].chunks_exact(64) {
+            let mut full = [0u8; 64];
+            full.copy_from_slice(block);
+            compress(&mut state, &full);
+        }
+        let mut digest = [0u8; 32];
+        for (out, word) in digest.chunks_exact_mut(4).zip(state) {
+            out.copy_from_slice(&word.to_be_bytes());
+        }
+        digest
+    }
+
+    /// Bytes that vary in every position, so a piece fed twice or out of
+    /// order changes the digest.
+    fn message(n: usize) -> Vec<u8> {
+        (0..n)
+            .map(|i| u8::try_from((i * 131 + 7) % 251).unwrap())
+            .collect()
+    }
+
+    /// CO1, VT37: fed in two pieces split at every point, and in three at
+    /// every pair of points, messages of 0 to 200 bytes give the one-shot
+    /// digest, and so does the wrapper.
+    #[test]
+    fn every_split_is_the_one_shot_digest() {
+        for n in 0..=200 {
+            let bytes = message(n);
+            let want = one_shot(&bytes);
+            assert_eq!(sha256(&bytes), want, "{n} bytes, one piece");
+            for k in 0..=n {
+                let mut hasher = Sha256::new();
+                hasher.update(&bytes[..k]);
+                hasher.update(&bytes[k..]);
+                assert_eq!(hasher.finish(), want, "{n} bytes split at {k}");
+            }
+            if n <= 140 {
+                for a in 0..=n {
+                    for b in a..=n {
+                        let mut hasher = Sha256::new();
+                        hasher.update(&bytes[..a]);
+                        hasher.update(&bytes[a..b]);
+                        hasher.update(&bytes[b..]);
+                        assert_eq!(hasher.finish(), want, "{n} bytes split at {a} and {b}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// CO1, VT37: byte by byte, and in uneven pieces of a long message,
+    /// the standard vectors and the one-shot digest; a clone hashes on
+    /// alone.
+    #[test]
+    fn pieces_of_any_size_give_the_standard_digests() {
+        let mut hasher = Sha256::new();
+        for byte in b"abc" {
+            hasher.update(&[*byte]);
+        }
+        assert_eq!(
+            hasher.finish_hex(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let million = vec![b'a'; 1_000_000];
+        let mut hasher = Sha256::new();
+        for piece in million.chunks(997) {
+            hasher.update(piece);
+        }
+        assert_eq!(
+            hasher.finish_hex(),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+        let bytes = message(10_000);
+        let mut hasher = Sha256::new();
+        let mut at = 0;
+        for size in (1..).map(|i| (i * 37) % 600) {
+            if at >= bytes.len() {
+                break;
+            }
+            let end = (at + size).min(bytes.len());
+            hasher.update(&bytes[at..end]);
+            at = end;
+        }
+        let fork = hasher.clone();
+        assert_eq!(hasher.finish(), one_shot(&bytes));
+        let mut fork = fork;
+        fork.update(b"more");
+        let mut longer = bytes.clone();
+        longer.extend_from_slice(b"more");
+        assert_eq!(fork.finish(), one_shot(&longer));
+        assert_eq!(Sha256::default().finish_hex(), sha256_hex(b""));
+    }
 
     // FIPS 180-4's examples (NIST CSRC, "Example Algorithms") and the
     // NIST byte-oriented test vectors.

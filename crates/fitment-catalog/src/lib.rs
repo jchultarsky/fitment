@@ -52,7 +52,7 @@ use rusqlite::{Connection, OpenFlags};
 
 pub use blobs::{BadBlob, Placed};
 pub use change::{Deleted, Deletion, NotReplaced, Pruned, Released, Replaced, Unnamed};
-pub use fs::{Content, Fs, Point, StdFs};
+pub use fs::{Content, Fs, FsRead, FsWrite, Point, StdFs};
 pub use gc::Collected;
 pub use hex::{NotHex, Sha256Hex};
 pub use ids::{BadReference, Id, Reference};

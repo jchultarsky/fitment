@@ -359,4 +359,10 @@ impl fitment_catalog::Fs for Shared {
     fn point(&self, at: Point) -> io::Result<()> {
         self.0.point(at)
     }
+    fn create_new_stream(&self, path: &Path) -> io::Result<Box<dyn fitment_catalog::FsWrite>> {
+        self.0.create_new_stream(path)
+    }
+    fn open_stream(&self, path: &Path, cap: u64) -> io::Result<Box<dyn fitment_catalog::FsRead>> {
+        self.0.open_stream(path, cap)
+    }
 }

@@ -4,13 +4,12 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, Uri, header};
+use axum::http::{StatusCode, Uri};
 use axum::response::Response;
 
 use crate::Shared;
 use crate::auth::documents::{
-    FORMAT_VERSION, PAGE_FORMAT, Page, PresentingToken, TOKEN_FORMAT, TokenDocument, USER_FORMAT,
-    UserDocument,
+    FORMAT_VERSION, Page, PresentingToken, TOKEN_FORMAT, TokenDocument, USER_FORMAT, UserDocument,
 };
 use crate::auth::password::{self, Verified};
 use crate::auth::requests::{
@@ -281,40 +280,6 @@ pub(super) async fn password(
     }
 }
 
-/// A page's response: `fitment.page`, and `Link: <next>; rel="next"`
-/// (VN3).
-fn page<T: serde::Serialize>(page: &Page<T>) -> Response {
-    let mut response = json::document(PAGE_FORMAT, FORMAT_VERSION, page);
-    if let Some(value) = page
-        .next
-        .as_deref()
-        .and_then(|next| HeaderValue::from_str(&format!("<{next}>; rel=\"next\"")).ok())
-    {
-        response.headers_mut().insert(header::LINK, value);
-    }
-    response
-}
-
-/// The next page's URL, if `rows` holds one more than `limit`.
-fn next_url<R>(
-    base: &str,
-    rows: &mut Vec<R>,
-    limit: u32,
-    key: impl Fn(&R) -> &str,
-    extra: &str,
-) -> Option<String> {
-    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-    if rows.len() <= limit {
-        return None;
-    }
-    rows.truncate(limit);
-    let last = rows.last().map(key)?;
-    Some(format!(
-        "{base}?after={}&limit={limit}{extra}",
-        query::cursor(last)
-    ))
-}
-
 /// `GET /v1/auth/tokens`: the caller's tokens by id (VN3), never a secret
 /// (AU3); `?owner=` names another user's, for an admin only (AU5, AU8).
 pub(super) async fn tokens_list(
@@ -355,7 +320,7 @@ pub(super) async fn tokens_list(
         fetched.map_err(|e| io_error(&e))
     })
     .await?;
-    let next = next_url(
+    let next = super::next_url(
         "/v1/auth/tokens",
         &mut rows,
         limit,
@@ -366,7 +331,7 @@ pub(super) async fn tokens_list(
         .iter()
         .map(|row| TokenDocument::of(row, shared.auth.last_used(row.key), None))
         .collect();
-    Ok(page(&Page::new(TOKEN_FORMAT, items, next)))
+    Ok(super::page(&Page::new(TOKEN_FORMAT, items, next)))
 }
 
 /// True if the caller's token is confined to its own subtree (AU10): a
@@ -505,9 +470,9 @@ pub(super) async fn users_list(
             .map_err(|e| io_error(&e))
     })
     .await?;
-    let next = next_url("/v1/auth/users", &mut rows, limit, |r| r.fold.as_str(), "");
+    let next = super::next_url("/v1/auth/users", &mut rows, limit, |r| r.fold.as_str(), "");
     let items = rows.iter().map(|row| UserDocument::of(row, None)).collect();
-    Ok(page(&Page::new(USER_FORMAT, items, next)))
+    Ok(super::page(&Page::new(USER_FORMAT, items, next)))
 }
 
 /// `POST /v1/auth/users` (admin): a user, with a password (hashed in an

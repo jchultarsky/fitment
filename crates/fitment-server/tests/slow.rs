@@ -289,3 +289,172 @@ async fn a_connection_lives_at_most_its_lifetime() {
     .unwrap();
     server.stop().await;
 }
+
+/// Starts an upload of `length` declared bytes on a raw connection and
+/// sends `pieces` of `piece` bytes, `every` apart, until the server
+/// answers; returns its answer. A reader thread takes the answer as it
+/// comes, before the reset that bytes sent after the server's close
+/// draw.
+fn trickle(
+    addr: std::net::SocketAddr,
+    token: &str,
+    length: usize,
+    piece: usize,
+    pieces: usize,
+    every: Duration,
+) -> Vec<u8> {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let head = format!(
+        "POST /v1/uploads HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\n\
+         Content-Type: application/octet-stream\r\nContent-Length: {length}\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    let answer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut reading = stream.try_clone().unwrap();
+    let sink = std::sync::Arc::clone(&answer);
+    #[allow(clippy::disallowed_methods)] // a client's reader, not the server's work
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0_u8; 4096];
+        while let Ok(n) = reading.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            sink.lock().unwrap().extend_from_slice(&buf[..n]);
+        }
+    });
+    let chunk = vec![b't'; piece];
+    for _ in 0..pieces {
+        if !answer.lock().unwrap().is_empty() || stream.write_all(&chunk).is_err() {
+            break;
+        }
+        std::thread::sleep(every);
+    }
+    let started = Instant::now();
+    while answer.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The answer has come, or the wait is over: the connection is done.
+    std::thread::sleep(Duration::from_millis(50));
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    let _ = reader.join();
+    answer.lock().unwrap().clone()
+}
+
+/// Waits up to 5 s for the server to hold no upload and no temporary
+/// file (the removal runs as the answer is sent).
+async fn settled(server: &TestServer) {
+    let started = Instant::now();
+    loop {
+        let idle = server.server().seams().uploads.running(0).0 == 0;
+        if idle && server.temporaries().is_empty() {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "an upload stayed"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// HX3, UP2 (VT18's upload throughput): an upload trickled below
+/// `limits.upload_min_kib_s`, averaged over the window, is cut `408
+/// upload_too_slow` once its first window is past, its temporary file
+/// removed and its slot free; one just above it completes.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upload_below_the_minimum_throughput_is_cut() {
+    let mut server = bound(|c| c.limits.upload_window_seconds = 1).await;
+    let (addr, token) = (server.addr(), server.token().to_owned());
+    let started = Instant::now();
+    let slow = tokio::task::spawn_blocking({
+        let token = token.clone();
+        // 1 KiB every 50 ms: 20 KiB/s, under 64.
+        move || trickle(addr, &token, 1 << 20, 1024, 1024, Duration::from_millis(50))
+    })
+    .await
+    .unwrap();
+    let text = String::from_utf8_lossy(&slow);
+    assert!(text.starts_with("HTTP/1.1 408"), "{text}");
+    assert!(text.contains("upload_too_slow"));
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(1) && elapsed < Duration::from_secs(8),
+        "{elapsed:?}"
+    );
+    settled(&server).await;
+    assert_eq!(server.object_files(), Vec::<String>::new());
+    let fast = tokio::task::spawn_blocking(move || {
+        // 16 KiB every 100 ms: 160 KiB/s, over 64, for 2 s.
+        trickle(
+            addr,
+            &token,
+            20 * 16 * 1024,
+            16 * 1024,
+            20,
+            Duration::from_millis(100),
+        )
+    })
+    .await
+    .unwrap();
+    let text = String::from_utf8_lossy(&fast);
+    assert!(text.starts_with("HTTP/1.1 201"), "{text}");
+    settled(&server).await;
+    assert_eq!(server.object_files().len(), 1);
+    server.stop().await;
+}
+
+/// HX3, UP2 (VT18): a body that stops coming is cut after
+/// `limits.upload_chunk_seconds` without a chunk, `408 upload_too_slow`,
+/// though its throughput window is long; nothing is kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stalled_upload_is_cut_at_the_chunk_wait() {
+    let mut server = bound(|c| {
+        c.limits.upload_chunk_seconds = 1;
+        c.limits.upload_window_seconds = 300;
+    })
+    .await;
+    let (addr, token) = (server.addr(), server.token().to_owned());
+    let started = Instant::now();
+    let reply = tokio::task::spawn_blocking(move || {
+        trickle(addr, &token, 4096, 100, 1, Duration::from_millis(1))
+    })
+    .await
+    .unwrap();
+    let text = String::from_utf8_lossy(&reply);
+    assert!(text.starts_with("HTTP/1.1 408"), "{text}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    settled(&server).await;
+    assert_eq!(server.object_files(), Vec::<String>::new());
+    server.stop().await;
+}
+
+/// UP2, VT13's upload half: a client that disconnects mid-upload leaves
+/// no object, no temporary file and no slot taken; the server serves the
+/// next client.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_gone_mid_upload_leaves_nothing() {
+    let mut server = bound(|_| {}).await;
+    let (addr, token) = (server.addr(), server.token().to_owned());
+    tokio::task::spawn_blocking(move || {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let head = format!(
+            "PUT /v1/uploads/sha256:{} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\n\
+             Content-Type: model/step\r\nContent-Length: 4194304\r\n\r\n",
+            "0".repeat(64)
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(&vec![b'g'; 1_500_000]).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        drop(stream);
+    })
+    .await
+    .unwrap();
+    settled(&server).await;
+    assert_eq!(server.object_files(), Vec::<String>::new());
+    assert_eq!(server.get("/v1/health").await.status, 204);
+    server.stop().await;
+}

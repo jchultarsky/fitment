@@ -1,0 +1,17 @@
+200
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.upload/1
+repr-digest: sha-256=:k05W/iLstXNIb+6C2EgZvySZ1pqlkGuiyRDOX5rGtWI=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.upload",
+  "format_version": 1,
+  "sha256": "62048ce1d1d48e0786d0a9e001ab0c72354bb9faa408a4984f9ceb2b9f73ccff",
+  "bytes": 18,
+  "held_by": [
+    "upload"
+  ],
+  "pinned_by_jobs": 0
+}
