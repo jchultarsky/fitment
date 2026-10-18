@@ -8,6 +8,17 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-17
+
+M5: the catalog. `fitment catalog` stores STEP parts by content, gated
+and indexed, and `fitment match --catalog` searches them: a catalog run is
+the file run over the parts its index admits, digest for digest. Publish
+`fitment-core` first, then `fitment-catalog` (new, internal and unstable:
+the CLI is its one user), then `fitment`. The four document formats of
+0.1.0 keep their layouts and versions, and `fitment.catalog` v1 is new;
+`signature_version` is 2, and since a `fitment.match` document records it
+inside its digest, a match document's digest changes with it.
+
 ### Added
 
 - **M5, PR 1 (the catalog's core):** `Matcher::judge_document` judges a
@@ -90,7 +101,9 @@ Until 1.0, minor versions may contain breaking changes.
   largest indexed. Level 1 never hides a part verification passes; it no
   longer claims to return everything level 2 keeps, which level 2's
   budget and borrowed diameters do not allow. The pair filter now steps
-  aside at level 2's own angular window.
+  aside at level 2's own angular window. Every `fitment.match` document
+  records the version inside its digest, so a document for the same
+  inputs has a new digest; its verdicts and evidence are unchanged.
 - `fitment socket`, `match` and `review` sync an output file's temporary
   copy and its directory around the rename, so a crash leaves the old file
   or the new one.

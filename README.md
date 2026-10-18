@@ -15,7 +15,8 @@ written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 > by content, gated and indexed, and `fitment match --catalog` searches
 > them: a catalog run is the file run over the parts its index admits,
 > digest for digest, and on the 10⁵-part scaled corpus every full run
-> holds every part an exhaustive run passes. Released so far: M4 (0.1.0).
+> holds every part an exhaustive run passes. Version 0.2.0 (M5) follows
+> 0.1.0 (M4).
 >
 > `fitment features` reads one part from a
 > STEP file, refusing a file that is not a canonical part, with reasons.
@@ -235,7 +236,7 @@ the catalog and the matcher is M6.
 | M2 | Features of one part |
 | M3 | Socket extraction |
 | M4 | Matching, evidence, and the known-answer corpus (done, 0.1.0) |
-| M5 | Catalog (done) |
+| M5 | Catalog (done, 0.2.0) |
 | M6 | REST API |
 | M7 | Optional body-fit verifier |
 | M8 | Viewer |

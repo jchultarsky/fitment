@@ -5,14 +5,19 @@ tests catalog parts against the *socket* an assembly requires of a part
 (holes on given axes, diameter limits, seating planes, grips, conical
 seats) and returns a verdict with its evidence.
 
-> **Status: milestone M4 done.** [`read_part`] reads one part from a STEP
-> file through the canonical gate; [`read_assembly`] lists an assembly's
-> parts; [`SocketDocument::extract`] reads what the neighbours of a part
-> require of any part that replaces it; a [`Matcher`] judges candidates
-> against that socket, with every check's evidence, and [`MatchDocument`]
-> is a run's JSON form (`fitment.match` v1). The body fit (M7) is not
-> checked yet: a candidate that passes every requirement is an
-> `InterfaceMatch`. See the
+> **Status: milestone M5 done (0.2.0).** [`read_part`] reads one part from
+> a STEP file through the canonical gate; [`read_assembly`] lists an
+> assembly's parts; [`SocketDocument::extract`] reads what the neighbours
+> of a part require of any part that replaces it; a [`Matcher`] judges
+> candidates against that socket, with every check's evidence, and
+> [`MatchDocument`] is a run's JSON form (`fitment.match` v1). For a
+> catalog, [`Matcher::judge_document`] judges a stored features document
+> exactly as its file, [`level_one`] finds candidates over any
+> [`IndexSource`] of their [`IndexTokens`], and
+> [`FeaturesDocument::read_with_properties`] also captures a part's stated
+> properties ([`StatedProperties`], read through [`PropertyMap`]). The
+> body fit (M7) is not checked yet: a candidate that passes every
+> requirement is an `InterfaceMatch`. See the
 > [plan](https://github.com/jchultarsky/fitment/blob/main/docs/PLAN.md).
 
 ## Matching
