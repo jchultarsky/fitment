@@ -130,13 +130,19 @@ impl Reply {
     }
 }
 
-/// A request to send.
+/// A request to send. Unless it names its own credentials or is
+/// [`Call::anonymous`], [`TestServer::send`] presents the harness's admin
+/// token (AU5: every route but four and login needs one).
 #[derive(Debug, Clone)]
 pub struct Call {
     pub method: Method,
     pub path: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// Sent without the harness's token.
+    pub anonymous: bool,
+    /// In process, the peer's address (`ConnectInfo`), which AU7 reads.
+    pub peer: Option<SocketAddr>,
 }
 
 impl Call {
@@ -150,7 +156,44 @@ impl Call {
             path: path.to_owned(),
             headers: Vec::new(),
             body: Vec::new(),
+            anonymous: false,
+            peer: None,
         }
+    }
+
+    /// A JSON request.
+    pub fn json(method: Method, path: &str, body: &serde_json::Value) -> Self {
+        Self::new(method, path)
+            .header("content-type", "application/json")
+            .body(body.to_string().as_bytes())
+    }
+
+    /// Without the harness's token.
+    #[must_use]
+    pub fn anonymous(mut self) -> Self {
+        self.anonymous = true;
+        self
+    }
+
+    /// With `Authorization: Bearer <token>`.
+    #[must_use]
+    pub fn bearer(self, token: &str) -> Self {
+        self.header("authorization", &format!("Bearer {token}"))
+    }
+
+    /// From `peer`, in process.
+    #[must_use]
+    pub fn peer(mut self, peer: SocketAddr) -> Self {
+        self.peer = Some(peer);
+        self
+    }
+
+    fn names_credentials(&self) -> bool {
+        self.anonymous
+            || self
+                .headers
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case("authorization"))
     }
 
     #[must_use]
@@ -182,7 +225,13 @@ impl Call {
         {
             builder = builder.header("content-length", self.body.len().to_string());
         }
-        builder.body(Body::from(self.body.clone())).unwrap()
+        let mut request = builder.body(Body::from(self.body.clone())).unwrap();
+        if let Some(peer) = self.peer {
+            request
+                .extensions_mut()
+                .insert(axum::extract::ConnectInfo(peer));
+        }
+        request
     }
 }
 
@@ -198,6 +247,8 @@ enum Transport {
 pub struct TestServer {
     pub dirs: Dirs,
     pub server: Option<Server>,
+    /// The harness's admin token, made on first use (AU9's library).
+    token: std::sync::OnceLock<String>,
     transport: Transport,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
@@ -215,6 +266,7 @@ impl TestServer {
         Self {
             dirs,
             server: Some(server),
+            token: std::sync::OnceLock::new(),
             transport: Transport::InProcess(router),
             stop: None,
             task: None,
@@ -250,6 +302,7 @@ impl TestServer {
         Self {
             dirs,
             server: Some(server),
+            token: std::sync::OnceLock::new(),
             transport: Transport::Wire(addr),
             stop: Some(stop),
             task: Some(task),
@@ -264,6 +317,7 @@ impl TestServer {
         Self {
             dirs,
             server: None,
+            token: std::sync::OnceLock::new(),
             transport: Transport::Wire(addr),
             stop: None,
             task: None,
@@ -283,6 +337,19 @@ impl TestServer {
         self.server.as_ref().expect("an in-process or bound server")
     }
 
+    /// The harness's admin token: a user `harness` made with AU9's
+    /// offline library on this server's state directory, with its own
+    /// random ids, so a golden's fixed ids are untouched.
+    pub fn token(&self) -> &str {
+        self.token.get_or_init(|| {
+            let minted = admin(&self.dirs)
+                .bootstrap_or_mint("harness")
+                .expect("the harness's token");
+            scan::secret(minted.secret.expose());
+            minted.secret.expose().to_owned()
+        })
+    }
+
     /// Sends `call`; the response passes XH11's checks and XH13's scan.
     pub async fn send(&self, call: Call) -> Reply {
         let reply = self.send_unchecked(call).await;
@@ -296,6 +363,12 @@ impl TestServer {
 
     /// Sends `call` without the checks: for VT34's controls only.
     pub async fn send_unchecked(&self, call: Call) -> Reply {
+        let call = if call.names_credentials() {
+            call
+        } else {
+            let token = self.token().to_owned();
+            call.bearer(&token)
+        };
         match &self.transport {
             Transport::InProcess(router) => {
                 let response = router.clone().oneshot(call.request(None)).await.unwrap();
@@ -556,4 +629,99 @@ pub fn is_state(path: &Path) -> bool {
 /// A header value.
 pub fn value(text: &str) -> HeaderValue {
     HeaderValue::from_str(text).unwrap()
+}
+
+/// AU9's library on `dirs`'s state directory, without a pepper.
+pub fn admin(dirs: &Dirs) -> fitment_server::admin::Admin {
+    fitment_server::admin::Admin::open(&dirs.config()).expect("the state opens offline")
+}
+
+/// The harness's ways with the offline library.
+pub trait AdminExt {
+    /// Bootstraps `username` as the first admin, or, when an admin exists,
+    /// makes it an admin and mints its token.
+    fn bootstrap_or_mint(
+        &self,
+        username: &str,
+    ) -> Result<fitment_server::auth::Minted, fitment_server::admin::AdminError>;
+}
+
+impl AdminExt for fitment_server::admin::Admin {
+    fn bootstrap_or_mint(
+        &self,
+        username: &str,
+    ) -> Result<fitment_server::auth::Minted, fitment_server::admin::AdminError> {
+        match self.bootstrap(username, None) {
+            Err(fitment_server::admin::AdminError::AdminExists) => {
+                let _ = self.add_user(username, fitment_server::auth::Role::Admin, None);
+                self.mint(username, "harness", None, None)
+            }
+            other => other,
+        }
+    }
+}
+
+/// A password for a test, registered so no response or log may hold it
+/// (XH13).
+pub fn password(text: &str) -> String {
+    scan::secret(text);
+    text.to_owned()
+}
+
+/// A person made through the server's own seams (its ids and clock):
+/// `password` hashed with the server's pepper and registered as a secret.
+pub fn seed_user(
+    server: &Server,
+    username: &str,
+    role: fitment_server::auth::Role,
+    password: Option<&str>,
+) -> fitment_server::state::UserRow {
+    let seams = server.seams();
+    let phc = password.map(|p| {
+        scan::secret(p);
+        fitment_server::auth::password::hash(p, seams.auth.pepper()).unwrap()
+    });
+    let id = seams.ids.id("u");
+    seams
+        .db
+        .create_user(
+            &id,
+            username,
+            &username.to_ascii_lowercase(),
+            role,
+            phc.as_deref(),
+            seams.ids.now_ms(),
+        )
+        .unwrap()
+}
+
+/// A token of `user` made through the seams, with no parent, of `role`,
+/// living from the server's now for `days` (negative: expired); its
+/// secret registered.
+pub fn seed_token(
+    server: &Server,
+    user: &fitment_server::state::UserRow,
+    role: fitment_server::auth::Role,
+    days: i64,
+) -> (fitment_server::state::TokenRow, String) {
+    let seams = server.seams();
+    let now = seams.ids.now_ms();
+    let minted = fitment_server::auth::mint(
+        seams.db,
+        seams.ids,
+        &fitment_server::state::MintFrom::Offline { user: user.key },
+        "seeded",
+        role,
+        now,
+        now + days * fitment_server::auth::DAY_MS,
+        u32::MAX,
+    )
+    .unwrap();
+    scan::secret(minted.secret.expose());
+    (minted.row, minted.secret.expose().to_owned())
+}
+
+/// A JSON body's call with a token.
+pub fn post(path: &str, token: &str, body: &serde_json::Value) -> Call {
+    Call::json(Method::POST, path, body).bearer(token)
 }

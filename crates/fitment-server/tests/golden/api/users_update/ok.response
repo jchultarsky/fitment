@@ -1,0 +1,16 @@
+200
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.user/1
+repr-digest: sha-256=:rI+gh4/BrfxP9nLNY5V+zSIFoM6eeBlGwlpHUaXLeeQ=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.user",
+  "format_version": 1,
+  "id": "u_00000000000000000000000001",
+  "username": "root",
+  "role": "admin",
+  "disabled": false,
+  "token": null
+}

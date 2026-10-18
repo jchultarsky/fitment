@@ -1,0 +1,23 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:MxM3wt0AuN2THYnKlH87Jyd4B6OzEcaHV167Xge5u9g=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/invalid_parameter",
+  "title": "A parameter is out of range",
+  "status": 400,
+  "detail": "a minted token's role is at most the presenting token's effective role, reader",
+  "code": "invalid_parameter",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "parameter": "role"
+  },
+  "request_id": "r_00000000000000000000000004"
+}

@@ -1,0 +1,4 @@
+POST /v1/auth/login
+content-type: application/json
+
+{"username": "Ada", "password": "correct horse battery staple", "token_name": "laptop", "days": 30}

@@ -1,0 +1,30 @@
+200
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.page/1
+repr-digest: sha-256=:szGPblMW5Jzu3B4suwKEpj16zgjID+hogVFVlUNPYoI=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.page",
+  "format_version": 1,
+  "kind": "fitment.token",
+  "items": [
+    {
+      "format": "fitment.token",
+      "format_version": 1,
+      "id": "t_00000000000000000000000003",
+      "name": "seeded",
+      "role": "reader",
+      "hint": "A70W",
+      "parent": null,
+      "created": "2026-09-21T14:13:20Z",
+      "expires": "2026-12-20T14:13:20Z",
+      "last_used": "2026-09-21T14:13:20Z",
+      "revoked": null,
+      "secret": null
+    }
+  ],
+  "next": null,
+  "generation": null
+}

@@ -270,8 +270,22 @@ pub struct AuthSection {
     pub token_default_days: u32,
     pub token_max_days: u32,
     pub hash_concurrency: u32,
+    /// How long a login waits for an argon2 slot (AU2), in seconds.
+    pub hash_wait_seconds: u32,
     pub max_live_tokens: u32,
     pub login_buckets: u32,
+    /// AU7: each user's requests a second, over all their tokens.
+    pub rate_per_second: u32,
+    /// AU7: and at most this many at once.
+    pub rate_burst: u32,
+    /// AU7: login attempts per client address per minute.
+    pub login_per_minute: u32,
+    /// AU7: failures per (username, address) per `login_failure_minutes`.
+    pub login_failures: u32,
+    pub login_failure_minutes: u32,
+    /// AU10: tokens a user mints a minute through `POST /v1/auth/tokens`,
+    /// so dead tokens cannot pile up faster than the sweep (review).
+    pub mints_per_minute: u32,
 }
 
 impl Default for AuthSection {
@@ -281,9 +295,54 @@ impl Default for AuthSection {
             token_default_days: 90,
             token_max_days: 365,
             hash_concurrency: 2,
+            hash_wait_seconds: 10,
             max_live_tokens: 20,
             login_buckets: 10_000,
+            rate_per_second: 50,
+            rate_burst: 100,
+            login_per_minute: 30,
+            login_failures: 10,
+            login_failure_minutes: 15,
+            mints_per_minute: 10,
         }
+    }
+}
+
+impl AuthSection {
+    /// The checks a value's type cannot make (AU4, AU7, AU10).
+    ///
+    /// # Errors
+    ///
+    /// The first value that fails.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if [
+            self.token_default_days,
+            self.token_max_days,
+            self.hash_concurrency,
+            self.hash_wait_seconds,
+            self.max_live_tokens,
+            self.login_buckets,
+            self.rate_per_second,
+            self.rate_burst,
+            self.login_per_minute,
+            self.login_failures,
+            self.login_failure_minutes,
+            self.mints_per_minute,
+        ]
+        .contains(&0)
+        {
+            return Err(value_error(
+                "auth",
+                "every count and time must be at least 1",
+            ));
+        }
+        if self.token_default_days > self.token_max_days {
+            return Err(value_error(
+                "auth.token_default_days",
+                "at most auth.token_max_days",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -408,6 +467,13 @@ impl Config {
         flags: &Flags,
         vars: &BTreeMap<String, String>,
     ) -> Result<Self, ConfigError> {
+        Self::checked(flags, vars)
+    }
+
+    fn from_sources_unchecked(
+        flags: &Flags,
+        vars: &BTreeMap<String, String>,
+    ) -> Result<Self, ConfigError> {
         let file = flags
             .config
             .clone()
@@ -421,8 +487,52 @@ impl Config {
             .try_into()
             .map_err(|e: toml::de::Error| ConfigError::Invalid(e.message().to_owned()))?;
         config.apply(flags);
-        config.validate()?;
         config.ignored = ignored;
+        Ok(config)
+    }
+
+    /// [`Config::from_sources`], then [`Config::validate`].
+    fn checked(flags: &Flags, vars: &BTreeMap<String, String>) -> Result<Self, ConfigError> {
+        let config = Self::from_sources_unchecked(flags, vars)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// The configuration of AU9's offline commands: the same sources, but
+    /// only `paths.state` is required, since they never open the catalog.
+    ///
+    /// # Errors
+    ///
+    /// As [`Config::load`], `paths.catalog` excepted.
+    #[allow(clippy::disallowed_methods)] // SV7: the one module that reads the environment
+    pub fn load_offline(flags: &Flags) -> Result<Self, ConfigError> {
+        let vars: BTreeMap<String, String> = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+            .filter(|(k, _)| k.starts_with(FAMILY))
+            .collect();
+        Self::offline_from_sources(flags, &vars)
+    }
+
+    /// [`Config::load_offline`] over the variables given, for tests.
+    ///
+    /// # Errors
+    ///
+    /// As [`Config::load_offline`].
+    pub fn offline_from_sources(
+        flags: &Flags,
+        vars: &BTreeMap<String, String>,
+    ) -> Result<Self, ConfigError> {
+        let config = Self::from_sources_unchecked(flags, vars)?;
+        if config.paths.state.as_os_str().is_empty() {
+            return Err(value_error(
+                "paths.state",
+                "required: the server's state directory",
+            ));
+        }
+        if crate::state::has_parent_component(&config.paths.state) {
+            return Err(value_error("paths.state", "no `..`"));
+        }
+        config.auth.validate()?;
         Ok(config)
     }
 
@@ -506,7 +616,7 @@ impl Config {
         if self.limits.max_json_kib == 0 || self.limits.page_max == 0 {
             return Err(value_error("limits", "sizes must be at least 1"));
         }
-        Ok(())
+        self.auth.validate()
     }
 
     /// `server.listen` as an address.

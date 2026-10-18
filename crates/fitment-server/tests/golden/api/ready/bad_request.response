@@ -1,0 +1,21 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:vObL0n1CQKZxbftRPru9xSDNjCTYN4F01eBdZyca/MM=:
+x-request-id: r_00000000000000000000000001
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/bad_request",
+  "title": "The request is malformed",
+  "status": 400,
+  "detail": "a token is taken only in the Authorization header, never in the query",
+  "code": "bad_request",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000001"
+}

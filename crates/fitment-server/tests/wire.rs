@@ -52,7 +52,8 @@ async fn blocking_work_never_holds_a_worker() {
         .hooks
         .set("info.blocking", Action::Delay(Duration::from_secs(2)));
     let addr = server.addr();
-    let slow = tokio::spawn(async move { support::wire(addr, &Call::get("/v1/info")).await });
+    let info = Call::get("/v1/info").bearer(server.token());
+    let slow = tokio::spawn(async move { support::wire(addr, &info).await });
     tokio::time::sleep(Duration::from_millis(200)).await;
     let started = Instant::now();
     assert_eq!(server.get("/v1/health").await.status, 204);

@@ -1,0 +1,23 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:5lntuEKqAxRzYnEtMY95xTHE6zyip6faPRyykfr4wwQ=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/too_many_tokens",
+  "title": "The user holds the most live tokens allowed",
+  "status": 409,
+  "detail": "a user holds at most 1 live tokens: revoke one first",
+  "code": "too_many_tokens",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {
+    "limit": 1
+  },
+  "request_id": "r_00000000000000000000000004"
+}

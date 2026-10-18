@@ -6,6 +6,10 @@
 //! Exit codes: 0 after a graceful stop; 2 for a configuration, a state
 //! directory or a lease the operator must change; 3 for a catalog or
 //! `server.db` of a newer schema; 1 for I/O, a port in use among them.
+//!
+//! `admin` holds AU9's offline commands: `bootstrap`, `user` and `token`.
+//! A secret they make goes to stdout once, alone on its line; what they
+//! say goes to stderr and never holds one.
 
 use std::io::{BufRead as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
@@ -14,6 +18,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
+use fitment_server::admin::{Admin, AdminError};
+use fitment_server::auth::{Minted, Role};
 use fitment_server::{Config, Flags, Server};
 
 #[derive(Parser)]
@@ -34,6 +40,131 @@ enum Command {
     /// Asks the configured listener's /v1/health; exits 0 if it answers 204
     /// (OP5: the image's HEALTHCHECK).
     Healthcheck(ConfigArgs),
+    /// Users and tokens, offline, on server.db directly, while the server
+    /// runs or not (AU9).
+    #[command(subcommand)]
+    Admin(AdminCommand),
+}
+
+#[derive(Subcommand)]
+enum AdminCommand {
+    /// Makes the first admin and prints a new admin token to stdout, once;
+    /// refused if an admin exists.
+    Bootstrap {
+        #[command(flatten)]
+        at: StateArgs,
+        /// The admin's username.
+        #[arg(long)]
+        username: String,
+        /// Also sets a password, read from stdin.
+        #[arg(long)]
+        password_stdin: bool,
+    },
+    /// Users.
+    #[command(subcommand)]
+    User(UserCommand),
+    /// Tokens.
+    #[command(subcommand)]
+    Token(TokenCommand),
+}
+
+#[derive(Subcommand)]
+enum UserCommand {
+    /// Makes a user (token-only without --password-stdin); prints its id.
+    Add {
+        #[command(flatten)]
+        at: StateArgs,
+        #[arg(long)]
+        username: String,
+        /// reader, writer or admin.
+        #[arg(long, value_parser = role, default_value = "reader")]
+        role: Role,
+        /// Sets a password, read from stdin.
+        #[arg(long)]
+        password_stdin: bool,
+    },
+    /// Lists the users: id, username, role, enabled or disabled.
+    List {
+        #[command(flatten)]
+        at: StateArgs,
+    },
+    /// Sets a user's role or disables or enables it.
+    Set {
+        #[command(flatten)]
+        at: StateArgs,
+        #[arg(long)]
+        username: String,
+        #[arg(long, value_parser = role)]
+        role: Option<Role>,
+        /// true or false.
+        #[arg(long)]
+        disabled: Option<bool>,
+    },
+    /// Sets a new password, read from stdin, and revokes every token of
+    /// the user.
+    ResetPassword {
+        #[command(flatten)]
+        at: StateArgs,
+        #[arg(long)]
+        username: String,
+        /// Reads the password from stdin (required).
+        #[arg(long, required = true)]
+        password_stdin: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum TokenCommand {
+    /// Mints a token for a user and prints it to stdout, once.
+    Mint {
+        #[command(flatten)]
+        at: StateArgs,
+        #[arg(long)]
+        username: String,
+        /// Its name.
+        #[arg(long, default_value = "admin")]
+        name: String,
+        /// At most the user's role; the user's when not given.
+        #[arg(long, value_parser = role)]
+        role: Option<Role>,
+        /// Its lifetime in days (`auth.token_default_days` when not given).
+        #[arg(long)]
+        days: Option<u32>,
+    },
+    /// Lists a user's tokens: id, name, role, hint, expiry, revocation.
+    List {
+        #[command(flatten)]
+        at: StateArgs,
+        #[arg(long)]
+        username: String,
+    },
+    /// Revokes a token and every token minted from it.
+    Revoke {
+        #[command(flatten)]
+        at: StateArgs,
+        /// The token's id, t_….
+        #[arg(long)]
+        id: String,
+    },
+}
+
+/// Where the offline commands work: the state directory, and the
+/// configuration naming the pepper (AU1).
+#[derive(Args)]
+struct StateArgs {
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "The configuration file (or FITMENT_SERVER_CONFIG), for auth.pepper_file and [auth]"
+    )]
+    config: Option<PathBuf>,
+    /// The server's state directory (paths.state).
+    #[arg(long, value_name = "DIR")]
+    state: Option<PathBuf>,
+}
+
+fn role(text: &str) -> Result<Role, String> {
+    Role::parse(text).ok_or_else(|| "reader, writer or admin".to_owned())
 }
 
 /// The only flags (OP2); every other key is the file's or the
@@ -87,7 +218,147 @@ fn main() -> ExitCode {
         Command::Serve(args) => serve(&args),
         Command::CheckConfig(args) => check_config(&args),
         Command::Healthcheck(args) => healthcheck(&args),
+        Command::Admin(command) => admin(command),
     }
+}
+
+/// AU9's commands: their result, or the error's exit code.
+fn admin(command: AdminCommand) -> ExitCode {
+    match run_admin(command) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => fail(error.exit_code(), &error.to_string()),
+    }
+}
+
+fn open(at: &StateArgs) -> Result<Admin, AdminError> {
+    let mut flags = Flags::default();
+    flags.config.clone_from(&at.config);
+    flags.state.clone_from(&at.state);
+    let config = Config::load_offline(&flags).map_err(|e| AdminError::Usage(e.to_string()))?;
+    Admin::open(&config)
+}
+
+/// The password on stdin, its final line break dropped; refused from a
+/// terminal, where it would be echoed and kept in the scrollback (review).
+fn password_from_stdin() -> Result<String, AdminError> {
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        return Err(AdminError::Usage(
+            "--password-stdin reads a pipe, not a terminal: pipe the password in, as \
+             `printf '%s' \"$PASSWORD\" | fitment-server admin …`"
+                .into(),
+        ));
+    }
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut text)
+        .map_err(|_| AdminError::Usage("the password on stdin is not UTF-8".into()))?;
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
+    Ok(text)
+}
+
+/// Prints a minted token's secret to stdout, alone and once, and what it
+/// is to stderr, without it.
+fn print_minted(minted: &Minted, what: &str) {
+    println!("{}", minted.secret.expose());
+    let _ = std::io::stdout().flush();
+    eprintln!(
+        "fitment-server: {what}: token {} ({}), expires {}",
+        minted.row.id,
+        minted.row.role.name(),
+        fitment_server::ids::rfc3339(minted.row.expires_ms)
+    );
+}
+
+fn run_admin(command: AdminCommand) -> Result<(), AdminError> {
+    match command {
+        AdminCommand::Bootstrap {
+            at,
+            username,
+            password_stdin,
+        } => {
+            let password = password_stdin.then(password_from_stdin).transpose()?;
+            let minted = open(&at)?.bootstrap(&username, password.as_deref())?;
+            print_minted(&minted, &format!("admin {username} created"));
+        }
+        AdminCommand::User(command) => run_user(command)?,
+        AdminCommand::Token(command) => run_token(command)?,
+    }
+    Ok(())
+}
+
+fn run_user(command: UserCommand) -> Result<(), AdminError> {
+    match command {
+        UserCommand::Add {
+            at,
+            username,
+            role,
+            password_stdin,
+        } => {
+            let password = password_stdin.then(password_from_stdin).transpose()?;
+            let user = open(&at)?.add_user(&username, role, password.as_deref())?;
+            println!("{}", user.id);
+        }
+        UserCommand::List { at } => {
+            for user in open(&at)?.users()? {
+                let state = if user.disabled { "disabled" } else { "enabled" };
+                println!("{} {} {} {state}", user.id, user.username, user.role.name());
+            }
+        }
+        UserCommand::Set {
+            at,
+            username,
+            role,
+            disabled,
+        } => {
+            let user = open(&at)?.set_user(&username, role, disabled)?;
+            eprintln!("fitment-server: {} is {}", user.username, user.role.name());
+        }
+        UserCommand::ResetPassword { at, username, .. } => {
+            let password = password_from_stdin()?;
+            let revoked = open(&at)?.reset_password(&username, &password)?;
+            eprintln!("fitment-server: password set; {revoked} tokens revoked");
+        }
+    }
+    Ok(())
+}
+
+fn run_token(command: TokenCommand) -> Result<(), AdminError> {
+    match command {
+        TokenCommand::Mint {
+            at,
+            username,
+            name,
+            role,
+            days,
+        } => {
+            let minted = open(&at)?.mint(&username, &name, role, days)?;
+            print_minted(&minted, &format!("minted for {username}"));
+        }
+        TokenCommand::List { at, username } => {
+            for token in open(&at)?.tokens(&username)? {
+                let revoked = token
+                    .revoked_ms
+                    .map_or_else(|| "live".to_owned(), fitment_server::ids::rfc3339);
+                println!(
+                    "{} {:?} {} {} {} {revoked}",
+                    token.id,
+                    token.name,
+                    token.role.name(),
+                    token.hint,
+                    fitment_server::ids::rfc3339(token.expires_ms)
+                );
+            }
+        }
+        TokenCommand::Revoke { at, id } => {
+            let revoked = open(&at)?.revoke(&id)?;
+            eprintln!("fitment-server: {revoked} tokens revoked");
+        }
+    }
+    Ok(())
 }
 
 /// OP1: JSON or text on stderr, filtered by `RUST_LOG`, then `log.filter`.

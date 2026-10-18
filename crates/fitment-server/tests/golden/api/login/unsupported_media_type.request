@@ -1,0 +1,4 @@
+POST /v1/auth/login
+content-type: text/plain
+
+{"username": "ada", "password": "correct horse battery staple"}

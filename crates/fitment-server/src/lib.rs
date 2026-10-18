@@ -6,14 +6,18 @@
 //! listener until its shutdown future ends. `main.rs` alone reads the
 //! process's arguments, installs the log subscriber and exits.
 //!
-//! This is M6's PR 2, the skeleton: configuration, the four server routes
-//! (`/v1/health`, `/v1/ready`, `/v1/info`, `/v1/openapi.json`), the
-//! hardening layers, the error registry, `server.db` with its lease, and
-//! the OpenAPI document. Authentication, uploads, jobs and the catalog's
-//! routes come in the PRs of the design's section 12.
+//! This is M6's PR 3: PR 2's skeleton (configuration, the four server
+//! routes `/v1/health`, `/v1/ready`, `/v1/info` and `/v1/openapi.json`,
+//! the hardening layers, the error registry, `server.db` with its lease,
+//! the OpenAPI document), and authentication: users and bearer tokens,
+//! roles on every route, `/v1/auth/*` and the offline admin commands
+//! ([`admin`]). Uploads, jobs and the catalog's routes come in the PRs of
+//! the design's section 12.
 #![forbid(unsafe_code)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
+pub mod admin;
+pub mod auth;
 pub mod catalog;
 pub mod config;
 #[cfg(feature = "test-support")]
@@ -37,8 +41,7 @@ use tokio::net::TcpListener;
 pub use config::{Config, ConfigError, Flags};
 
 /// How many `/v1/info` requests read the catalog at once; the others wait
-/// within the handler's timeout (HX3). The route needs no authentication
-/// until PR 3, so its cost is capped.
+/// within the handler's timeout (HX3), until PR 7's reader pool (CX1).
 pub const INFO_CONCURRENCY: usize = 4;
 
 /// The committed OpenAPI document, served as these bytes (VN7).
@@ -61,6 +64,12 @@ pub enum StartError {
     /// The catalog cannot be opened (its reason's exit code, ER2).
     #[error("the catalog cannot be opened: {}", .0.log)]
     Catalog(catalog::Unavailable),
+    /// The pepper cannot be used (AU1: exit 2, or 1 for I/O).
+    #[error(transparent)]
+    Pepper(#[from] auth::PepperError),
+    /// The dummy PHC string could not be made (AU2, exit 1).
+    #[error("the password hash could not be prepared")]
+    Hash,
     /// The configured roots cannot be resolved (exit 1); named as
     /// `state:` and `catalog:` (OP1).
     #[error("state: or catalog: cannot be resolved: {kind}")]
@@ -80,9 +89,11 @@ impl StartError {
                 state::StateError::Io { .. }
                 | state::StateError::Db(state::DbError::Sqlite(_) | state::DbError::Create(_)),
             )
+            | Self::Pepper(auth::PepperError::Unreadable(_))
+            | Self::Hash
             | Self::Io { .. } => 1,
             Self::Catalog(unavailable) => unavailable.reason.exit_code(),
-            Self::Config(_) | Self::Nested | Self::State(_) => 2,
+            Self::Config(_) | Self::Nested | Self::State(_) | Self::Pepper(_) => 2,
         }
     }
 }
@@ -102,6 +113,7 @@ pub fn check(config: &Config) -> Result<(), StartError> {
         return Err(StartError::Nested);
     }
     state::check(&config.paths.state)?;
+    auth::pepper_of(&config.auth)?;
     catalog::CatalogDir::new(&config.paths.catalog, &config.catalog)
         .inspect()
         .map_err(StartError::Catalog)
@@ -115,10 +127,14 @@ pub(crate) struct Shared {
     /// This process's lease holder id (SD6).
     pub(crate) holder: String,
     pub(crate) ids: ids::Ids,
+    /// Authentication's state (AU1 to AU7).
+    pub(crate) auth: Arc<auth::Auth>,
     pub(crate) trusted_proxies: Vec<IpAddr>,
     pub(crate) verifier: matching::Verifier,
     /// Set when the server drains (SD1): readiness answers 503.
     pub(crate) draining: AtomicBool,
+    /// When the warning of an untrusted `X-Forwarded-For` was last logged.
+    pub(crate) forwarded_warned_ms: std::sync::atomic::AtomicI64,
     /// Cleared when a lease renewal fails or finds another holder (SD6).
     pub(crate) lease_ok: AtomicBool,
     /// Set once the lease is given up.
@@ -134,6 +150,11 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    /// The auth part of JS9's sweep (AU6): blocking.
+    pub(crate) fn sweep_auth(&self) -> Result<usize, state::DbError> {
+        self.auth.sweep(&self.db, self.ids.now_ms())
+    }
+
     /// How often the lease is renewed.
     pub(crate) fn lease_renewal(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.lease_renewal_ms.load(Ordering::SeqCst).max(1))
@@ -144,6 +165,10 @@ impl Shared {
     /// when its last handle goes.
     pub(crate) fn release(&self) {
         if !self.released.swap(true, Ordering::SeqCst) {
+            // SD1's last writes: the batched last uses (AU6).
+            if let Err(error) = self.sweep_auth() {
+                tracing::warn!(error = %error, "the tokens' last uses could not be written");
+            }
             if let Err(error) = self.db.release_lease(&self.holder) {
                 tracing::warn!(error = %error, "the lease could not be released");
             }
@@ -189,6 +214,13 @@ impl Server {
         if nested {
             return Err(StartError::Nested);
         }
+        let pepper = auth::pepper_of(&config.auth)?;
+        if !pepper.is_set() {
+            tracing::warn!(
+                "auth.pepper_file is not set: passwords are hashed with argon2id without a pepper (AU1)"
+            );
+        }
+        let auth = Arc::new(auth::Auth::new(&config.auth, pepper).map_err(|_| StartError::Hash)?);
         let ids = ids::Ids::default();
         let (db, _) = state::open(&config.paths.state, &ids.id("u"), ids.now_ms())?;
         let holder = ids.id("l");
@@ -214,9 +246,11 @@ impl Server {
                 catalog,
                 holder,
                 ids,
+                auth,
                 trusted_proxies,
                 verifier,
                 draining: AtomicBool::new(false),
+                forwarded_warned_ms: std::sync::atomic::AtomicI64::new(0),
                 lease_ok: AtomicBool::new(true),
                 released: AtomicBool::new(false),
                 info_slots: tokio::sync::Semaphore::new(INFO_CONCURRENCY),
@@ -266,7 +300,20 @@ impl Server {
         Seams {
             ids: &self.shared.ids,
             hooks: &self.shared.hooks,
+            auth: &self.shared.auth,
+            db: &self.shared.db,
         }
+    }
+
+    /// Writes the batched `last_used_ms` values and deletes tokens dead
+    /// for 30 days (the auth part of JS9's sweep; AU6, audit flaw 4).
+    /// Blocking. Returns the tokens deleted.
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn sweep_auth(&self) -> Result<usize, state::DbError> {
+        self.shared.sweep_auth()
     }
 
     /// OP11: renews the lease every `interval` instead of 10 s, so a test
@@ -293,4 +340,8 @@ pub struct Seams<'a> {
     pub ids: &'a ids::Ids,
     /// The hook points.
     pub hooks: &'a hooks::Hooks,
+    /// Authentication's counters and the limits' clock.
+    pub auth: &'a auth::Auth,
+    /// `server.db`, for seeding users and tokens with the fixed ids.
+    pub db: &'a state::Db,
 }

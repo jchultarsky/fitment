@@ -187,13 +187,16 @@ fn only_catalog_rs_names_the_catalog_crate() {
     }
 }
 
-/// SV6: `server.db` is opened by `state/db.rs` alone, the only module
-/// naming rusqlite; no SQL of the server names a table of the catalog;
-/// `deny.toml` lets rusqlite in through `fitment-catalog` and
-/// `fitment-server` only.
+/// SV6: `server.db` is opened by the module `state::db` alone (`state/db.rs`
+/// and its submodules under `state/db/`), the only one naming rusqlite; no
+/// SQL of the server names a table of the catalog; `deny.toml` lets
+/// rusqlite in through `fitment-catalog` and `fitment-server` only.
 #[test]
 fn the_two_databases_stay_apart() {
-    assert_eq!(naming("rusqlite"), set(&["state/db.rs"]));
+    let db = |name: &str| name == "state/db.rs" || name.starts_with("state/db/");
+    let named = naming("rusqlite");
+    assert!(named.contains("state/db.rs"), "{named:?}");
+    assert!(named.iter().all(|n| db(n)), "{named:?}");
     let catalog_only = [
         "blob",
         "clock",
@@ -207,7 +210,7 @@ fn the_two_databases_stay_apart() {
         "tokens",
     ];
     for (file, text) in sources() {
-        if !(file == "state/db.rs" || file == "state/schema.sql") {
+        if !(db(&file) || file == "state/schema.sql") {
             continue;
         }
         let words: Vec<&str> = text

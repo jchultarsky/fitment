@@ -1,0 +1,4 @@
+PATCH /v1/auth/users/u_00000000000000000000000001
+content-type: application/json
+
+{"disabled": true}

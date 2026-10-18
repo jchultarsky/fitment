@@ -1,0 +1,21 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:8UEwhkbElb7RoYWKUjVQOkY1g28bFFX/17aXJmUrr4A=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/last_admin",
+  "title": "The last enabled admin cannot be disabled or demoted",
+  "status": 409,
+  "detail": "the last enabled admin cannot be disabled or demoted: make another admin first",
+  "code": "last_admin",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

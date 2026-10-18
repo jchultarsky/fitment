@@ -28,11 +28,58 @@ const NEVER_IN_A_RESPONSE: [&str; 11] = [
 /// What neither a response nor a log line may hold: secrets.
 const SECRETS: [&str; 4] = ["fitment_pat_", "Bearer ", "$argon2", "PEPPER-"];
 
+/// The secrets the tests made: every password they used, every token a
+/// response or a command gave them (whole and without its prefix) and
+/// every pepper (XH13).
+static KNOWN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Adds `secret` to what no response or log line may hold; a token is
+/// registered with and without its prefix.
+pub fn secret(secret: &str) {
+    let mut known = KNOWN.lock().unwrap();
+    let body = secret.strip_prefix("fitment_pat_").unwrap_or(secret);
+    for text in [secret, body] {
+        if text.len() >= 8 && !known.iter().any(|k| k == text) {
+            known.push(text.to_owned());
+        }
+    }
+}
+
+/// Every secret, as the scan names it: the fixed needles whole, the known
+/// ones by their first four characters only.
+fn secrets() -> Vec<(String, String)> {
+    let mut all: Vec<(String, String)> = SECRETS
+        .iter()
+        .map(|s| ((*s).to_owned(), format!("`{s}`")))
+        .collect();
+    for known in KNOWN.lock().unwrap().iter() {
+        let shown = format!("a known secret `{}…`", known.get(..4).unwrap_or(""));
+        all.push((known.clone(), shown));
+    }
+    all
+}
+
+/// A creating response's `fitment.token` (AU3) carries its secret once:
+/// it is registered, and masked for the scan of the rest of the body.
+fn masked(body: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return body.to_owned();
+    };
+    let Some(token) = value["secret"]
+        .as_str()
+        .filter(|_| value["format"] == "fitment.token")
+    else {
+        return body.to_owned();
+    };
+    secret(token);
+    body.replace(token, "<the token's secret>")
+}
+
 /// Every leak in a response, body and header values: a root's path, the tests' directory
 /// prefix, any of [`NEVER_IN_A_RESPONSE`] or a secret; and every document
 /// check that fails (XH11).
 pub fn response(reply: &Reply, roots: &[String]) -> Vec<String> {
-    let mut text = String::from_utf8_lossy(&reply.body).into_owned();
+    let mut text = masked(&String::from_utf8_lossy(&reply.body));
     // Header values too (review S9): a path or a token in a header leaks
     // as surely as in a body.
     for (name, value) in &reply.headers {
@@ -57,9 +104,14 @@ pub fn body(text: &str, roots: &[String]) -> Vec<String> {
     if text.contains(PREFIX) {
         found.push(format!("a test directory's name ({PREFIX}…)"));
     }
-    for needle in NEVER_IN_A_RESPONSE.iter().chain(&SECRETS) {
+    for needle in NEVER_IN_A_RESPONSE {
         if text.contains(needle) {
             found.push(format!("`{needle}`"));
+        }
+    }
+    for (needle, shown) in secrets() {
+        if text.contains(&needle) {
+            found.push(shown);
         }
     }
     found
@@ -67,10 +119,10 @@ pub fn body(text: &str, roots: &[String]) -> Vec<String> {
 
 /// The secrets in log lines (XH13): paths are allowed there.
 pub fn logs(text: &str) -> Vec<String> {
-    SECRETS
-        .iter()
-        .filter(|needle| text.contains(**needle))
-        .map(|needle| format!("a secret in the log: `{needle}`"))
+    secrets()
+        .into_iter()
+        .filter(|(needle, _)| text.contains(needle.as_str()))
+        .map(|(_, shown)| format!("a secret in the log: {shown}"))
         .collect()
 }
 

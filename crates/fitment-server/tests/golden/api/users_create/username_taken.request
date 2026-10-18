@@ -1,0 +1,5 @@
+POST /v1/auth/users
+authorization: Bearer <root's admin token>
+content-type: application/json
+
+{"username": "ROOT", "role": "reader"}

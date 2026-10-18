@@ -1,0 +1,3 @@
+DELETE /v1/auth/tokens/t_7zzzzzzzzzzzzzzzzzzzzzzzzz
+authorization: Bearer <ada's reader token>
+

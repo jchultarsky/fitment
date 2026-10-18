@@ -1,0 +1,3 @@
+GET /v1/info?owner=u_x
+authorization: Bearer <root's admin token>
+

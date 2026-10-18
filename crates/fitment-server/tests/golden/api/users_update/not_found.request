@@ -1,0 +1,5 @@
+PATCH /v1/auth/users/u_7zzzzzzzzzzzzzzzzzzzzzzzzz
+authorization: Bearer <root's admin token>
+content-type: application/json
+
+{"disabled": true}

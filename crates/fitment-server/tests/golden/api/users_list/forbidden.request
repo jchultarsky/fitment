@@ -1,0 +1,3 @@
+GET /v1/auth/users
+authorization: Bearer <ada's reader token>
+

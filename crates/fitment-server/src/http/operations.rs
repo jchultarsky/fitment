@@ -59,6 +59,12 @@ impl Mode {
 pub enum RequestBody {
     /// Nothing: a body is `413 body_too_large`.
     None,
+    /// A JSON body of at most `limits.max_json_kib` (VN6), of the request
+    /// schema named (a component of the OpenAPI document).
+    Json {
+        /// The component's name.
+        schema: &'static str,
+    },
 }
 
 /// One successful response.
@@ -94,6 +100,8 @@ pub struct Operation {
     pub mode: Mode,
     /// What the request carries.
     pub body: RequestBody,
+    /// The query parameters it takes (VN3, AU8); any other is refused.
+    pub query: &'static [&'static str],
     /// The successful responses.
     pub answers: &'static [Answer],
     /// The error codes it can answer.
@@ -103,7 +111,7 @@ pub struct Operation {
 use ErrorCode as E;
 
 /// Every operation, in the order of section 7 (VN7, XH14).
-pub const OPERATIONS: [Operation; 4] = [
+pub const OPERATIONS: [Operation; 13] = [
     Operation {
         id: "info",
         method: "GET",
@@ -113,6 +121,7 @@ pub const OPERATIONS: [Operation; 4] = [
         role_fields: &[],
         mode: Mode::Sync,
         body: RequestBody::None,
+        query: &[],
         answers: &[Answer {
             status: 200,
             media: Some(super::json::JSON),
@@ -120,6 +129,9 @@ pub const OPERATIONS: [Operation; 4] = [
             description: "fitment.info",
         }],
         codes: &[
+            E::BadRequest,
+            E::Unauthenticated,
+            E::RateLimited,
             E::BodyTooLarge,
             E::NotAcceptable,
             E::CatalogUnavailable,
@@ -139,13 +151,19 @@ pub const OPERATIONS: [Operation; 4] = [
         role_fields: &[],
         mode: Mode::Sync,
         body: RequestBody::None,
+        query: &[],
         answers: &[Answer {
             status: 204,
             media: None,
             format: None,
             description: "the process runs",
         }],
-        codes: &[E::BodyTooLarge, E::RequestTimeout, E::Internal],
+        codes: &[
+            E::BadRequest,
+            E::BodyTooLarge,
+            E::RequestTimeout,
+            E::Internal,
+        ],
     },
     Operation {
         id: "ready",
@@ -156,6 +174,7 @@ pub const OPERATIONS: [Operation; 4] = [
         role_fields: &[],
         mode: Mode::Sync,
         body: RequestBody::None,
+        query: &[],
         answers: &[Answer {
             status: 204,
             media: None,
@@ -163,6 +182,7 @@ pub const OPERATIONS: [Operation; 4] = [
             description: "ready",
         }],
         codes: &[
+            E::BadRequest,
             E::BodyTooLarge,
             E::CatalogUnavailable,
             E::ShuttingDown,
@@ -179,6 +199,7 @@ pub const OPERATIONS: [Operation; 4] = [
         role_fields: &[],
         mode: Mode::Sync,
         body: RequestBody::None,
+        query: &[],
         answers: &[Answer {
             status: 200,
             media: Some(super::json::JSON),
@@ -186,10 +207,283 @@ pub const OPERATIONS: [Operation; 4] = [
             description: "the OpenAPI 3.1 document",
         }],
         codes: &[
+            E::BadRequest,
             E::BodyTooLarge,
             E::NotAcceptable,
             E::RequestTimeout,
             E::Internal,
+        ],
+    },
+    AUTH[0],
+    AUTH[1],
+    AUTH[2],
+    AUTH[3],
+    AUTH[4],
+    AUTH[5],
+    AUTH[6],
+    AUTH[7],
+    AUTH[8],
+];
+
+const fn answer(status: u16, format: Option<&'static str>, description: &'static str) -> Answer {
+    Answer {
+        status,
+        media: match format {
+            Some(_) => Some(super::json::JSON),
+            None => None,
+        },
+        format,
+        description,
+    }
+}
+
+use crate::auth::documents::{PAGE_FORMAT, TOKEN_FORMAT, USER_FORMAT};
+
+/// Section 7.10's routes (AU1 to AU10).
+const AUTH: [Operation; 9] = [
+    Operation {
+        id: "login",
+        method: "POST",
+        path: "/v1/auth/login",
+        summary: "A token from a username and password, its secret shown once (AU2, AU7, AU10)",
+        role: Role::None,
+        role_fields: &[],
+        mode: Mode::Sync,
+        body: RequestBody::Json {
+            schema: "LoginRequest",
+        },
+        query: &[],
+        answers: &[answer(
+            201,
+            Some(TOKEN_FORMAT),
+            "fitment.token, with its secret",
+        )],
+        codes: &[
+            E::BadRequest,
+            E::InvalidParameter,
+            E::NotAcceptable,
+            E::TooManyTokens,
+            E::BodyTooLarge,
+            E::UnsupportedMediaType,
+            E::RateLimited,
+            E::RequestTimeout,
+            E::IoError,
+            E::Internal,
+            E::InvalidCredentials,
+        ],
+    },
+    Operation {
+        id: "me",
+        method: "GET",
+        path: "/v1/auth/me",
+        summary: "The caller, with the presenting token's id and effective role (AU5)",
+        role: Role::Reader,
+        role_fields: &[],
+        mode: Mode::Sync,
+        body: RequestBody::None,
+        query: &[],
+        answers: &[answer(200, Some(USER_FORMAT), "fitment.user")],
+        codes: &[
+            E::BadRequest,
+            E::NotAcceptable,
+            E::BodyTooLarge,
+            E::RateLimited,
+            E::RequestTimeout,
+            E::IoError,
+            E::Internal,
+            E::Unauthenticated,
+        ],
+    },
+    Operation {
+        id: "password",
+        method: "POST",
+        path: "/v1/auth/password",
+        summary: "Changes the caller's password; every other token of theirs is revoked (AU1, AU4)",
+        role: Role::Reader,
+        role_fields: &[],
+        mode: Mode::Sync,
+        body: RequestBody::Json {
+            schema: "PasswordRequest",
+        },
+        query: &[],
+        answers: &[answer(204, None, "changed")],
+        codes: &[
+            E::BadRequest,
+            E::InvalidParameter,
+            E::BodyTooLarge,
+            E::UnsupportedMediaType,
+            E::RateLimited,
+            E::RequestTimeout,
+            E::IoError,
+            E::Internal,
+            E::Unauthenticated,
+            E::InvalidCredentials,
+        ],
+    },
+    Operation {
+        id: "tokens_list",
+        method: "GET",
+        path: "/v1/auth/tokens",
+        summary: "A page of the caller's tokens, never a secret (AU3); an admin's ?owner= reads another's (AU8)",
+        role: Role::Reader,
+        role_fields: &[("owner", Role::Admin)],
+        mode: Mode::Sync,
+        body: RequestBody::None,
+        query: &["after", "limit", "owner"],
+        answers: &[answer(
+            200,
+            Some(PAGE_FORMAT),
+            "fitment.page of fitment.token",
+        )],
+        codes: &[
+            E::BadRequest,
+            E::InvalidParameter,
+            E::NotFound,
+            E::NotAcceptable,
+            E::BodyTooLarge,
+            E::RateLimited,
+            E::RequestTimeout,
+            E::IoError,
+            E::Internal,
+            E::Unauthenticated,
+            E::Forbidden,
+        ],
+    },
+    Operation {
+        id: "tokens_mint",
+        method: "POST",
+        path: "/v1/auth/tokens",
+        summary: "Mints a token within the presenting one: role and expiry at most its own (AU10)",
+        role: Role::Reader,
+        role_fields: &[],
+        mode: Mode::Sync,
+        body: RequestBody::Json {
+            schema: "MintRequest",
+        },
+        query: &[],
+        answers: &[answer(
+            201,
+            Some(TOKEN_FORMAT),
+            "fitment.token, with its secret",
+        )],
+        codes: &[
+            E::BadRequest,
+            E::InvalidParameter,
+            E::NotAcceptable,
+            E::TooManyTokens,
+            E::BodyTooLarge,
+            E::UnsupportedMediaType,
+            E::RateLimited,
+            E::RequestTimeout,
+            E::IoError,
+            E::Internal,
+            E::Unauthenticated,
+        ],
+    },
+    Operation {
+        id: "tokens_revoke",
+        method: "DELETE",
+        path: "/v1/auth/tokens/{id}",
+        summary: "Revokes a token and every token minted from it; `current` is the presenting one (AU4)",
+        role: Role::Reader,
+        role_fields: &[],
+        mode: Mode::Sync,
+        body: RequestBody::None,
+        query: &[],
+        answers: &[answer(204, None, "revoked")],
+        codes: &[
+            E::BadRequest,
+            E::NotFound,
+            E::BodyTooLarge,
+            E::RateLimited,
+            E::RequestTimeout,
+            E::IoError,
+            E::Internal,
+            E::Unauthenticated,
+        ],
+    },
+    Operation {
+        id: "users_list",
+        method: "GET",
+        path: "/v1/auth/users",
+        summary: "A page of the users, by folded username (AU5)",
+        role: Role::Admin,
+        role_fields: &[],
+        mode: Mode::Sync,
+        body: RequestBody::None,
+        query: &["after", "limit"],
+        answers: &[answer(
+            200,
+            Some(PAGE_FORMAT),
+            "fitment.page of fitment.user",
+        )],
+        codes: &[
+            E::BadRequest,
+            E::InvalidParameter,
+            E::NotAcceptable,
+            E::BodyTooLarge,
+            E::RateLimited,
+            E::RequestTimeout,
+            E::IoError,
+            E::Internal,
+            E::Unauthenticated,
+            E::Forbidden,
+        ],
+    },
+    Operation {
+        id: "users_create",
+        method: "POST",
+        path: "/v1/auth/users",
+        summary: "Makes a user, with a password or token-only (AU1, AU5)",
+        role: Role::Admin,
+        role_fields: &[],
+        mode: Mode::Sync,
+        body: RequestBody::Json {
+            schema: "CreateUserRequest",
+        },
+        query: &[],
+        answers: &[answer(201, Some(USER_FORMAT), "fitment.user")],
+        codes: &[
+            E::BadRequest,
+            E::InvalidParameter,
+            E::NotAcceptable,
+            E::UsernameTaken,
+            E::BodyTooLarge,
+            E::UnsupportedMediaType,
+            E::RateLimited,
+            E::RequestTimeout,
+            E::IoError,
+            E::Internal,
+            E::Unauthenticated,
+            E::Forbidden,
+        ],
+    },
+    Operation {
+        id: "users_update",
+        method: "PATCH",
+        path: "/v1/auth/users/{id}",
+        summary: "Sets a user's role or disabled flag, in force at the next request (AU4)",
+        role: Role::Admin,
+        role_fields: &[],
+        mode: Mode::Sync,
+        body: RequestBody::Json {
+            schema: "UpdateUserRequest",
+        },
+        query: &[],
+        answers: &[answer(200, Some(USER_FORMAT), "fitment.user")],
+        codes: &[
+            E::BadRequest,
+            E::NotFound,
+            E::LastAdmin,
+            E::NotAcceptable,
+            E::BodyTooLarge,
+            E::UnsupportedMediaType,
+            E::RateLimited,
+            E::RequestTimeout,
+            E::IoError,
+            E::Internal,
+            E::Unauthenticated,
+            E::Forbidden,
         ],
     },
 ];

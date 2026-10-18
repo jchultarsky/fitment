@@ -1,0 +1,2 @@
+GET /v1/ready?access_token=x
+

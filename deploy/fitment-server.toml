@@ -5,6 +5,19 @@
 [server]
 # Inside the container; publish the port behind a TLS proxy (M6-20).
 listen = "0.0.0.0:8080"
+# The TLS proxy's own addresses, exact (no ranges): only from them are
+# X-Forwarded-For (the client's address, which AU7's login limits key on)
+# and X-Request-Id believed. Without them every client is the proxy, and
+# all logins share its buckets. For example:
+# trusted_proxies = ["10.0.0.2"]
+
+[auth]
+# A file of 16 to 1,024 random bytes, mode 0600, keying every password hash
+# (AU1); without one the server warns at start. Mount it read-only, and
+# pass the same configuration to `fitment-server admin` so passwords it
+# sets verify here. Rotating it is not supported in M6: every password
+# would have to be set again. For example:
+# pepper_file = "/run/secrets/fitment-pepper"
 
 [paths]
 catalog = "/var/lib/fitment/catalog"

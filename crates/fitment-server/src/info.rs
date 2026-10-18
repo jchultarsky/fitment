@@ -22,7 +22,7 @@ pub const API_MAJOR: u32 = 1;
 
 /// The API's minor version, raised with each addition within v1 (VN1);
 /// the OpenAPI document's `info.version` is `1.<minor>` (VN7).
-pub const API_MINOR: u32 = 0;
+pub const API_MINOR: u32 = 1;
 
 /// The OpenAPI document's `info.version`.
 pub fn api_version() -> String {
@@ -164,6 +164,18 @@ pub fn formats() -> Vec<FormatVersion> {
         (catalog::FORMAT, catalog::FORMAT_VERSION),
         (INFO_FORMAT, INFO_FORMAT_VERSION),
         (ERROR_FORMAT, ERROR_FORMAT_VERSION),
+        (
+            crate::auth::documents::PAGE_FORMAT,
+            crate::auth::documents::FORMAT_VERSION,
+        ),
+        (
+            crate::auth::documents::TOKEN_FORMAT,
+            crate::auth::documents::FORMAT_VERSION,
+        ),
+        (
+            crate::auth::documents::USER_FORMAT,
+            crate::auth::documents::FORMAT_VERSION,
+        ),
     ])
     .into_iter()
     .map(|(format, format_version)| FormatVersion {

@@ -1,0 +1,23 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:t5MxokBE17jIQSgr+N5KsdoAghIsArG7hKcrhhJdUCc=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/invalid_parameter",
+  "title": "A parameter is out of range",
+  "status": 400,
+  "detail": "this route takes no such query parameter",
+  "code": "invalid_parameter",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "allowed": []
+  },
+  "request_id": "r_00000000000000000000000004"
+}

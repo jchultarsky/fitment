@@ -1,6 +1,14 @@
 //! `server.db` (docs/research/m6-api.md, section 6.2, OB1): the server's
 //! own SQLite database, the catalog's kind of database. The only module
-//! that names rusqlite (SV6); no SQL here names a catalog table.
+//! that names rusqlite (SV6), with its submodule `auth` for users and
+//! tokens; no SQL here names a catalog table.
+
+mod auth;
+
+pub use auth::{
+    CreateUserError, MintError, MintFrom, NewToken, PasswordSet, Presented, SWEEP_BATCH, TokenRow,
+    UpdateUserError, UserRow,
+};
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -60,6 +68,13 @@ pub enum DbError {
     /// Another server holds the lease (SD6, exit 2).
     #[error("another fitment-server holds this state directory")]
     LeaseHeld,
+    /// An older schema while a server holds the lease: the offline
+    /// commands never migrate beside it (AU9, exit 2).
+    #[error(
+        "server.db is of an older schema and a fitment-server holds the state directory: \
+         the server migrates it at its start"
+    )]
+    MigrateBesideServer,
     /// The file cannot be made (exit 1).
     #[error("server.db cannot be made: {0}")]
     Create(std::io::ErrorKind),
@@ -72,7 +87,7 @@ pub enum DbError {
 /// keys, no trusted schema, the busy timeout; `fullfsync` on Apple (ST9).
 fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_millis(5_000))?;
-    let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+    let mode = journal_mode_wal(conn)?;
     if !mode.eq_ignore_ascii_case("wal") {
         return Err(rusqlite::Error::InvalidParameterName(
             "journal_mode is not wal: the state directory must be on a local file system".into(),
@@ -89,6 +104,26 @@ fn configure(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Switches to WAL and answers the mode in force. SQLite answers a
+/// switch that meets another connection's lock with `SQLITE_BUSY` at once,
+/// without its busy handler, as concurrent first opens do (review: eight
+/// bootstraps on a new state), so it is retried for up to the busy
+/// timeout.
+fn journal_mode_wal(conn: &Connection) -> rusqlite::Result<String> {
+    let started = std::time::Instant::now();
+    loop {
+        match conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0)) {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy
+                    && started.elapsed() < std::time::Duration::from_millis(5_000) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            other => return other,
+        }
+    }
+}
+
 /// What a database with these header fields is: `objects`, whether its
 /// schema holds anything.
 fn kind_of(id: i64, version: i64, objects: bool) -> Kind {
@@ -101,11 +136,18 @@ fn kind_of(id: i64, version: i64, objects: bool) -> Kind {
     }
 }
 
-/// What the database at `conn` is.
+/// What the database at `conn` is, its three fields read by one
+/// statement, so from one snapshot: a concurrent first start committing
+/// between separate reads would give its tables without its header, which
+/// reads as foreign (CI).
 fn kind(conn: &Connection) -> rusqlite::Result<Kind> {
-    let id: i64 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
-    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let objects: i64 = conn.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
+    let (id, version, objects): (i64, i64, i64) = conn.query_row(
+        "SELECT (SELECT application_id FROM pragma_application_id()),
+                (SELECT user_version FROM pragma_user_version()),
+                (SELECT count(*) FROM sqlite_schema)",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
     Ok(kind_of(id, version, objects > 0))
 }
 
@@ -198,6 +240,26 @@ impl Db {
     ///
     /// [`DbError::Foreign`], [`DbError::Newer`], or SQLite's.
     pub fn open(dir: &Path, system_id: &str, now_ms: i64) -> Result<(Self, Kind), DbError> {
+        Self::open_as(dir, system_id, now_ms, false)
+    }
+
+    /// [`Db::open`] for AU9's offline commands, which take no lease: an
+    /// older schema is refused while a server holds the lease, so nothing
+    /// migrates beside it ([`may_migrate`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::open`], and [`DbError::MigrateBesideServer`].
+    pub fn open_offline(dir: &Path, system_id: &str, now_ms: i64) -> Result<(Self, Kind), DbError> {
+        Self::open_as(dir, system_id, now_ms, true)
+    }
+
+    fn open_as(
+        dir: &Path,
+        system_id: &str,
+        now_ms: i64,
+        offline: bool,
+    ) -> Result<(Self, Kind), DbError> {
         let path = dir.join(DATABASE);
         create_file(&path).map_err(|e| DbError::Create(e.kind()))?;
         let mut conn = Connection::open_with_flags(
@@ -206,6 +268,10 @@ impl Db {
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
+        // Before the first read: a first start and the offline commands
+        // may open a new database at once, and its creation's locks are
+        // waited for, not failed (review).
+        conn.busy_timeout(std::time::Duration::from_millis(5_000))?;
         let found = kind(&conn)?;
         match found {
             Kind::Foreign => return Err(DbError::Foreign),
@@ -215,12 +281,25 @@ impl Db {
                     ours: SCHEMA_VERSION,
                 });
             }
+            Kind::Older(_) if offline => {
+                let beat: Option<i64> = conn
+                    .query_row("SELECT heartbeat_ms FROM lease WHERE one = 1", [], |r| {
+                        r.get(0)
+                    })
+                    .optional()?;
+                may_migrate(
+                    found,
+                    beat.is_some_and(|b| now_ms.saturating_sub(b) < LEASE_STALE_MS),
+                )?;
+            }
             _ => {}
         }
         configure(&conn)?;
-        if found == Kind::Empty {
-            create(&mut conn, system_id, now_ms)?;
-            // The header in the file itself, for `check-config`'s read.
+        // The header in the file itself, for `check-config`'s read; only
+        // the connection that made the schema checkpoints, since two
+        // checkpoints at once fail rather than wait (review: concurrent
+        // first opens).
+        if found == Kind::Empty && create(&mut conn, system_id, now_ms)? {
             conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         }
         let readers = (0..READERS)
@@ -350,14 +429,30 @@ impl Db {
     }
 }
 
+/// AU9 and SD3: an offline command may open a database of `kind` with the
+/// lease `held` by a server only if it needs no migration; a server
+/// migrates an older schema at its own start, holding the lease.
+///
+/// # Errors
+///
+/// [`DbError::MigrateBesideServer`].
+pub fn may_migrate(kind: Kind, held: bool) -> Result<(), DbError> {
+    match kind {
+        Kind::Older(_) if held => Err(DbError::MigrateBesideServer),
+        _ => Ok(()),
+    }
+}
+
 /// Schema 1 and the `system` user, in one exclusive transaction, the
-/// header set last inside it (OB1, M6-56).
-fn create(conn: &mut Connection, system_id: &str, now_ms: i64) -> rusqlite::Result<()> {
+/// header set last inside it (OB1, M6-56). False if another connection
+/// made them first.
+fn create(conn: &mut Connection, system_id: &str, now_ms: i64) -> rusqlite::Result<bool> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
     // A second process may have created it between the header's read and
     // the lock: then there is nothing to do.
     if kind(&tx)? != Kind::Empty {
-        return tx.commit();
+        tx.commit()?;
+        return Ok(false);
     }
     tx.execute_batch(SCHEMA)?;
     tx.execute(
@@ -371,5 +466,6 @@ fn create(conn: &mut Connection, system_id: &str, now_ms: i64) -> rusqlite::Resu
     )?;
     tx.pragma_update(None, "application_id", APPLICATION_ID)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-    tx.commit()
+    tx.commit()?;
+    Ok(true)
 }

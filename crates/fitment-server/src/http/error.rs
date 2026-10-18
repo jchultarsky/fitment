@@ -76,6 +76,8 @@ pub enum ErrorCode {
     OriginalNotStored,
     JobFinished,
     TooManyTokens,
+    UsernameTaken,
+    LastAdmin,
     BytesNotKept,
     DerivedRowsGone,
     PreconditionFailed,
@@ -184,7 +186,7 @@ use ErrorCode as C;
 
 /// Section 7.12, row by row, in `ErrorCode`'s order (ER1).
 #[rustfmt::skip]
-pub const SPECS: [Spec; 82] = [
+pub const SPECS: [Spec; 84] = [
     spec(C::BadRequest, "bad_request", Usage, Some(400), Some(2), false, "The request is malformed"),
     spec(C::InvalidParameter, "invalid_parameter", Usage, Some(400), Some(2), false, "A parameter is out of range"),
     spec(C::InvalidReference, "invalid_reference", Usage, Some(400), Some(2), false, "A reference is malformed"),
@@ -208,6 +210,8 @@ pub const SPECS: [Spec; 82] = [
     spec(C::OriginalNotStored, "original_not_stored", Usage, Some(409), None, false, "The socket's assembly is not stored"),
     spec(C::JobFinished, "job_finished", Usage, Some(409), None, false, "The job has ended or cannot stop"),
     spec(C::TooManyTokens, "too_many_tokens", Usage, Some(409), None, false, "The user holds the most live tokens allowed"),
+    spec(C::UsernameTaken, "username_taken", Usage, Some(409), None, false, "The username is another user's"),
+    spec(C::LastAdmin, "last_admin", Usage, Some(409), None, false, "The last enabled admin cannot be disabled or demoted"),
     spec(C::BytesNotKept, "bytes_not_kept", Usage, Some(410), Some(2), false, "The bytes are no longer kept"),
     spec(C::DerivedRowsGone, "derived_rows_gone", Usage, Some(410), Some(2), false, "The revision's derived rows are gone"),
     spec(C::PreconditionFailed, "precondition_failed", Usage, Some(412), None, false, "A precondition failed"),
