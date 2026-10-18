@@ -53,6 +53,7 @@ pub fn sweep(
     loop {
         let expired = db.expire_uploads(now_ms, EXPIRE_BATCH)?;
         swept.expired += expired;
+        db.yield_writer();
         if expired < usize::try_from(EXPIRE_BATCH).unwrap_or(usize::MAX) {
             break;
         }
@@ -64,6 +65,7 @@ pub fn sweep(
         // A failed unlink stays a candidate: the next sweep tries it again.
         let stuck = !batch.failed.is_empty();
         swept.failed.extend(batch.failed);
+        db.yield_writer();
         if done || stuck {
             break;
         }
@@ -72,6 +74,7 @@ pub fn sweep(
         Ok(files) => {
             for batch in files.chunks(usize::try_from(UNLINK_BATCH).unwrap_or(1000)) {
                 swept.orphans += db.unlink_orphans(batch, |sha| objects.unlink(sha))?;
+                db.yield_writer();
             }
         }
         Err(error) => tracing::warn!(kind = ?error.kind(), "the store's files could not be listed"),

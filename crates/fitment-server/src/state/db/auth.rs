@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use rusqlite::{Connection, OptionalExtension as _, Row, TransactionBehavior, params};
 
-use super::{Db, DbError, LEASE_STALE_MS, lock};
+use super::{Db, DbError, LEASE_STALE_MS};
 use crate::auth::Role;
 
 /// A user's row: never its key or password hash outside the server (ER3);
@@ -482,7 +482,7 @@ impl Db {
         now_ms: i64,
         first_admin: bool,
     ) -> Result<UserRow, CreateUserError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(DbError::from)?;
@@ -532,7 +532,7 @@ impl Db {
         keep_an_admin: bool,
         now_ms: i64,
     ) -> Result<Option<UserRow>, UpdateUserError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let Some(before) = user_where(&tx, "u.id = ?1 AND u.kind = 'person'", &id)? else {
             return Ok(None);
@@ -580,7 +580,7 @@ impl Db {
         presenting: Option<(i64, &str)>,
         now_ms: i64,
     ) -> Result<PasswordSet, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some((token, verified)) = presenting {
             let live = token_where(&tx, "t.key = ?1", &token)?
@@ -611,7 +611,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn rehash(&self, user: i64, old: &str, new: &str) -> Result<bool, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = tx.execute(
             "UPDATE user SET password_phc = ?3 WHERE key = ?1 AND password_phc = ?2",
@@ -634,7 +634,7 @@ impl Db {
         token: &NewToken<'_>,
         max_live: u32,
     ) -> Result<TokenRow, MintError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now_ms = token.created_ms;
         if !mint_allowed(&tx, from, now_ms)? {
@@ -698,7 +698,7 @@ impl Db {
     ///
     /// SQLite's.
     pub fn revoke(&self, key: i64, now_ms: i64) -> Result<usize, DbError> {
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let revoked = revoke_in(&tx, key, now_ms)?;
         tx.commit()?;
@@ -759,7 +759,7 @@ impl Db {
         if used.is_empty() {
             return Ok(());
         }
-        let mut conn = lock(&self.writer);
+        let mut conn = self.writer();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         {
             let mut statement = tx.prepare(
@@ -789,7 +789,7 @@ impl Db {
         let mut cursor = i64::MAX;
         let mut deleted = 0;
         loop {
-            let mut conn = lock(&self.writer);
+            let mut conn = self.writer();
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let keys: Vec<i64> = {
                 let mut statement =
@@ -810,6 +810,8 @@ impl Db {
                 }
             }
             tx.commit()?;
+            drop(conn);
+            self.yield_writer();
             cursor = last;
         }
     }
