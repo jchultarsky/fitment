@@ -415,6 +415,41 @@ async fn make(server: &TestServer, token: &str, id: &str) -> Made {
     }
 }
 
+/// A review of `a`'s revision, and an import naming her socket's bytes,
+/// are another's as surely as a read (RA7, UP3): `404`, the review's as an
+/// id that does not exist, the import's as an upload not held.
+async fn others_writes_are_not_found(
+    server: &TestServer,
+    a: &Made,
+    ada_token: &str,
+    charlie_token: &str,
+) {
+    let review = Call::json(
+        Method::POST,
+        &format!("/v1/sockets/{}/review", a.revision),
+        &serde_json::json!({ "decisions": [{ "requirement": "bore:hole-427", "status": "kept" }] }),
+    );
+    let reviewed = server.send(review.bearer(charlie_token)).await;
+    assert_eq!(
+        (reviewed.status.as_u16(), reviewed.code()),
+        (404, "not_found".to_owned())
+    );
+    let document = server
+        .send(Call::get(&format!("/v1/sockets/{}", a.revision)).bearer(ada_token))
+        .await;
+    assert_eq!(document.status, 200);
+    let import = serde_json::json!({
+        "upload": format!("sha256:{}", fitment_core::sha256_hex(&document.body))
+    });
+    let imported = server
+        .send(support::waiting("/v1/sockets/import", &import).bearer(charlie_token))
+        .await;
+    assert_eq!(
+        (imported.status.as_u16(), imported.code()),
+        (404, "upload_not_found".to_owned())
+    );
+}
+
 /// VT25 in full (AU8, UP3, RA4): a non-owner cannot read, list, cancel,
 /// download or delete another's job, match, upload, assembly or socket
 /// line, and gets the `404` of an id that does not exist; two users with
@@ -463,7 +498,7 @@ async fn a_non_owner_meets_404_everywhere() {
                 fitment_core::sha256_hex(b"only ada's")
             ),
         ),
-        (Method::GET, format!("/v1/sockets/{}@r9", a.line)),
+        (Method::GET, format!("/v1/sockets/{}", a.revision)),
     ];
     assert!(
         server
@@ -487,6 +522,7 @@ async fn a_non_owner_meets_404_everywhere() {
             );
         }
     }
+    others_writes_are_not_found(&server, a, &ada_token, &charlie_token).await;
     let charlie_lists = [
         "/v1/jobs",
         "/v1/matches",

@@ -112,12 +112,9 @@ pub fn run(args: &Args) -> ExitCode {
         return ExitCode::from(USAGE);
     };
     let socket_path = printable(&args.socket.display().to_string());
-    let text = match std::fs::read_to_string(&args.socket) {
+    let text = match super::socket_text(&args.socket, &socket_path) {
         Ok(text) => text,
-        Err(error) => {
-            note(&format!("error: cannot read {socket_path}: {error}"));
-            return ExitCode::from(ERROR);
-        }
+        Err(code) => return code,
     };
     let document = match gate(&socket_path, &text) {
         Ok(document) => document,
@@ -440,17 +437,8 @@ fn policy(args: &Args) -> Option<MatchPolicy> {
 /// MF2 before any candidate: a stale document is reported by its versions
 /// before any strict read (MF11, VD9); then it must read back.
 fn gate(path: &str, text: &str) -> Result<SocketDocument, ExitCode> {
-    let value: Option<Value> = serde_json::from_str(text).ok();
-    let version = |key: &str| {
-        value
-            .as_ref()
-            .and_then(|v| v[key].as_u64())
-            .and_then(|n| u32::try_from(n).ok())
-    };
-    if let (Some(extractor), Some(rules)) = (
-        version("extractor_version"),
-        version("socket_rules_version"),
-    ) {
+    // CO2: the versions as the server reads them, by one core helper.
+    if let Some((extractor, rules)) = SocketDocument::stated_versions(text) {
         if (extractor, rules)
             != (
                 fitment_core::EXTRACTOR_VERSION,

@@ -133,6 +133,7 @@ pub const OPERATIONS: [Operation; 46] = [
         }],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::Unauthenticated,
             E::RateLimited,
             E::BodyTooLarge,
@@ -163,6 +164,7 @@ pub const OPERATIONS: [Operation; 46] = [
         }],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::BodyTooLarge,
             E::RequestTimeout,
             E::Internal,
@@ -186,6 +188,7 @@ pub const OPERATIONS: [Operation; 46] = [
         }],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::BodyTooLarge,
             E::CatalogUnavailable,
             E::ShuttingDown,
@@ -211,6 +214,7 @@ pub const OPERATIONS: [Operation; 46] = [
         }],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::BodyTooLarge,
             E::NotAcceptable,
             E::RequestTimeout,
@@ -300,6 +304,33 @@ const SUBMIT: &[ErrorCode] = &[
     E::QueueFull,
     E::ShuttingDown,
     E::QuotaExceeded,
+    E::IoError,
+    E::Internal,
+    E::Unauthenticated,
+];
+
+/// [`SUBMIT`]'s, and what an extraction's `carry_from` can answer at the
+/// request (MF11): another file's socket, or its stored bytes damaged.
+const SOCKET_SUBMIT: &[ErrorCode] = &[
+    E::BadRequest,
+    E::InvalidParameter,
+    E::InvalidReference,
+    E::NameInvalid,
+    E::NotFound,
+    E::UploadNotFound,
+    E::NotAcceptable,
+    E::BodyTooLarge,
+    E::UnsupportedMediaType,
+    E::IdempotencyKeyReused,
+    E::CarryFromForeign,
+    E::RateLimited,
+    E::TooManyJobs,
+    E::TooLarge,
+    E::RequestTimeout,
+    E::QueueFull,
+    E::ShuttingDown,
+    E::QuotaExceeded,
+    E::BlobDamaged,
     E::IoError,
     E::Internal,
     E::Unauthenticated,
@@ -488,6 +519,7 @@ const ASSEMBLIES: [Operation; 7] = [
         answers: &[answer(204, None, "deleted")],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::InvalidReference,
             E::NotFound,
             E::AssemblyInUse,
@@ -549,7 +581,7 @@ const SOCKETS: [Operation; 7] = [
         },
         query: &[],
         answers: JOB_ANSWERS,
-        codes: SUBMIT,
+        codes: SOCKET_SUBMIT,
     },
     Operation {
         id: "sockets_list",
@@ -616,6 +648,7 @@ const SOCKETS: [Operation; 7] = [
         answers: &[answer(204, None, "a tombstone")],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::InvalidReference,
             E::NotFound,
             E::BodyTooLarge,
@@ -687,6 +720,7 @@ const SOCKETS: [Operation; 7] = [
             E::UnsupportedMediaType,
             E::RateLimited,
             E::RequestTimeout,
+            E::QuotaExceeded,
             E::StorageFull,
             E::BlobDamaged,
             E::IoError,
@@ -761,6 +795,7 @@ const MATCHES: [Operation; 5] = [
         }],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::NotFound,
             E::NoDocument,
             E::NotAcceptable,
@@ -899,6 +934,7 @@ const JOBS: [Operation; 7] = [
         )],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::NotFound,
             E::NoDocument,
             E::NotAcceptable,
@@ -928,6 +964,7 @@ const JOBS: [Operation; 7] = [
         )],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::NotFound,
             E::JobFinished,
             E::NotAcceptable,
@@ -954,6 +991,7 @@ const JOBS: [Operation; 7] = [
         answers: JOB,
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::NotFound,
             E::NotAcceptable,
             E::BodyTooLarge,
@@ -979,6 +1017,7 @@ const JOBS: [Operation; 7] = [
         answers: &[answer(204, None, "deleted")],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::NotFound,
             E::JobNotFinished,
             E::BodyTooLarge,
@@ -995,6 +1034,7 @@ const JOBS: [Operation; 7] = [
 /// What every upload that streams bytes can answer (UP2 to UP4, HX3).
 const STREAMED: &[ErrorCode] = &[
     E::BadRequest,
+    E::InvalidParameter,
     E::InvalidReference,
     E::NotAcceptable,
     E::UploadTooSlow,
@@ -1134,6 +1174,7 @@ const UPLOADS: [Operation; 6] = [
         answers: &[answer(204, None, "deleted")],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::InvalidReference,
             E::NotFound,
             E::UploadInUse,
@@ -1193,6 +1234,7 @@ const AUTH: [Operation; 9] = [
         answers: &[answer(200, Some(USER_FORMAT), "fitment.user")],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::NotAcceptable,
             E::BodyTooLarge,
             E::RateLimited,
@@ -1301,6 +1343,7 @@ const AUTH: [Operation; 9] = [
         answers: &[answer(204, None, "revoked")],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::NotFound,
             E::BodyTooLarge,
             E::RateLimited,
@@ -1381,6 +1424,7 @@ const AUTH: [Operation; 9] = [
         answers: &[answer(200, Some(USER_FORMAT), "fitment.user")],
         codes: &[
             E::BadRequest,
+            E::InvalidParameter,
             E::NotFound,
             E::LastAdmin,
             E::NotAcceptable,

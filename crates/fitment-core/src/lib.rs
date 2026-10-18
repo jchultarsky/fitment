@@ -36,11 +36,11 @@ mod tolerance;
 mod verdict;
 
 pub use assembly::{
-    AssemblyNote, AssemblyNoteCode, AssemblyRead, BadHex, Candidate, ComponentError, ComponentRead,
-    ComponentSummary, DefinitionKind, GateResult, ListedDefinition, Listing, MAX_OCCURRENCES,
-    MatchedBy, Occurrence, OccurrencePath, PARTS_FORMAT, PARTS_FORMAT_VERSION, PartEntry,
-    PartOccurrence, PartsDocument, PartsFormatError, PathForm, SelectError, SelectedComponent,
-    Selection, Source, UsageRef, read_assembly,
+    AssemblyComponents, AssemblyNote, AssemblyNoteCode, AssemblyRead, BadHex, Candidate,
+    ComponentError, ComponentRead, ComponentSummary, DefinitionKind, GateResult, ListedDefinition,
+    Listing, MAX_OCCURRENCES, MatchedBy, Occurrence, OccurrencePath, PARTS_FORMAT,
+    PARTS_FORMAT_VERSION, PartEntry, PartOccurrence, PartsDocument, PartsFormatError, PathForm,
+    SelectError, SelectedComponent, Selection, Source, UsageRef, read_assembly,
 };
 pub use features::{
     Axis, Bottom, Cone, Countersink, Cylinder, CylinderClass, DefinitionRef, End, Extent,

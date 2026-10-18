@@ -355,11 +355,11 @@ impl Objects {
     }
 
     /// DC12: the byte ranges `ranges` (start, end), in increasing order and
-    /// not overlapping, of the object `sha256` of `bytes` bytes, read in
-    /// one pass of the streaming reader up to the last range's end. The
-    /// object as a whole is not hashed: each range is checked by the
-    /// caller against the SHA-256 its index records for it. The seam has
-    /// no seek, so a page reads the bytes before its ranges too.
+    /// not overlapping, of the object `sha256` of `bytes` bytes, each read
+    /// where it starts on one open file: the seam's `seek_to` goes past
+    /// what lies before and between them, so a page reads its own bytes
+    /// only. The object as a whole is not hashed: each range is checked by
+    /// the caller against the SHA-256 its index records for it.
     ///
     /// # Errors
     ///
@@ -379,28 +379,25 @@ impl Objects {
             .fs
             .open_stream(&self.path(sha256), bytes)
             .map_err(missing)?;
-        let mut out: Vec<Vec<u8>> = ranges.iter().map(|_| Vec::new()).collect();
-        let last = ranges.last().map_or(0, |r| r.1);
-        let mut buf = vec![0_u8; 256 * 1024];
-        let mut at = 0_u64;
-        while at < last {
-            let n = reader.read_chunk(&mut buf).map_err(damaged)?;
-            if n == 0 {
-                return Err(ObjectError::Damaged);
+        let mut out = Vec::with_capacity(ranges.len());
+        let mut at = None;
+        for (from, to) in ranges {
+            // Each range read where it starts: what lies before or between
+            // them is sought past, never read (DC12).
+            if at != Some(*from) {
+                reader.seek_to(*from).map_err(damaged)?;
             }
-            let end = at + u64::try_from(n).unwrap_or(u64::MAX);
-            for ((from, to), range) in ranges.iter().zip(out.iter_mut()) {
-                let (lo, hi) = ((*from).max(at), (*to).min(end));
-                if lo < hi {
-                    let (lo, hi) = (lo - at, hi - at);
-                    let (lo, hi) = (
-                        usize::try_from(lo).unwrap_or(usize::MAX),
-                        usize::try_from(hi).unwrap_or(usize::MAX),
-                    );
-                    range.extend_from_slice(&buf[lo..hi]);
+            let mut range = vec![0_u8; usize::try_from(to - from).unwrap_or(usize::MAX)];
+            let mut filled = 0;
+            while filled < range.len() {
+                let n = reader.read_chunk(&mut range[filled..]).map_err(damaged)?;
+                if n == 0 {
+                    return Err(ObjectError::Damaged);
                 }
+                filled += n;
             }
-            at = end;
+            out.push(range);
+            at = Some(*to);
         }
         Ok(out)
     }

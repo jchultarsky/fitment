@@ -1020,6 +1020,24 @@ async fn the_apis_documents_are_their_goldens() {
             && scenario.method != Method::HEAD
         {
             produced.insert(reply.code());
+            // Review of M6 PR 6: every answer's code is one its operation
+            // declares, so the OpenAPI document lists what is answered. A
+            // path no operation routes, or a method its operation does not
+            // take, is answered by the router (ER4), not the operation.
+            let op = fitment_server::http::operations::OPERATIONS
+                .iter()
+                .find(|op| op.id == scenario.operation);
+            let routed = op.filter(|op| op.method == scenario.method.as_str());
+            let declared =
+                routed.is_none_or(|op| op.codes.iter().any(|c| c.name() == reply.code()));
+            if !declared {
+                failures.push(format!(
+                    "{}/{}: answers {}, which the operation does not declare",
+                    scenario.operation,
+                    scenario.name,
+                    reply.code()
+                ));
+            }
         }
         operations.insert(scenario.operation);
         let base = golden_dir().join(scenario.operation).join(scenario.name);

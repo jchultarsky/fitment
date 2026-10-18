@@ -1619,3 +1619,138 @@ async fn original_failing(server: &TestServer) -> Value {
     );
     original
 }
+
+/// `table` of the server's `server.db` renamed `to`, from outside the
+/// server, so the queries naming it fail as a broken database's would.
+fn rename_table(server: &TestServer, table: &str, to: &str) {
+    let conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    conn.execute_batch(&format!("ALTER TABLE {table} RENAME TO {to}"))
+        .unwrap();
+}
+
+/// ER3 (review of M6 PR 6): a failure of `server.db` is `500 io_error`,
+/// never read as a missing row: registering an assembly, importing a
+/// socket of an assembly the caller holds and asking for a match's
+/// original all read the caller's assembly, and with its names' table
+/// gone each answers `io_error`, not `404`, an unverified import or
+/// `original_not_stored`; a match whose socket's revision cannot be read
+/// when its run is stored fails `internal`, not a run that is silently
+/// verified.
+#[tokio::test]
+async fn a_failing_database_is_never_read_as_a_missing_row() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let assembly = support::assembly("s01_bolted.stp");
+    let assembly_sha = server.upload(&assembly).await;
+    let document = server
+        .upload(&support::cli_golden("socket", "s01_bolted--BRACKET.json"))
+        .await;
+    let candidate = server.upload(&support::candidate("m_bracket.stp")).await;
+    let files = json!([{ "upload": format!("sha256:{candidate}"), "label": "m_bracket.stp" }]);
+    rename_table(&server, "assembly_name", "assembly_name_gone");
+    let calls = [
+        support::waiting(
+            "/v1/assemblies",
+            &json!({ "upload": format!("sha256:{assembly_sha}") }),
+        ),
+        support::waiting(
+            "/v1/sockets/import",
+            &json!({ "upload": format!("sha256:{document}") }),
+        ),
+        support::waiting(
+            "/v1/matches",
+            &json!({ "socket": socket, "original": true, "candidates": { "files": files } }),
+        ),
+    ];
+    for call in calls {
+        let reply = server.send(call).await;
+        assert_eq!(
+            (reply.status.as_u16(), reply.code()),
+            (500, "io_error".to_owned()),
+            "{}",
+            String::from_utf8_lossy(&reply.body)
+        );
+    }
+    rename_table(&server, "assembly_name_gone", "assembly_name");
+    let gate = Gate::new();
+    let hooks = &server.server().seams().hooks;
+    hooks.set("job.ran", Action::Pause(gate.clone()));
+    let body = json!({ "socket": socket, "candidates": { "files": files } });
+    let queued = server
+        .send(Call::json(Method::POST, "/v1/matches", &body))
+        .await
+        .json();
+    let id = queued["id"].as_str().unwrap().to_owned();
+    assert!(gate.arrived(1, Duration::from_secs(30)).await);
+    rename_table(&server, "socket_revision", "socket_revision_gone");
+    gate.open();
+    hooks.clear("job.ran");
+    let job = server.finished_job(&id, Duration::from_secs(60)).await;
+    rename_table(&server, "socket_revision_gone", "socket_revision");
+    assert_eq!(
+        (job["state"].as_str(), job["error"]["code"].as_str()),
+        (Some("failed"), Some("internal")),
+        "{job}"
+    );
+}
+
+/// JS11, OB4 (review of M6 PR 6): what a request resolved and the job's
+/// insert leave no window for a foreign key's `500`: an extraction with a
+/// `carry_from` resolves its assembly, then waits in its parse slot while
+/// the assembly is deleted and the sweep unlinks its bytes; the insert
+/// finds the assembly gone and answers as the request would have, `404
+/// not_found`, nothing queued.
+#[tokio::test]
+async fn a_reference_swept_while_its_request_waits_is_not_found() {
+    let server = Arc::new(TestServer::fresh());
+    let assembly = support::assembly("s01_bolted.stp");
+    let sha = fitment_core::sha256_hex(&assembly);
+    let registered = server.register(&assembly, "s01_bolted.stp").await;
+    assert_eq!(registered["state"], "succeeded", "{registered}");
+    let seams = server.server().seams();
+    let start = seams.ids.now_ms();
+    seams.ids.fix_time(start + 20 * 3_600_000);
+    let carry = server
+        .upload(&support::cli_golden("socket", "s01_bolted--BRACKET.json"))
+        .await;
+    let gate = Gate::new();
+    seams.hooks.set("socket.parse", Action::Pause(gate.clone()));
+    let extraction = {
+        let server = Arc::clone(&server);
+        let body = json!({ "assembly": format!("sha256:{sha}"), "part": "BRACKET",
+                           "carry_from": { "upload": format!("sha256:{carry}") } });
+        tokio::spawn(async move {
+            server
+                .send(Call::json(Method::POST, "/v1/sockets", &body))
+                .await
+        })
+    };
+    assert!(gate.arrived(1, Duration::from_secs(30)).await);
+    let deleted = server
+        .send(Call::new(
+            Method::DELETE,
+            &format!("/v1/assemblies/sha256:{sha}"),
+        ))
+        .await;
+    assert_eq!(deleted.status, 204);
+    seams.ids.fix_time(start + 25 * 3_600_000);
+    server.server().sweep_store().unwrap();
+    let swept = !server.object_files().contains(&sha);
+    gate.open();
+    seams.hooks.clear("socket.parse");
+    let reply = extraction.await.unwrap();
+    assert!(swept, "the assembly's bytes were swept while it waited");
+    assert_eq!(
+        (reply.status.as_u16(), reply.code()),
+        (404, "not_found".to_owned()),
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
+    assert_eq!(reply.json()["details"]["resource"], "assembly");
+    let jobs = server.get("/v1/jobs").await.json();
+    assert_eq!(
+        jobs["items"].as_array().unwrap().len(),
+        1,
+        "only the registration's job: nothing queued"
+    );
+}

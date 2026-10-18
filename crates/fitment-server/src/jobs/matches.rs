@@ -16,7 +16,9 @@
 
 use std::collections::BTreeMap;
 
-use fitment_core::{ComponentError, MatchOptions, SelectedComponent, SocketDocument};
+use fitment_core::{
+    AssemblyComponents, ComponentError, MatchOptions, SelectedComponent, SocketDocument,
+};
 use serde_json::{Map, Value};
 
 use super::Control;
@@ -28,8 +30,10 @@ use super::run::{self, Halt, Ran, hook};
 use crate::Shared;
 use crate::gate;
 use crate::http::error::ErrorCode;
-use crate::matching::{self, ComponentInput, FileInput, Judged, Judging, MatchRun};
-use crate::runs::{self, RunFacts, SummaryFacts};
+use crate::matching::{
+    self, ComponentInput, FileInput, Judged, Judging, MatchRun, OriginalProblem,
+};
+use crate::runs::{self, RunFacts, RunOptions, RunVersions, SummaryFacts};
 use crate::state::{DbError, End, JobRow, Rows};
 
 /// What a match judges, read and checked (JB2, CO5, SN9).
@@ -39,6 +43,10 @@ struct Prepared {
     options: MatchOptions,
     components: Vec<ComponentInput>,
     original: Option<Result<SelectedComponent, ()>>,
+    /// The options as applied, the floor as it stands now (SN3).
+    applied: RunOptions,
+    /// The build's socket versions the gate held the socket to (MF11).
+    build: (u32, u32),
 }
 
 /// A judging's progress (JB8): counts only, never a verdict (M6-51).
@@ -52,7 +60,7 @@ fn judging(done: u64, total: u64) -> Progress {
 
 /// The job (JS6).
 pub(crate) fn run(shared: &Shared, row: &JobRow, control: &Control) -> Result<Ran, DbError> {
-    let prepared = match prepare(shared, row) {
+    let prepared = match prepare(shared, row, control) {
         Ok(prepared) => prepared,
         Err(halt) => return halted(shared, row, control, &halt),
     };
@@ -73,8 +81,11 @@ pub(crate) fn run(shared: &Shared, row: &JobRow, control: &Control) -> Result<Ra
         options: prepared.options,
         verifier: verifier.as_ref(),
         files: files(&prepared.job),
-        components: prepared.components.clone(),
-        original: prepared.original.clone(),
+        components: &prepared.components,
+        original: prepared
+            .original
+            .as_ref()
+            .map(|o| o.as_ref().map_err(|&()| ())),
         window,
         hook: &judge_hook,
     };
@@ -127,7 +138,7 @@ fn files(job: &MatchJob) -> Vec<FileInput> {
 /// JB2, CO5, SN9: the socket read and gated again (MF11 against the
 /// running build, the strict reader, MF2 with the floor in force now);
 /// the components read and chosen; the original read.
-fn prepare(shared: &Shared, row: &JobRow) -> Result<Prepared, Halt> {
+fn prepare(shared: &Shared, row: &JobRow, control: &Control) -> Result<Prepared, Halt> {
     let job: MatchJob = run::request(row)?;
     let bytes = run::read_input(
         shared,
@@ -141,10 +152,21 @@ fn prepare(shared: &Shared, row: &JobRow) -> Result<Prepared, Halt> {
     drop(bytes);
     let floor = shared.config.matching.require_reviewed_floor;
     let require_reviewed = job.options.require_reviewed || floor;
+    // SN3: who required review, as it is applied here: the request's
+    // record, or the floor that stands at dispatch.
+    let applied = RunOptions {
+        require_fit: job.options.require_fit,
+        require_reviewed,
+        require_reviewed_by: if job.options.require_reviewed {
+            job.options.require_reviewed_by.clone()
+        } else {
+            floor.then(|| "server".to_owned())
+        },
+    };
     matching::admit(&document, require_reviewed)
         .map_err(|e| Box::new(gate::end(&e, build, row.kind)))?;
     let options = MatchOptions::new(job.options.require_fit, require_reviewed);
-    let components = components(shared, row.kind, &job)?;
+    let components = components(shared, row.kind, &job, control)?;
     let original = job.original.as_deref().map(|sha256| {
         let sha256 = sha256.trim_start_matches("sha256:");
         // CO5: an original whose assembly cannot be read fails the run
@@ -159,43 +181,137 @@ fn prepare(shared: &Shared, row: &JobRow) -> Result<Prepared, Halt> {
         options,
         components,
         original,
+        applied,
+        build,
     })
 }
 
-/// CO5, CO3: each component read and chosen by core, once per (assembly,
+/// CO5, CO3: each component chosen by core, once per (assembly,
 /// definition) with every label; its default label
-/// `component:<sha256, first 12>/#<n>` (RA8). A selection error ends the
-/// job `refused`, exit 2, with its code; a component of a refused assembly
-/// `refused`, exit 3, `component_refused`, before anything is judged.
-fn components(shared: &Shared, kind: Kind, job: &MatchJob) -> Result<Vec<ComponentInput>, Halt> {
-    let mut assemblies: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    let mut out: Vec<ComponentInput> = Vec::new();
-    for asked in &job.components {
-        let sha256 = asked.assembly.trim_start_matches("sha256:").to_owned();
-        if !assemblies.contains_key(&sha256) {
-            let bytes = run::read_input(shared, kind, &sha256)?;
-            assemblies.insert(sha256.clone(), bytes);
+/// `component:<sha256, first 12>/#<n>` (RA8). The entries are grouped by
+/// assembly: each assembly's bytes are read once, read as an assembly
+/// once, and dropped before its components are chosen, and its reading
+/// dropped before the next assembly's (JS3); the stop flag is asked
+/// between assemblies and between selections (JS8), and the count chosen
+/// published (JB8). A selection error ends the job `refused`, exit 2, with
+/// its code; a component of a refused assembly `refused`, exit 3,
+/// `component_refused`, before anything is judged; of several, the first
+/// in the request's order.
+fn components(
+    shared: &Shared,
+    kind: Kind,
+    job: &MatchJob,
+    control: &Control,
+) -> Result<Vec<ComponentInput>, Halt> {
+    let total = u64::try_from(job.components.len()).unwrap_or(u64::MAX);
+    // Each assembly's entries, in the order the assembly is first named.
+    let mut groups: Vec<(&str, Vec<usize>)> = Vec::new();
+    let mut group_of: BTreeMap<&str, usize> = BTreeMap::new();
+    for (i, asked) in job.components.iter().enumerate() {
+        let sha256 = asked.assembly.trim_start_matches("sha256:");
+        let at = *group_of.entry(sha256).or_insert_with(|| {
+            groups.push((sha256, Vec::new()));
+            groups.len() - 1
+        });
+        groups[at].1.push(i);
+    }
+    let mut chosen = Chosen::default();
+    for (sha256, entries) in groups {
+        if chosen.failed_before(entries.first().copied().unwrap_or(0)) {
+            continue;
         }
-        let bytes = assemblies.get(&sha256).map_or(&[][..], Vec::as_slice);
-        let component =
-            SelectedComponent::read(bytes, asked.part.as_deref(), asked.occurrence.as_deref())
-                .map_err(|e| Box::new(component_error(kind, &e)))?;
-        let label = asked
-            .label
-            .clone()
-            .unwrap_or_else(|| format!("component:{}/#{}", &sha256[..12], component.definition));
-        match out.iter_mut().find(|c| {
-            c.component.assembly_sha256 == component.assembly_sha256
-                && c.component.definition == component.definition
-        }) {
-            Some(seen) => seen.labels.push(label),
-            None => out.push(ComponentInput {
-                component,
-                labels: vec![label],
-            }),
+        stop_check(control, kind)?;
+        let assembly = AssemblyComponents::read(&run::read_input(shared, kind, sha256)?);
+        for i in entries {
+            if chosen.failed_before(i) {
+                break;
+            }
+            stop_check(control, kind)?;
+            let asked = &job.components[i];
+            match SelectedComponent::select(
+                &assembly,
+                asked.part.as_deref(),
+                asked.occurrence.as_deref(),
+            ) {
+                Ok(component) => chosen.found(i, component),
+                Err(error) => chosen.fail(i, component_error(kind, &error)),
+            }
+            if chosen.done % 256 == 0 {
+                control.progress(shared, run::progress("reading", chosen.done, total));
+            }
+        }
+        drop(assembly);
+        control.progress(shared, run::progress("reading", chosen.done, total));
+    }
+    chosen.inputs(job)
+}
+
+/// The components chosen so far: each (assembly, definition) once, the one
+/// each entry names, and the first failing entry's ending.
+#[derive(Default)]
+struct Chosen {
+    each: BTreeMap<(String, u64), SelectedComponent>,
+    named: BTreeMap<usize, (String, u64)>,
+    failed: Option<(usize, End)>,
+    done: u64,
+}
+
+impl Chosen {
+    /// Whether an entry before `i` has failed: nothing after it is read.
+    fn failed_before(&self, i: usize) -> bool {
+        self.failed.as_ref().is_some_and(|(at, _)| *at < i)
+    }
+
+    fn found(&mut self, i: usize, component: SelectedComponent) {
+        let key = (
+            component.assembly_sha256().to_owned(),
+            component.definition(),
+        );
+        self.named.insert(i, key.clone());
+        self.each.entry(key).or_insert(component);
+        self.done += 1;
+    }
+
+    fn fail(&mut self, i: usize, ending: End) {
+        if !self.failed_before(i) {
+            self.failed = Some((i, ending));
         }
     }
-    Ok(out)
+
+    /// The inputs in the request's order (MF3), every label each was
+    /// named by; or the first failing entry's ending.
+    fn inputs(mut self, job: &MatchJob) -> Result<Vec<ComponentInput>, Halt> {
+        if let Some((_, ending)) = self.failed {
+            return Err(Box::new(ending));
+        }
+        let mut out: Vec<ComponentInput> = Vec::new();
+        let mut at: BTreeMap<(String, u64), usize> = BTreeMap::new();
+        for (i, key) in self.named {
+            let asked = &job.components[i];
+            let label = asked
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("component:{}/#{}", &key.0[..12], key.1));
+            if let Some(&slot) = at.get(&key) {
+                out[slot].labels.push(label);
+            } else if let Some(component) = self.each.remove(&key) {
+                at.insert(key, out.len());
+                out.push(ComponentInput {
+                    component,
+                    labels: vec![label],
+                });
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// JS8: a set stop flag ends the job as its stop says.
+fn stop_check(control: &Control, kind: Kind) -> Result<(), Halt> {
+    if control.flag.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(Box::new(run::internal(kind, "stopped")));
+    }
+    Ok(())
 }
 
 /// A component that cannot be read: its selection's error (exit 2) or the
@@ -224,39 +340,44 @@ fn component_error(kind: Kind, error: &ComponentError) -> End {
 /// fitment bug or an unreadable original (`run_incomplete`); its details
 /// the bugs' labels and the original's problem.
 fn bug_error(done: &MatchRun) -> (ErrorCode, String) {
-    let code = if done
-        .original
-        .as_deref()
-        .is_some_and(|o| o.starts_with("the original fails"))
-    {
-        ErrorCode::OriginalFailsOwnSocket
-    } else if done.shortlist_unsound {
-        ErrorCode::ShortlistUnsound
-    } else {
-        ErrorCode::RunIncomplete
-    };
+    let code = bug_code(done.original.as_ref(), done.shortlist_unsound);
     let mut details = Map::new();
     details.insert("bugs".into(), Value::from(done.bugs.clone()));
     details.insert("corrupt".into(), Value::Array(Vec::new()));
     details.insert(
         "original".into(),
-        done.original.clone().map_or(Value::Null, Value::from),
+        done.original
+            .as_ref()
+            .map_or(Value::Null, |o| Value::from(o.text())),
     );
     let detail = "the run's document is kept, but it is no result: see details and the job's notes";
     (code, documents::error_details(detail, details))
 }
 
-/// The revision `job` names is unverified (RA10): the run notes it.
-fn unverified(shared: &Shared, row: &JobRow, job: &MatchJob) -> bool {
+/// JB3, section 7.13: the code of a run that exits 1, chosen from what
+/// the run found, never from its words: the original failing its own
+/// socket first, then a shortlist drop, else `run_incomplete`.
+fn bug_code(original: Option<&OriginalProblem>, shortlist_unsound: bool) -> ErrorCode {
+    if matches!(original, Some(OriginalProblem::Fails(_))) {
+        ErrorCode::OriginalFailsOwnSocket
+    } else if shortlist_unsound {
+        ErrorCode::ShortlistUnsound
+    } else {
+        ErrorCode::RunIncomplete
+    }
+}
+
+/// The revision `job` names is unverified (RA10): the run notes it. A
+/// failure of `server.db` fails the job (`internal`), never read as a
+/// verified revision.
+fn unverified(shared: &Shared, row: &JobRow, job: &MatchJob) -> Result<bool, DbError> {
     let Some(reference) = job.socket.as_str().and_then(|s| SocketRef::parse(s).ok()) else {
-        return false;
+        return Ok(false);
     };
-    shared
+    Ok(shared
         .db
-        .revision(row.owner, &reference.id, reference.n)
-        .ok()
-        .flatten()
-        .is_some_and(|r| !r.verified)
+        .revision(row.owner, &reference.id, reference.n)?
+        .is_some_and(|r| !r.verified))
 }
 
 /// The document and its index stored (DC1, DC12), then the job's end: the
@@ -299,7 +420,7 @@ fn store(
     hook(shared, "job.stored");
     let mut notes = Notes::default();
     notes.matched(&done.notes);
-    if unverified(shared, row, job) {
+    if unverified(shared, row, job)? {
         notes.unverified_socket();
     }
     let state = State::of_exit(done.exit);
@@ -316,8 +437,10 @@ fn store(
         policy: matching::policy_facts(&match_policy(job)),
         fit_verifier: done.fit_verifier.clone(),
         bugs: done.bugs.clone(),
-        original: done.original.clone(),
+        original: done.original.as_ref().map(OriginalProblem::text),
         original_judged: done.original_judged,
+        options: prepared.applied.clone(),
+        versions: RunVersions::of(prepared.build),
     };
     let ending = End {
         exit: Some(done.exit),
@@ -356,4 +479,35 @@ fn match_policy(job: &MatchJob) -> fitment_core::MatchPolicy {
         job.policy.clearance,
     )
     .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// JB3 (review of M6 PR 6): the code comes from the problem's kind:
+    /// a failing original is `original_fails_own_socket` whatever else
+    /// broke; an original that is only a bug, unreadable or not judged
+    /// is a shortlist drop's code or `run_incomplete`.
+    #[test]
+    fn the_code_is_the_problems_kind() {
+        let fails = OriginalProblem::Fails("socket-1/bore:hole-1".into());
+        assert_eq!(
+            bug_code(Some(&fails), true),
+            ErrorCode::OriginalFailsOwnSocket
+        );
+        assert_eq!(
+            bug_code(Some(&fails), false),
+            ErrorCode::OriginalFailsOwnSocket
+        );
+        for other in [
+            OriginalProblem::Bug,
+            OriginalProblem::Unreadable,
+            OriginalProblem::JudgingFailed,
+        ] {
+            assert_eq!(bug_code(Some(&other), true), ErrorCode::ShortlistUnsound);
+            assert_eq!(bug_code(Some(&other), false), ErrorCode::RunIncomplete);
+        }
+        assert_eq!(bug_code(None, false), ErrorCode::RunIncomplete);
+    }
 }

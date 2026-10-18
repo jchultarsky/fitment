@@ -651,20 +651,20 @@ impl<'a> Matcher<'a> {
         let theirs = matches!(
             &source,
             CandidateSource::Component { assembly_sha256, definition }
-                if *assembly_sha256 == component.assembly_sha256
-                    && *definition == component.definition
+                if assembly_sha256 == component.assembly_sha256()
+                    && *definition == component.definition()
         );
         if theirs {
-            return self.judge(&component.part, source, None);
+            return self.judge(component.part(), source, None);
         }
         let refusals = vec![Refusal::new(
             RefusalCode::Internal,
-            Some(component.definition),
+            Some(component.definition()),
             "a component was named as another candidate than itself",
         )];
         CandidateResult {
             source,
-            product: component.part.definition.product.clone(),
+            product: component.part().definition.product.clone(),
             status: Status::Refused,
             verdict: Verdict::refused(refusals.iter().map(|r| r.code).collect()),
             refusals,
@@ -1056,5 +1056,157 @@ impl<'a> Matcher<'a> {
                 (id, c)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check(codes: &[FailureCode]) -> Check {
+        let failures = codes
+            .iter()
+            .map(|code| Failure::new(*code, At::default(), "planted"))
+            .collect();
+        Check::of(Evidence::new(Vec::new(), Vec::new(), failures))
+    }
+
+    fn socket(name: &str, stage: Stage, checks: Vec<(&str, Check)>) -> SocketResult {
+        SocketResult {
+            socket: name.to_owned(),
+            stage,
+            verdict: Verdict::refused(Vec::new()),
+            placement: None,
+            chosen: Chosen::None,
+            u_mm: 0.0,
+            epsilon_mm: 0.0,
+            missing: Vec::new(),
+            checks: checks
+                .into_iter()
+                .map(|(id, c)| (RequirementId::new(id), c))
+                .collect(),
+            not_checked: Vec::new(),
+            placements: (0, false),
+        }
+    }
+
+    fn result(sockets: Vec<SocketResult>) -> CandidateResult {
+        CandidateResult {
+            source: CandidateSource::component("ab".repeat(32), 7),
+            product: None,
+            status: Status::Accepted,
+            refusals: Vec::new(),
+            read: None,
+            verdict: Verdict::refused(Vec::new()),
+            flags: Vec::new(),
+            warnings: Vec::new(),
+            sockets,
+        }
+    }
+
+    /// VD15 (CO2): a constructed original failing a requirement beyond VD5
+    /// and VD6 fails there; one VD5 or VD6 explains does not; a failure
+    /// with no code, or a socket the shortlist dropped, does.
+    #[test]
+    fn a_failing_original_names_where_it_fails() {
+        let v = Stage::Verification;
+        let fails = result(vec![socket(
+            "s1",
+            v,
+            vec![
+                ("bore:a", check(&[])),
+                ("bore:b", check(&[FailureCode::Unverifiable])),
+                (
+                    "bore:c",
+                    check(&[FailureCode::DiameterMin, FailureCode::Unverifiable]),
+                ),
+            ],
+        )]);
+        assert_eq!(
+            fails.original_check(),
+            OriginalCheck {
+                exhausted: Vec::new(),
+                fails_at: Some("s1/bore:c".into()),
+            }
+        );
+        assert!(fails.original_fails());
+        let explained = result(vec![socket(
+            "s1",
+            v,
+            vec![
+                ("bore:a", check(&[FailureCode::FloorAboveTolerance])),
+                ("bore:b", check(&[FailureCode::Unverifiable])),
+            ],
+        )]);
+        assert_eq!(explained.original_check(), OriginalCheck::default());
+        assert!(!explained.original_fails());
+        let uncoded = Check::Failed(Evidence::new(Vec::new(), Vec::new(), Vec::new()));
+        let bare = result(vec![socket("s1", v, vec![("seat:a", uncoded)])]);
+        assert_eq!(bare.original_check().fails_at.as_deref(), Some("s1/seat:a"));
+        let dropped = result(vec![socket(
+            "s2",
+            Stage::Shortlist,
+            vec![("bore:a", check(&[]))],
+        )]);
+        assert_eq!(
+            dropped.original_check().fails_at.as_deref(),
+            Some("s2 (the shortlist dropped it)")
+        );
+    }
+
+    /// VD15, AL11 (CO2): a constructed original whose search a bound
+    /// exhausted is not checked there and excuses its socket, a drop
+    /// included; a later socket's failure is still found, after the
+    /// exhausted ones in the order the CLI notes them.
+    #[test]
+    fn an_exhausted_original_is_excused_where_it_is_exhausted() {
+        let exhausted = result(vec![
+            socket(
+                "s1",
+                Stage::Shortlist,
+                vec![("bore:a", check(&[FailureCode::AlignmentExhausted]))],
+            ),
+            socket(
+                "s2",
+                Stage::Verification,
+                vec![(
+                    "bore:b",
+                    check(&[
+                        FailureCode::CoverageExhausted,
+                        FailureCode::AlignmentExhausted,
+                    ]),
+                )],
+            ),
+        ]);
+        assert_eq!(
+            exhausted.original_check(),
+            OriginalCheck {
+                exhausted: vec!["s1/bore:a".into(), "s2/bore:b".into()],
+                fails_at: None,
+            }
+        );
+        assert!(!exhausted.original_fails());
+        let then_fails = result(vec![
+            socket(
+                "s1",
+                Stage::Verification,
+                vec![("bore:a", check(&[FailureCode::AlignmentExhausted]))],
+            ),
+            socket(
+                "s2",
+                Stage::Verification,
+                vec![(
+                    "bore:b",
+                    check(&[FailureCode::AlignmentExhausted, FailureCode::AxisOffset]),
+                )],
+            ),
+        ]);
+        assert_eq!(
+            then_fails.original_check(),
+            OriginalCheck {
+                exhausted: vec!["s1/bore:a".into()],
+                fails_at: Some("s2/bore:b".into()),
+            }
+        );
     }
 }

@@ -101,7 +101,8 @@ impl Action {
 /// `info.blocking` (inside it, on the blocking pool), `auth.hash` (inside
 /// an argon2 slot, on the blocking pool: AU2), `upload.chunk` (before an
 /// upload's next chunk is read), `socket.parse` (inside one of HX8's
-/// parse slots, on the blocking pool), and a job's: `job.submitted`,
+/// parse slots, on the blocking pool), `stored.read` (inside one of the
+/// stored-bytes read slots, on the blocking pool), and a job's: `job.submitted`,
 /// `job.dispatched` (async), `job.read`, `job.ran`, `job.stored`,
 /// `job.committing` and `job.committed` (on the blocking pool), and a
 /// match's `match.window` (before each window) and `match.judge` (before

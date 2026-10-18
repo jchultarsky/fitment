@@ -704,7 +704,7 @@ async fn component_matches_are_the_librarys() {
             .map(|(p, o, l)| {
                 let component = SelectedComponent::read(&bytes, *p, *o).unwrap();
                 let label = l.map_or_else(
-                    || format!("component:{}/#{}", &sha[..12], component.definition),
+                    || format!("component:{}/#{}", &sha[..12], component.definition()),
                     str::to_owned,
                 );
                 (
@@ -919,12 +919,19 @@ async fn the_gate_is_checked_again_at_dispatch() {
     assert!(job["outcome"].is_null());
 }
 
+/// `file` with a second `socket_rules_version` of `rules` as its last key.
+fn duplicated(file: &[u8], rules: u32) -> Vec<u8> {
+    let text = std::str::from_utf8(file).unwrap().trim_end();
+    let body = text.strip_suffix('}').unwrap().trim_end();
+    format!("{body},\n  \"socket_rules_version\": {rules}\n}}\n").into_bytes()
+}
+
 /// UP6, JB2, VD9: an uploaded socket document is read as `fitment match`
-/// reads a socket file: stale, its digest broken, refused, not JSON, and
-/// unreviewed under `require_reviewed`, each refused before any job with
-/// the CLI's exit code 3 (nothing on its stdout); bytes that are not UTF-8
-/// are `socket_unreadable` too, where the CLI cannot read the file (exit
-/// 1); the file itself, uploaded, gives the CLI's document.
+/// reads a socket file: stale, its digest broken, refused, not JSON, not
+/// UTF-8, an array, a duplicated version key, and unreviewed under
+/// `require_reviewed`, each refused before any job with the CLI's exit
+/// code 3 (nothing on its stdout), stale on both sides or on neither; the
+/// file itself, uploaded, gives the CLI's document.
 #[tokio::test]
 async fn an_uploaded_socket_is_read_as_the_cli_reads_it() {
     let server = TestServer::fresh();
@@ -966,6 +973,21 @@ async fn an_uploaded_socket_is_read_as_the_cli_reads_it() {
             "socket_unreadable",
         ),
         ("unreviewed", file.clone(), true, "socket_unreviewed"),
+        // CO2: the versions read by one core helper on both sides: an
+        // array states none, and of a duplicated key the last counts.
+        ("an array", b"[6, 6]".to_vec(), false, "socket_unreadable"),
+        (
+            "a duplicated key",
+            duplicated(&file, fitment_core::SOCKET_RULES_VERSION - 1),
+            false,
+            "socket_stale",
+        ),
+        (
+            "a duplicated key, current last",
+            duplicated(&file, fitment_core::SOCKET_RULES_VERSION),
+            false,
+            "socket_unreadable",
+        ),
         // SN6: a report is never input: a match document is no socket.
         (
             "a match document",
@@ -993,12 +1015,15 @@ async fn an_uploaded_socket_is_read_as_the_cli_reads_it() {
         if reviewed {
             args.push("--require-reviewed");
         }
-        let (exit, stdout, _) = cli(&dir, &args);
-        // The CLI reads its socket file as text: bytes that are not UTF-8
-        // it cannot read at all (exit 1); the API refuses them as the
-        // document they claim to be (section 7.12's `utf8` reason).
-        let wanted = if what == "not utf-8" { 1 } else { 3 };
-        assert_eq!((exit, stdout.is_empty()), (Some(wanted), true), "{what}");
+        let (exit, stdout, stderr) = cli(&dir, &args);
+        // Bytes that are not UTF-8 are no socket document to either (exit
+        // 3); the CLI names staleness exactly where the API does.
+        assert_eq!((exit, stdout.is_empty()), (Some(3), true), "{what}");
+        assert_eq!(
+            stderr.contains("extract it again"),
+            code == "socket_stale",
+            "{what}: {stderr}"
+        );
     }
     let sha = server.upload(&file).await;
     let body = json!({ "socket": { "upload": format!("sha256:{sha}") },

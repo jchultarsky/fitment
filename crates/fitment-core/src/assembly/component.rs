@@ -4,26 +4,62 @@
 //! its own target, and gets the leaf's part in its own frame with the
 //! assembly's SHA-256 and the definition's `#id`, or why it cannot be read.
 //! The server judges a component through this alone, so it never selects
-//! or reads a part itself (SN1).
+//! or reads a part itself (SN1). An assembly is read once however many
+//! components are chosen from it ([`AssemblyComponents`]).
 
-use super::{ComponentRead, SelectError, read_assembly};
+use super::{AssemblyRead, ComponentRead, SelectError, read_assembly};
 use crate::features::Part;
 use crate::gate::Refusal;
 use crate::matching::CandidateSource;
 use crate::sha256::sha256_hex;
 use crate::socket::SocketDocument;
 
-/// A leaf of an assembly, read as a part (CF1, CO5). The name
-/// `ComponentRead` is the listing's own reading of each definition.
+/// An assembly read once, its SHA-256 beside it: every component a caller
+/// names in it is chosen from this one reading (CO5), so a thousand
+/// components of one assembly cost one read, not a thousand. The SHA-256
+/// is the bytes' own, so a component chosen from it names the file it
+/// came from.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct SelectedComponent {
+// The fields are private; the methods below read them.
+#[allow(clippy::exhaustive_structs)]
+pub struct AssemblyComponents {
+    assembly_sha256: String,
+    read: AssemblyRead,
+}
+
+impl AssemblyComponents {
+    /// `step` read as an assembly, its SHA-256 taken. Bytes in, values
+    /// out; the bytes are not kept.
+    pub fn read(step: &[u8]) -> Self {
+        Self {
+            assembly_sha256: sha256_hex(step),
+            read: read_assembly(step),
+        }
+    }
+
     /// The assembly's SHA-256, hex.
-    pub assembly_sha256: String,
-    /// The definition's `#id`.
-    pub definition: u64,
-    /// The part, in its own frame.
-    pub part: Box<Part>,
+    pub fn sha256(&self) -> &str {
+        &self.assembly_sha256
+    }
+
+    /// The reading itself.
+    pub fn assembly(&self) -> &AssemblyRead {
+        &self.read
+    }
+}
+
+/// A leaf of an assembly, read as a part (CF1, CO5). The name
+/// `ComponentRead` is the listing's own reading of each definition. Its
+/// fields are private: one is made only by choosing it from an assembly's
+/// bytes, so its SHA-256, definition and part always agree, which
+/// `Matcher::judge_component` relies on.
+#[derive(Debug, Clone, PartialEq)]
+// The fields are private; the methods below read them.
+#[allow(clippy::exhaustive_structs)]
+pub struct SelectedComponent {
+    assembly_sha256: String,
+    definition: u64,
+    part: Box<Part>,
 }
 
 /// Why no component could be read.
@@ -49,7 +85,8 @@ pub enum ComponentError {
 impl SelectedComponent {
     /// The component `part` and `occurrence` name in `step`, chosen by the
     /// code `SocketDocument::extract` chooses its target with (section 5),
-    /// the assembly gate's refusals kept. Bytes in, values out.
+    /// the assembly gate's refusals kept. Bytes in, values out: one
+    /// [`AssemblyComponents::read`], then [`select`](Self::select).
     ///
     /// # Errors
     ///
@@ -59,7 +96,21 @@ impl SelectedComponent {
         part: Option<&str>,
         occurrence: Option<&str>,
     ) -> Result<Self, ComponentError> {
-        let read = read_assembly(step);
+        Self::select(&AssemblyComponents::read(step), part, occurrence)
+    }
+
+    /// The component `part` and `occurrence` name in an assembly already
+    /// read, as [`read`](Self::read) chooses it.
+    ///
+    /// # Errors
+    ///
+    /// A [`ComponentError`]: the selection's, or the gate's refusals.
+    pub fn select(
+        assembly: &AssemblyComponents,
+        part: Option<&str>,
+        occurrence: Option<&str>,
+    ) -> Result<Self, ComponentError> {
+        let read = &assembly.read;
         let Some(listing) = read.listing() else {
             return Err(ComponentError::Refused(read.refusals().to_vec()));
         };
@@ -71,7 +122,7 @@ impl SelectedComponent {
             .definitions()
             .get(selection.definition)
             .ok_or(ComponentError::NotFound)?;
-        Self::of(step, listed.definition.instance, listed.read.as_ref())
+        Self::of(assembly, listed.definition.instance, listed.read.as_ref())
     }
 
     /// The target `document` was extracted from, read from `step`, its
@@ -89,7 +140,8 @@ impl SelectedComponent {
         if sha256_hex(step) != document.source().sha256 {
             return Err(ComponentError::NotFound);
         }
-        let read = read_assembly(step);
+        let assembly = AssemblyComponents::read(step);
+        let read = &assembly.read;
         let Some(listing) = read.listing() else {
             return Err(ComponentError::Refused(read.refusals().to_vec()));
         };
@@ -101,17 +153,17 @@ impl SelectedComponent {
             .iter()
             .find(|d| d.definition.instance == instance)
             .ok_or(ComponentError::NotFound)?;
-        Self::of(step, instance, listed.read.as_ref())
+        Self::of(&assembly, instance, listed.read.as_ref())
     }
 
     fn of(
-        step: &[u8],
+        assembly: &AssemblyComponents,
         definition: u64,
         read: Option<&ComponentRead>,
     ) -> Result<Self, ComponentError> {
         match read {
             Some(ComponentRead::Accepted(part)) => Ok(Self {
-                assembly_sha256: sha256_hex(step),
+                assembly_sha256: assembly.assembly_sha256.clone(),
                 definition,
                 part: part.clone(),
             }),
@@ -120,6 +172,21 @@ impl SelectedComponent {
             }
             None => Err(ComponentError::NotFound),
         }
+    }
+
+    /// The assembly's SHA-256, hex.
+    pub fn assembly_sha256(&self) -> &str {
+        &self.assembly_sha256
+    }
+
+    /// The definition's `#id`.
+    pub fn definition(&self) -> u64 {
+        self.definition
+    }
+
+    /// The part, in its own frame.
+    pub fn part(&self) -> &Part {
+        &self.part
     }
 
     /// Where it comes from (MF6's `source`): the assembly and the

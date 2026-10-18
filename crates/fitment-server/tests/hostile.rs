@@ -831,6 +831,104 @@ async fn quotas_are_checked_before_bytes_and_as_they_stream() {
     assert_eq!(server.temporaries(), Vec::<std::path::PathBuf>::new());
 }
 
+/// UP4, RA5 (review of M6 PR 6): a socket revision's document counts
+/// against its owner's quota, once however many rows name its object: a
+/// review's new revision adds its document's charge; at the quota a
+/// review and an import are `507 quota_exceeded`, nothing made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn socket_revisions_count_against_their_owners_quota() {
+    let (server, users) = quota_world(1);
+    let (ada, token) = users[0].clone();
+    let bytes = support::assembly("s02_cbore.stp");
+    let assembly = fitment_core::sha256_hex(&bytes);
+    assert!(
+        server
+            .send(support::put_upload(&bytes).bearer(&token))
+            .await
+            .status
+            .is_success()
+    );
+    let body = json!({ "upload": format!("sha256:{assembly}") });
+    server
+        .send(support::waiting("/v1/assemblies", &body).bearer(&token))
+        .await;
+    let body = json!({ "assembly": format!("sha256:{assembly}"), "part": "BLOCK" });
+    let job = server
+        .send(support::waiting("/v1/sockets", &body).bearer(&token))
+        .await
+        .json();
+    let revision = job["result"]["href"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("/v1/sockets/")
+        .to_owned();
+    let seams = server.server().seams();
+    let charged = || seams.db.charged_bytes(ada, seams.ids.now_ms()).unwrap();
+    let before = charged();
+    let review = |at: &str, status: &str| {
+        Call::json(
+            Method::POST,
+            &format!("/v1/sockets/{at}/review"),
+            &json!({ "decisions": [{ "requirement": "bore:hole-427", "status": status }] }),
+        )
+        .bearer(&token)
+    };
+    let made = server.send(review(&revision, "kept")).await;
+    assert_eq!(made.status, 201);
+    let second = made
+        .header("location")
+        .unwrap()
+        .trim_start_matches("/v1/sockets/")
+        .to_owned();
+    let document_bytes = u64::try_from(made.body.len()).unwrap();
+    assert_eq!(
+        charged(),
+        before + fitment_server::state::charge(document_bytes),
+        "the new revision's document is charged"
+    );
+    let upload = server
+        .send(support::put_upload(&made.body).bearer(&token))
+        .await;
+    assert!(upload.status.is_success());
+    assert_eq!(
+        charged(),
+        before + fitment_server::state::charge(document_bytes),
+        "an upload of the same bytes is the same object, charged once"
+    );
+    hold(&server, ada, 'e', GIB - charged());
+    let refused = server.send(review(&second, "removed")).await;
+    assert_eq!(
+        (refused.status.as_u16(), refused.code()),
+        (507, "quota_exceeded".to_owned()),
+        "{}",
+        String::from_utf8_lossy(&refused.body)
+    );
+    assert_eq!(refused.json()["details"]["limit"], "user_quota_gib");
+    let import = json!({ "upload": format!("sha256:{}", fitment_core::sha256_hex(&made.body)) });
+    let imported = server
+        .send(support::waiting("/v1/sockets/import", &import).bearer(&token))
+        .await;
+    assert_eq!(
+        (imported.status.as_u16(), imported.code()),
+        (507, "quota_exceeded".to_owned())
+    );
+    let revisions = server
+        .send(
+            Call::get(&format!(
+                "/v1/sockets/{}/revisions",
+                second.split('@').next().unwrap()
+            ))
+            .bearer(&token),
+        )
+        .await
+        .json();
+    assert_eq!(
+        revisions["items"].as_array().unwrap().len(),
+        2,
+        "nothing made"
+    );
+}
+
 /// UP4: the staging quota counts the bytes of open temporary files, a
 /// declared length reserved up front and streamed bytes past it; past it,
 /// `507 quota_exceeded`, and the bytes are released with the file.
@@ -1602,9 +1700,10 @@ async fn socket_documents_parse_four_at_a_time() {
         (503, "request_timeout".to_owned())
     );
     assert_eq!(fifth.json()["retryable"], false);
+    assert_eq!(fifth.json()["details"]["limit"], "parse_concurrency");
     assert!(
-        started.elapsed() >= Duration::from_secs(2),
-        "it waited the handler's time"
+        started.elapsed() >= Duration::from_secs(1),
+        "it waited half the handler's time"
     );
     assert_eq!(gate.reached(), 4, "the fifth never parsed");
     gate.open();
@@ -1612,6 +1711,154 @@ async fn socket_documents_parse_four_at_a_time() {
         assert_eq!(held.await.unwrap().status, 202);
     }
     server.server().seams().hooks.clear("socket.parse");
+}
+
+/// HX8: a parse's slot is held by the parse, not by the request: a review
+/// whose parse is paused and whose request the layer times out still holds
+/// its slot, so a second review never reaches its parse while the first's
+/// runs, and is answered by the gate's own wait, `503 request_timeout`
+/// with `details.limit = "parse_concurrency"`, before its layer's timeout.
+#[tokio::test]
+async fn a_dropped_request_keeps_its_parse_slot() {
+    let dirs = Dirs::new();
+    let mut c = dirs.config();
+    c.limits.parse_concurrency = 1;
+    c.server.handler_timeout_seconds = 2;
+    let server = TestServer::in_process(dirs, c);
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let gate = Gate::new();
+    server
+        .server()
+        .seams()
+        .hooks
+        .set("socket.parse", Action::Pause(gate.clone()));
+    let review = || {
+        Call::json(
+            Method::POST,
+            &format!("/v1/sockets/{socket}/review"),
+            &json!({ "decisions": [{ "requirement": "bore:hole-427", "status": "kept" }] }),
+        )
+    };
+    let first = server.send(review()).await;
+    let after_first = gate.reached();
+    let started = Instant::now();
+    let second = server.send(review()).await;
+    let waited = started.elapsed();
+    let after_second = gate.reached();
+    // Opened before any assertion, so a failure ends the test rather than
+    // leaving a parse paused on the blocking pool.
+    gate.open();
+    assert_eq!(first.status, 503, "the layer timed out the first review");
+    assert_eq!(after_first, 1, "the first review's parse runs on");
+    assert_eq!(after_second, 1, "the second never parsed");
+    assert_eq!(
+        (second.status.as_u16(), second.code()),
+        (503, "request_timeout".to_owned())
+    );
+    assert_eq!(second.json()["details"]["limit"], "parse_concurrency");
+    assert!(waited < Duration::from_secs(2), "the gate answered");
+    server.server().seams().hooks.clear("socket.parse");
+}
+
+/// JS3, JS8, CO5 (review of PR 6): four thousand components naming one
+/// assembly read it once, not four thousand times: the match ends well
+/// within the 27.8 s the review measured for re-reading it per entry; and
+/// a match cancelled before its components are chosen ends `cancelled`
+/// at once, the stop flag asked between assemblies and selections.
+#[tokio::test]
+async fn many_components_of_one_assembly_read_it_once() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let sha = fitment_core::sha256_hex(&support::assembly("s01_bolted.stp"));
+    let components: Vec<serde_json::Value> = (0..4000)
+        .map(|_| json!({ "assembly": format!("sha256:{sha}"), "part": "BRACKET" }))
+        .collect();
+    let body = json!({ "socket": socket, "candidates": { "components": components } });
+    let started = Instant::now();
+    let job = server.run_match(&body).await;
+    let took = started.elapsed();
+    assert_eq!(job["state"], "succeeded", "{job}");
+    assert!(
+        took < Duration::from_secs(8),
+        "4,000 components took {took:?}"
+    );
+    let gate = Gate::new();
+    let hooks = &server.server().seams().hooks;
+    hooks.set("job.read", Action::Pause(gate.clone()));
+    let queued = server
+        .send(Call::json(Method::POST, "/v1/matches", &body))
+        .await
+        .json();
+    let id = queued["id"].as_str().unwrap().to_owned();
+    assert!(gate.arrived(1, Duration::from_secs(30)).await);
+    let cancel = server
+        .send(Call::new(Method::POST, &format!("/v1/jobs/{id}/cancel")))
+        .await;
+    assert_eq!(cancel.json()["state"], "cancelling");
+    let started = Instant::now();
+    gate.open();
+    hooks.clear("job.read");
+    let job = server.finished_job(&id, Duration::from_secs(120)).await;
+    let took = started.elapsed();
+    assert_eq!(job["state"], "cancelled", "{job}");
+    assert!(took < Duration::from_secs(3), "the cancel took {took:?}");
+}
+
+/// OB3, DC12 (review of M6 PR 6): reads of stored bytes are bounded by
+/// `limits.read_concurrency`: with its one slot held by a candidate page
+/// paused in its read, a document's download waits for it, and is
+/// answered `503 request_timeout` with `details.limit =
+/// "read_concurrency"` within half the handler's time, never reaching a
+/// read; once the page's read ends, both serve.
+#[tokio::test]
+async fn stored_bytes_are_read_within_their_slots() {
+    let dirs = Dirs::new();
+    let mut c = dirs.config();
+    c.limits.read_concurrency = 1;
+    c.server.handler_timeout_seconds = 2;
+    let server = TestServer::in_process(dirs, c);
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let sha = server.upload(&support::candidate("m_bracket.stp")).await;
+    let files = json!([{ "upload": format!("sha256:{sha}"), "label": "m_bracket.stp" }]);
+    let job = server
+        .run_match(&json!({ "socket": socket, "candidates": { "files": files } }))
+        .await;
+    let id = job["id"].as_str().unwrap().to_owned();
+    let gate = Gate::new();
+    let hooks = &server.server().seams().hooks;
+    hooks.set("stored.read", Action::Pause(gate.clone()));
+    let server = std::sync::Arc::new(server);
+    let page = {
+        let (server, id) = (std::sync::Arc::clone(&server), id.clone());
+        tokio::spawn(async move {
+            server
+                .get(&format!("/v1/matches/{id}/candidates?limit=1"))
+                .await
+        })
+    };
+    let paused = gate.arrived(1, Duration::from_secs(30)).await;
+    let started = Instant::now();
+    let download = server.get(&format!("/v1/matches/{id}/document")).await;
+    let waited = started.elapsed();
+    let reached = gate.reached();
+    gate.open();
+    server.server().seams().hooks.clear("stored.read");
+    assert!(paused, "the page holds the slot");
+    assert_eq!(
+        (download.status.as_u16(), download.code()),
+        (503, "request_timeout".to_owned())
+    );
+    assert_eq!(download.json()["details"]["limit"], "read_concurrency");
+    assert!(waited < Duration::from_secs(2), "the slot's wait answered");
+    assert_eq!(reached, 1, "the download never read");
+    assert_eq!(page.await.unwrap().status, 200);
+    assert_eq!(
+        server
+            .get(&format!("/v1/matches/{id}/document"))
+            .await
+            .status,
+        200
+    );
 }
 
 /// RA8, HX2, CM1: a match's names and candidates within their bounds: a

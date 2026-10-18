@@ -95,6 +95,15 @@ pub(crate) fn conclude(
     })
 }
 
+/// A phase's progress (JB8): counts only, never a verdict (M6-51).
+pub(crate) fn progress(phase: &'static str, done: u64, total: u64) -> Progress {
+    Progress {
+        phase,
+        done,
+        total: Some(total),
+    }
+}
+
 /// A reading's progress (JB8): counts only.
 pub(crate) fn reading(done: u64) -> Progress {
     Progress {

@@ -147,7 +147,11 @@ pub(crate) struct Shared {
     /// set the fake one (VT31); read once per job.
     pub(crate) verifier: std::sync::RwLock<matching::Verifier>,
     /// HX8: the socket documents parsed at once by requests.
-    pub(crate) parse_slots: tokio::sync::Semaphore,
+    pub(crate) parse_slots: Arc<tokio::sync::Semaphore>,
+    /// OB3, DC12: the reads of stored bytes requests make at once (a
+    /// document served whole or hashed before it streams, a candidate
+    /// page), `limits.read_concurrency`.
+    pub(crate) read_slots: Arc<tokio::sync::Semaphore>,
     /// OP11, VT32: how far the build's socket rules version is raised, so
     /// a test meets a socket stored by an older build.
     #[cfg(feature = "test-support")]
@@ -334,6 +338,7 @@ impl Server {
             .collect();
         let verifier = matching::verifier(&config.fit);
         let parse_slots = usize::try_from(config.limits.parse_concurrency.max(1)).unwrap_or(1);
+        let read_slots = usize::try_from(config.limits.read_concurrency.max(1)).unwrap_or(1);
         let objects = state::Objects::new(&config.paths.state, fs);
         // SD2: no upload survives its connection, so a start finds only
         // abandoned temporary files.
@@ -355,7 +360,8 @@ impl Server {
                 auth,
                 trusted_proxies,
                 verifier: std::sync::RwLock::new(verifier),
-                parse_slots: tokio::sync::Semaphore::new(parse_slots),
+                parse_slots: Arc::new(tokio::sync::Semaphore::new(parse_slots)),
+                read_slots: Arc::new(tokio::sync::Semaphore::new(read_slots)),
                 #[cfg(feature = "test-support")]
                 rules_shift: std::sync::atomic::AtomicU32::new(0),
                 objects,

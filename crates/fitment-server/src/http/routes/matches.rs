@@ -15,7 +15,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
 use serde_json::Value;
 
-use super::jobs::{self, Id, Submission};
+use super::jobs::{self, Id, Input, Submission};
 use crate::Shared;
 use crate::auth::documents::Page;
 use crate::http::cache::{self, Cache, Served};
@@ -34,6 +34,14 @@ use crate::state::JobRow;
 
 fn not_found() -> ApiError {
     ApiError::new(ErrorCode::NotFound, "no match of that id is yours to see")
+}
+
+/// `409 original_not_stored` (CO5).
+fn original_not_stored() -> ApiError {
+    ApiError::new(
+        ErrorCode::OriginalNotStored,
+        "the original is read from the socket's own assembly: register it (POST /v1/assemblies)",
+    )
 }
 
 /// RA8: a label, display text, never one a catalog entry's would read as
@@ -211,20 +219,22 @@ async fn inputs_of(
     owner: i64,
     files: &[FileJob],
     components: &[ComponentJob],
-) -> Result<Vec<(String, u64)>, ApiError> {
-    let mut inputs: Vec<(String, u64)> = Vec::new();
+) -> Result<Vec<Input>, ApiError> {
+    let mut inputs: Vec<Input> = Vec::new();
     for file in files {
         let sha256 = file.upload.trim_start_matches("sha256:").to_owned();
-        if !inputs.iter().any(|(s, _)| *s == sha256) {
+        if !inputs.iter().any(|i| i.sha256 == sha256) {
             let bytes = super::nameable(shared, owner, &sha256).await?;
-            inputs.push((sha256, bytes));
+            inputs.push(Input::upload(sha256, bytes));
         }
     }
     for component in components {
         let sha256 = component.assembly.trim_start_matches("sha256:").to_owned();
-        if !inputs.iter().any(|(s, _)| *s == sha256) {
-            let assembly = super::assemblies::of(shared, owner, sha256.clone()).await?;
-            inputs.push((sha256, assembly.bytes));
+        if !inputs.iter().any(|i| i.sha256 == sha256) {
+            let bytes = super::assemblies::for_match(shared, owner, sha256.clone())
+                .await?
+                .ok_or_else(super::assemblies::not_found)?;
+            inputs.push(Input::named(sha256, bytes, super::assemblies::not_found));
         }
     }
     Ok(inputs)
@@ -255,23 +265,23 @@ pub(super) async fn create(
         socket_of(&shared, owner, &body.socket).await?;
     let (_, source) =
         super::sockets::gated(&shared, &document, document_bytes, options.require_reviewed).await?;
-    let mut inputs = vec![(document.clone(), document_bytes)];
+    let gone = if revision.is_some() {
+        super::sockets::not_found
+    } else {
+        super::upload_not_found
+    };
+    let mut inputs = vec![Input::named(document.clone(), document_bytes, gone)];
     let original = if body.original.unwrap_or(false) {
-        let held = super::assemblies::of(&shared, owner, source.clone())
-            .await
-            .map_err(|_| {
-                ApiError::new(
-                    ErrorCode::OriginalNotStored,
-                    "the original is read from the socket's own assembly: register it (POST /v1/assemblies)",
-                )
-            })?;
-        inputs.push((source.clone(), held.bytes));
+        let held = super::assemblies::for_match(&shared, owner, source.clone())
+            .await?
+            .ok_or_else(original_not_stored)?;
+        inputs.push(Input::named(source.clone(), held, original_not_stored));
         Some(format!("sha256:{source}"))
     } else {
         None
     };
     for input in inputs_of(&shared, owner, &files, &components).await? {
-        if !inputs.iter().any(|(s, _)| *s == input.0) {
+        if !inputs.iter().any(|i| i.sha256 == input.sha256) {
             inputs.push(input);
         }
     }
@@ -298,9 +308,15 @@ pub(super) async fn create(
 /// AU8: the match `id`, a match job the caller owns, or any for an admin.
 async fn find(shared: &Arc<Shared>, caller: &Principal, id: &str) -> Result<JobRow, ApiError> {
     let id = jobs::job_id(id).map_err(|_| not_found())?;
-    let row = jobs::find(shared, caller, id)
-        .await
-        .map_err(|_| not_found())?;
+    // Only a missing job is this route's 404; `server.db`'s failure stays
+    // its own error (ER3).
+    let row = jobs::find(shared, caller, id).await.map_err(|e| {
+        if e.code() == ErrorCode::NotFound {
+            not_found()
+        } else {
+            e
+        }
+    })?;
     if row.kind == Kind::Match {
         Ok(row)
     } else {
@@ -512,7 +528,7 @@ pub(super) async fn candidates(
         ));
     };
     let (reading, bytes) = (Arc::clone(&shared), row.result_bytes.unwrap_or(0));
-    let (first, entries, total) = blocking(move || {
+    let (first, entries, total) = crate::http::stored(&shared, move || {
         let index_bytes = reading
             .db
             .object_bytes(&index)

@@ -13,7 +13,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use super::error::{ApiError, ErrorCode};
-use super::{blocking, json};
+use super::json;
 use crate::Shared;
 use crate::jobs::events::ChannelBody;
 use crate::state::ObjectError;
@@ -209,7 +209,7 @@ pub(crate) async fn object(
         return streamed(shared, served, &etag).await;
     }
     let (reading, sha256, bytes) = (Arc::clone(shared), served.sha256.clone(), served.bytes);
-    let body = blocking(move || {
+    let body = super::stored(shared, move || {
         let read = reading
             .objects
             .read(&sha256, bytes)
@@ -233,7 +233,7 @@ pub(crate) async fn object(
 /// gone stops the reader (VT13).
 async fn streamed(shared: &Arc<Shared>, served: Served, etag: &str) -> Result<Response, ApiError> {
     let (opening, sha256, bytes) = (Arc::clone(shared), served.sha256.clone(), served.bytes);
-    let reader = blocking(move || {
+    let reader = super::stored(shared, move || {
         opening
             .objects
             .open_checked(&sha256, bytes)

@@ -41,6 +41,43 @@ pub(super) async fn of(
     owner: i64,
     sha256: String,
 ) -> Result<AssemblyRow, ApiError> {
+    found(shared, owner, sha256).await?.ok_or_else(not_found)
+}
+
+/// M6-64, UP3: the length of an assembly `owner` may name in a match: one
+/// they registered, or one an input of a retained match record of theirs
+/// holds, so the run can be submitted again unchanged on its own bytes
+/// after the assembly's row is deleted; `None` otherwise.
+///
+/// # Errors
+///
+/// `server.db`'s (ER3).
+pub(super) async fn for_match(
+    shared: &Arc<Shared>,
+    owner: i64,
+    sha256: String,
+) -> Result<Option<u64>, ApiError> {
+    let reading = Arc::clone(shared);
+    blocking(move || {
+        let db = &reading.db;
+        match db
+            .assembly(owner, &sha256, assemblies::versions())
+            .map_err(|e| db_error(&e))?
+        {
+            Some(row) => Ok(Some(row.bytes)),
+            None => db.match_input(owner, &sha256).map_err(|e| db_error(&e)),
+        }
+    })
+    .await
+}
+
+/// The owner's assembly of `sha256`, `None` if they hold none; a failure
+/// of `server.db` is its own error (ER3), never read as none.
+pub(super) async fn found(
+    shared: &Arc<Shared>,
+    owner: i64,
+    sha256: String,
+) -> Result<Option<AssemblyRow>, ApiError> {
     let reading = Arc::clone(shared);
     blocking(move || {
         reading
@@ -48,8 +85,7 @@ pub(super) async fn of(
             .assembly(owner, &sha256, assemblies::versions())
             .map_err(|e| db_error(&e))
     })
-    .await?
-    .ok_or_else(not_found)
+    .await
 }
 
 /// `POST /v1/assemblies` (RA3): the job `assembly_read`; an assembly the
@@ -74,7 +110,7 @@ pub(super) async fn create(
     }
     let bytes = super::nameable(&shared, caller.user.key, &sha256).await?;
     let owner = caller.user.key;
-    let found = of(&shared, owner, sha256.clone()).await.ok();
+    let found = found(&shared, owner, sha256.clone()).await?;
     if found
         .as_ref()
         .and_then(|a| a.parts.as_ref())
@@ -105,7 +141,7 @@ pub(super) async fn create(
         kind: Kind::AssemblyRead,
         request,
         request_sha256,
-        inputs: vec![(sha256, bytes)],
+        inputs: vec![super::jobs::Input::upload(sha256, bytes)],
         fingerprint,
         cites: Vec::new(),
     };

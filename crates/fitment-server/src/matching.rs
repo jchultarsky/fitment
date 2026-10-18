@@ -93,13 +93,6 @@ pub enum GateError {
     },
 }
 
-/// MF11's version fields, read without the document's other fields.
-#[derive(Deserialize)]
-struct Versions {
-    extractor_version: Option<u32>,
-    socket_rules_version: Option<u32>,
-}
-
 impl GateError {
     /// Its code (section 7.12).
     pub fn code(&self) -> ErrorCode {
@@ -139,11 +132,8 @@ fn gate_error(refused: SocketRefused) -> GateError {
 /// [`GateError`].
 pub fn read_socket(bytes: &[u8], build: Build) -> Result<SocketDocument, GateError> {
     let text = std::str::from_utf8(bytes).map_err(|_| GateError::Utf8)?;
-    if let Ok(Versions {
-        extractor_version: Some(extractor),
-        socket_rules_version: Some(rules),
-    }) = serde_json::from_slice::<Versions>(bytes)
-    {
+    // CO2: the versions as `fitment match` reads them, by one core helper.
+    if let Some((extractor, rules)) = SocketDocument::stated_versions(text) {
         if (extractor, rules) != build {
             return Err(GateError::Stale { extractor, rules });
         }
@@ -301,11 +291,11 @@ pub struct Judging<'a> {
     pub verifier: &'a (dyn FitVerifier + Send + Sync),
     /// The file candidates, once each.
     pub files: Vec<FileInput>,
-    /// The components.
-    pub components: Vec<ComponentInput>,
+    /// The components, borrowed from the job's preparation.
+    pub components: &'a [ComponentInput],
     /// The original (VD15, SN9): read, or `Err` when its assembly cannot
     /// be read (CO5); `None` when not asked.
-    pub original: Option<Result<SelectedComponent, ()>>,
+    pub original: Option<Result<&'a SelectedComponent, ()>>,
     /// JS7: how many files are read and judged at once, the job's CPU
     /// permits.
     pub window: usize,
@@ -336,9 +326,10 @@ pub struct MatchRun {
     pub bugs: Vec<String>,
     /// A pass after a shortlist drop (SL1) among them.
     pub shortlist_unsound: bool,
-    /// Why the original fails the run, if it does: unreadable, or where it
+    /// Why the original fails the run, if it does: unreadable, judged as a
+    /// fitment bug, or where it
     /// fails its own socket (VD15).
-    pub original: Option<String>,
+    pub original: Option<OriginalProblem>,
     /// The original was judged.
     pub original_judged: bool,
     /// The document's distinct candidates.
@@ -451,37 +442,78 @@ impl Collected {
 /// its notes, and why it fails the run, if it does.
 fn judge_original(
     matcher: &Matcher<'_>,
-    original: Option<&Result<SelectedComponent, ()>>,
+    original: Option<Result<&SelectedComponent, ()>>,
     notes: &mut Vec<MatchNote>,
-) -> (Option<CandidateResult>, Option<String>) {
+) -> (Option<CandidateResult>, Option<OriginalProblem>) {
     match original {
         None => (None, None),
         Some(Err(())) => {
             notes.push(MatchNote::OriginalUnreadable);
-            (None, Some("the original's assembly cannot be read".into()))
+            (None, Some(OriginalProblem::Unreadable))
         }
         Some(Ok(component)) => {
             let Some(result) = caught(|| matcher.judge_component(component, component.source()))
             else {
                 notes.push(MatchNote::JudgingFailed("original".into()));
-                return (None, Some("judging the original failed".into()));
+                return (None, Some(OriginalProblem::JudgingFailed));
             };
-            let bug = reported("original", &result, notes);
-            let check = result.original_check();
-            notes.extend(
-                check
-                    .exhausted
-                    .iter()
-                    .cloned()
-                    .map(MatchNote::OriginalExhausted),
-            );
-            let fails = check.fails_at.map(|at| {
-                notes.push(MatchNote::OriginalFails(at.clone()));
-                format!("the original fails its own socket at {at}")
-            });
-            let problem =
-                fails.or_else(|| bug.then(|| "the original's judgment is a fitment bug".into()));
+            let problem = original_notes(&result, notes);
             (Some(result), problem)
+        }
+    }
+}
+
+/// The original's judgment noted as `fitment match --original` notes it:
+/// as any candidate's (a refusal, a shortlist drop), then, as the CLI's
+/// `reported(..) || original_bug(..)` short-circuits, VD15's self-check
+/// only when that reported no fitment bug. Where it fails still chooses
+/// the error's code (JB3).
+fn original_notes(result: &CandidateResult, notes: &mut Vec<MatchNote>) -> Option<OriginalProblem> {
+    let bug = reported("original", result, notes);
+    let check = result.original_check();
+    if !bug {
+        notes.extend(
+            check
+                .exhausted
+                .iter()
+                .cloned()
+                .map(MatchNote::OriginalExhausted),
+        );
+        if let Some(at) = &check.fails_at {
+            notes.push(MatchNote::OriginalFails(at.clone()));
+        }
+    }
+    check
+        .fails_at
+        .map(OriginalProblem::Fails)
+        .or_else(|| bug.then_some(OriginalProblem::Bug))
+}
+
+/// Why the original fails a run (VD15, CO5, JB3): the error's code is
+/// chosen from this, never from its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OriginalProblem {
+    /// Its assembly cannot be read (CO5): `run_incomplete`.
+    Unreadable,
+    /// Judging it panicked: `run_incomplete`.
+    JudgingFailed,
+    /// Its judgment is a fitment bug (M4-17) and it fails nowhere.
+    Bug,
+    /// It fails its own socket at this `socket/requirement`:
+    /// `original_fails_own_socket`.
+    Fails(String),
+}
+
+impl OriginalProblem {
+    /// The run's words for it, recorded in `fitment.run` and the error's
+    /// details.
+    pub fn text(&self) -> String {
+        match self {
+            Self::Unreadable => "the original's assembly cannot be read".into(),
+            Self::JudgingFailed => "judging the original failed".into(),
+            Self::Bug => "the original's judgment is a fitment bug".into(),
+            Self::Fails(at) => format!("the original fails its own socket at {at}"),
         }
     }
 }
@@ -535,7 +567,7 @@ pub fn judge<E>(
     };
     let mut collected = Collected::default();
     let (original, original_problem) =
-        judge_original(&matcher, judging.original.as_ref(), &mut collected.notes);
+        judge_original(&matcher, judging.original, &mut collected.notes);
     let total = u64::try_from(judging.files.len() + judging.components.len()).unwrap_or(u64::MAX);
     let mut done = 0_u64;
     let window = judging.window.max(1);
@@ -557,7 +589,7 @@ pub fn judge<E>(
         }
         done += u64::try_from(files.len()).unwrap_or(0);
     }
-    for component in &judging.components {
+    for component in judging.components {
         if !between(done, total) {
             return Judged::Stopped;
         }
@@ -585,7 +617,7 @@ fn finish(
     matcher: &Matcher<'_>,
     collected: Collected,
     original: Option<&CandidateResult>,
-    original_problem: Option<String>,
+    original_problem: Option<OriginalProblem>,
 ) -> MatchRun {
     let Collected {
         results,
@@ -622,6 +654,65 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// JB10, JB3 (review of M6 PR 6): an original failing its own socket
+    /// is noted where it fails; one whose judgment is also a fitment bug
+    /// is noted as the bug only, as the CLI's short-circuit notes it, and
+    /// still fails the run `original_fails_own_socket`.
+    #[test]
+    fn a_buggy_original_is_noted_as_the_cli_notes_it() {
+        const S01: &[u8] = include_bytes!("../../fitment-core/tests/assemblies/s01_bolted.stp");
+        let document = SocketDocument::extract(S01, Some("BRACKET"), None).unwrap();
+        let matcher = Matcher::new(
+            &document,
+            MatchPolicy::default(),
+            MatchOptions::default(),
+            &NoFitVerifier,
+        )
+        .unwrap();
+        let original = SelectedComponent::target(S01, &document).unwrap();
+        let mut result = matcher.judge_component(&original, original.source());
+        assert_eq!(result.original_check().fails_at, None, "it passes as read");
+        let failed = fitment_core::Failure::new(
+            fitment_core::FailureCode::DiameterMin,
+            fitment_core::At::default(),
+            "planted",
+        );
+        let id = result.sockets[0].checks[0].0.as_str().to_owned();
+        let passed = result.sockets[0].checks[0].1.clone();
+        assert!(passed.passed());
+        result.sockets[0].checks[0].1 = fitment_core::Check::of(fitment_core::Evidence::new(
+            Vec::new(),
+            Vec::new(),
+            vec![failed],
+        ));
+        let at = format!("{}/{id}", result.sockets[0].socket);
+        let mut notes = Vec::new();
+        let problem = original_notes(&result, &mut notes);
+        assert_eq!(problem, Some(OriginalProblem::Fails(at.clone())));
+        assert_eq!(notes, vec![MatchNote::OriginalFails(at.clone())]);
+        // A drop of a socket every check passes: SL1 broken, a fitment
+        // bug (M4-17), and where the original fails too.
+        result.sockets[0].checks[0].1 = passed;
+        result.sockets[0].stage = fitment_core::Stage::Shortlist;
+        assert!(result.is_fitment_bug());
+        let at = format!("{} (the shortlist dropped it)", result.sockets[0].socket);
+        let mut notes = Vec::new();
+        let problem = original_notes(&result, &mut notes);
+        assert_eq!(
+            problem,
+            Some(OriginalProblem::Fails(at)),
+            "the code's choice"
+        );
+        assert!(
+            notes.iter().all(|n| !matches!(
+                n,
+                MatchNote::OriginalFails(_) | MatchNote::OriginalExhausted(_)
+            )),
+            "{notes:?}"
+        );
+        assert_eq!(notes, vec![MatchNote::ShortlistUnsound("original".into())]);
+    }
 
     /// DC7: D9's tolerances give `default`; another value `cli`, as the
     /// CLI's flags do; a zero, negative or 90-degree tolerance is refused.

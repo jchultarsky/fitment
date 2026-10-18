@@ -125,6 +125,11 @@ pub enum Submitted {
     Existing(JobRow),
     /// The key named a job of another request: `422`.
     KeyReused,
+    /// The object of input `n` is gone (resolved at the request, swept
+    /// before the insert): nothing is written.
+    InputGone(usize),
+    /// A cited socket revision is gone: nothing is written.
+    CiteGone,
 }
 
 /// How a job ends (JB3): what its finishing transaction writes.
@@ -444,6 +449,30 @@ impl Db {
                 } else {
                     Submitted::KeyReused
                 });
+            }
+        }
+        // Review of M6 PR 6: what the request resolved is checked again in
+        // this transaction, which the sweep's cannot interleave, so a
+        // reference gone meanwhile is its request's own answer, never a
+        // foreign key's failure.
+        for (n, sha256) in new.inputs.iter().enumerate() {
+            let held: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM object WHERE sha256 = ?1)",
+                [sha256],
+                |r| r.get(0),
+            )?;
+            if !held {
+                return Ok(Submitted::InputGone(n));
+            }
+        }
+        for revision in new.cites {
+            let held: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM socket_revision WHERE key = ?1)",
+                [revision],
+                |r| r.get(0),
+            )?;
+            if !held {
+                return Ok(Submitted::CiteGone);
             }
         }
         tx.execute(

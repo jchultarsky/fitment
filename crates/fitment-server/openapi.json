@@ -7685,7 +7685,7 @@
             "type": "object"
           },
           "RunOptions": {
-            "description": "`fitment.run`'s options (SN3, M6-12).",
+            "description": "`fitment.run`'s options (SN3, M6-12): as the run applied them, the\nfloor as it stood at dispatch.",
             "properties": {
               "require_fit": {
                 "type": "boolean"
@@ -7842,7 +7842,7 @@
             "type": "object"
           },
           "RunVersions": {
-            "description": "`fitment.run`'s versions (SV5).",
+            "description": "`fitment.run`'s versions (SV5): the build's that ran the match,\nrecorded at the run.",
             "properties": {
               "extractor_version": {
                 "format": "uint32",
@@ -7976,7 +7976,8 @@
             "type": "string"
           },
           "options": {
-            "$ref": "#/$defs/RunOptions"
+            "$ref": "#/$defs/RunOptions",
+            "description": "As the run applied them, the floor at dispatch; as asked for a run\nthat recorded none."
           },
           "original": {
             "anyOf": [
@@ -8017,7 +8018,15 @@
             "description": "The document's, for a run that succeeded only (M6-59)."
           },
           "versions": {
-            "$ref": "#/$defs/RunVersions"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunVersions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The versions of the build that ran it, recorded at the run; null\nfor a run that recorded none (it stored no document)."
           }
         },
         "required": [
@@ -11278,9 +11287,10 @@
                 }
               }
             },
-            "description": "bad_request, invalid_reference",
+            "description": "bad_request, invalid_parameter, invalid_reference",
             "x-fitment-codes": [
               "bad_request",
+              "invalid_parameter",
               "invalid_reference"
             ]
           },
@@ -12289,9 +12299,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "401": {
@@ -12867,9 +12878,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "401": {
@@ -13324,9 +13336,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "401": {
@@ -13687,9 +13700,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "413": {
@@ -13762,9 +13776,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "401": {
@@ -14085,9 +14100,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "401": {
@@ -14404,9 +14420,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "401": {
@@ -14557,9 +14574,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "401": {
@@ -14864,9 +14882,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "401": {
@@ -15756,9 +15775,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "401": {
@@ -15888,9 +15908,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "406": {
@@ -15969,9 +15990,10 @@
                 }
               }
             },
-            "description": "bad_request",
+            "description": "bad_request, invalid_parameter",
             "x-fitment-codes": [
-              "bad_request"
+              "bad_request",
+              "invalid_parameter"
             ]
           },
           "413": {
@@ -16336,9 +16358,10 @@
                 }
               }
             },
-            "description": "idempotency_key_reused",
+            "description": "idempotency_key_reused, carry_from_foreign",
             "x-fitment-codes": [
-              "idempotency_key_reused"
+              "idempotency_key_reused",
+              "carry_from_foreign"
             ]
           },
           "429": {
@@ -16363,8 +16386,9 @@
                 }
               }
             },
-            "description": "io_error, internal",
+            "description": "blob_damaged, io_error, internal",
             "x-fitment-codes": [
+              "blob_damaged",
               "io_error",
               "internal"
             ]
@@ -16655,9 +16679,10 @@
                 }
               }
             },
-            "description": "bad_request, invalid_reference",
+            "description": "bad_request, invalid_parameter, invalid_reference",
             "x-fitment-codes": [
               "bad_request",
+              "invalid_parameter",
               "invalid_reference"
             ]
           },
@@ -17155,8 +17180,9 @@
                 }
               }
             },
-            "description": "storage_full",
+            "description": "quota_exceeded, storage_full",
             "x-fitment-codes": [
+              "quota_exceeded",
               "storage_full"
             ]
           }
@@ -17581,9 +17607,10 @@
                 }
               }
             },
-            "description": "bad_request, invalid_reference",
+            "description": "bad_request, invalid_parameter, invalid_reference",
             "x-fitment-codes": [
               "bad_request",
+              "invalid_parameter",
               "invalid_reference"
             ]
           },
@@ -17759,9 +17786,10 @@
                 }
               }
             },
-            "description": "bad_request, invalid_reference",
+            "description": "bad_request, invalid_parameter, invalid_reference",
             "x-fitment-codes": [
               "bad_request",
+              "invalid_parameter",
               "invalid_reference"
             ]
           },
@@ -18250,9 +18278,10 @@
                 }
               }
             },
-            "description": "bad_request, invalid_reference",
+            "description": "bad_request, invalid_parameter, invalid_reference",
             "x-fitment-codes": [
               "bad_request",
+              "invalid_parameter",
               "invalid_reference"
             ]
           },

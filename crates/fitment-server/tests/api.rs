@@ -1577,6 +1577,58 @@ async fn candidate_pages_are_the_documents_bytes() {
     assert_eq!(whole.status, 200, "the other candidates still serve");
 }
 
+/// DC12 (review of M6 PR 6): a candidate page reads its own bytes: on the
+/// seam, its document is opened once and sought to the page's first
+/// candidate, and the bytes read are that candidate's, not the document's
+/// before it.
+#[tokio::test]
+async fn a_candidate_page_seeks_to_its_bytes() {
+    let dirs = Dirs::new();
+    let config = dirs.config();
+    let seam = fitment_catalog::fs::CountingFs::new();
+    let server = TestServer::in_process_with_fs(dirs, config, std::sync::Arc::new(seam.clone()));
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let files = bracket_files(&server).await;
+    let job = server
+        .run_match(&json!({ "socket": socket, "candidates": { "files": files } }))
+        .await;
+    let id = job["id"].as_str().unwrap();
+    let document = server.get(&format!("/v1/matches/{id}/document")).await;
+    let ranges = fitment_server::runs::index(&document.body).unwrap();
+    let last = ranges.len() - 1;
+    let before = seam.calls().len();
+    let page = server
+        .get(&format!(
+            "/v1/matches/{id}/candidates?offset={last}&limit=1"
+        ))
+        .await;
+    assert_eq!(page.status, 200);
+    let calls = &seam.calls()[before..];
+    let sought: Vec<u64> = calls
+        .iter()
+        .filter_map(|c| match c {
+            fitment_catalog::fs::Call::Seek(_, at) => Some(*at),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sought, vec![ranges[last].start], "{calls:?}");
+    let room: usize = calls
+        .iter()
+        .filter_map(|c| match c {
+            fitment_catalog::fs::Call::ReadChunk(path, n)
+                if path
+                    .to_string_lossy()
+                    .contains(&job["document"]["sha256"].as_str().unwrap()[..16]) =>
+            {
+                Some(*n)
+            }
+            _ => None,
+        })
+        .sum();
+    let own = usize::try_from(ranges[last].end - ranges[last].start).unwrap();
+    assert_eq!(room, own, "only the candidate's own bytes are read");
+}
+
 /// The job `matched`, over `candidate` against `file`, is `fitment match
 /// S.json m_block02.stp --format json`'s: exit code and bytes.
 async fn the_clis_match(server: &TestServer, file: &[u8], candidate: &[u8], matched: &Value) {
@@ -1822,16 +1874,32 @@ async fn reviews_race_and_name_their_revision() {
             &json!({ "decisions": [{ "requirement": "bore:hole-427", "status": status }] }),
         )
     };
-    let (a, b) = tokio::join!(server.send(review("kept")), server.send(review("removed").body(
+    // Both pass the request's check of the current revision and wait at
+    // their parse, so the race is decided where the revision is written.
+    let gate = fitment_server::hooks::Gate::new();
+    let hooks = &server.server().seams().hooks;
+    hooks.set(
+        "socket.parse",
+        fitment_server::hooks::Action::Pause(gate.clone()),
+    );
+    let opened = async {
+        assert!(gate.arrived(2, std::time::Duration::from_secs(30)).await);
+        gate.open();
+    };
+    let (a, b, ()) = tokio::join!(server.send(review("kept")), server.send(review("removed").body(
         json!({ "decisions": [{ "requirement": "bore:hole-427", "status": "removed", "note": "by hand" }] })
             .to_string()
             .as_bytes()
-    )));
+    )), opened);
+    hooks.clear("socket.parse");
     let mut statuses = [a.status.as_u16(), b.status.as_u16()];
     statuses.sort_unstable();
     assert_eq!(statuses, [201, 409]);
     let loser = if a.status == 409 { &a } else { &b };
     assert_eq!(loser.code(), "revision_not_current");
+    // The race's loser names the revision that is current now, as a
+    // review of an old revision does (RA7).
+    assert_eq!(loser.json()["details"]["current"], format!("{line}@r2"));
     let winner = if a.status == 201 { &a } else { &b };
     assert_eq!(
         winner.header("location"),
@@ -1856,6 +1924,7 @@ async fn reviews_race_and_name_their_revision() {
         (old.status.as_u16(), old.code()),
         (409, "revision_not_current".to_owned())
     );
+    assert_eq!(old.json()["details"]["current"], format!("{line}@r2"));
     let sha = server.upload(&support::candidate("m_block02.stp")).await;
     let body = json!({ "socket": line, "candidates": { "files": [
         { "upload": format!("sha256:{sha}"), "label": "catalog:BLOCK@r1" } ] } });
@@ -1911,6 +1980,59 @@ async fn a_retained_match_runs_again_on_its_own_bytes() {
     assert!(
         !server.object_files().contains(&sha),
         "the records expired: the sweep unlinked them"
+    );
+}
+
+/// M6-64, UP3, OB4 (review of M6 PR 6): a retained match over a
+/// component and its original holds the assembly's bytes, so after its
+/// socket line and its assembly are deleted the same request, submitted
+/// again, names them as registered and gives the same document's bytes;
+/// another user, who holds no such record, cannot name them.
+#[tokio::test]
+async fn a_retained_component_match_runs_again_without_its_assembly() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let line = socket.split('@').next().unwrap().to_owned();
+    let sha = fitment_core::sha256_hex(&support::assembly("s02_cbore.stp"));
+    let body = json!({ "socket": socket, "original": true, "candidates": { "components": [
+        { "assembly": format!("sha256:{sha}"), "part": "BLOCK" } ] } });
+    let first = server.run_match(&body).await;
+    assert_eq!(first["state"], "succeeded", "{first}");
+    let bytes = server.document(&first).await.body;
+    for path in [
+        format!("/v1/sockets/{line}"),
+        format!("/v1/assemblies/sha256:{sha}"),
+    ] {
+        let deleted = server.send(Call::new(Method::DELETE, &path)).await;
+        assert_eq!(deleted.status, 204, "{path}");
+    }
+    let again = server.run_match(&body).await;
+    assert_eq!(again["state"], "succeeded", "{again}");
+    assert_eq!(
+        server.document(&again).await.body,
+        bytes,
+        "the same bytes again"
+    );
+    let bob = support::seed_user(
+        server.server(),
+        "bob",
+        fitment_server::auth::Role::Reader,
+        None,
+    );
+    let (_, token) = support::seed_token(
+        server.server(),
+        &bob,
+        fitment_server::auth::Role::Reader,
+        30,
+    );
+    let theirs = server
+        .send(waiting("/v1/matches", &body).bearer(&token))
+        .await;
+    assert_eq!(
+        theirs.status,
+        404,
+        "{}",
+        String::from_utf8_lossy(&theirs.body)
     );
 }
 
@@ -2154,6 +2276,79 @@ async fn a_match_judges_the_revision_it_was_given() {
             .unwrap()
             .is_empty(),
         "judged against @r1, as it was when the job was made"
+    );
+}
+
+/// DC10, SN3, SV5 (review of M6 PR 6): `fitment.run` states the options
+/// and versions its run recorded, not its request's nor the answering
+/// build's: a match asked with no option and queued while the floor was
+/// off, then run by a server whose floor is on, states `require_reviewed:
+/// true` by `"server"`, and the versions `job.run` holds; a run that
+/// recorded nothing (cancelled while queued) states its request's options
+/// and `versions: null`.
+#[tokio::test]
+async fn a_run_states_the_options_and_versions_it_ran_with() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let doc: Value = server.get(&format!("/v1/sockets/{socket}")).await.json();
+    let decisions: Vec<Value> = doc["extracted"]["sockets"][0]["requirements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| json!({ "requirement": r["id"], "status": "kept" }))
+        .collect();
+    let reviewed = server
+        .send(Call::json(
+            Method::POST,
+            &format!("/v1/sockets/{socket}/review"),
+            &json!({ "decisions": decisions }),
+        ))
+        .await;
+    let current = reviewed
+        .header("location")
+        .unwrap()
+        .trim_start_matches("/v1/sockets/")
+        .to_owned();
+    let sha = server.upload(&support::candidate("m_block02.stp")).await;
+    let body = json!({ "socket": current, "candidates": { "files": [
+        { "upload": format!("sha256:{sha}"), "label": "m_block02.stp" } ] } });
+    server.server().hold_jobs();
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let queued = server
+            .send(Call::json(Method::POST, "/v1/matches", &body))
+            .await
+            .json();
+        ids.push(queued["id"].as_str().unwrap().to_owned());
+    }
+    let cancelled = server
+        .send(Call::new(
+            Method::POST,
+            &format!("/v1/jobs/{}/cancel", ids[1]),
+        ))
+        .await;
+    assert_eq!(cancelled.json()["state"], "cancelled");
+    let unrun = server.get(&format!("/v1/matches/{}", ids[1])).await.json();
+    assert_eq!(unrun["options"]["require_reviewed"], false, "{unrun}");
+    assert!(unrun["options"]["require_reviewed_by"].is_null(), "{unrun}");
+    assert!(unrun["versions"].is_null(), "{unrun}");
+    let mut config = server.dirs.config();
+    config.matching.require_reviewed_floor = true;
+    let server = server.restart(config);
+    let job = server.finished_job(&ids[0], Duration::from_secs(60)).await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    let run = server.get(&format!("/v1/matches/{}", ids[0])).await.json();
+    assert_eq!(run["options"]["require_reviewed"], true, "{run}");
+    assert_eq!(run["options"]["require_reviewed_by"], "server", "{run}");
+    let conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    let recorded: String = conn
+        .query_row("SELECT run FROM job WHERE id = ?1", [&ids[0]], |r| r.get(0))
+        .unwrap();
+    let recorded: Value = serde_json::from_str(&recorded).unwrap();
+    assert_eq!(run["versions"], recorded["versions"]);
+    assert_eq!(
+        run["versions"]["socket_rules_version"],
+        fitment_core::SOCKET_RULES_VERSION
     );
 }
 

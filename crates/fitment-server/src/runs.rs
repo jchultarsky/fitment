@@ -87,6 +87,10 @@ pub struct RunFacts {
     pub original: Option<String>,
     /// The original was judged.
     pub original_judged: bool,
+    /// The options as the run applied them: the floor at dispatch (SN3).
+    pub options: RunOptions,
+    /// The build's versions that ran it (SV5).
+    pub versions: RunVersions,
 }
 
 /// One candidate's place in its document (DC12): its bytes' range and
@@ -298,8 +302,9 @@ pub struct RunCandidates {
     pub distinct: Option<usize>,
 }
 
-/// `fitment.run`'s options (SN3, M6-12).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// `fitment.run`'s options (SN3, M6-12): as the run applied them, the
+/// floor as it stood at dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RunOptions {
     #[allow(missing_docs)]
@@ -320,8 +325,9 @@ pub struct RunOriginal {
     pub judged: bool,
 }
 
-/// `fitment.run`'s versions (SV5).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// `fitment.run`'s versions (SV5): the build's that ran the match,
+/// recorded at the run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RunVersions {
     #[allow(missing_docs)]
@@ -333,7 +339,21 @@ pub struct RunVersions {
     #[allow(missing_docs)]
     pub match_rules_version: u32,
     /// The server's version.
-    pub server: &'static str,
+    pub server: String,
+}
+
+impl RunVersions {
+    /// The versions of the build that runs a match now, its socket
+    /// versions `build`'s (MF11).
+    pub fn of(build: (u32, u32)) -> Self {
+        Self {
+            extractor_version: build.0,
+            socket_rules_version: build.1,
+            signature_version: fitment_core::SIGNATURE_VERSION,
+            match_rules_version: fitment_core::MATCH_RULES_VERSION,
+            server: env!("CARGO_PKG_VERSION").to_owned(),
+        }
+    }
 }
 
 /// `fitment.run`'s problems (M6-59): what makes the run exit 1, and for a
@@ -383,12 +403,14 @@ pub struct RunDocument {
     pub candidates: RunCandidates,
     /// As the document states it.
     pub policy: PolicyFacts,
-    #[allow(missing_docs)]
+    /// As the run applied them, the floor at dispatch; as asked for a run
+    /// that recorded none.
     pub options: RunOptions,
     #[allow(missing_docs)]
     pub original: Option<RunOriginal>,
-    #[allow(missing_docs)]
-    pub versions: RunVersions,
+    /// The versions of the build that ran it, recorded at the run; null
+    /// for a run that recorded none (it stored no document).
+    pub versions: Option<RunVersions>,
     /// As the document names it; null without one (SN4, SN11).
     pub fit_verifier: Option<String>,
     /// The document's, for a run that succeeded only (M6-59).
@@ -460,18 +482,12 @@ pub fn run(row: &JobRow, asked: Asked) -> RunDocument {
             distinct: facts.as_ref().map(|f| f.distinct),
         },
         policy: facts.as_ref().map_or(asked.policy, |f| f.policy.clone()),
-        options: asked.options,
+        options: facts.as_ref().map_or(asked.options, |f| f.options.clone()),
         original: asked.original.map(|assembly| RunOriginal {
             assembly,
             judged: facts.as_ref().is_some_and(|f| f.original_judged),
         }),
-        versions: RunVersions {
-            extractor_version: fitment_core::EXTRACTOR_VERSION,
-            socket_rules_version: fitment_core::SOCKET_RULES_VERSION,
-            signature_version: fitment_core::SIGNATURE_VERSION,
-            match_rules_version: fitment_core::MATCH_RULES_VERSION,
-            server: env!("CARGO_PKG_VERSION"),
-        },
+        versions: facts.as_ref().map(|f| f.versions.clone()),
         fit_verifier: facts.as_ref().and_then(|f| f.fit_verifier.clone()),
         summary: facts.as_ref().filter(|_| succeeded).map(|f| f.summary),
         outcome: row.outcome.clone().filter(|_| succeeded),

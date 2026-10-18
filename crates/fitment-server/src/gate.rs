@@ -125,8 +125,13 @@ pub(crate) fn build(shared: &Shared) -> Build {
 }
 
 /// HX8: `work`, a socket document's parse, on the blocking pool behind one
-/// of `limits.parse_concurrency` fair slots; past the handler's time
-/// waiting for one, `503 request_timeout`, not retryable on a write (ER6).
+/// of `limits.parse_concurrency` fair slots. The slot is owned and moves
+/// into the blocking work, so a request that times out or is dropped
+/// while its parse runs still holds the slot until the parse ends: no
+/// slot is freed while its parse goes on. The wait for one is half the
+/// handler's time, so a sync route (a review) answers `503
+/// request_timeout`, `details.limit = "parse_concurrency"`, before its
+/// layer's timeout does; not retryable on a write (ER6).
 ///
 /// # Errors
 ///
@@ -135,8 +140,8 @@ pub(crate) async fn parsed<T: Send + 'static>(
     shared: &Arc<Shared>,
     work: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
 ) -> Result<T, ApiError> {
-    let limit = Duration::from_secs(u64::from(shared.config.server.handler_timeout_seconds));
-    let slot = tokio::time::timeout(limit, shared.parse_slots.acquire())
+    let slots = Arc::clone(&shared.parse_slots);
+    let slot = tokio::time::timeout(slot_wait(shared), slots.acquire_owned())
         .await
         .map_err(|_| {
             ApiError::new(
@@ -148,11 +153,17 @@ pub(crate) async fn parsed<T: Send + 'static>(
         })?
         .map_err(|_| ApiError::internal())?;
     let hooked = Arc::clone(shared);
-    let result = blocking(move || {
+    blocking(move || {
         crate::jobs::run::hook(&hooked, "socket.parse");
-        work()
+        let result = work();
+        drop(slot);
+        result
     })
-    .await;
-    drop(slot);
-    result
+    .await
+}
+
+/// HX8: the wait for a parse slot, half the handler's time, so it ends
+/// before the route's layer timeout (HX3).
+pub(crate) fn slot_wait(shared: &Shared) -> Duration {
+    Duration::from_millis(u64::from(shared.config.server.handler_timeout_seconds) * 500)
 }

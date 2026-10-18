@@ -164,10 +164,13 @@ pub(super) async fn nameable(
     })
     .await?
     .map(|holding| holding.bytes)
-    .ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::UploadNotFound,
-            "no upload of these bytes is yours: upload them (PUT /v1/uploads/sha256:HEX)",
-        )
-    })
+    .ok_or_else(upload_not_found)
+}
+
+/// `404 upload_not_found` (UP3).
+pub(super) fn upload_not_found() -> ApiError {
+    ApiError::new(
+        ErrorCode::UploadNotFound,
+        "no upload of these bytes is yours: upload them (PUT /v1/uploads/sha256:HEX)",
+    )
 }

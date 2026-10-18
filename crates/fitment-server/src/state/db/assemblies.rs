@@ -420,8 +420,9 @@ pub enum Reviewed {
     /// The revision made: its number.
     Made(i64),
     /// The line's current revision is no longer the one reviewed: `409
-    /// revision_not_current`, nothing written.
-    NotCurrent,
+    /// revision_not_current`, nothing written; the current revision's
+    /// number, which the answer names (RA7).
+    NotCurrent(i64),
     /// The owner holds no live line of that id.
     Gone,
 }
@@ -656,7 +657,9 @@ impl Db {
             return Ok(Reviewed::Gone);
         };
         if line.current.as_ref().map(|c| c.key) != Some(base) {
-            return Ok(Reviewed::NotCurrent);
+            return Ok(Reviewed::NotCurrent(
+                line.current.as_ref().map_or(0, |c| c.n),
+            ));
         }
         place().map_err(StoreError::Place)?;
         tx.execute(

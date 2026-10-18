@@ -375,7 +375,7 @@ async fn component_runs(
             &NoFitVerifier,
         )
         .unwrap();
-        let label = format!("component:{}/#{}", &sha[..12], component.definition);
+        let label = format!("component:{}/#{}", &sha[..12], component.definition());
         let expected = MatchDocument::new(
             &matcher,
             vec![(
@@ -390,14 +390,14 @@ async fn component_runs(
         half.problems
             .extend(parity::bytes(&what, expected.to_json().as_bytes(), &got));
         let doc: Value = serde_json::from_slice(&got).unwrap();
-        let sources = BTreeSet::from([format!("{sha}#{}", component.definition)]);
+        let sources = BTreeSet::from([format!("{sha}#{}", component.definition())]);
         half.problems
             .extend(checks(&doc, policy, &digest, &sources, &what));
         push_run(
             half,
             case,
             policy,
-            Outcome::find_component(&doc, &sha, component.definition),
+            Outcome::find_component(&doc, &sha, component.definition()),
         );
         half.documents.insert(what, got);
         half.count("component runs");

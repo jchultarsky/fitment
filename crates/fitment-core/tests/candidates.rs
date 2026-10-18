@@ -163,7 +163,7 @@ fn judge_component_is_judge_part_on_the_read_component() {
         let Some(fitment_core::ComponentRead::Accepted(by_listing)) = &listed.read else {
             panic!("{case}: the target is not read");
         };
-        assert_eq!(component.definition, listed.definition.instance);
+        assert_eq!(component.definition(), listed.definition.instance);
         for (name, policy) in policies() {
             let matcher = Matcher::new(
                 &document,
@@ -183,8 +183,8 @@ fn judge_component_is_judge_part_on_the_read_component() {
                 "{case} {name}"
             );
             let other = fitment_core::CandidateSource::component(
-                component.assembly_sha256.clone(),
-                component.definition + 1,
+                component.assembly_sha256().to_owned(),
+                component.definition() + 1,
             );
             for wrong in [other, fitment_core::CandidateSource::Given] {
                 let refused = matcher.judge_component(&component, wrong);
@@ -264,4 +264,32 @@ fn a_component_named_twice_is_one_entry() {
         ],
     );
     assert_eq!(once.digest(), ab.digest());
+}
+
+/// CO5 (review of M6 PR 6): components chosen from one reading of an
+/// assembly are the components `read` chooses from its bytes, each
+/// naming the bytes' SHA-256; a selection's error and a refused
+/// assembly's are `read`'s too.
+#[test]
+fn components_chosen_from_one_reading_are_reads() {
+    let bytes = assembly("s01_bolted");
+    let once = fitment_core::AssemblyComponents::read(bytes);
+    assert_eq!(once.sha256(), fitment_core::sha256_hex(bytes));
+    for (part, occurrence) in [
+        (Some("BRACKET"), None),
+        (None, Some("#1")),
+        (Some("NO SUCH PART"), None),
+    ] {
+        let chosen = fitment_core::SelectedComponent::select(&once, part, occurrence);
+        let read = fitment_core::SelectedComponent::read(bytes, part, occurrence);
+        assert_eq!(chosen, read, "{part:?} {occurrence:?}");
+        if let Ok(component) = chosen {
+            assert_eq!(component.assembly_sha256(), once.sha256());
+        }
+    }
+    let refused = fitment_core::AssemblyComponents::read(b"no STEP file");
+    assert_eq!(
+        fitment_core::SelectedComponent::select(&refused, Some("BRACKET"), None),
+        fitment_core::SelectedComponent::read(b"no STEP file", Some("BRACKET"), None)
+    );
 }

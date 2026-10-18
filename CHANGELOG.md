@@ -151,12 +151,25 @@ Until 1.0, minor versions may contain breaking changes.
   `fitment-core` gains `CandidateResult::is_fitment_bug`,
   `shortlist_unsound`, `original_check` and `original_fails`,
   `Outcome::exit_code`, `SelectedComponent` (a component of an assembly,
-  read and chosen as a socket's target is) with `ComponentError`, and
+  read and chosen as a socket's target is; its fields private, read by
+  getters) with `ComponentError`, `AssemblyComponents` (an assembly read
+  once, every component chosen from it with `SelectedComponent::select`),
+  `SocketDocument::stated_versions` (the version fields a socket gate reads
+  first, one reading for the CLI and the server) and
   `Matcher::judge_component`; a `fitment.match` document now merges a
   component named twice into one entry with both labels, as it merges
   files of one SHA-256. `fitment match` takes its exit code, its bug
   tests and its original's reading from them; none of its output
-  changes.
+  changes but the one below. `fitment-catalog`'s `FsRead` gains
+  `seek_to`, provided by default, so a candidate page reads its own bytes.
+
+### Changed
+
+- **M6, PR 6's reviews: `fitment match` and `fitment review` refuse a
+  socket document whose bytes are not UTF-8** as no socket document,
+  exit 3 (`refused: not a socket document`), as the API refuses it
+  (`422 socket_unreadable`); they exited 1 before, as for a file that
+  cannot be read, which is still exit 1.
 
 ## [0.2.0] - 2026-10-17
 

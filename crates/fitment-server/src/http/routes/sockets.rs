@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use fitment_core::{ReviewError, ReviewStatus, SocketDocument};
 
-use super::jobs::{self, Id, Submission};
+use super::jobs::{self, Id, Input, Submission};
 use crate::Shared;
 use crate::assemblies::{LINE_KIND, LineItem, REVISION_KIND, RevisionItem};
 use crate::auth::documents::Page;
@@ -36,7 +36,7 @@ use crate::jobs::request::{
 use crate::matching::{self, Build, GateError};
 use crate::state::{NewRevision, Reviewed};
 
-fn not_found() -> ApiError {
+pub(super) fn not_found() -> ApiError {
     ApiError::new(ErrorCode::NotFound, "no socket of that id is yours").with("resource", "socket")
 }
 
@@ -121,7 +121,11 @@ pub(super) async fn create(
     }
     let owner = caller.user.key;
     let assembly = super::assemblies::of(&shared, owner, sha256.clone()).await?;
-    let mut inputs = vec![(sha256.clone(), assembly.bytes)];
+    let mut inputs = vec![Input::named(
+        sha256.clone(),
+        assembly.bytes,
+        super::assemblies::not_found,
+    )];
     let mut cites = Vec::new();
     let carry_from = match &body.carry_from {
         Some(carry) => {
@@ -130,7 +134,12 @@ pub(super) async fn create(
             // an older OUT: no socket document, or another file's, is
             // `422 carry_from_foreign`; another part's is the job's to see.
             carried_of(&shared, &object, bytes, &sha256).await?;
-            inputs.push((object, bytes));
+            let gone = if revision.is_some() {
+                not_found
+            } else {
+                super::upload_not_found
+            };
+            inputs.push(Input::named(object, bytes, gone));
             // OB4 (review S8 of PR 5): a carried revision is cited, so the
             // sweep keeps it until the job ends.
             cites.extend(revision);
@@ -316,6 +325,8 @@ pub(super) async fn review(
         let stale = GateError::Stale { extractor, rules };
         return Err(gate::api_error(&stale, build));
     }
+    // UP4: a revision's document counts against its owner's quota.
+    super::jobs::under_quota(&shared, owner).await?;
     let (reading, sha, bytes) = (
         Arc::clone(&shared),
         current.document_sha256.clone(),
@@ -429,10 +440,11 @@ async fn commit_review(
             };
             answer_revision(shared, &at, StatusCode::CREATED).await
         }
-        Reviewed::NotCurrent => Err(ApiError::new(
+        Reviewed::NotCurrent(n) => Err(ApiError::new(
             ErrorCode::RevisionNotCurrent,
             "another review made a revision first: review the current revision",
-        )),
+        )
+        .with("current", format!("{id}@r{n}"))),
         Reviewed::Gone => Err(not_found()),
     }
 }
@@ -497,12 +509,14 @@ pub(super) async fn import(
     let owner = caller.user.key;
     let bytes = super::nameable(&shared, owner, &sha256).await?;
     let (line, source) = gated(&shared, &sha256, bytes, false).await?;
-    let mut inputs = vec![(sha256.clone(), bytes)];
-    let assembly = super::assemblies::of(&shared, owner, source.clone())
-        .await
-        .ok();
+    let mut inputs = vec![Input::upload(sha256.clone(), bytes)];
+    let assembly = super::assemblies::found(&shared, owner, source.clone()).await?;
     if let Some(held) = &assembly {
-        inputs.push((source.clone(), held.bytes));
+        inputs.push(Input::named(
+            source.clone(),
+            held.bytes,
+            super::assemblies::not_found,
+        ));
     }
     let (request, request_sha256) = request::normalized(&ImportJob {
         upload: format!("sha256:{sha256}"),
