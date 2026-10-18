@@ -1209,6 +1209,45 @@ for rule, tests in M6_PR2.items():
     assert RULES[rule] == {"deferred": "M6 PR 2"}, rule
     RULES[rule] = {"tests": tests}
 assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 2"}], "a PR 2 rule is still deferred"
+# PR 3 builds authentication and permissions (section 12, item 3): passwords (AU1), the login's one hash (AU2),
+# tokens (AU3), expiry and revocation (AU4), roles on every route (AU5), authentication without writes (AU6), rate
+# limits (AU7), the offline commands (AU9) and minting within the presenting token (AU10). AU8 waits for PR 6.
+S_AUTH, S_ADMIN = f"{SERVER}/tests/auth.rs", f"{SERVER}/tests/admin.rs"
+S_PASS, S_TOKEN = f"{SERVER}/src/auth/password.rs", f"{SERVER}/src/auth/token.rs"
+S_LIMIT, S_ROLES, S_AUTHMOD = f"{SERVER}/src/auth/limit.rs", f"{SERVER}/src/auth/roles.rs", f"{SERVER}/src/auth/mod.rs"
+M6_PR3 = {
+    "AU1": [f"{S_HOST}::passwords_past_their_bounds_are_refused_before_hashing", f"{S_AUTH}::the_pepper_keys_every_hash",
+            f"{S_AUTH}::older_parameters_are_rehashed_at_login", f"{S_PASS}::password_round_trip",
+            f"{S_PASS}::the_pepper_is_argon2s_secret", f"{S_PASS}::the_parameters_are_recorded",
+            f"{S_PASS}::lengths_are_characters_with_an_upper_bound", f"{S_AUTHMOD}::a_pepper_file_is_the_owners_alone"],
+    "AU2": [f"{S_AUTH}::a_login_costs_one_hash_whatever_the_username",
+            f"{S_AUTH}::argon2_runs_on_the_blocking_pool_two_at_a_time"],
+    "AU3": [f"{S_AUTH}::secrets_are_stored_only_as_hashes", f"{S_AUTH}::tokens_are_taken_from_the_header_only",
+            f"{S_TOKEN}::tokens_are_prefixed_hashed_and_hidden", f"{S_TOKEN}::bearer_headers_are_read_strictly",
+            f"{S_TOKEN}::a_token_in_a_query_is_found", f"{S_ADMIN}::bootstrap_prints_the_first_admins_token_once"],
+    "AU4": [f"{S_AUTH}::revocation_disabling_and_demotion_take_effect_at_once", f"{S_AUTH}::every_token_expires",
+            f"{S_AUTH}::revocation_cascades_and_a_password_change_revokes_the_rest",
+            f"{S_AUTH}::dead_tokens_are_swept_after_30_days", f"{S_ADMIN}::tokens_are_minted_and_revoked_offline"],
+    "AU5": [f"{S_AUTH}::every_operation_answers_each_principal_as_its_role_says",
+            f"{S_AUTH}::revocation_disabling_and_demotion_take_effect_at_once", f"{S_ROLES}::role_permits_matrix",
+            f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "AU6": [f"{S_AUTH}::authentication_writes_nothing", f"{S_AUTH}::the_log_names_the_user_by_id_only"],
+    "AU7": [f"{S_HOST}::the_request_rate_is_per_user_over_all_their_tokens",
+            f"{S_HOST}::logins_are_limited_per_pair_and_per_address",
+            f"{S_HOST}::login_buckets_are_keyed_by_the_client_and_bounded",
+            f"{S_LIMIT}::a_bucket_gives_its_burst_then_its_rate", f"{S_LIMIT}::the_least_recently_used_bucket_goes"],
+    "AU9": [f"{S_ADMIN}::bootstrap_prints_the_first_admins_token_once",
+            f"{S_ADMIN}::users_are_managed_offline_beside_the_server",
+            f"{S_ADMIN}::tokens_are_minted_and_revoked_offline",
+            f"{S_ADMIN}::the_commands_refuse_with_the_clis_exit_codes",
+            f"{S_ADMIN}::the_commands_never_migrate_beside_a_server"],
+    "AU10": [f"{S_HOST}::a_token_mints_only_within_itself", f"{S_HOST}::the_twenty_first_live_token_is_refused",
+             f"{S_AUTH}::revocation_cascades_and_a_password_change_revokes_the_rest"],
+}
+for rule, tests in M6_PR3.items():
+    assert RULES[rule] == {"deferred": "M6 PR 3"}, rule
+    RULES[rule] = {"tests": tests}
+assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 3"}], "a PR 3 rule is still deferred"
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],

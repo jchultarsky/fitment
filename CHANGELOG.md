@@ -43,6 +43,27 @@ Until 1.0, minor versions may contain breaking changes.
   and `Snapshot::status_counts`. `deny/sync.toml` keeps tokio, hyper, axum
   and tower out of `fitment` and `fitment-catalog`. No output of `fitment`
   changes.
+- **M6, PR 3 (authentication and permissions):** users and bearer tokens
+  for `fitment-server`, ported from Vectera's auth with its flaws fixed.
+  Passwords are argon2id (m = 19 MiB, t = 2, p = 1, recorded in the PHC
+  string and rehashed at login when they change) with the pepper of
+  `auth.pepper_file` as argon2's secret, 12 to 256 characters; a login
+  costs one hash whatever the username. Tokens (`fitment_pat_…`) are
+  stored as SHA-256 only, shown once, always expire (90 days by default,
+  365 at most) and are taken only from the `Authorization` header. Roles
+  reader, writer and admin guard every route but health, readiness, the
+  OpenAPI document and login; a request's role is the lower of its user's
+  and its token's. A token mints others only within its own role and
+  expiry, revoking a token revokes those minted from it, a password change
+  revokes every other token of the user, and a user holds at most 20 live
+  tokens. Requests are rate-limited per user, logins per address and per
+  (username, address), in a bounded set of buckets. New routes under
+  `/v1/auth/` (login, me, password, tokens, users) and the documents
+  `fitment.token`, `fitment.user` and `fitment.page`; `/v1/info` now needs a
+  token; the error code `username_taken`. `fitment-server admin bootstrap`
+  makes the first admin offline and prints its token once; `admin user`
+  and `admin token` manage users and tokens beside a running server. No
+  output of `fitment` changes.
 
 ## [0.2.0] - 2026-10-17
 

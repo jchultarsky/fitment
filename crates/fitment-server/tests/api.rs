@@ -104,7 +104,7 @@ async fn info_states_the_build_the_catalog_and_the_limits() {
     assert_eq!(reply.header("content-type"), Some("application/json"));
     let doc = reply.json();
     assert_eq!(doc["server"]["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(doc["api"], serde_json::json!({ "major": 1, "minor": 0 }));
+    assert_eq!(doc["api"], serde_json::json!({ "major": 1, "minor": 1 }));
     let versions = &doc["versions"];
     assert_eq!(
         versions["extractor_version"],
@@ -257,12 +257,20 @@ async fn unknown_paths_are_not_found() {
             "{path}"
         );
     }
+    // HX5: a parameter is a whole segment, typed by its handler; none is
+    // a wildcard.
     for op in &fitment_server::http::operations::OPERATIONS {
-        assert!(
-            !op.path.contains('*') && !op.path.contains('{'),
-            "{}",
-            op.path
-        );
+        assert!(!op.path.contains('*'), "{}", op.path);
+        for segment in op.path.split('/') {
+            if segment.contains('{') || segment.contains('}') {
+                let name = segment.strip_prefix('{').and_then(|s| s.strip_suffix('}'));
+                assert!(
+                    name.is_some_and(|n| n.bytes().all(|b| b.is_ascii_lowercase())),
+                    "{}",
+                    op.path
+                );
+            }
+        }
     }
 }
 

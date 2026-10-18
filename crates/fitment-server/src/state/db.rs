@@ -1,6 +1,11 @@
 //! `server.db` (docs/research/m6-api.md, section 6.2, OB1): the server's
 //! own SQLite database, the catalog's kind of database. The only module
-//! that names rusqlite (SV6); no SQL here names a catalog table.
+//! that names rusqlite (SV6), with its submodule `auth` for users and
+//! tokens; no SQL here names a catalog table.
+
+mod auth;
+
+pub use auth::{CreateUserError, MintError, MintFrom, NewToken, Presented, TokenRow, UserRow};
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -60,6 +65,13 @@ pub enum DbError {
     /// Another server holds the lease (SD6, exit 2).
     #[error("another fitment-server holds this state directory")]
     LeaseHeld,
+    /// An older schema while a server holds the lease: the offline
+    /// commands never migrate beside it (AU9, exit 2).
+    #[error(
+        "server.db is of an older schema and a fitment-server holds the state directory: \
+         the server migrates it at its start"
+    )]
+    MigrateBesideServer,
     /// The file cannot be made (exit 1).
     #[error("server.db cannot be made: {0}")]
     Create(std::io::ErrorKind),
@@ -198,6 +210,26 @@ impl Db {
     ///
     /// [`DbError::Foreign`], [`DbError::Newer`], or SQLite's.
     pub fn open(dir: &Path, system_id: &str, now_ms: i64) -> Result<(Self, Kind), DbError> {
+        Self::open_as(dir, system_id, now_ms, false)
+    }
+
+    /// [`Db::open`] for AU9's offline commands, which take no lease: an
+    /// older schema is refused while a server holds the lease, so nothing
+    /// migrates beside it ([`may_migrate`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::open`], and [`DbError::MigrateBesideServer`].
+    pub fn open_offline(dir: &Path, system_id: &str, now_ms: i64) -> Result<(Self, Kind), DbError> {
+        Self::open_as(dir, system_id, now_ms, true)
+    }
+
+    fn open_as(
+        dir: &Path,
+        system_id: &str,
+        now_ms: i64,
+        offline: bool,
+    ) -> Result<(Self, Kind), DbError> {
         let path = dir.join(DATABASE);
         create_file(&path).map_err(|e| DbError::Create(e.kind()))?;
         let mut conn = Connection::open_with_flags(
@@ -214,6 +246,17 @@ impl Db {
                     found,
                     ours: SCHEMA_VERSION,
                 });
+            }
+            Kind::Older(_) if offline => {
+                let beat: Option<i64> = conn
+                    .query_row("SELECT heartbeat_ms FROM lease WHERE one = 1", [], |r| {
+                        r.get(0)
+                    })
+                    .optional()?;
+                may_migrate(
+                    found,
+                    beat.is_some_and(|b| now_ms.saturating_sub(b) < LEASE_STALE_MS),
+                )?;
             }
             _ => {}
         }
@@ -347,6 +390,20 @@ impl Db {
                 r.get(0)
             })
         })
+    }
+}
+
+/// AU9 and SD3: an offline command may open a database of `kind` with the
+/// lease `held` by a server only if it needs no migration; a server
+/// migrates an older schema at its own start, holding the lease.
+///
+/// # Errors
+///
+/// [`DbError::MigrateBesideServer`].
+pub fn may_migrate(kind: Kind, held: bool) -> Result<(), DbError> {
+    match kind {
+        Kind::Older(_) if held => Err(DbError::MigrateBesideServer),
+        _ => Ok(()),
     }
 }
 

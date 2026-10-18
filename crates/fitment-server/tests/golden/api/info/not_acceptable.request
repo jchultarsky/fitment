@@ -1,3 +1,4 @@
 GET /v1/info
+authorization: Bearer <root's admin token>
 accept: text/html
 

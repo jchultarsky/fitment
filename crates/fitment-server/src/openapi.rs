@@ -17,9 +17,16 @@ use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use serde_json::{Map, Value, json};
 
+use crate::auth::documents::{
+    FORMAT_VERSION as AUTH_FORMAT_VERSION, PAGE_FORMAT, Page, TOKEN_FORMAT, TokenDocument,
+    USER_FORMAT, UserDocument,
+};
+use crate::auth::requests::{
+    CreateUserRequest, LoginRequest, MintRequest, PasswordRequest, UpdateUserRequest,
+};
 use crate::http::error::{ERROR_FORMAT, ERROR_FORMAT_VERSION, ErrorCode, Problem};
-use crate::http::json::PROBLEM_JSON;
-use crate::http::operations::{OPERATIONS, Operation};
+use crate::http::json::{JSON, PROBLEM_JSON};
+use crate::http::operations::{OPERATIONS, Operation, RequestBody, Role};
 use crate::info::{INFO_FORMAT, INFO_FORMAT_VERSION, Info, api_version};
 
 /// The base of every schema's `$id`: `<base><format>/<version>`.
@@ -148,7 +155,93 @@ pub fn schemas() -> Map<String, Value> {
         ERROR_FORMAT,
         schema_of::<Problem>(ERROR_FORMAT, ERROR_FORMAT_VERSION, false),
     );
+    add(
+        TOKEN_FORMAT,
+        schema_of::<TokenDocument>(TOKEN_FORMAT, AUTH_FORMAT_VERSION, false),
+    );
+    add(
+        USER_FORMAT,
+        schema_of::<UserDocument>(USER_FORMAT, AUTH_FORMAT_VERSION, false),
+    );
+    add(
+        PAGE_FORMAT,
+        schema_of::<Page<Value>>(PAGE_FORMAT, AUTH_FORMAT_VERSION, false),
+    );
     schemas
+}
+
+/// The request bodies' schemas, by the name `OPERATIONS` gives them: closed,
+/// since a request with an unknown field is refused (VN6).
+pub fn request_schemas() -> Map<String, Value> {
+    let mut schemas = Map::new();
+    let mut add = |name: &str, mut schema: Value| {
+        close(&mut schema);
+        if let Some(object) = schema.as_object_mut() {
+            object.insert("$id".into(), format!("{SCHEMA_BASE}requests/{name}").into());
+        }
+        schemas.insert(name.to_owned(), schema);
+    };
+    let generator = || {
+        SchemaSettings::draft2020_12()
+            .for_deserialize()
+            .into_generator()
+    };
+    add(
+        "LoginRequest",
+        generator()
+            .into_root_schema_for::<LoginRequest>()
+            .to_value(),
+    );
+    add(
+        "PasswordRequest",
+        generator()
+            .into_root_schema_for::<PasswordRequest>()
+            .to_value(),
+    );
+    add(
+        "MintRequest",
+        generator().into_root_schema_for::<MintRequest>().to_value(),
+    );
+    add(
+        "CreateUserRequest",
+        generator()
+            .into_root_schema_for::<CreateUserRequest>()
+            .to_value(),
+    );
+    add(
+        "UpdateUserRequest",
+        generator()
+            .into_root_schema_for::<UpdateUserRequest>()
+            .to_value(),
+    );
+    schemas
+}
+
+/// What a query parameter means (VN3, AU8).
+fn parameter(name: &str) -> Value {
+    let description = match name {
+        "after" => "the cursor of the page to start after: the previous page's `next` holds it",
+        "limit" => "items per page: 100 by default, at most limits.page_max",
+        "owner" => "an admin's: the user whose items to list (AU8)",
+        _ => "",
+    };
+    json!({ "name": name, "in": "query", "required": false, "description": description,
+            "schema": { "type": "string" } })
+}
+
+/// The path's `{name}` parameters, then the operation's query parameters.
+fn parameters(op: &Operation) -> Vec<Value> {
+    let mut out: Vec<Value> = op
+        .path
+        .split('/')
+        .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
+        .map(|name| {
+            json!({ "name": name, "in": "path", "required": true,
+                    "schema": { "type": "string" } })
+        })
+        .collect();
+    out.extend(op.query.iter().map(|name| parameter(name)));
+    out
 }
 
 /// The catalog document's schema, closed (CA6).
@@ -195,14 +288,23 @@ fn operation(op: &Operation) -> Value {
         .iter()
         .map(|(field, role)| json!({ "field": field, "role": role.name() }))
         .collect();
-    json!({
+    let mut object = json!({
         "operationId": op.id,
         "summary": op.summary,
         "x-fitment-role": op.role.name(),
         "x-fitment-role-fields": role_fields,
         "x-fitment-mode": op.mode.name(),
+        "parameters": parameters(op),
+        "security": if op.role == Role::None { json!([]) } else { json!([{ "bearer": [] }]) },
         "responses": responses,
-    })
+    });
+    if let (RequestBody::Json { schema }, Some(map)) = (op.body, object.as_object_mut()) {
+        map.insert(
+            "requestBody".into(),
+            json!({ "required": true, "content": { JSON: { "schema": reference(schema) } } }),
+        );
+    }
+    object
 }
 
 /// The document's value.
@@ -227,7 +329,16 @@ pub fn value() -> Value {
             "x-fitment-error-codes": codes,
         },
         "paths": paths,
-        "components": { "schemas": schemas() },
+        "components": {
+            "schemas": schemas().into_iter().chain(request_schemas()).collect::<Map<String, Value>>(),
+            "securitySchemes": {
+                "bearer": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "description": "a token: its prefix and 43 base64url characters (AU3)",
+                },
+            },
+        },
     })
 }
 

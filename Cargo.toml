@@ -67,6 +67,11 @@ tower = { version = "0.5.3", default-features = false, features = ["limit", "tim
 tower-http = { version = "0.7.1", features = ["trace", "sensitive-headers", "catch-panic", "cors"] }
 http-body-util = "0.1"
 getrandom = "0.4"
+# Passwords (docs/research/m6-api.md, AU1): argon2id with the pepper as its
+# secret. 0.6.0 is the version B's prototype built on Rust 1.85 (its MSRV);
+# without its `getrandom` feature, since the salt comes from our own
+# `getrandom` call.
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "password-hash"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "json", "ansi", "std"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
@@ -86,6 +91,15 @@ pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
+
+# argon2 at AU1's parameters (19 MiB, two passes) takes seconds unoptimized;
+# the server's tests hash on every login, so the debug build optimizes the
+# hash's own crates, which changes no result.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

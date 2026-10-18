@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::http::Method;
+use fitment_server::Server;
+use fitment_server::auth::Role;
 use fitment_server::hooks::Action;
 use fitment_server::http::error::ErrorCode;
 use support::{Call, Dirs, Reply, TestServer};
@@ -47,7 +49,7 @@ const HEADERS: [&str; 14] = [
 ];
 
 /// What a scenario does to a fresh server before its request.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Setup {
     None,
     /// The catalog's marker removed: `catalog_unavailable`.
@@ -58,22 +60,46 @@ enum Setup {
     SlowHandler,
     /// A panicking handler: `internal`.
     Panic,
+    /// `ada`, a reader with a password, and no token.
+    Ada,
+    /// As `Ada`, with one login a minute: the second is `rate_limited`.
+    LoginOnce,
+    /// One live token a user at most: a mint is `too_many_tokens`.
+    OneToken,
 }
+
+/// Whose token a scenario presents (AU5): seeded with the fixed ids, so
+/// every id in the golden is exact.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Principal {
+    /// No credentials.
+    None,
+    /// `root`, an admin, and its admin token.
+    Admin,
+    /// `ada`, a reader with a password, and her reader token.
+    Reader,
+}
+
+/// `ada`'s password in every scenario (registered with the leak scan).
+const ADA: &str = "correct horse battery staple";
 
 struct Scenario {
     operation: &'static str,
     name: &'static str,
     setup: Setup,
+    principal: Principal,
     method: Method,
     path: &'static str,
     headers: &'static [(&'static str, &'static str)],
     body: &'static [u8],
 }
 
+#[allow(clippy::too_many_arguments)] // a scenario's fields, in its table's columns
 const fn scenario(
     operation: &'static str,
     name: &'static str,
     setup: Setup,
+    principal: Principal,
     method: Method,
     path: &'static str,
     headers: &'static [(&'static str, &'static str)],
@@ -83,6 +109,7 @@ const fn scenario(
         operation,
         name,
         setup,
+        principal,
         method,
         path,
         headers,
@@ -92,23 +119,69 @@ const fn scenario(
 
 const JSON: &[(&str, &str)] = &[("content-type", "application/json")];
 const HTML: &[(&str, &str)] = &[("accept", "text/html")];
+const TEXT: &[(&str, &str)] = &[("content-type", "text/plain")];
+
+use Principal as P;
+use Setup as S;
 
 /// Every scenario: at least one per operation of `OPERATIONS` (XH14), and
 /// one per error code a request can reach in this build.
 #[rustfmt::skip]
-const SCENARIOS: [Scenario; 12] = [
-    scenario("health", "ok", Setup::None, Method::GET, "/v1/health", &[], b""),
-    scenario("ready", "ok", Setup::None, Method::GET, "/v1/ready", &[], b""),
-    scenario("ready", "catalog_unavailable", Setup::NoCatalog, Method::GET, "/v1/ready", &[], b""),
-    scenario("ready", "shutting_down", Setup::Draining, Method::GET, "/v1/ready", &[], b""),
-    scenario("info", "ok", Setup::None, Method::GET, "/v1/info", &[], b""),
-    scenario("info", "not_acceptable", Setup::None, Method::GET, "/v1/info", HTML, b""),
-    scenario("info", "body_too_large", Setup::None, Method::GET, "/v1/info", JSON, b"{}"),
-    scenario("info", "method_not_allowed", Setup::None, Method::POST, "/v1/info", &[], b""),
-    scenario("info", "request_timeout", Setup::SlowHandler, Method::GET, "/v1/info", &[], b""),
-    scenario("info", "internal", Setup::Panic, Method::GET, "/v1/info", &[], b""),
-    scenario("openapi", "ok", Setup::None, Method::GET, "/v1/openapi.json", &[], b""),
-    scenario("unrouted", "not_found", Setup::None, Method::GET, "/v1/nope", &[], b""),
+const SCENARIOS: [Scenario; 37] = [
+    scenario("health", "ok", S::None, P::None, Method::GET, "/v1/health", &[], b""),
+    scenario("ready", "ok", S::None, P::None, Method::GET, "/v1/ready", &[], b""),
+    scenario("ready", "catalog_unavailable", S::NoCatalog, P::None, Method::GET, "/v1/ready", &[], b""),
+    scenario("ready", "shutting_down", S::Draining, P::None, Method::GET, "/v1/ready", &[], b""),
+    scenario("ready", "bad_request", S::None, P::None, Method::GET, "/v1/ready?access_token=x", &[], b""),
+    scenario("info", "ok", S::None, P::Admin, Method::GET, "/v1/info", &[], b""),
+    scenario("info", "unauthenticated", S::None, P::None, Method::GET, "/v1/info", &[], b""),
+    scenario("info", "not_acceptable", S::None, P::Admin, Method::GET, "/v1/info", HTML, b""),
+    scenario("info", "body_too_large", S::None, P::Admin, Method::GET, "/v1/info", JSON, b"{}"),
+    scenario("info", "method_not_allowed", S::None, P::None, Method::POST, "/v1/info", &[], b""),
+    scenario("info", "request_timeout", S::SlowHandler, P::Admin, Method::GET, "/v1/info", &[], b""),
+    scenario("info", "internal", S::Panic, P::Admin, Method::GET, "/v1/info", &[], b""),
+    scenario("info", "invalid_parameter", S::None, P::Admin, Method::GET, "/v1/info?owner=u_x", &[], b""),
+    scenario("openapi", "ok", S::None, P::None, Method::GET, "/v1/openapi.json", &[], b""),
+    scenario("unrouted", "not_found", S::None, P::None, Method::GET, "/v1/nope", &[], b""),
+    scenario("login", "created", S::Ada, P::None, Method::POST, "/v1/auth/login", JSON,
+        br#"{"username": "Ada", "password": "correct horse battery staple", "token_name": "laptop", "days": 30}"#),
+    scenario("login", "invalid_credentials", S::Ada, P::None, Method::POST, "/v1/auth/login", JSON,
+        br#"{"username": "ada", "password": "not her password at all"}"#),
+    scenario("login", "rate_limited", S::LoginOnce, P::None, Method::POST, "/v1/auth/login", JSON,
+        br#"{"username": "ada", "password": "correct horse battery staple"}"#),
+    scenario("login", "bad_request", S::Ada, P::None, Method::POST, "/v1/auth/login", JSON,
+        br#"{"username": "ada", "password": "correct horse battery staple", "role": "admin"}"#),
+    scenario("login", "unsupported_media_type", S::Ada, P::None, Method::POST, "/v1/auth/login", TEXT,
+        br#"{"username": "ada", "password": "correct horse battery staple"}"#),
+    scenario("me", "ok", S::None, P::Reader, Method::GET, "/v1/auth/me", &[], b""),
+    scenario("password", "changed", S::None, P::Reader, Method::POST, "/v1/auth/password", JSON,
+        br#"{"current": "correct horse battery staple", "new": "a much longer passphrase now"}"#),
+    scenario("password", "invalid_credentials", S::None, P::Reader, Method::POST, "/v1/auth/password", JSON,
+        br#"{"current": "not her password at all", "new": "a much longer passphrase now"}"#),
+    scenario("tokens_list", "ok", S::None, P::Reader, Method::GET, "/v1/auth/tokens", &[], b""),
+    scenario("tokens_list", "forbidden", S::None, P::Reader, Method::GET,
+        "/v1/auth/tokens?owner=u_7zzzzzzzzzzzzzzzzzzzzzzzzz", &[], b""),
+    scenario("tokens_mint", "created", S::None, P::Reader, Method::POST, "/v1/auth/tokens", JSON,
+        br#"{"name": "ci", "days": 7}"#),
+    scenario("tokens_mint", "invalid_parameter", S::None, P::Reader, Method::POST, "/v1/auth/tokens", JSON,
+        br#"{"name": "ci", "role": "writer"}"#),
+    scenario("tokens_mint", "too_many_tokens", S::OneToken, P::Reader, Method::POST, "/v1/auth/tokens", JSON,
+        br#"{"name": "ci"}"#),
+    scenario("tokens_revoke", "current", S::None, P::Reader, Method::DELETE, "/v1/auth/tokens/current", &[], b""),
+    scenario("tokens_revoke", "not_found", S::None, P::Reader, Method::DELETE,
+        "/v1/auth/tokens/t_7zzzzzzzzzzzzzzzzzzzzzzzzz", &[], b""),
+    scenario("users_list", "ok", S::Ada, P::Admin, Method::GET, "/v1/auth/users?limit=1", &[], b""),
+    scenario("users_list", "forbidden", S::None, P::Reader, Method::GET, "/v1/auth/users", &[], b""),
+    scenario("users_create", "created", S::None, P::Admin, Method::POST, "/v1/auth/users", JSON,
+        br#"{"username": "grace", "role": "writer", "password": null}"#),
+    scenario("users_create", "username_taken", S::None, P::Admin, Method::POST, "/v1/auth/users", JSON,
+        br#"{"username": "ROOT", "role": "reader"}"#),
+    scenario("users_update", "ok", S::None, P::Admin, Method::PATCH,
+        "/v1/auth/users/u_00000000000000000000000001", JSON, br#"{"role": "admin", "disabled": false}"#),
+    scenario("users_update", "not_found", S::None, P::Admin, Method::PATCH,
+        "/v1/auth/users/u_7zzzzzzzzzzzzzzzzzzzzzzzzz", JSON, br#"{"disabled": true}"#),
+    scenario("users_update", "unauthenticated", S::None, P::None, Method::PATCH,
+        "/v1/auth/users/u_00000000000000000000000001", JSON, br#"{"disabled": true}"#),
 ];
 
 /// The codes whose routes come in a later PR of section 12, with that PR:
@@ -117,9 +190,7 @@ const SCENARIOS: [Scenario; 12] = [
 /// only through a fault no golden stages without the seams of the PR named
 /// (a busy holder, `CountingFs`). Section 7.12's job-only codes (HTTP "—")
 /// are not listed: no request answers one; the job goldens show them.
-const PENDING: [(&str, u32); 54] = [
-    ("bad_request", 3),
-    ("invalid_parameter", 3),
+const PENDING: [(&str, u32); 46] = [
     ("invalid_reference", 4),
     ("not_an_id", 7),
     ("name_invalid", 5),
@@ -137,16 +208,13 @@ const PENDING: [(&str, u32); 54] = [
     ("upload_in_use", 5),
     ("original_not_stored", 6),
     ("job_finished", 5),
-    ("too_many_tokens", 3),
     ("bytes_not_kept", 7),
     ("derived_rows_gone", 7),
     ("precondition_failed", 7),
-    ("unsupported_media_type", 3),
     ("upload_digest_mismatch", 4),
     ("idempotency_key_reused", 5),
     ("carry_from_foreign", 6),
     ("revision_required", 6),
-    ("rate_limited", 3),
     ("too_many_jobs", 5),
     ("too_many_streams", 5),
     ("review_unknown_requirement", 6),
@@ -169,14 +237,11 @@ const PENDING: [(&str, u32); 54] = [
     ("blob_damaged", 4),
     ("catalog_damaged", 7),
     ("io_error", 4),
-    ("unauthenticated", 3),
-    ("invalid_credentials", 3),
-    ("forbidden", 3),
 ];
 
 /// The PR this tree builds (section 12): a pending code waits for a later
 /// one, at most the exit.
-const PR_NOW: u32 = 2;
+const PR_NOW: u32 = 3;
 
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/api")
@@ -186,33 +251,104 @@ fn openapi_marker() -> &'static str {
     "<the bytes of crates/fitment-server/openapi.json>\n"
 }
 
+/// The masks a golden writes for a secret (AU3): a token's secret, shown
+/// once in its creating response, never in a committed file.
+const SECRET_MASK: &str = "<the token's secret, shown once>";
+
+/// Seeds `username` with the server's fixed ids and time: a person of
+/// `role`, with `password` if given, and a token of the role if `token`.
+fn seed(
+    server: &Server,
+    username: &str,
+    role: Role,
+    password: Option<&str>,
+    token: bool,
+) -> Option<String> {
+    let seams = server.seams();
+    let phc =
+        password.map(|p| fitment_server::auth::password::hash(p, seams.auth.pepper()).unwrap());
+    let id = seams.ids.id("u");
+    let now = seams.ids.now_ms();
+    let fold = username.to_ascii_lowercase();
+    let user = seams
+        .db
+        .create_user(&id, username, &fold, role, phc.as_deref(), now)
+        .unwrap();
+    token.then(|| {
+        let from = fitment_server::state::MintFrom::Offline { user: user.key };
+        let minted = fitment_server::auth::mint(
+            seams.db,
+            seams.ids,
+            &from,
+            "seeded",
+            role,
+            now,
+            now + 90 * fitment_server::auth::DAY_MS,
+            20,
+        )
+        .unwrap();
+        support::scan::secret(minted.secret.expose());
+        minted.secret.expose().to_owned()
+    })
+}
+
 /// Runs `scenario` on a fresh in-process server.
 async fn run(scenario: &Scenario) -> Reply {
     let dirs = Dirs::new();
     let mut config = dirs.config();
-    if matches!(scenario.setup, Setup::SlowHandler) {
-        config.server.handler_timeout_seconds = 1;
+    match scenario.setup {
+        S::SlowHandler => config.server.handler_timeout_seconds = 1,
+        S::LoginOnce => config.auth.login_per_minute = 1,
+        S::OneToken => config.auth.max_live_tokens = 1,
+        _ => {}
     }
     let server = TestServer::in_process(dirs, config);
     let hooks = &server.server().seams().hooks;
     match scenario.setup {
-        Setup::None => {}
-        Setup::NoCatalog => {
+        S::NoCatalog => {
             std::fs::remove_file(server.dirs.catalog.join("FITMENT-CATALOG")).unwrap();
         }
-        Setup::Draining => server.server().drain(),
-        Setup::SlowHandler => hooks.set("info", Action::Delay(Duration::from_millis(1500))),
-        Setup::Panic => hooks.set("info", Action::Panic("a golden's planted panic".into())),
+        S::Draining => server.server().drain(),
+        S::SlowHandler => hooks.set("info", Action::Delay(Duration::from_millis(1500))),
+        S::Panic => hooks.set("info", Action::Panic("a golden's planted panic".into())),
+        _ => {}
     }
-    let mut call = Call::new(scenario.method.clone(), scenario.path).body(scenario.body);
+    support::password(ADA);
+    let token = match scenario.principal {
+        P::Admin => seed(server.server(), "root", Role::Admin, None, true),
+        P::Reader => seed(server.server(), "ada", Role::Reader, Some(ADA), true),
+        P::None => None,
+    };
+    if matches!(scenario.setup, S::Ada | S::LoginOnce) {
+        seed(server.server(), "ada", Role::Reader, Some(ADA), false);
+    }
+    if scenario.setup == S::LoginOnce {
+        let login = br#"{"username": "ada", "password": "correct horse battery staple"}"#;
+        let first = Call::new(Method::POST, "/v1/auth/login")
+            .header("content-type", "application/json")
+            .body(login)
+            .anonymous();
+        assert_eq!(server.send(first).await.status, 201);
+    }
+    let mut call = Call::new(scenario.method.clone(), scenario.path)
+        .body(scenario.body)
+        .anonymous();
     for (name, value) in scenario.headers {
         call = call.header(name, value);
+    }
+    if let Some(token) = token {
+        call = call.bearer(&token);
     }
     server.send(call).await
 }
 
 fn render_request(scenario: &Scenario) -> String {
     let mut text = format!("{} {}\n", scenario.method, scenario.path);
+    match scenario.principal {
+        P::Admin => text.push_str("authorization: Bearer <root's admin token>\n"),
+        P::Reader => text.push_str("authorization: Bearer <ada's reader token>\n"),
+        P::None => {}
+    }
     for (name, value) in scenario.headers {
         let _ = writeln!(text, "{name}: {value}");
     }
@@ -237,7 +373,14 @@ fn render_response(scenario: &Scenario, reply: &Reply) -> String {
         );
         text.push_str(openapi_marker());
     } else {
-        text.push_str(&String::from_utf8_lossy(&reply.body));
+        let body = String::from_utf8_lossy(&reply.body).into_owned();
+        let secret = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v["secret"].as_str().map(str::to_owned));
+        match secret {
+            Some(secret) => text.push_str(&body.replace(&secret, SECRET_MASK)),
+            None => text.push_str(&body),
+        }
     }
     text
 }

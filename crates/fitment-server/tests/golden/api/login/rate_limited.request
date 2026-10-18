@@ -1,0 +1,4 @@
+POST /v1/auth/login
+content-type: application/json
+
+{"username": "ada", "password": "correct horse battery staple"}

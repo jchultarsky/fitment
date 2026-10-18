@@ -1,0 +1,5 @@
+POST /v1/auth/password
+authorization: Bearer <ada's reader token>
+content-type: application/json
+
+{"current": "correct horse battery staple", "new": "a much longer passphrase now"}

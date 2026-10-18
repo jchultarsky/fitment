@@ -1,0 +1,5 @@
+POST /v1/auth/tokens
+authorization: Bearer <ada's reader token>
+content-type: application/json
+
+{"name": "ci"}

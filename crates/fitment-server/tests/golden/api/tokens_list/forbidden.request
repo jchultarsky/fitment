@@ -1,0 +1,3 @@
+GET /v1/auth/tokens?owner=u_7zzzzzzzzzzzzzzzzzzzzzzzzz
+authorization: Bearer <ada's reader token>
+

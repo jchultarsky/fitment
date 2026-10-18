@@ -2,8 +2,8 @@
 cache-control: no-store
 content-type: application/json
 fitment-format: fitment.info/1
-repr-digest: sha-256=:qZxaYZSllTAQSOXPFSiGlpta2B88e447LDvzrudv4hQ=:
-x-request-id: r_00000000000000000000000001
+repr-digest: sha-256=:poTxznofuIm4V2wYhrJPDdaRqHnRDLrDbhNK26pgXYE=:
+x-request-id: r_00000000000000000000000004
 
 {
   "format": "fitment.info",
@@ -14,7 +14,7 @@ x-request-id: r_00000000000000000000000001
   },
   "api": {
     "major": 1,
-    "minor": 0
+    "minor": 1
   },
   "versions": {
     "extractor_version": 6,
@@ -47,11 +47,23 @@ x-request-id: r_00000000000000000000000001
       "format_version": 1
     },
     {
+      "format": "fitment.page",
+      "format_version": 1
+    },
+    {
       "format": "fitment.parts",
       "format_version": 1
     },
     {
       "format": "fitment.socket",
+      "format_version": 1
+    },
+    {
+      "format": "fitment.token",
+      "format_version": 1
+    },
+    {
+      "format": "fitment.user",
       "format_version": 1
     }
   ],

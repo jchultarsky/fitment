@@ -22,8 +22,9 @@ pub enum Action {
     Log(String),
 }
 
-/// The hook points: `info` (the handler, before its blocking work) and
-/// `info.blocking` (inside it, on the blocking pool).
+/// The hook points: `info` (the handler, before its blocking work),
+/// `info.blocking` (inside it, on the blocking pool) and `auth.hash`
+/// (inside an argon2 slot, on the blocking pool: AU2).
 #[derive(Debug, Default)]
 pub struct Hooks {
     points: Mutex<BTreeMap<String, Action>>,

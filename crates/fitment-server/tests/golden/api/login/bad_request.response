@@ -1,0 +1,24 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:v19G6Ne7+RoQCw5+hhMYxLpJLSLe06wMdDru+KJTHVw=:
+x-request-id: r_00000000000000000000000002
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/bad_request",
+  "title": "The request is malformed",
+  "status": 400,
+  "detail": "the body does not have the request's fields and types (line 1, column 70)",
+  "code": "bad_request",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "column": 70,
+    "line": 1
+  },
+  "request_id": "r_00000000000000000000000002"
+}

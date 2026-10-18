@@ -1,0 +1,25 @@
+200
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.page/1
+repr-digest: sha-256=:JpraQKEF00Ql0ce0hM2I0i0HV1b+xJ5PZJmR8fFURZ0=:
+x-request-id: r_00000000000000000000000005
+
+{
+  "format": "fitment.page",
+  "format_version": 1,
+  "kind": "fitment.user",
+  "items": [
+    {
+      "format": "fitment.user",
+      "format_version": 1,
+      "id": "u_00000000000000000000000004",
+      "username": "ada",
+      "role": "reader",
+      "disabled": false,
+      "token": null
+    }
+  ],
+  "next": "/v1/auth/users?after=YWRh&limit=1",
+  "generation": null
+}

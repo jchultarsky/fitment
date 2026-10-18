@@ -10,7 +10,9 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use crate::Shared;
+use crate::http::blocking;
 use crate::http::error::{ApiError, ErrorCode};
+use crate::http::extract::Reader;
 use crate::http::json;
 use crate::info::{INFO_FORMAT, INFO_FORMAT_VERSION};
 
@@ -54,9 +56,12 @@ fn shutting_down(reason: &'static str) -> ApiError {
         .retry_after(5)
 }
 
-/// DC11: `fitment.info`, the catalog read in one snapshot on the blocking
-/// pool (SV3).
-pub(super) async fn info(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
+/// DC11: `fitment.info`, for a reader (AU5), the catalog read in one
+/// snapshot on the blocking pool (SV3).
+pub(super) async fn info(
+    State(shared): State<Arc<Shared>>,
+    _: Reader,
+) -> Result<Response, ApiError> {
     #[cfg(feature = "test-support")]
     if let Some(planted) = shared.hooks.reached("info").await {
         return Ok(axum::response::IntoResponse::into_response((
@@ -87,26 +92,4 @@ pub(super) async fn openapi() -> Response {
         None,
         Bytes::from_static(crate::OPENAPI),
     )
-}
-
-/// Runs blocking work on the blocking pool (SV3); a panic in it is
-/// `internal`, its message logged (JS6).
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
-) -> Result<T, ApiError> {
-    match tokio::task::spawn_blocking(work).await {
-        Ok(result) => result,
-        Err(error) => {
-            let message = error.try_into_panic().ok().and_then(|p| {
-                p.downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-            });
-            tracing::error!(
-                panic = message.as_deref().unwrap_or("cancelled"),
-                "blocking work failed"
-            );
-            Err(ApiError::internal())
-        }
-    }
 }

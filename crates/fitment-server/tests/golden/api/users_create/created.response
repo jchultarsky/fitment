@@ -1,0 +1,16 @@
+201
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.user/1
+repr-digest: sha-256=:0eGBZTct8rA0I27hKJrkD2EJfd6VdjwEeAfk9UYvzmQ=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.user",
+  "format_version": 1,
+  "id": "u_00000000000000000000000005",
+  "username": "grace",
+  "role": "writer",
+  "disabled": false,
+  "token": null
+}

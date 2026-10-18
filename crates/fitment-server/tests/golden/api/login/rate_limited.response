@@ -1,0 +1,24 @@
+429
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:gKdUaB0/bT6FNuw1agim71AiDBD+V2GSD7YcBApNfmI=:
+retry-after: 60
+x-request-id: r_00000000000000000000000005
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/rate_limited",
+  "title": "Too many requests",
+  "status": 429,
+  "detail": "too many requests: try again later",
+  "code": "rate_limited",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": true,
+  "details": {
+    "retry_after_seconds": 60
+  },
+  "request_id": "r_00000000000000000000000005"
+}

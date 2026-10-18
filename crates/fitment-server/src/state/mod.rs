@@ -14,7 +14,9 @@ pub mod db;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub use db::{Db, DbError, Kind};
+pub use db::{
+    CreateUserError, Db, DbError, Kind, MintError, MintFrom, NewToken, Presented, TokenRow, UserRow,
+};
 
 /// The marker's name.
 pub const MARKER: &str = "FITMENT-SERVER-STATE";
@@ -124,12 +126,36 @@ fn make_dir(dir: &Path, path: &Path) -> Result<(), StateError> {
 ///
 /// A [`StateError`].
 pub fn open(dir: &Path, system_id: &str, now_ms: i64) -> Result<(Db, Kind), StateError> {
+    open_as(dir, system_id, now_ms, false)
+}
+
+/// [`open`] for AU9's offline commands: a new state directory is made as a
+/// first start makes it, and an older `server.db` is refused while a
+/// server holds the lease ([`Db::open_offline`]).
+///
+/// # Errors
+///
+/// A [`StateError`].
+pub fn open_offline(dir: &Path, system_id: &str, now_ms: i64) -> Result<(Db, Kind), StateError> {
+    open_as(dir, system_id, now_ms, true)
+}
+
+fn open_as(
+    dir: &Path,
+    system_id: &str,
+    now_ms: i64,
+    offline: bool,
+) -> Result<(Db, Kind), StateError> {
     let was = marked(dir)?;
     make_dir(dir, dir)?;
     for sub in [dir.join("objects").join("sha256"), dir.join("tmp")] {
         make_dir(dir, &sub)?;
     }
-    let opened = Db::open(dir, system_id, now_ms)?;
+    let opened = if offline {
+        Db::open_offline(dir, system_id, now_ms)?
+    } else {
+        Db::open(dir, system_id, now_ms)?
+    };
     if !was {
         let marker = dir.join(MARKER);
         std::fs::write(&marker, MARKER_TEXT).map_err(io_at(dir, &marker))?;

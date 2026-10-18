@@ -1,0 +1,19 @@
+200
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.user/1
+repr-digest: sha-256=:TCMMm20KVq++bZ9GDVUz35bLniMCVecaBMzgI4Hlpd4=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.user",
+  "format_version": 1,
+  "id": "u_00000000000000000000000001",
+  "username": "ada",
+  "role": "reader",
+  "disabled": false,
+  "token": {
+    "id": "t_00000000000000000000000003",
+    "role": "reader"
+  }
+}

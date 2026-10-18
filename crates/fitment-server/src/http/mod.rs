@@ -8,8 +8,10 @@
 //! (ER5). The routes come from `OPERATIONS` alone (XH14).
 
 pub mod error;
+pub mod extract;
 pub mod json;
 pub mod operations;
+pub mod query;
 mod routes;
 
 use std::collections::BTreeMap;
@@ -46,7 +48,7 @@ pub struct RequestId(pub String);
 pub(crate) fn router(shared: Arc<Shared>) -> Router {
     let mut paths: BTreeMap<&str, MethodRouter<Arc<Shared>>> = BTreeMap::new();
     for op in &OPERATIONS {
-        let route = per_route(op, routes::handler(op));
+        let route = per_route(&shared, op, routes::handler(op));
         let merged = match paths.remove(op.path) {
             Some(existing) => existing.merge(route),
             None => route,
@@ -73,7 +75,8 @@ pub(crate) fn router(shared: Arc<Shared>) -> Router {
         None => router,
     };
     // OP1's request span: the request id, the method, the matched route
-    // template (never the raw URI or query), then the status and latency.
+    // template (never the raw URI or query), the user's id once
+    // authenticated (never the username), then the status and latency.
     let trace = TraceLayer::new_for_http()
         .make_span_with(|request: &Request<Body>| {
             let id = request
@@ -84,7 +87,13 @@ pub(crate) fn router(shared: Arc<Shared>) -> Router {
                 .extensions()
                 .get::<MatchedPath>()
                 .map_or("(none)", MatchedPath::as_str);
-            tracing::info_span!("request", request_id = id, method = %request.method(), route)
+            tracing::info_span!(
+                "request",
+                request_id = id,
+                method = %request.method(),
+                route,
+                user = tracing::field::Empty
+            )
         })
         .on_response(
             |response: &Response<Body>, latency: Duration, _: &tracing::Span| {
@@ -106,12 +115,24 @@ pub(crate) fn router(shared: Arc<Shared>) -> Router {
         .with_state(shared)
 }
 
-/// A route's own layers, from its operation: no body where it takes none
-/// (HX2), checked before `Accept` (VN8; ER5's order).
+/// A route's own layers, from its operation, outermost first: no body
+/// where it takes none (HX2), `Accept` (VN8), then its role (AU5: the
+/// authentication every route but the four open ones and login carries,
+/// XH14), so usage is answered before credentials are read (ER5); a JSON
+/// body is read by the handler, after them, under its cap (HX2).
 fn per_route(
+    shared: &Arc<Shared>,
     op: &'static Operation,
     route: MethodRouter<Arc<Shared>>,
 ) -> MethodRouter<Arc<Shared>> {
+    let route = route.layer(middleware::from_fn_with_state(
+        (Arc::clone(shared), op.role),
+        extract::authenticate,
+    ));
+    let allowed = op.query;
+    let route = route.layer(middleware::from_fn(move |request: Request, next: Next| {
+        known_query(allowed, request, next)
+    }));
     let media = op.answers.iter().find_map(|a| a.media);
     let route = match media {
         Some(media) => route.layer(middleware::from_fn(move |request: Request, next: Next| {
@@ -121,6 +142,81 @@ fn per_route(
     };
     match op.body {
         RequestBody::None => route.layer(middleware::from_fn(no_body)),
+        RequestBody::Json { .. } => {
+            let cap = usize::try_from(shared.config.limits.max_json_kib)
+                .unwrap_or(usize::MAX / 1024)
+                .saturating_mul(1024);
+            route.layer(middleware::from_fn(
+                move |mut request: Request, next: Next| {
+                    request.extensions_mut().insert(json::JsonCap(cap));
+                    json_body(cap, request, next)
+                },
+            ))
+        }
+    }
+}
+
+/// HX2: a JSON body whose declared length passes its cap is `413
+/// body_too_large` before a byte is read; the extractor cuts a chunked one
+/// at the cap.
+async fn json_body(cap: usize, request: Request, next: Next) -> Response {
+    let declared = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    if declared.is_some_and(|n| n > u64::try_from(cap).unwrap_or(u64::MAX)) {
+        return ApiError::new(
+            ErrorCode::BodyTooLarge,
+            format!("a JSON body is at most {} KiB", cap / 1024),
+        )
+        .into_response();
+    }
+    next.run(request).await
+}
+
+/// AU3: a token in the query is `400 bad_request`. VN3, AU8: a query
+/// parameter the operation does not take is `400 invalid_parameter`, so `?owner=` on a route that takes none is refused,
+/// never ignored. Routes that take none accept an empty query.
+async fn known_query(allowed: &'static [&'static str], request: Request, next: Next) -> Response {
+    // AU3: a token in a query string would reach logs and proxies; refused
+    // first, whatever else the request holds.
+    if request
+        .uri()
+        .query()
+        .is_some_and(crate::auth::token::in_query)
+    {
+        return ApiError::new(
+            ErrorCode::BadRequest,
+            "a token is taken only in the Authorization header, never in the query",
+        )
+        .into_response();
+    }
+    if let Err(error) = query::params(request.uri().query(), allowed) {
+        return error.into_response();
+    }
+    next.run(request).await
+}
+
+/// Runs blocking work on the blocking pool (SV3); a panic in it is
+/// `internal`, its message logged (JS6).
+pub(crate) async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(error) => {
+            let message = error.try_into_panic().ok().and_then(|p| {
+                p.downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+            });
+            tracing::error!(
+                panic = message.as_deref().unwrap_or("cancelled"),
+                "blocking work failed"
+            );
+            Err(ApiError::internal())
+        }
     }
 }
 
@@ -131,6 +227,7 @@ pub(crate) fn method_filter(method: &str) -> MethodFilter {
         "PUT" => MethodFilter::PUT,
         "DELETE" => MethodFilter::DELETE,
         "PATCH" => MethodFilter::PATCH,
+        "HEAD" => MethodFilter::HEAD,
         _ => MethodFilter::GET,
     }
 }

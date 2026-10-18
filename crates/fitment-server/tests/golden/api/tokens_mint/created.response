@@ -1,0 +1,21 @@
+201
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.token/1
+repr-digest: sha-256=:QXmBJHJ1agfmtEDBLZJ8kBU+gdp6IC6wtpXqOQ0nmcA=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.token",
+  "format_version": 1,
+  "id": "t_00000000000000000000000006",
+  "name": "ci",
+  "role": "reader",
+  "hint": "xyMD",
+  "parent": "t_00000000000000000000000003",
+  "created": "2026-09-21T14:13:20Z",
+  "expires": "2026-09-28T14:13:20Z",
+  "last_used": null,
+  "revoked": null,
+  "secret": "<the token's secret, shown once>"
+}

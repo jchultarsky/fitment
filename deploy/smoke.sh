@@ -11,10 +11,13 @@
 # 2. Its user is not root; both binaries print the workspace's version.
 # 3. A smoke run with two volumes and a read-only root: the CLI makes the
 #    catalog, the server starts, health and readiness answer 204 (from the
-#    host and through the image's own `healthcheck`), `fitment.info` names
-#    the version, and SIGTERM stops it with exit 0. PR 6 adds the bootstrap,
-#    an upload of s01 and the committed bracket, and a socket and a match
-#    job whose document equals crates/fitment/tests/golden/match/'s.
+#    host and through the image's own `healthcheck`), the first admin is
+#    made with `admin bootstrap` beside the running server (AU9) and its
+#    token, printed once, reads `fitment.info`, which names the version and
+#    needs a token (AU5); a second bootstrap is refused; the token is in no
+#    log; and SIGTERM stops it with exit 0. PR 6 adds an upload of s01 and
+#    the committed bracket, and a socket and a match job whose document
+#    equals crates/fitment/tests/golden/match/'s.
 # 4. Its size is reported, under a ceiling of twice the first measured.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -93,14 +96,32 @@ done
 [ "$status" = 204 ] || { docker logs "$name" >&2; fail "health answered '$status'"; }
 [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/v1/ready")" = 204 ] ||
   fail "not ready"
-curl -sf "http://127.0.0.1:$port/v1/info" | grep -q "\"version\": \"$version\"" ||
+# AU9: the first admin, offline, beside the running server; its token on
+# stdout once.
+token=$(docker exec "$name" fitment-server admin bootstrap --username smoke)
+case "$token" in
+  fitment_pat_*) ;;
+  *) fail "admin bootstrap printed no token" ;;
+esac
+if docker exec "$name" fitment-server admin bootstrap --username again >/dev/null 2>&1; then
+  fail "a second bootstrap was not refused"
+fi
+[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/v1/info")" = 401 ] ||
+  fail "fitment.info answered without a token"
+auth=(-H "Authorization: Bearer $token")
+curl -sf "${auth[@]}" "http://127.0.0.1:$port/v1/info" | grep -q "\"version\": \"$version\"" ||
   fail "fitment.info does not name $version"
+curl -sf "${auth[@]}" "http://127.0.0.1:$port/v1/auth/me" | grep -q '"role": "admin"' ||
+  fail "the bootstrap token is not an admin's"
 docker exec "$name" fitment-server healthcheck || fail "the image's healthcheck failed"
 docker stop --time 45 "$name" >/dev/null
 code=$(docker inspect --format '{{.State.ExitCode}}' "$name")
 [ "$code" = 0 ] || { docker logs "$name" >&2; fail "the server exited $code after SIGTERM"; }
 docker logs "$name" 2>/dev/null | grep -qx "fitment-server: listening on 0.0.0.0:8080" ||
   fail "stdout is not the address line"
+if docker logs "$name" 2>&1 | grep -qF "${token#fitment_pat_}"; then
+  fail "the bootstrap token is in the server's log"
+fi
 
 size=$(docker image inspect --format '{{.Size}}' "$image")
 echo "VT29: the image is $size bytes (ceiling $ceiling)"

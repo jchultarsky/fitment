@@ -1,0 +1,21 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:TM/eRlKpUBSUqa1WEkF8uTsOrTIHvFTlxpQjCFQoVOo=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/username_taken",
+  "title": "The username is another user's",
+  "status": 409,
+  "detail": "another user has this username (compared without case)",
+  "code": "username_taken",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

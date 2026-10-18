@@ -90,9 +90,10 @@ check "names fitment_catalog outside fitment-server's catalog.rs" \
   sh -c "grep -rlE '\bfitment_catalog\b' $server/src | grep -vx '$server/src/catalog.rs' | grep ."
 check "builds a Matcher or a MatchDocument outside fitment-server's matching.rs" \
   sh -c "grep -rlE '\b(Matcher|MatchDocument)::' $server/src | grep -vx '$server/src/matching.rs' | grep ."
-# SV6: server.db is opened by state/db.rs alone.
-check "names rusqlite outside fitment-server's state/db.rs" \
-  sh -c "grep -rlE '\brusqlite\b' $server/src | grep -vx '$server/src/state/db.rs' | grep ."
+# SV6: server.db is opened by the module state::db alone (state/db.rs and
+# its submodules under state/db/).
+check "names rusqlite outside fitment-server's state/db.rs and state/db/" \
+  sh -c "grep -rlE '\brusqlite\b' $server/src | grep -vx '$server/src/state/db.rs' | grep -v '^$server/src/state/db/' | grep ."
 # SV7, DC1: documents are served as the library's bytes, never re-serialized
 # through a Value; clippy cannot scope a ban to a module.
 check "uses serde_json::(Value|from_str|to_value) in matching.rs or objects.rs" \
