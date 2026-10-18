@@ -1,0 +1,80 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: W/"j6.succeeded"
+fitment-format: fitment.job/1
+location: /v1/jobs/j_00000000000000000000000009
+preference-applied: wait=30
+repr-digest: sha-256=:z0n6iA0SfguijiOCYOvbmKAac+4JVXHBPm9J6kzM2vM=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.job",
+  "format_version": 1,
+  "id": "j_00000000000000000000000009",
+  "kind": "match",
+  "owner": "u_00000000000000000000000001",
+  "state": "succeeded",
+  "attempt": 1,
+  "request": {
+    "components": [],
+    "files": [
+      {
+        "label": "m_block02.stp",
+        "upload": "sha256:1f021de7913c486df1f45d44bc6306c39f1b7374d9eccb818e27fbc6990db4ea"
+      },
+      {
+        "label": "m_block02_cb_deep.stp",
+        "upload": "sha256:4f68da82466fb9b036f4773f9aeefa44a8abef375f45abf155b47f22f56ba6be"
+      }
+    ],
+    "options": {
+      "require_fit": false,
+      "require_reviewed": false,
+      "require_reviewed_by": null
+    },
+    "original": null,
+    "policy": {
+      "clearance": "strict",
+      "tolerance_deg": 0.01,
+      "tolerance_mm": 0.01
+    },
+    "socket": "sk_4c08cde1bddb3df26f3b@r1",
+    "socket_document": "sha256:3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d"
+  },
+  "request_sha256": "048039de7560db063fa790b92e8131a9daa0c1260875fe6c411ad4d67414f3f5",
+  "queue_position": null,
+  "progress": null,
+  "cancel_requested": false,
+  "exit_code": 4,
+  "outcome": "interface_match",
+  "result": {
+    "href": "/v1/matches/j_00000000000000000000000009",
+    "format": "fitment.run"
+  },
+  "document": {
+    "href": "/v1/jobs/j_00000000000000000000000009/document",
+    "format": "fitment.match",
+    "sha256": "735167136a18792b8aa7b2560e4e215686b18d58ed0f2bab9a8c9670bdf38e57",
+    "bytes": 24797
+  },
+  "error": null,
+  "notes": [
+    {
+      "code": "summary",
+      "message": "2 candidates: 0 match, 1 interface match, 1 reject; fit not checked (no fit verifier in this build)"
+    },
+    {
+      "code": "unreviewed_requirements",
+      "count": 4,
+      "message": "4 requirements are unreviewed"
+    }
+  ],
+  "pinned": false,
+  "times": {
+    "created": "2026-09-21T14:13:20Z",
+    "started": "2026-09-21T14:13:20Z",
+    "finished": "2026-09-21T14:13:20Z",
+    "expires": "2026-10-21T14:13:20Z"
+  }
+}

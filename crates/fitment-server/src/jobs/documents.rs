@@ -321,13 +321,10 @@ pub fn failed(
     let release = matches!(state, State::Interrupted | State::Cancelled)
         || (state == State::Failed && retryable(code, kind));
     End {
-        state,
         exit,
-        outcome: None,
         error: Some((code.name().to_owned(), error_details(detail, details))),
         release_key: release,
-        document: None,
-        result: None,
+        ..End::bare(state)
     }
 }
 
@@ -336,13 +333,8 @@ pub fn failed(
 pub fn stopped(kind: Kind) -> Stopped {
     Stopped {
         cancelled: End {
-            state: State::Cancelled,
-            exit: None,
-            outcome: None,
-            error: None,
             release_key: true,
-            document: None,
-            result: None,
+            ..End::bare(State::Cancelled)
         },
         deadline: failed(
             State::Failed,

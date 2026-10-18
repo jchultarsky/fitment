@@ -127,6 +127,36 @@ Until 1.0, minor versions may contain breaking changes.
   `fitment.job`, `fitment.job.event` and `fitment.assembly`, the error code
   `job_not_finished`, and the configuration keys `jobs.streams_per_user`
   and `jobs.streams`. No output of `fitment` changes.
+- **M6, PR 6 (review, import and matching through the API, and the
+  exit's file half):** `POST /v1/matches` runs `fitment match` over
+  uploaded files and components of the caller's assemblies as the job
+  `match`, its document exactly the CLI's `--format json` bytes (the
+  library's for components), its policy the CLI's flags as fields, the
+  original judged beside the candidates with `original: true`; the socket
+  is read and gated as the CLI reads a socket file before any job (`422
+  socket_stale`, `socket_unreadable`, `socket_refused`, `socket_unreviewed`)
+  and again when the job starts. `GET /v1/matches`, `/v1/matches/{id}`
+  (the new run record `fitment.run`, stating `outcome` and `summary` only
+  for a run that succeeded), `…/document` and `…/candidates` (pages
+  sliced from the document's own bytes through an index built once). `POST
+  /v1/sockets/{line}@r{n}/review` applies `fitment review`'s decisions in
+  order, all or none, as a new revision, refusing a revision that is not
+  current (`409`) or not named (`428`); `POST /v1/sockets/import` takes a
+  socket file the CLI wrote as the job `socket_import`, verified when the
+  caller's assembly reproduces it, else stored `verified: false`. Socket
+  documents are parsed at requests at most `limits.parse_concurrency` at
+  once. Jobs carry the CLI's stderr lines as `notes`. Through the built
+  server, every corpus match case under both policies gives the CLI's (or
+  the library's) documents and the library's report, byte for byte.
+  `fitment-core` gains `CandidateResult::is_fitment_bug`,
+  `shortlist_unsound`, `original_check` and `original_fails`,
+  `Outcome::exit_code`, `SelectedComponent` (a component of an assembly,
+  read and chosen as a socket's target is) with `ComponentError`, and
+  `Matcher::judge_component`; a `fitment.match` document now merges a
+  component named twice into one entry with both labels, as it merges
+  files of one SHA-256. `fitment match` takes its exit code, its bug
+  tests and its original's reading from them; none of its output
+  changes.
 
 ## [0.2.0] - 2026-10-17
 

@@ -1498,3 +1498,293 @@ async fn ten_thousand_jobs_list_expire_and_one_stays_pinned() {
     assert_eq!(left["items"].as_array().unwrap().len(), 1);
     assert_eq!(left["items"][0]["id"], job["id"]);
 }
+
+/// A server whose harness admin holds s01's BRACKET socket and the
+/// committed bracket: its socket revision and the candidate's `files`.
+async fn match_world(
+    config: impl FnOnce(&mut fitment_server::Config),
+) -> (TestServer, String, serde_json::Value) {
+    let dirs = Dirs::new();
+    let mut c = dirs.config();
+    config(&mut c);
+    let server = TestServer::in_process(dirs, c);
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let sha = server.upload(&support::candidate("m_bracket.stp")).await;
+    let files = json!([{ "upload": format!("sha256:{sha}"), "label": "m_bracket.stp" }]);
+    (server, socket, files)
+}
+
+/// UP6, VT45: a socket document is read from at most
+/// `limits.max_socket_mib` bytes: one past it, as an import, a match's
+/// socket or a `carry_from`, is `413 too_large` (`details.limit`) before
+/// it is read; one at it is read (and refused here for what it says).
+#[tokio::test]
+async fn a_socket_document_past_its_cap_is_refused() {
+    let (server, socket, files) = match_world(|c| c.limits.max_socket_mib = 1).await;
+    let at = vec![b' '; 1024 * 1024];
+    let mut past = at.clone();
+    past.push(b' ');
+    let at = server.upload(&at).await;
+    let past = server.upload(&past).await;
+    let s01 = fitment_core::sha256_hex(&support::assembly("s01_bolted.stp"));
+    for (sha, status, code) in [(&past, 413, "too_large"), (&at, 422, "socket_unreadable")] {
+        let upload = json!({ "upload": format!("sha256:{sha}") });
+        let calls = [
+            support::waiting("/v1/sockets/import", &upload),
+            support::waiting(
+                "/v1/matches",
+                &json!({ "socket": upload, "candidates": { "files": files } }),
+            ),
+            support::waiting(
+                "/v1/sockets",
+                &json!({ "assembly": format!("sha256:{s01}"), "part": "BRACKET", "carry_from": upload }),
+            ),
+        ];
+        for (i, call) in calls.into_iter().enumerate() {
+            let reply = server.send(call).await;
+            let code = if i == 2 && status == 422 {
+                "carry_from_foreign"
+            } else {
+                code
+            };
+            assert_eq!(
+                (reply.status.as_u16(), reply.code().as_str()),
+                (status, code),
+                "{i}"
+            );
+            if status == 413 {
+                assert_eq!(reply.json()["details"]["limit"], "max_socket_mib");
+            }
+        }
+    }
+    let _ = socket;
+}
+
+/// HX8's parse slots (VT45's parse half, review F22): socket documents are
+/// parsed at requests at most `limits.parse_concurrency` at once; with
+/// four slots, five imports held at the parse leave the fifth waiting, and
+/// past the handler's time it is `503 request_timeout`, not retryable on a
+/// write (ER6); the four go on when let through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn socket_documents_parse_four_at_a_time() {
+    let (server, _, _) = match_world(|c| {
+        c.limits.parse_concurrency = 4;
+        c.server.handler_timeout_seconds = 2;
+    })
+    .await;
+    let file = support::cli_golden("socket", "s01_bolted--BRACKET.json");
+    let sha = server.upload(&file).await;
+    let gate = Gate::new();
+    let seams = server.server().seams();
+    seams.hooks.set("socket.parse", Action::Pause(gate.clone()));
+    let import = || {
+        Call::json(
+            Method::POST,
+            "/v1/sockets/import",
+            &json!({ "upload": format!("sha256:{sha}") }),
+        )
+    };
+    let server = std::sync::Arc::new(server);
+    let held: Vec<_> = (0..4)
+        .map(|_| {
+            let (server, call) = (std::sync::Arc::clone(&server), import());
+            tokio::spawn(async move { server.send(call).await })
+        })
+        .collect();
+    assert!(
+        gate.arrived(4, Duration::from_secs(30)).await,
+        "four parse at once"
+    );
+    let started = Instant::now();
+    let fifth = server.send(import()).await;
+    assert_eq!(
+        (fifth.status.as_u16(), fifth.code()),
+        (503, "request_timeout".to_owned())
+    );
+    assert_eq!(fifth.json()["retryable"], false);
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "it waited the handler's time"
+    );
+    assert_eq!(gate.reached(), 4, "the fifth never parsed");
+    gate.open();
+    for held in held {
+        assert_eq!(held.await.unwrap().status, 202);
+    }
+    server.server().seams().hooks.clear("socket.parse");
+}
+
+/// RA8, HX2, CM1: a match's names and candidates within their bounds: a
+/// label of 1,024 bytes is taken, one more byte or a control character is
+/// `400 name_invalid`, one starting `catalog:` `400 label_reserved`; past
+/// `limits.max_candidates` candidates `400 invalid_parameter`; a component
+/// naming neither a part nor an occurrence, and a tolerance of `-0.0`,
+/// zero or 90 degrees, `400 invalid_parameter`; none at all `400
+/// no_candidates`. Each before any job.
+#[tokio::test]
+async fn match_names_and_candidates_past_their_bounds_are_refused() {
+    let (server, socket, files) = match_world(|c| c.limits.max_candidates = 2).await;
+    let sha = files[0]["upload"].as_str().unwrap().to_owned();
+    let file = |label: &str| json!({ "upload": sha, "label": label });
+    let s01 = fitment_core::sha256_hex(&support::assembly("s01_bolted.stp"));
+    let with = |candidates: serde_json::Value, extra: serde_json::Value| {
+        let mut body = json!({ "socket": socket, "candidates": candidates });
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        support::waiting("/v1/matches", &body)
+    };
+    let long = "l".repeat(1024);
+    let ok = server
+        .send(with(json!({ "files": [file(&long)] }), json!({})))
+        .await;
+    assert_eq!(ok.status, 200, "{}", String::from_utf8_lossy(&ok.body));
+    let cases = [
+        (
+            json!({ "files": [file(&format!("{long}l"))] }),
+            json!({}),
+            "name_invalid",
+        ),
+        (
+            json!({ "files": [file("tab\there")] }),
+            json!({}),
+            "name_invalid",
+        ),
+        (
+            json!({ "files": [file("catalog:BRACKET@r1")] }),
+            json!({}),
+            "label_reserved",
+        ),
+        (
+            json!({ "files": [file("a"), file("b"), file("c")] }),
+            json!({}),
+            "invalid_parameter",
+        ),
+        (
+            json!({ "components": [{ "assembly": format!("sha256:{s01}") }] }),
+            json!({}),
+            "invalid_parameter",
+        ),
+        (
+            json!({ "files": [file("a")] }),
+            json!({ "policy": { "tolerance_mm": -0.0 } }),
+            "invalid_parameter",
+        ),
+        (
+            json!({ "files": [file("a")] }),
+            json!({ "policy": { "tolerance_mm": 0.0 } }),
+            "invalid_parameter",
+        ),
+        (
+            json!({ "files": [file("a")] }),
+            json!({ "policy": { "tolerance_deg": 90.0 } }),
+            "invalid_parameter",
+        ),
+        (json!({}), json!({}), "no_candidates"),
+    ];
+    let before = server.get("/v1/jobs?kind=match").await.json()["items"]
+        .as_array()
+        .unwrap()
+        .len();
+    for (candidates, extra, code) in cases {
+        let reply = server.send(with(candidates.clone(), extra.clone())).await;
+        assert_eq!(
+            (reply.status.as_u16(), reply.code().as_str()),
+            (400, code),
+            "{candidates} {extra}"
+        );
+    }
+    let after = server.get("/v1/jobs?kind=match").await.json()["items"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(before, after, "no job was made");
+}
+
+/// JB7, SN7, VT22's deadline: a match past a test-sized deadline is
+/// stopped between windows and ends `failed`, `deadline_exceeded`, with no
+/// document and no outcome, never `reject`.
+#[tokio::test]
+async fn a_match_past_its_deadline_fails_with_no_document() {
+    let (server, socket, files) = match_world(|_| {}).await;
+    let seams = server.server().seams();
+    seams.jobs.set_deadline(Duration::from_millis(200));
+    seams
+        .hooks
+        .set("match.window", Action::Delay(Duration::from_millis(600)));
+    let job = server
+        .run_match(&json!({ "socket": socket, "candidates": { "files": files } }))
+        .await;
+    assert_eq!(
+        (job["state"].as_str(), job["error"]["code"].as_str()),
+        (Some("failed"), Some("deadline_exceeded")),
+        "{job}"
+    );
+    assert!(job["document"].is_null() && job["outcome"].is_null() && job["exit_code"].is_null());
+    let id = job["id"].as_str().unwrap();
+    let document = server.get(&format!("/v1/matches/{id}/document")).await;
+    assert_eq!(document.code(), "no_document");
+    let run = server.get(&format!("/v1/matches/{id}")).await.json();
+    assert!(run["outcome"].is_null() && run["summary"].is_null() && run["document"].is_null());
+}
+
+/// VT22, JB7: the corpus's hostile parts (`h_*`) as uploaded candidates
+/// against their sockets: each judged within M4's bound and the job's
+/// deadline, its document the CLI's for the same file, byte for byte.
+/// Release only, as the corpus suites are.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hostile_parts_through_the_api_are_the_clis() {
+    let Some(corpus) = fitment_corpus::Corpus::locate_release_only() else {
+        return;
+    };
+    let server = TestServer::fresh();
+    let mut seen = 0;
+    for case in corpus.cases().iter().filter(|c| c["kind"] == "hostile") {
+        seen += 1;
+        let id = case["id"].as_str().unwrap();
+        let source = case["socket"]["case"].as_str().unwrap();
+        let part = case["socket"]["part"].as_str().unwrap();
+        let bytes = std::fs::read(corpus.dir().join(format!("{source}.stp"))).unwrap();
+        server.register(&bytes, &format!("{source}.stp")).await;
+        let extracted = server
+            .extract(&fitment_core::sha256_hex(&bytes), part)
+            .await;
+        let socket = extracted["result"]["href"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("/v1/sockets/")
+            .to_owned();
+        let file = case["candidate"]["file"].as_str().unwrap();
+        let sha = server
+            .upload(&std::fs::read(corpus.dir().join(file)).unwrap())
+            .await;
+        let started = Instant::now();
+        let job = server
+            .run_match(&json!({ "socket": socket, "candidates": { "files": [
+                { "upload": format!("sha256:{sha}"), "label": file } ] } }))
+            .await;
+        let bound = case["expect"]["within_s"].as_f64().unwrap();
+        assert!(
+            started.elapsed().as_secs_f64() < bound + 5.0,
+            "{id}: past its bound"
+        );
+        assert_eq!(job["state"], "succeeded", "{id}: {job}");
+        let scratch = server.dirs.root.join(id);
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(
+            scratch.join("S.json"),
+            server.get(&format!("/v1/sockets/{socket}")).await.body,
+        )
+        .unwrap();
+        std::fs::write(
+            scratch.join(file),
+            std::fs::read(corpus.dir().join(file)).unwrap(),
+        )
+        .unwrap();
+        let (code, stdout, _) =
+            support::cli(&scratch, &["match", "S.json", file, "--format", "json"]);
+        assert_eq!(job["exit_code"].as_i64(), code.map(i64::from), "{id}");
+        assert_eq!(server.document(&job).await.body, stdout, "{id}");
+    }
+    assert!(seen >= 4, "{seen} hostile cases");
+}

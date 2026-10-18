@@ -4,8 +4,9 @@
 use serde::Serialize;
 
 /// A job's kind (JB1). PR 5 runs `features`, `assembly_read` and
-/// `socket_extract`; the others are named so `server.db`'s rows and the
-/// lanes are complete, and come with PRs 6 and 7.
+/// `socket_extract`, PR 6 `socket_import` and `match`; the catalog's are
+/// named so `server.db`'s rows and the lanes are complete, and come with
+/// PR 7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -16,9 +17,9 @@ pub enum Kind {
     AssemblyRead,
     /// `POST /v1/sockets`: `fitment socket FILE --part X`.
     SocketExtract,
-    /// `POST /v1/sockets/import` (PR 6).
+    /// `POST /v1/sockets/import`: a socket file, verified or marked.
     SocketImport,
-    /// `POST /v1/matches` (PR 6).
+    /// `POST /v1/matches`: `fitment match S FILE…`.
     Match,
     /// The catalog's writes and maintenance (PR 7).
     CatalogIngest,

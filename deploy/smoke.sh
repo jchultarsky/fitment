@@ -20,8 +20,9 @@
 #    POST names the bytes itself; s01 is registered and its BRACKET's
 #    socket extracted through jobs (PR 5), each waited for, their documents
 #    the CLI's goldens' bytes (crates/fitment/tests/golden/{parts,socket}/);
-#    the token is in no log; and SIGTERM stops it with exit 0. PR 6 adds a
-#    match job whose document equals crates/fitment/tests/golden/match/'s.
+#    a match job over the committed BRACKET candidates gives the document
+#    of crates/fitment/tests/golden/match/ (PR 6); the token is in no log;
+#    and SIGTERM stops it with exit 0.
 # 4. Its size is reported, under a ceiling of twice the first measured.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -166,6 +167,21 @@ href=$(sed -nE 's/^    "href": "(\/v1\/sockets\/sk_[0-9a-f]+@r1)",$/\1/p' "$work
 [ -n "$href" ] || fail "the socket job names no revision"
 curl -sf "${auth[@]}" "http://127.0.0.1:$port$href" | cmp -s - "$work/socket-doc.json" ||
   fail "the revision is not the job's document"
+# PR 6: a match job over s01's committed BRACKET candidates, labelled by
+# their file names, its document the CLI's golden's bytes (DC1, DC3).
+files=""
+for stem in m_bracket m_bracket_blind m_bracket_dia_small m_bracket_lug m_bracket_missing_hole \
+  m_bracket_thick m_bracket_top_pocket; do
+  file="crates/fitment-core/tests/candidates/$stem.stp"
+  hash=$(sha "$file")
+  curl -s -o /dev/null -X PUT "${auth[@]}" -H 'Content-Type: model/step' \
+    --data-binary "@$file" "$uploads/sha256:$hash" || fail "uploading $file"
+  files="$files${files:+, }{\"upload\": \"sha256:$hash\", \"label\": \"$stem.stp\"}"
+done
+id=$(job matches "{\"socket\": \"${href#/v1/sockets/}\", \"candidates\": {\"files\": [$files]}}" "$work/match.json")
+curl -sf "${auth[@]}" "$api/matches/$id/document" -o "$work/match-doc.json" || fail "the match document"
+cmp -s "$work/match-doc.json" crates/fitment/tests/golden/match/s01_bolted--BRACKET.json ||
+  fail "the match is not the CLI's"
 docker exec "$name" fitment-server healthcheck || fail "the image's healthcheck failed"
 docker stop --time 45 "$name" >/dev/null
 code=$(docker inspect --format '{{.State.ExitCode}}' "$name")

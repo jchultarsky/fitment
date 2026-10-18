@@ -1,11 +1,11 @@
 200
 cache-control: no-cache
 content-type: application/json
-etag: W/"j4.refused"
+etag: W/"j5.refused"
 fitment-format: fitment.job/1
 location: /v1/jobs/j_00000000000000000000000005
 preference-applied: wait=30
-repr-digest: sha-256=:8m4v2cTYihq1GohUtWXayGRHdmE4DgxjWjXB+R5S2GE=:
+repr-digest: sha-256=:AG0JODuiUl6e3g+y0dmtqQJYY6/Sc9rEOR/pPUyN1tw=:
 x-request-id: r_00000000000000000000000004
 
 {
@@ -33,7 +33,13 @@ x-request-id: r_00000000000000000000000004
     "bytes": 595
   },
   "error": null,
-  "notes": [],
+  "notes": [
+    {
+      "code": "refused",
+      "message": "refused: unparseable: the file is not ISO 10303-21: syntax error at line 1, column 1: expected ISO-10303-21, found 'a'",
+      "refusal": "unparseable"
+    }
+  ],
   "pinned": false,
   "times": {
     "created": "2026-09-21T14:13:20Z",

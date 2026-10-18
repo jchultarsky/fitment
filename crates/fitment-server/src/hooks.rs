@@ -100,9 +100,12 @@ impl Action {
 /// The hook points: `info` (the handler, before its blocking work),
 /// `info.blocking` (inside it, on the blocking pool), `auth.hash` (inside
 /// an argon2 slot, on the blocking pool: AU2), `upload.chunk` (before an
-/// upload's next chunk is read), and a job's: `job.submitted`,
+/// upload's next chunk is read), `socket.parse` (inside one of HX8's
+/// parse slots, on the blocking pool), and a job's: `job.submitted`,
 /// `job.dispatched` (async), `job.read`, `job.ran`, `job.stored`,
-/// `job.committing` and `job.committed` (on the blocking pool).
+/// `job.committing` and `job.committed` (on the blocking pool), and a
+/// match's `match.window` (before each window) and `match.judge` (before
+/// each candidate's judgment, inside its caught panic).
 #[derive(Debug, Default)]
 pub struct Hooks {
     points: Mutex<BTreeMap<String, Action>>,

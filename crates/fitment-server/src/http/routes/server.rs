@@ -81,7 +81,7 @@ pub(super) async fn info(
     .await?;
     let mut catalog = catalog;
     catalog.state.queues_full = shared.jobs.queues_full();
-    let kernel = crate::matching::kernel(&shared.verifier);
+    let kernel = crate::matching::kernel(&shared.verifier());
     let document = crate::info::info(&shared.config, kernel, catalog);
     Ok(json::document(INFO_FORMAT, INFO_FORMAT_VERSION, &document))
 }

@@ -577,6 +577,12 @@ pub(super) async fn document(
         .and_then(|name| SocketRef::parse(name).ok())
         .filter(|_| matches!(row.kind, Kind::SocketExtract | Kind::SocketImport));
     let digest = match named {
+        // DC4: a match's own digest, from its run's facts.
+        None if row.kind == Kind::Match => row
+            .run
+            .as_deref()
+            .and_then(|r| serde_json::from_str::<crate::runs::RunFacts>(r).ok())
+            .map(|f| f.digest),
         Some(reference) => {
             let (reading, owner) = (Arc::clone(&shared), row.owner);
             blocking(move || {

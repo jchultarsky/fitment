@@ -915,14 +915,60 @@ async fn a_start_settles_what_the_last_process_left() {
     assert_eq!(line["current"]["n"], 1, "JS13: not run again");
 }
 
+/// The request a kind's job is made by, after its setup on `server`:
+/// `socket` and `import` on a registered s02, `match` on its extracted
+/// BLOCK and the committed candidates, `assembly` on the bytes alone.
+async fn abort_setup(server: &TestServer, kind: &str, sha: &str) -> support::Call {
+    let register = support::waiting(
+        "/v1/assemblies",
+        &json!({ "upload": format!("sha256:{sha}"), "file_name": "s02_cbore.stp" }),
+    );
+    if kind == "assembly" {
+        return register;
+    }
+    assert_eq!(server.send(register).await.json()["state"], "succeeded");
+    match kind {
+        "socket" => support::waiting(
+            "/v1/sockets",
+            &json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK" }),
+        ),
+        "import" => {
+            let file = server
+                .upload(&support::cli_golden("socket", "s02_cbore--BLOCK.json"))
+                .await;
+            support::waiting(
+                "/v1/sockets/import",
+                &json!({ "upload": format!("sha256:{file}") }),
+            )
+        }
+        _ => {
+            let job = server.extract(sha, "BLOCK").await;
+            let socket = job["result"]["href"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("/v1/sockets/");
+            let mut files = Vec::new();
+            for name in ["m_block02.stp", "m_block02_cb_deep.stp"] {
+                let upload = server.upload(&support::candidate(name)).await;
+                files.push(json!({ "upload": format!("sha256:{upload}"), "label": name }));
+            }
+            support::waiting(
+                "/v1/matches",
+                &json!({ "socket": socket, "candidates": { "files": files } }),
+            )
+        }
+    }
+}
+
 /// VT10, JB6, JS11, JS13, SD2, SD4, SD5: the built binary aborted at each
 /// named point of a job's life, then started again on the same
-/// directories: the job ends once, as JB6 says; a pure job run again ends
-/// with the CLI's bytes, on its second attempt if the first had started;
-/// one whose result committed is not run again (one revision, its
-/// attempt 1); one killed on both attempts is `interrupted`; a request
-/// whose answer the abort lost is found again by its `Idempotency-Key`.
-/// On Unix and Windows alike (`abort()` at the hook).
+/// directories, for extractions, imports, assembly readings and matches:
+/// the job ends once, as JB6 says; a pure job run again ends with the
+/// CLI's bytes, on its second attempt if the first had started; one whose
+/// result committed is not run again (one revision, its attempt 1); one
+/// killed on both attempts is `interrupted`; a request whose answer the
+/// abort lost is found again by its `Idempotency-Key`. On Unix and Windows
+/// alike (`abort()` at the hook).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_abort_at_every_hook_point_leaves_each_job_ending_once() {
     const RESTART: &str = "[test]\nlease_stale_ms = 1\n";
@@ -937,31 +983,15 @@ async fn an_abort_at_every_hook_point_leaves_each_job_ending_once() {
         "job.committed",
     ];
     for point in points {
-        for kind in ["socket", "assembly"] {
+        for kind in ["socket", "assembly", "import", "match"] {
             let mut server = TestServer::process(Dirs::new(), RESTART);
             let bytes = support::assembly("s02_cbore.stp");
             let sha = server.upload(&bytes).await;
-            let register = support::waiting(
-                "/v1/assemblies",
-                &json!({ "upload": format!("sha256:{sha}"), "file_name": "s02_cbore.stp" }),
-            );
-            if kind == "socket" {
-                assert_eq!(
-                    server.send(register.clone()).await.json()["state"],
-                    "succeeded"
-                );
-            }
+            let call = abort_setup(&server, kind, &sha)
+                .await
+                .header("idempotency-key", "the-one");
             let hooks = format!("{RESTART}hooks = {{ \"{point}\" = \"abort\" }}\n");
             server.restart_process(&hooks);
-            let call = if kind == "socket" {
-                support::waiting(
-                    "/v1/sockets",
-                    &json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK" }),
-                )
-            } else {
-                register.clone()
-            }
-            .header("idempotency-key", "the-one");
             let answered = server.try_send(call.clone()).await;
             assert!(answered.is_none(), "{point} {kind}: the abort answered");
             server.restart_process(RESTART);
@@ -979,27 +1009,51 @@ async fn an_abort_at_every_hook_point_leaves_each_job_ending_once() {
             );
             let started = !matches!(point, "job.submitted" | "job.committed");
             assert_eq!(job["attempt"], if started { 2 } else { 1 }, "{what}");
-            if kind == "socket" {
-                assert_eq!(server.document(&job).await.body, golden, "{what}");
-                let lines = server.get("/v1/sockets").await.json();
-                assert_eq!(lines["items"][0]["current"]["n"], 1, "{what}: one revision");
-            } else {
-                let parts = server
-                    .get(&format!("/v1/assemblies/sha256:{sha}/parts"))
-                    .await;
-                assert_eq!(
-                    parts.body,
-                    support::cli_golden("parts", "s02_cbore.json"),
+            match kind {
+                "socket" | "import" => {
+                    assert_eq!(server.document(&job).await.body, golden, "{what}");
+                    let lines = server.get("/v1/sockets").await.json();
+                    assert_eq!(lines["items"][0]["current"]["n"], 1, "{what}: one revision");
+                }
+                "assembly" => {
+                    let parts = server
+                        .get(&format!("/v1/assemblies/sha256:{sha}/parts"))
+                        .await;
+                    assert_eq!(
+                        parts.body,
+                        support::cli_golden("parts", "s02_cbore.json"),
+                        "{what}"
+                    );
+                }
+                _ => assert_eq!(
+                    server.document(&job).await.body,
+                    support::cli_golden("match", "s02_cbore--BLOCK.json"),
                     "{what}"
-                );
+                ),
             }
-            let all = server.get("/v1/jobs?kind=socket_extract").await.json();
-            if kind == "socket" {
+            let kind_name = match kind {
+                "socket" => "socket_extract",
+                "import" => "socket_import",
+                "match" => "match",
+                _ => "assembly_read",
+            };
+            let all = server
+                .get(&format!("/v1/jobs?kind={kind_name}"))
+                .await
+                .json();
+            if kind != "assembly" {
                 assert_eq!(all["items"].as_array().unwrap().len(), 1, "{what}: one job");
             }
         }
     }
-    // Killed on both attempts: interrupted.
+}
+
+/// VT10, JB6, SD5, JB9: a pure job killed on both its attempts is
+/// `interrupted`, `job_interrupted`, with no verdict, and its key is
+/// released, so the same request submits anew.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_job_killed_on_both_attempts_is_interrupted() {
+    const RESTART: &str = "[test]\nlease_stale_ms = 1\n";
     let mut server = TestServer::process(Dirs::new(), RESTART);
     let sha = server.upload(&support::assembly("s02_cbore.stp")).await;
     let hooks = format!("{RESTART}hooks = {{ \"job.read\" = \"abort\" }}\n");
@@ -1200,4 +1254,368 @@ async fn a_committed_job_runs_though_its_answer_was_lost() {
     assert_eq!(next["state"], "succeeded");
     let taken = server.finished_job(&orphan, Duration::from_secs(30)).await;
     assert_eq!(taken["state"], "succeeded", "{taken}");
+}
+
+/// s02's BLOCK socket and its two committed candidates, uploaded: the
+/// match's body, and the CLI's document for it.
+async fn block_match(server: &TestServer) -> (Value, Vec<u8>) {
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let mut files = Vec::new();
+    for name in ["m_block02.stp", "m_block02_cb_deep.stp"] {
+        let sha = server.upload(&support::candidate(name)).await;
+        files.push(json!({ "upload": format!("sha256:{sha}"), "label": name }));
+    }
+    let body = json!({ "socket": socket, "candidates": { "files": files } });
+    (body, support::cli_golden("match", "s02_cbore--BLOCK.json"))
+}
+
+/// VT9 for matches (JS6, SN7): a match that panics after its socket is
+/// read, after its window is judged, or before its document is stored ends
+/// `failed`, `internal`, with no document and no verdict; a judgment that
+/// panics is caught as the CLI catches it: the run `failed`,
+/// `run_incomplete`, its document kept without that candidate; the server
+/// goes on, and the next match is the CLI's.
+#[tokio::test]
+async fn a_match_that_panics_fails_and_the_server_goes_on() {
+    let server = TestServer::fresh();
+    let (body, golden) = block_match(&server).await;
+    let hooks = &server.server().seams().hooks;
+    for point in ["job.read", "match.window", "job.ran", "job.stored"] {
+        hooks.set(point, Action::Panic(format!("a planted panic at {point}")));
+        let job = server.run_match(&body).await;
+        hooks.clear(point);
+        assert_eq!(
+            (job["state"].as_str(), job["error"]["code"].as_str()),
+            (Some("failed"), Some("internal")),
+            "{point}: {job}"
+        );
+        assert!(job["document"].is_null(), "{point}");
+        no_verdict(&job);
+        let next = server.run_match(&body).await;
+        assert_eq!(server.document(&next).await.body, golden, "{point}");
+    }
+    hooks.set(
+        "match.judge",
+        Action::Panic("a planted judgment's panic".into()),
+    );
+    let job = server.run_match(&body).await;
+    hooks.clear("match.judge");
+    assert_eq!(
+        (
+            job["state"].as_str(),
+            job["exit_code"].as_u64(),
+            job["error"]["code"].as_str()
+        ),
+        (Some("failed"), Some(1), Some("run_incomplete")),
+        "{job}"
+    );
+    no_verdict(&job);
+    let doc: Value = serde_json::from_slice(&server.document(&job).await.body).unwrap();
+    assert_eq!(
+        doc["summary"]["candidates"], 0,
+        "no judgment that panicked is in it"
+    );
+    let codes: Vec<&str> = job["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes.iter().filter(|c| **c == "judging_failed").count(), 2);
+}
+
+/// VT41 for matches (JB5, JS8, SN7): a queued match cancelled is
+/// `cancelled` at once; a running one, cancelled while a window waits, is
+/// `cancelling` and then `cancelled` before the next window: neither
+/// leaves a document, a run's summary or an outcome.
+#[tokio::test]
+async fn a_cancelled_match_leaves_nothing() {
+    let server = TestServer::fresh();
+    let (body, _) = block_match(&server).await;
+    server.server().hold_jobs();
+    let queued = server
+        .send(Call::json(Method::POST, "/v1/matches", &body))
+        .await
+        .json();
+    let id = queued["id"].as_str().unwrap().to_owned();
+    let cancel = server
+        .send(Call::new(Method::POST, &format!("/v1/jobs/{id}/cancel")))
+        .await;
+    assert_eq!(cancel.json()["state"], "cancelled");
+    server.server().resume_jobs();
+    let gate = Gate::new();
+    server
+        .server()
+        .seams()
+        .hooks
+        .set("match.window", Action::Pause(gate.clone()));
+    let running = server
+        .send(Call::json(Method::POST, "/v1/matches", &body))
+        .await
+        .json();
+    let running = running["id"].as_str().unwrap().to_owned();
+    assert!(gate.arrived(1, Duration::from_secs(30)).await);
+    let cancel = server
+        .send(Call::new(
+            Method::POST,
+            &format!("/v1/jobs/{running}/cancel"),
+        ))
+        .await;
+    assert_eq!(cancel.json()["state"], "cancelling");
+    gate.open();
+    server.server().seams().hooks.clear("match.window");
+    for id in [id, running] {
+        let job = server.finished_job(&id, Duration::from_secs(60)).await;
+        assert_eq!(job["state"], "cancelled", "{job}");
+        assert!(job["document"].is_null() && job["result"].is_null() && job["outcome"].is_null());
+        let run = server.get(&format!("/v1/matches/{id}")).await.json();
+        assert!(run["document"].is_null() && run["summary"].is_null() && run["outcome"].is_null());
+        assert_eq!(run["complete"], false);
+        let document = server.get(&format!("/v1/matches/{id}/document")).await;
+        assert_eq!(document.code(), "no_document");
+    }
+}
+
+/// XH12.3 on every read of a match (VT44): `outcome` null in
+/// `fitment.job`, `fitment.run`, the `end` event, `GET /v1/jobs` and
+/// `GET /v1/matches`; a kept document served with `Fitment-Exit-Code: 1`,
+/// its run `complete: false`, `summary` null, its counts under
+/// `problems.incomplete_summary`, every page `complete: false`.
+async fn states_no_verdict(server: &TestServer, id: &str, kept: bool) {
+    let job = server.get(&format!("/v1/jobs/{id}")).await.json();
+    assert_ne!(job["state"], "succeeded");
+    assert!(job["outcome"].is_null(), "{job}");
+    let run = server.get(&format!("/v1/matches/{id}")).await.json();
+    assert!(
+        run["outcome"].is_null() && run["summary"].is_null(),
+        "{run}"
+    );
+    assert_eq!(run["complete"], false);
+    let jobs = server.get("/v1/jobs?kind=match").await.json();
+    let listed = jobs["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["id"] == id)
+        .unwrap()
+        .clone();
+    assert!(listed["outcome"].is_null());
+    let runs = server.get("/v1/matches").await.json();
+    let listed = runs["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id)
+        .unwrap()
+        .clone();
+    assert!(listed["outcome"].is_null() && listed["summary"].is_null());
+    let events = server
+        .open(Call::get(&format!("/v1/jobs/{id}/events")))
+        .await;
+    let mut events = events.into_body();
+    let lines = support::lines(&mut events, Duration::from_secs(30), |e| e["type"] == "end").await;
+    let end = lines.last().unwrap();
+    assert_eq!(end["type"], "end");
+    assert!(end["outcome"].is_null(), "{end}");
+    let document = server.get(&format!("/v1/matches/{id}/document")).await;
+    if kept {
+        assert_eq!(document.header("fitment-exit-code"), Some("1"));
+        let doc: Value = serde_json::from_slice(&document.body).unwrap();
+        assert_eq!(run["problems"]["incomplete_summary"], doc["summary"]);
+        let page = server
+            .get(&format!("/v1/matches/{id}/candidates"))
+            .await
+            .json();
+        assert_eq!(
+            (page["complete"].as_bool(), page["exit_code"].as_u64()),
+            (Some(false), Some(1))
+        );
+    } else {
+        assert_eq!(document.code(), "no_document");
+        assert!(run["problems"]["incomplete_summary"].is_null());
+    }
+}
+
+/// VT44, XH12, JB3, SN4, DC10, DC12, M6-59: a match driven to every end
+/// but success states no verdict anywhere: refused at the request (no
+/// job), refused at dispatch (the build's socket rules raised), failed by
+/// a panicking judgment and by an original that fails its own socket (a
+/// socket file edited and imported without its assembly, whose original
+/// then fails the edited requirement), past its deadline, cancelled, and
+/// interrupted (two attempts killed: in `a_killed_match_twice_is_interrupted`).
+/// The control: a succeeded run states its outcome, and no
+/// `incomplete_summary`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_job_that_did_not_succeed_states_a_verdict() {
+    let server = TestServer::fresh();
+    let (body, _) = block_match(&server).await;
+    let good = server.run_match(&body).await;
+    let run = server
+        .get(&format!("/v1/matches/{}", good["id"].as_str().unwrap()))
+        .await
+        .json();
+    assert!(good["outcome"].is_string() && run["outcome"].is_string());
+    assert!(
+        run["problems"]["incomplete_summary"].is_null(),
+        "the control"
+    );
+    let mut unreviewed = body.clone();
+    unreviewed["options"] = json!({ "require_reviewed": true });
+    let refused = server
+        .send(support::waiting("/v1/matches", &unreviewed))
+        .await;
+    assert_eq!(refused.status, 422, "refused at the request: no job");
+    let seams = server.server().seams();
+    // Refused at dispatch.
+    server.server().hold_jobs();
+    let queued = server
+        .send(Call::json(Method::POST, "/v1/matches", &body))
+        .await
+        .json();
+    server.server().set_rules_shift(1);
+    server.server().resume_jobs();
+    let id = queued["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        server.finished_job(&id, Duration::from_secs(60)).await["state"],
+        "refused"
+    );
+    server.server().set_rules_shift(0);
+    states_no_verdict(&server, &id, false).await;
+    // A panicking judgment.
+    seams.hooks.set(
+        "match.judge",
+        Action::Panic("a planted judgment's panic".into()),
+    );
+    let failed = server.run_match(&body).await;
+    seams.hooks.clear("match.judge");
+    states_no_verdict(&server, failed["id"].as_str().unwrap(), true).await;
+    // Past its deadline.
+    seams.jobs.set_deadline(Duration::from_millis(100));
+    seams
+        .hooks
+        .set("match.window", Action::Delay(Duration::from_millis(400)));
+    let late = server.run_match(&body).await;
+    seams.hooks.clear("match.window");
+    seams.jobs.set_deadline(Duration::from_secs(3600));
+    assert_eq!(late["error"]["code"], "deadline_exceeded");
+    states_no_verdict(&server, late["id"].as_str().unwrap(), false).await;
+    // Cancelled.
+    server.server().hold_jobs();
+    let queued = server
+        .send(Call::json(Method::POST, "/v1/matches", &body))
+        .await
+        .json();
+    let id = queued["id"].as_str().unwrap().to_owned();
+    server
+        .send(Call::new(Method::POST, &format!("/v1/jobs/{id}/cancel")))
+        .await;
+    server.server().resume_jobs();
+    states_no_verdict(&server, &id, false).await;
+    // The original failing its own socket.
+    let original = original_failing(&server).await;
+    states_no_verdict(&server, original["id"].as_str().unwrap(), true).await;
+}
+
+/// VT44's `interrupted` end, JB6, SD5: a match whose process is killed
+/// on both attempts ends `interrupted`, `job_interrupted`, with no
+/// document, and no verdict in `fitment.job`, `fitment.run` or the lists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_killed_match_twice_is_interrupted() {
+    const RESTART: &str = "[test]\nlease_stale_ms = 1\n";
+    let mut server = TestServer::process(Dirs::new(), RESTART);
+    let sha = server.upload(&support::assembly("s02_cbore.stp")).await;
+    let call = abort_setup(&server, "match", &sha).await;
+    let hooks = format!("{RESTART}hooks = {{ \"job.read\" = \"abort\" }}\n");
+    server.restart_process(&hooks);
+    assert!(server.try_send(call).await.is_none());
+    server.restart_process(&hooks);
+    let mut tries = 0;
+    while server.try_send(Call::get("/v1/health")).await.is_some() {
+        tries += 1;
+        assert!(tries < 600, "the second attempt never aborted");
+        let _ = server.try_send(Call::get("/v1/jobs?wait=1")).await;
+    }
+    server.restart_process(RESTART);
+    let listed = server.get("/v1/jobs?kind=match").await.json();
+    let job = &listed["items"][0];
+    assert_eq!(
+        (
+            job["state"].as_str(),
+            job["error"]["code"].as_str(),
+            job["attempt"].as_u64()
+        ),
+        (Some("interrupted"), Some("job_interrupted"), Some(2)),
+        "{job}"
+    );
+    assert!(job["outcome"].is_null() && job["document"].is_null());
+    let id = job["id"].as_str().unwrap();
+    let run = server.get(&format!("/v1/matches/{id}")).await.json();
+    assert!(run["outcome"].is_null() && run["summary"].is_null() && run["document"].is_null());
+    let runs = server.get("/v1/matches").await.json();
+    assert!(runs["items"][0]["outcome"].is_null());
+}
+
+/// A match whose original fails its own socket (VD15): the CLI's s01
+/// BRACKET socket file with one bore's shaft widened past the original's
+/// hole and its digest recomputed, imported without its assembly
+/// (unverified, so nothing reproduces it), then the assembly registered
+/// so the original can be read.
+async fn original_failing(server: &TestServer) -> Value {
+    let mut edited: Value =
+        serde_json::from_slice(&support::cli_golden("socket", "s01_bolted--BRACKET.json")).unwrap();
+    let requirements = edited["extracted"]["sockets"][0]["requirements"]
+        .as_array_mut()
+        .unwrap();
+    let bore = requirements
+        .iter_mut()
+        .find(|r| r["id"].as_str().unwrap().starts_with("bore:"))
+        .unwrap();
+    // A bore whose shaft no hole of the original clears.
+    bore["requires"]["spans"][0]["hole_diameter_mm"] = json!(7.5);
+    bore["requires"]["spans"][0]["clear_diameter_mm"] = json!(7.0);
+    let mut stated = edited.clone();
+    for key in ["digest", "review", "stale_reviews"] {
+        stated.as_object_mut().unwrap().remove(key);
+    }
+    edited["digest"] = json!(format!(
+        "sha256:{}",
+        fitment_core::sha256_hex(stated.to_string().as_bytes())
+    ));
+    let file = serde_json::to_vec_pretty(&edited).unwrap();
+    let upload = server.upload(&file).await;
+    let imported = server
+        .send(support::waiting(
+            "/v1/sockets/import",
+            &json!({ "upload": format!("sha256:{upload}") }),
+        ))
+        .await
+        .json();
+    assert_eq!(
+        imported["state"], "succeeded",
+        "unverified, nothing parsed but the file: {imported}"
+    );
+    let socket = imported["result"]["href"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("/v1/sockets/")
+        .to_owned();
+    server
+        .register(&support::assembly("s01_bolted.stp"), "s01_bolted.stp")
+        .await;
+    let candidate = server.upload(&support::candidate("m_bracket.stp")).await;
+    let original = server
+        .run_match(
+            &json!({ "socket": socket, "original": true, "candidates": { "files": [
+            { "upload": format!("sha256:{candidate}"), "label": "m_bracket.stp" } ] } }),
+        )
+        .await;
+    assert_eq!(
+        (
+            original["state"].as_str(),
+            original["error"]["code"].as_str()
+        ),
+        (Some("failed"), Some("original_fails_own_socket")),
+        "{original}"
+    );
+    original
 }

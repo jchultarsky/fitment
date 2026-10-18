@@ -10,8 +10,9 @@
 //! binary's documents meet the same gate and baseline, each case's
 //! outcome in them the library's (`docs/research/m6-api.md`, VT4, VT5),
 //! all scored by `fitment-corpus` (SC1), with each case's review applied
-//! on both paths (M6-38). Without the corpus these pass with a note,
-//! unless `FITMENT_REQUIRE_CORPUS=1`.
+//! on both paths (M6-38); core's run helpers give the CLI's exit codes
+//! (CO2, VT37). Without the corpus these pass with a note, unless
+//! `FITMENT_REQUIRE_CORPUS=1`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -415,6 +416,8 @@ struct BinaryRun {
 struct Binary {
     problems: Vec<String>,
     runs: Vec<BinaryRun>,
+    /// Each `fitment match`'s exit code, with its key, policy and cases.
+    exits: Vec<(SocketKey, Policy, Option<i32>, Vec<String>)>,
 }
 
 /// The binary path, run once per test binary.
@@ -428,6 +431,7 @@ fn run_binary(corpus: &Corpus) -> Binary {
     let mut out = Binary {
         problems: Vec::new(),
         runs: Vec::new(),
+        exits: Vec::new(),
     };
     for (key, group) in corpus.socket_groups() {
         let files: Vec<(Case<'_>, String)> = group
@@ -492,6 +496,12 @@ fn run_match(
             .into_iter()
             .map(|p| format!("{at}: {p}")),
     );
+    out.exits.push((
+        key.clone(),
+        policy,
+        output.status.code(),
+        cases.iter().map(|(c, _)| c.id().to_owned()).collect(),
+    ));
     let code = parity::exit_code("succeeded", Some(parity::outcome_of(&doc)));
     if output.status.code() != code {
         out.problems.push(format!(
@@ -561,6 +571,85 @@ fn a_documents_outcome_is_the_librarys() {
             Err(e) => problems.push(format!("{} {}: {e}", run.case, run.policy.name())),
         }
     }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// VT37, CO2 (`docs/research/m6-api.md`), JB4: core's run helpers give the
+/// CLI's exit codes on every corpus run of the binary path: the exit code
+/// of each `fitment match` is 1 if a library result of its cases is a
+/// fitment bug (`is_fitment_bug`), else `Outcome::exit_code` of the
+/// library's document over the same results; no corpus result is a bug,
+/// and every corpus component judged through `judge_component` (CO5) is
+/// `judge_part` on the part the listing reads.
+#[test]
+fn exit_codes_are_the_clis() {
+    let (Some(corpus), Some(binary), Some(runs)) = (corpus(), binary(), runs()) else {
+        return;
+    };
+    let mut problems = Vec::new();
+    for (key, policy, code, cases) in &binary.exits {
+        let case = corpus.case(&cases[0]).unwrap();
+        let judged = socket_document(corpus.dir(), case);
+        let matcher = Matcher::new(
+            &judged.reviewed,
+            policy.match_policy(),
+            MatchOptions::default(),
+            &NoFitVerifier,
+        )
+        .unwrap();
+        let results: Vec<_> = cases
+            .iter()
+            .map(|c| {
+                (
+                    library_run(runs, c, *policy).result.clone(),
+                    vec![c.clone()],
+                )
+            })
+            .collect();
+        let bug = results.iter().any(|(r, _)| r.is_fitment_bug());
+        let core = if bug {
+            1
+        } else {
+            MatchDocument::new(&matcher, results).outcome().exit_code()
+        };
+        if *code != Some(i32::from(core)) {
+            problems.push(format!(
+                "{key:?} {}: the CLI's {code:?}, core's {core}",
+                policy.name()
+            ));
+        }
+    }
+    for run in runs {
+        if run.result.is_fitment_bug() || run.result.shortlist_unsound() {
+            problems.push(format!(
+                "{} {}: a fitment bug",
+                run.case["id"],
+                run.policy.name()
+            ));
+        }
+        let case = Case::new(&run.case);
+        if let CandidateRef::Component { source, part } = case.candidate() {
+            let bytes = fs::read(corpus.dir().join(format!("{source}.stp"))).unwrap();
+            let component =
+                fitment_core::SelectedComponent::read(&bytes, Some(&part), None).unwrap();
+            let judged = socket_document(corpus.dir(), case);
+            let matcher = Matcher::new(
+                &judged.reviewed,
+                run.policy.match_policy(),
+                MatchOptions::default(),
+                &NoFitVerifier,
+            )
+            .unwrap();
+            if matcher.judge_component(&component, component.source()) != run.result {
+                problems.push(format!(
+                    "{} {}: judge_component is not judge_part",
+                    run.case["id"],
+                    run.policy.name()
+                ));
+            }
+        }
+    }
+    assert!(binary.exits.len() > 40, "{} runs", binary.exits.len());
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 

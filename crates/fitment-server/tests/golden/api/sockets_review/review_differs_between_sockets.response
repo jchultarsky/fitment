@@ -1,0 +1,24 @@
+422
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:vBAbg/DzhNeps2To+u/wmuvxJ+Zv8JH0ga5dfbOxX5U=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/review_differs_between_sockets",
+  "title": "The requirement's sockets are reviewed differently",
+  "status": 422,
+  "detail": "the requirement differs between the sockets holding it: name one",
+  "code": "review_differs_between_sockets",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "decision": 0,
+    "requirement": "shaft:shaft-729"
+  },
+  "request_id": "r_00000000000000000000000008"
+}

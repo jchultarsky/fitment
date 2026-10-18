@@ -1,0 +1,21 @@
+422
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:Y9AvLbWwE6vAZWywPY/pQ5dDk/Jjw8dMEzbbINCg0Tc=:
+x-request-id: r_00000000000000000000000006
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/carry_from_foreign",
+  "title": "The document to carry from is for another target",
+  "status": 422,
+  "detail": "carry_from is the socket of another file",
+  "code": "carry_from_foreign",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000006"
+}

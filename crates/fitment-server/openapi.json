@@ -95,6 +95,23 @@
         "title": "FeaturesRequest",
         "type": "object"
       },
+      "ImportRequest": {
+        "$id": "https://fitment.dev/schemas/requests/ImportRequest",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`POST /v1/sockets/import` (section 7.6, RA10, UP6).",
+        "properties": {
+          "upload": {
+            "description": "The uploaded `fitment.socket`, `sha256:HEX`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload"
+        ],
+        "title": "ImportRequest",
+        "type": "object"
+      },
       "LoginRequest": {
         "$id": "https://fitment.dev/schemas/requests/LoginRequest",
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -133,6 +150,244 @@
           "password"
         ],
         "title": "LoginRequest",
+        "type": "object"
+      },
+      "MatchRequest": {
+        "$defs": {
+          "CandidatesRequest": {
+            "additionalProperties": false,
+            "description": "A match's candidates: files and components, at least one (CM1).",
+            "properties": {
+              "components": {
+                "default": null,
+                "description": "Leaves of the caller's registered assemblies (CO5).",
+                "items": {
+                  "$ref": "#/$defs/ComponentCandidate"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "files": {
+                "default": null,
+                "description": "Uploaded STEP files, each with its label (RA8).",
+                "items": {
+                  "$ref": "#/$defs/FileCandidate"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "ClearanceName": {
+            "description": "D6's clearance, as the request names it (DC7).",
+            "oneOf": [
+              {
+                "const": "strict",
+                "description": "A clearance hole bounded by the original's too.",
+                "type": "string"
+              },
+              {
+                "const": "functional",
+                "description": "Larger than the original passes, flagged.",
+                "type": "string"
+              }
+            ]
+          },
+          "ComponentCandidate": {
+            "additionalProperties": false,
+            "description": "A component candidate: a part of an assembly, as `--part` and\n`--occurrence` name one.",
+            "properties": {
+              "assembly": {
+                "description": "`sha256:HEX`, an assembly the caller registered.",
+                "type": "string"
+              },
+              "label": {
+                "default": null,
+                "description": "Its label; default `component:<assembly sha256, first 12>/#<n>`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "occurrence": {
+                "default": null,
+                "description": "As `--occurrence`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "part": {
+                "default": null,
+                "description": "As `--part`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "assembly"
+            ],
+            "type": "object"
+          },
+          "FileCandidate": {
+            "additionalProperties": false,
+            "description": "A file candidate.",
+            "properties": {
+              "label": {
+                "description": "The CLI's label, the argument as given (RA8): required.",
+                "type": "string"
+              },
+              "upload": {
+                "description": "`sha256:HEX`, an upload of the caller's (UP3).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "upload",
+              "label"
+            ],
+            "type": "object"
+          },
+          "OptionsRequest": {
+            "additionalProperties": false,
+            "description": "A match's options.",
+            "properties": {
+              "require_fit": {
+                "default": null,
+                "description": "`--require-fit`.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "require_reviewed": {
+                "default": null,
+                "description": "`--require-reviewed`; the operator's floor may force it (SN3).",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "PolicyRequest": {
+            "additionalProperties": false,
+            "description": "DC7's policy fields.",
+            "properties": {
+              "clearance": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ClearanceName"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "D6: `strict` (the default) or `functional`."
+              },
+              "tolerance_deg": {
+                "default": null,
+                "description": "D9's angular tolerance, in degrees (0.01).",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "tolerance_mm": {
+                "default": null,
+                "description": "D9's linear tolerance, in mm (0.01).",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "SocketFrom": {
+            "anyOf": [
+              {
+                "description": "A revision of the caller's lines; a bare id its current one (RA9).",
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An uploaded socket document.",
+                "properties": {
+                  "upload": {
+                    "description": "`sha256:HEX`.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "upload"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A match's socket (section 7.8): `\"sk_…\"` or `\"sk_…@rN\"` of the\ncaller's lines, or `{\"upload\": \"sha256:…\"}`, a socket file as the CLI\nreads it (UP6)."
+          }
+        },
+        "$id": "https://fitment.dev/schemas/requests/MatchRequest",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`POST /v1/matches` (section 7.8): a file run's candidates are uploads\nand components of the caller's assemblies; the catalog's runs come with\nPR 7.",
+        "properties": {
+          "candidates": {
+            "$ref": "#/$defs/CandidatesRequest",
+            "description": "What is judged."
+          },
+          "options": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OptionsRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`require_fit` and `require_reviewed`, default false (SN3)."
+          },
+          "original": {
+            "default": null,
+            "description": "Also judge the original (VD15, SN9): the socket's own target, from\nits assembly, which the caller registered.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PolicyRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "DC7: the CLI's flags as fields; D9's and D6's defaults."
+          },
+          "socket": {
+            "$ref": "#/$defs/SocketFrom",
+            "description": "The socket judged against."
+          }
+        },
+        "required": [
+          "socket",
+          "candidates"
+        ],
+        "title": "MatchRequest",
         "type": "object"
       },
       "MintRequest": {
@@ -233,6 +488,83 @@
           "pinned"
         ],
         "title": "PinRequest",
+        "type": "object"
+      },
+      "ReviewRequest": {
+        "$defs": {
+          "Decision": {
+            "additionalProperties": false,
+            "description": "One review decision: `fitment review --keep/--remove/--unreview ID\n[--note T] [--socket S]`.",
+            "properties": {
+              "note": {
+                "default": null,
+                "description": "Why: required to remove (M3 9.4).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requirement": {
+                "description": "The requirement's id.",
+                "type": "string"
+              },
+              "socket": {
+                "default": null,
+                "description": "Only in this socket; every socket holding it when null.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/DecisionStatus",
+                "description": "`kept`, `removed` or `unreviewed`."
+              }
+            },
+            "required": [
+              "requirement",
+              "status"
+            ],
+            "type": "object"
+          },
+          "DecisionStatus": {
+            "description": "A decision's status.",
+            "oneOf": [
+              {
+                "const": "kept",
+                "description": "Reviewed and kept.",
+                "type": "string"
+              },
+              {
+                "const": "removed",
+                "description": "Taken out of matching, with a note.",
+                "type": "string"
+              },
+              {
+                "const": "unreviewed",
+                "description": "Back to unreviewed.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$id": "https://fitment.dev/schemas/requests/ReviewRequest",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`POST /v1/sockets/{line}@r{n}/review` (section 7.6, OB5, RA7).",
+        "properties": {
+          "decisions": {
+            "description": "Applied in order, all or none, as `fitment review` once per\ndecision.",
+            "items": {
+              "$ref": "#/$defs/Decision"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "decisions"
+        ],
+        "title": "ReviewRequest",
         "type": "object"
       },
       "SocketRequest": {
@@ -3893,7 +4225,7 @@
             "type": "object"
           },
           "Kind": {
-            "description": "A job's kind (JB1). PR 5 runs `features`, `assembly_read` and\n`socket_extract`; the others are named so `server.db`'s rows and the\nlanes are complete, and come with PRs 6 and 7.",
+            "description": "A job's kind (JB1). PR 5 runs `features`, `assembly_read` and\n`socket_extract`, PR 6 `socket_import` and `match`; the catalog's are\nnamed so `server.db`'s rows and the lanes are complete, and come with\nPR 7.",
             "oneOf": [
               {
                 "enum": [
@@ -3922,12 +4254,12 @@
               },
               {
                 "const": "socket_import",
-                "description": "`POST /v1/sockets/import` (PR 6).",
+                "description": "`POST /v1/sockets/import`: a socket file, verified or marked.",
                 "type": "string"
               },
               {
                 "const": "match",
-                "description": "`POST /v1/matches` (PR 6).",
+                "description": "`POST /v1/matches`: `fitment match S FILE…`.",
                 "type": "string"
               },
               {
@@ -7250,6 +7582,465 @@
         "title": "PartsDocument",
         "type": "object"
       },
+      "fitment.run": {
+        "$defs": {
+          "PolicyFacts": {
+            "description": "The policy as a `fitment.match` document states it (MF6), for\n`fitment.run` (DC10).",
+            "properties": {
+              "angular_deg": {
+                "description": "The angular one, in degrees.",
+                "format": "double",
+                "type": "number"
+              },
+              "clearance": {
+                "description": "`strict` or `functional`.",
+                "type": "string"
+              },
+              "grip": {
+                "description": "`hard` (D7).",
+                "type": "string"
+              },
+              "linear_mm": {
+                "description": "The linear tolerance, in mm.",
+                "format": "double",
+                "type": "number"
+              },
+              "name": {
+                "description": "`default`, or `cli` for other tolerances (DC7).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "linear_mm",
+              "angular_deg",
+              "clearance",
+              "grip"
+            ],
+            "type": "object"
+          },
+          "RunCandidates": {
+            "description": "`fitment.run`'s candidates of a file run.",
+            "properties": {
+              "components": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "distinct": {
+                "description": "The document's distinct candidates (MF3, CO3), once judged.",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "files": {
+                "description": "The files and components asked for.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "description": "`files`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "files",
+              "components",
+              "distinct"
+            ],
+            "type": "object"
+          },
+          "RunDocumentLink": {
+            "description": "`fitment.run`'s link to its document (DC1, DC5).",
+            "properties": {
+              "bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "digest": {
+                "description": "The document's own `digest`.",
+                "type": "string"
+              },
+              "href": {
+                "description": "`/v1/matches/{id}/document`.",
+                "type": "string"
+              },
+              "sha256": {
+                "description": "The bytes' SHA-256 and length.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "href",
+              "sha256",
+              "bytes",
+              "digest"
+            ],
+            "type": "object"
+          },
+          "RunOptions": {
+            "description": "`fitment.run`'s options (SN3, M6-12).",
+            "properties": {
+              "require_fit": {
+                "type": "boolean"
+              },
+              "require_reviewed": {
+                "type": "boolean"
+              },
+              "require_reviewed_by": {
+                "description": "`\"request\"`, `\"server\"` or null.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "require_fit",
+              "require_reviewed",
+              "require_reviewed_by"
+            ],
+            "type": "object"
+          },
+          "RunOriginal": {
+            "description": "`fitment.run`'s original (VD15, SN9).",
+            "properties": {
+              "assembly": {
+                "description": "The socket's own assembly, `sha256:HEX`.",
+                "type": "string"
+              },
+              "judged": {
+                "description": "It was judged; its entry is the document's `original`.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "assembly",
+              "judged"
+            ],
+            "type": "object"
+          },
+          "RunProblems": {
+            "description": "`fitment.run`'s problems (M6-59): what makes the run exit 1, and for a\nrun that did not succeed the counts of what its kept document judged.",
+            "properties": {
+              "bugs": {
+                "description": "The candidates that are fitment bugs, by label.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "corrupt": {
+                "description": "Damaged catalog rows (QR4): none in a file run.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "incomplete_summary": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SummaryFacts"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "A run that did not succeed: its kept document's counts, never in\n`summary`."
+              },
+              "original": {
+                "description": "Why the original fails the run.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "corrupt",
+              "bugs",
+              "original",
+              "incomplete_summary"
+            ],
+            "type": "object"
+          },
+          "RunSocket": {
+            "description": "`fitment.run`'s socket (DC10, RA10).",
+            "properties": {
+              "assembly": {
+                "description": "Its source assembly, `sha256:HEX`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "digest": {
+                "description": "Its own `digest` (DC5).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "how": {
+                "description": "How the revision was made: `extract`, `review`, `import`; null for\nan upload.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ref": {
+                "description": "The revision judged, `sk_…@rN`, or null for an uploaded document.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "sha256": {
+                "description": "The socket document's bytes' SHA-256.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "unreviewed": {
+                "description": "Its unreviewed requirements (SN8).",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "upload": {
+                "description": "The uploaded document, `sha256:HEX`, or null.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "verified": {
+                "description": "RA10: extracted by this server from the caller's assembly.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ref",
+              "upload",
+              "sha256",
+              "digest",
+              "assembly",
+              "how",
+              "verified",
+              "unreviewed"
+            ],
+            "type": "object"
+          },
+          "RunVersions": {
+            "description": "`fitment.run`'s versions (SV5).",
+            "properties": {
+              "extractor_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "match_rules_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "server": {
+                "description": "The server's version.",
+                "type": "string"
+              },
+              "signature_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "socket_rules_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "extractor_version",
+              "socket_rules_version",
+              "signature_version",
+              "match_rules_version",
+              "server"
+            ],
+            "type": "object"
+          },
+          "SummaryFacts": {
+            "description": "How many candidates got each verdict, as `fitment.match`'s `summary`\nstates them (SN4: copied, never recomputed).",
+            "properties": {
+              "candidates": {
+                "description": "Distinct candidates.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "interface_match": {
+                "description": "`InterfaceMatch`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "match": {
+                "description": "`Match`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refused": {
+                "description": "Refused by M2's gate.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reject": {
+                "description": "`Reject`, refused ones included.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "candidates",
+              "match",
+              "interface_match",
+              "reject",
+              "refused"
+            ],
+            "type": "object"
+          }
+        },
+        "$id": "https://fitment.dev/schemas/fitment.run/1",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`fitment.run` v1 (DC10, section 7.11). It holds no time, so two\nservers' records of one run differ only in ids.",
+        "properties": {
+          "candidates": {
+            "$ref": "#/$defs/RunCandidates"
+          },
+          "complete": {
+            "description": "True only for a run that succeeded.",
+            "type": "boolean"
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunDocumentLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The document, if one was kept."
+          },
+          "exit_code": {
+            "description": "The CLI's exit code (JB4).",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "fit_verifier": {
+            "description": "As the document names it; null without one (SN4, SN11).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "description": "[`RUN_FORMAT`].",
+            "type": "string"
+          },
+          "format_version": {
+            "description": "1.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "The match's id, its job's.",
+            "type": "string"
+          },
+          "options": {
+            "$ref": "#/$defs/RunOptions"
+          },
+          "original": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunOriginal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "description": "Likewise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "policy": {
+            "$ref": "#/$defs/PolicyFacts",
+            "description": "As the document states it."
+          },
+          "problems": {
+            "$ref": "#/$defs/RunProblems"
+          },
+          "socket": {
+            "$ref": "#/$defs/RunSocket"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SummaryFacts"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The document's, for a run that succeeded only (M6-59)."
+          },
+          "versions": {
+            "$ref": "#/$defs/RunVersions"
+          }
+        },
+        "required": [
+          "format",
+          "format_version",
+          "id",
+          "socket",
+          "candidates",
+          "policy",
+          "options",
+          "original",
+          "versions",
+          "fit_verifier",
+          "summary",
+          "outcome",
+          "exit_code",
+          "complete",
+          "problems",
+          "document"
+        ],
+        "title": "RunDocument",
+        "type": "object"
+      },
       "fitment.socket": {
         "$defs": {
           "AssemblyNote": {
@@ -9995,7 +10786,7 @@
     },
     "summary": "fitment's REST API: jobs over the catalog and the matcher",
     "title": "fitment-server",
-    "version": "1.3",
+    "version": "1.4",
     "x-fitment-error-codes": [
       "bad_request",
       "invalid_parameter",
@@ -14208,6 +14999,874 @@
         "x-fitment-role-fields": []
       }
     },
+    "/v1/matches": {
+      "get": {
+        "operationId": "matches_list",
+        "parameters": [
+          {
+            "description": "only the runs of this socket line, sk_…, or of one revision, sk_…@rN",
+            "in": "query",
+            "name": "socket",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the cursor of the page to start after: the previous page's `next` holds it",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "items per page: 100 by default, at most limits.page_max",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "an admin's: the user whose items to list (AU8)",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.page"
+                }
+              }
+            },
+            "description": "fitment.page of fitment.run"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A page of the caller's runs, fitment.run, by (creation time, id), of one socket line if given (VN3)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": [
+          {
+            "field": "owner",
+            "role": "admin"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "matches_create",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job: the finished job, after Prefer: wait or for a key's replay"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job: the job, queued or running"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference, name_invalid, label_reserved, no_candidates",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference",
+              "name_invalid",
+              "label_reserved",
+              "no_candidates"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found, upload_not_found",
+            "x-fitment-codes": [
+              "not_found",
+              "upload_not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "original_not_stored",
+            "x-fitment-codes": [
+              "original_not_stored"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large, too_large",
+            "x-fitment-codes": [
+              "body_too_large",
+              "too_large"
+            ]
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unsupported_media_type",
+            "x-fitment-codes": [
+              "unsupported_media_type"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "idempotency_key_reused, socket_unreadable, socket_refused, socket_stale, socket_unreviewed",
+            "x-fitment-codes": [
+              "idempotency_key_reused",
+              "socket_unreadable",
+              "socket_refused",
+              "socket_stale",
+              "socket_unreviewed"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited, too_many_jobs, too_many_streams",
+            "x-fitment-codes": [
+              "rate_limited",
+              "too_many_jobs",
+              "too_many_streams"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "blob_damaged, io_error, internal",
+            "x-fitment-codes": [
+              "blob_damaged",
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout, queue_full, shutting_down",
+            "x-fitment-codes": [
+              "request_timeout",
+              "queue_full",
+              "shutting_down"
+            ]
+          },
+          "507": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "quota_exceeded",
+            "x-fitment-codes": [
+              "quota_exceeded"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Runs a match over uploads and components: the job match, fitment match S FILE… --format json (JB2, DC3, DC7)",
+        "x-fitment-mode": "job",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
+    "/v1/matches/{id}": {
+      "get": {
+        "operationId": "matches_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.run"
+                }
+              }
+            },
+            "description": "fitment.run"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "forbidden",
+            "x-fitment-codes": [
+              "forbidden"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "io_error, internal",
+            "x-fitment-codes": [
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A run's record, fitment.run: outcome and summary only for a run that succeeded (DC10, M6-59)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
+    "/v1/matches/{id}/candidates": {
+      "get": {
+        "operationId": "matches_candidates",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the index of the first candidate of the page, in the document's order (DC12)",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "items per page: 100 by default, at most limits.page_max",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.page"
+                }
+              }
+            },
+            "description": "fitment.page of {index, entry}, a view"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found, no_document",
+            "x-fitment-codes": [
+              "not_found",
+              "no_document"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "blob_damaged, io_error, internal",
+            "x-fitment-codes": [
+              "blob_damaged",
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A page of a run's candidates, each the document's own bytes, sliced through its index; never parsed (DC12)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
+    "/v1/matches/{id}/document": {
+      "get": {
+        "operationId": "matches_document",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.match"
+                }
+              }
+            },
+            "description": "fitment.match, exact bytes, with Fitment-Digest"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request",
+            "x-fitment-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found, no_document",
+            "x-fitment-codes": [
+              "not_found",
+              "no_document"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "blob_damaged, io_error, internal",
+            "x-fitment-codes": [
+              "blob_damaged",
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A run's fitment.match, exact bytes, Fitment-Exit-Code 0, 4, 5, or 1 for a run kept incomplete (DC1, DC4)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
     "/v1/openapi.json": {
       "get": {
         "operationId": "openapi",
@@ -14750,6 +16409,226 @@
         "x-fitment-role-fields": []
       }
     },
+    "/v1/sockets/import": {
+      "post": {
+        "operationId": "sockets_import",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job: the finished job, after Prefer: wait or for a key's replay"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.job"
+                }
+              }
+            },
+            "description": "fitment.job: the job, queued or running"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference, name_invalid, label_reserved, no_candidates",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference",
+              "name_invalid",
+              "label_reserved",
+              "no_candidates"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found, upload_not_found",
+            "x-fitment-codes": [
+              "not_found",
+              "upload_not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "original_not_stored",
+            "x-fitment-codes": [
+              "original_not_stored"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large, too_large",
+            "x-fitment-codes": [
+              "body_too_large",
+              "too_large"
+            ]
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unsupported_media_type",
+            "x-fitment-codes": [
+              "unsupported_media_type"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "idempotency_key_reused, socket_unreadable, socket_refused, socket_stale, socket_unreviewed",
+            "x-fitment-codes": [
+              "idempotency_key_reused",
+              "socket_unreadable",
+              "socket_refused",
+              "socket_stale",
+              "socket_unreviewed"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited, too_many_jobs, too_many_streams",
+            "x-fitment-codes": [
+              "rate_limited",
+              "too_many_jobs",
+              "too_many_streams"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "blob_damaged, io_error, internal",
+            "x-fitment-codes": [
+              "blob_damaged",
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout, queue_full, shutting_down",
+            "x-fitment-codes": [
+              "request_timeout",
+              "queue_full",
+              "shutting_down"
+            ]
+          },
+          "507": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "quota_exceeded",
+            "x-fitment-codes": [
+              "quota_exceeded"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Imports a socket file the CLI wrote: the job socket_import, verified against the caller's assembly or marked (RA10, UP6)",
+        "x-fitment-mode": "job",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
+      }
+    },
     "/v1/sockets/{socket}": {
       "delete": {
         "operationId": "sockets_delete",
@@ -15054,6 +16933,243 @@
             "role": "admin"
           }
         ]
+      }
+    },
+    "/v1/sockets/{socket}/review": {
+      "post": {
+        "operationId": "sockets_review",
+        "parameters": [
+          {
+            "description": "sk_ and 20 hex digits, and @rN for one revision (RA4, RA5)",
+            "in": "path",
+            "name": "socket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.socket"
+                }
+              }
+            },
+            "description": "fitment.socket, the current revision's bytes: the decisions changed nothing"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.socket"
+                }
+              }
+            },
+            "description": "fitment.socket, the new revision's exact bytes, Location naming it"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "bad_request, invalid_parameter, invalid_reference",
+            "x-fitment-codes": [
+              "bad_request",
+              "invalid_parameter",
+              "invalid_reference"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unauthenticated",
+            "x-fitment-codes": [
+              "unauthenticated"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_found",
+            "x-fitment-codes": [
+              "not_found"
+            ]
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "not_acceptable",
+            "x-fitment-codes": [
+              "not_acceptable"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "revision_not_current",
+            "x-fitment-codes": [
+              "revision_not_current"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "body_too_large",
+            "x-fitment-codes": [
+              "body_too_large"
+            ]
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "unsupported_media_type",
+            "x-fitment-codes": [
+              "unsupported_media_type"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "review_unknown_requirement, review_unknown_socket, review_differs_between_sockets, review_note_required, review_note_too_long, review_refused_document, socket_stale, socket_unreadable",
+            "x-fitment-codes": [
+              "review_unknown_requirement",
+              "review_unknown_socket",
+              "review_differs_between_sockets",
+              "review_note_required",
+              "review_note_too_long",
+              "review_refused_document",
+              "socket_stale",
+              "socket_unreadable"
+            ]
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "revision_required",
+            "x-fitment-codes": [
+              "revision_required"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "rate_limited",
+            "x-fitment-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "blob_damaged, io_error, internal",
+            "x-fitment-codes": [
+              "blob_damaged",
+              "io_error",
+              "internal"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "request_timeout",
+            "x-fitment-codes": [
+              "request_timeout"
+            ]
+          },
+          "507": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "storage_full",
+            "x-fitment-codes": [
+              "storage_full"
+            ]
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Reviews revision sk_…@rN, the line's current one: fitment review once per decision, a new revision (RA7, OB5)",
+        "x-fitment-mode": "sync",
+        "x-fitment-role": "reader",
+        "x-fitment-role-fields": []
       }
     },
     "/v1/sockets/{socket}/revisions": {

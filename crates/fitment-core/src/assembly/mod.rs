@@ -6,6 +6,7 @@
 //! occurrence under the root is a path of usages plus one rigid transform
 //! from the occurrence's frame to the root's.
 
+mod component;
 mod parts;
 mod step;
 
@@ -18,6 +19,7 @@ use crate::features::{DefinitionRef, FileHeader, Part};
 use crate::gate::Refusal;
 use crate::geom::Rigid;
 
+pub use component::{ComponentError, SelectedComponent};
 pub use parts::{
     BadHex, ComponentSummary, GateResult, PARTS_FORMAT, PARTS_FORMAT_VERSION, PartEntry,
     PartOccurrence, PartsDocument, PartsFormatError, Source,

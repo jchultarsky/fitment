@@ -1,11 +1,11 @@
 200
 cache-control: no-cache
 content-type: application/json
-etag: W/"j4.succeeded"
+etag: W/"j5.succeeded"
 fitment-format: fitment.job/1
 location: /v1/jobs/j_00000000000000000000000009
 preference-applied: wait=30
-repr-digest: sha-256=:bWJ6J5W9CESJbTh4uCprIG/HkALe6kcqXGy9msCUPT4=:
+repr-digest: sha-256=:Dxeqw8qKeMxqjVGkGKDTkOV5GVY2uHlGd7PxBT77Sdo=:
 x-request-id: r_00000000000000000000000008
 
 {
@@ -40,7 +40,12 @@ x-request-id: r_00000000000000000000000008
     "bytes": 18885
   },
   "error": null,
-  "notes": [],
+  "notes": [
+    {
+      "code": "summary",
+      "message": "BLOCK: 1 occurrences, 1 sockets, 4 requirements (4 unreviewed), 0 left out"
+    }
+  ],
   "pinned": false,
   "times": {
     "created": "2026-09-21T14:13:20Z",

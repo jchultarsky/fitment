@@ -70,6 +70,10 @@ pub struct JobRow {
     pub expires_ms: Option<i64>,
     /// Its last persisted event's `seq` (JB8, VN5).
     pub last_seq: i64,
+    /// A match's candidates index (DC12).
+    pub index_sha256: Option<String>,
+    /// A match's run facts, as JSON (DC10).
+    pub run: Option<String>,
 }
 
 /// A persisted event (JB8).
@@ -142,6 +146,33 @@ pub struct End {
     pub document: Option<(String, u64, String)>,
     /// What it made, if known before the transaction.
     pub result: Option<String>,
+    /// JB10: its notes, as a JSON array, each also written as a `note`
+    /// event; `None` leaves the row's (`[]`).
+    pub notes: Option<String>,
+    /// DC12: a match's candidates index, its object's name and length,
+    /// placed by the transaction with the document.
+    pub index: Option<(String, u64)>,
+    /// DC10: a match's run facts, as JSON, for `fitment.run`.
+    pub run: Option<String>,
+}
+
+impl End {
+    /// An end in `state` that keeps nothing: no exit code, document,
+    /// error, notes or result; the key kept.
+    pub fn bare(state: State) -> Self {
+        Self {
+            state,
+            exit: None,
+            outcome: None,
+            error: None,
+            release_key: false,
+            document: None,
+            result: None,
+            notes: None,
+            index: None,
+            run: None,
+        }
+    }
 }
 
 /// What a job's end makes durable with it (JS13).
@@ -194,6 +225,10 @@ pub struct SocketRows<'a> {
     /// The new revision, or `None`: the bytes equal the current verified
     /// revision's, so nothing is written (`unchanged`).
     pub revision: Option<NewRevision<'a>>,
+    /// The owner must still hold the assembly (an extraction, a verified
+    /// import); an unverified import names one the server never read
+    /// (RA10).
+    pub needs_assembly: bool,
 }
 
 /// A socket revision to insert (RA5, OB5).
@@ -274,7 +309,7 @@ const COLUMNS: &str = "j.key, j.id, j.owner, u.id, j.kind, j.state, CAST(j.reque
     j.deadline_ms, j.cancel_requested, j.exit, j.outcome, j.error_code, j.error_details,
     j.result_sha256, (SELECT o.bytes FROM object o WHERE o.sha256 = j.result_sha256),
     j.result_format, j.result, j.notes, j.pinned, j.expires_ms,
-    (SELECT coalesce(max(e.seq), 0) FROM job_event e WHERE e.job = j.key)";
+    (SELECT coalesce(max(e.seq), 0) FROM job_event e WHERE e.job = j.key), j.index_sha256, j.run";
 
 fn job_row(row: &Row<'_>) -> rusqlite::Result<JobRow> {
     let kind: String = row.get(4)?;
@@ -312,6 +347,8 @@ fn job_row(row: &Row<'_>) -> rusqlite::Result<JobRow> {
         pinned: row.get::<_, i64>(24)? != 0,
         expires_ms: row.get(25)?,
         last_seq: row.get(26)?,
+        index_sha256: row.get(27)?,
+        run: row.get(28)?,
     })
 }
 
@@ -489,7 +526,7 @@ impl Db {
                      JOIN user u ON u.key = j.owner WHERE j.owner = ?1 AND j.idempotency_key = ?2"
                 ),
                 params![owner, key],
-                |r| Ok((job_row(r)?, r.get(27)?)),
+                |r| Ok((job_row(r)?, r.get(29)?)),
             )
             .optional()
         })
@@ -637,13 +674,8 @@ impl Db {
         match row.state {
             State::Queued => {
                 let ending = End {
-                    state: State::Cancelled,
-                    exit: None,
-                    outcome: None,
-                    error: None,
                     release_key: true,
-                    document: None,
-                    result: None,
+                    ..End::bare(State::Cancelled)
                 };
                 let events = write_end(&tx, &row, &ending, now_ms, retention_ms, end)?;
                 let row = by_key(&tx, key)?;
@@ -757,8 +789,11 @@ impl Db {
                 let mut ending = ending.clone();
                 // The object before the rows that name it (OB5); a rename
                 // a rollback leaves behind is an orphan the sweep unlinks.
-                if let Some((sha256, bytes, _)) = &ending.document {
+                if ending.document.is_some() || ending.index.is_some() {
                     place().map_err(StoreError::Place)?;
+                }
+                let objects = ending.document.iter().map(|(s, b, _)| (s, b));
+                for (sha256, bytes) in objects.chain(ending.index.iter().map(|(s, b)| (s, b))) {
                     tx.execute(
                         "INSERT INTO object (sha256, bytes, added_ms) VALUES (?1, ?2, ?3)
                          ON CONFLICT (sha256) DO NOTHING",
@@ -855,7 +890,7 @@ impl Db {
             ))?;
             statement
                 .query_map([], |r| {
-                    let bytes: i64 = r.get(27)?;
+                    let bytes: i64 = r.get(29)?;
                     Ok((job_row(r)?, u64::try_from(bytes).unwrap_or(0)))
                 })?
                 .collect()
@@ -913,6 +948,57 @@ impl Db {
         )?;
         tx.commit()?;
         Ok(deleted)
+    }
+
+    /// A page of `owner`'s match jobs by (creation time, id) (VN3, M6-55),
+    /// after `after`, of the line `socket` (and its revision `n`) if given:
+    /// at most `limit`.
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn matches_page(
+        &self,
+        owner: i64,
+        socket: Option<(&str, Option<i64>)>,
+        after: Option<(i64, &str)>,
+        limit: u32,
+    ) -> Result<Vec<JobRow>, DbError> {
+        let (after_ms, after_id) = after.unwrap_or((i64::MIN, ""));
+        let (line, n) = socket.map_or((None, None), |(l, n)| (Some(l), n));
+        self.read(|conn| {
+            let mut statement = conn.prepare(&format!(
+                "SELECT {COLUMNS} FROM job j JOIN user u ON u.key = j.owner
+                 WHERE j.owner = ?1 AND j.kind = 'match'
+                   AND (?2 IS NULL OR EXISTS (
+                         SELECT 1 FROM job_cites c JOIN socket_revision r ON r.key = c.revision
+                         WHERE c.job = j.key AND r.line_id = ?2 AND (?3 IS NULL OR r.n = ?3)))
+                   AND (j.created_ms > ?4 OR (j.created_ms = ?4 AND j.id > ?5))
+                 ORDER BY j.created_ms, j.id LIMIT ?6"
+            ))?;
+            statement
+                .query_map(params![owner, line, n, after_ms, after_id, limit], job_row)?
+                .collect()
+        })
+    }
+
+    /// The socket revision job `key` cites (OB4's `job_cites`), if it
+    /// cites one: a match's, as `fitment.run` states it (DC10).
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn cited_revision(&self, key: i64) -> Result<Option<(i64, String, i64)>, DbError> {
+        self.read(|conn| {
+            conn.query_row(
+                "SELECT r.owner, r.line_id, r.n FROM job_cites c
+                 JOIN socket_revision r ON r.key = c.revision WHERE c.job = ?1
+                 ORDER BY r.key LIMIT 1",
+                [key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+        })
     }
 
     /// The objects job `key` holds as its inputs (OB4), in order.
@@ -986,13 +1072,10 @@ fn object_bytes(tx: &Transaction<'_>, sha256: &str) -> rusqlite::Result<u64> {
 
 fn succeeded(result: Option<String>, sha256: String, bytes: u64, kind: Kind) -> End {
     End {
-        state: State::Succeeded,
         exit: Some(0),
-        outcome: None,
-        error: None,
-        release_key: false,
         document: Some((sha256, bytes, kind.document_format().to_owned())),
         result,
+        ..End::bare(State::Succeeded)
     }
 }
 
@@ -1014,7 +1097,8 @@ fn write_end(
     tx.execute(
         "UPDATE job SET state = ?2, exit = ?3, outcome = ?4, error_code = ?5, error_details = ?6,
                         result_sha256 = ?7, result_format = ?8, result = ?9, finished_ms = ?10,
-                        expires_ms = ?11
+                        expires_ms = ?11, index_sha256 = ?12, run = coalesce(?13, run),
+                        notes = coalesce(?14, notes)
          WHERE key = ?1",
         params![
             row.key,
@@ -1027,9 +1111,17 @@ fn write_end(
             format,
             ending.result,
             now_ms,
-            now_ms.saturating_add(retention_ms)
+            now_ms.saturating_add(retention_ms),
+            ending.index.as_ref().map(|(s, _)| s.as_str()),
+            ending.run,
+            ending.notes
         ],
     )?;
+    // JB8, JB10: each note is a persisted event, before the end's.
+    let mut events = Vec::new();
+    for note in ending.notes.as_deref().map(notes_of).unwrap_or_default() {
+        events.push(append(tx, row.key, now_ms, "note", &note)?);
+    }
     if ending.release_key {
         tx.execute(
             "UPDATE job SET released_key = idempotency_key, idempotency_key = NULL
@@ -1051,5 +1143,13 @@ fn write_end(
     let ended = by_key(tx, row.key)?;
     let data = end(&ended);
     let last = append(tx, row.key, now_ms, "end", &data)?;
-    Ok(vec![state, last])
+    events.extend([state, last]);
+    Ok(events)
+}
+
+/// The notes of a JSON array, each compact, in order (JB10).
+fn notes_of(text: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<serde_json::Value>>(text)
+        .map(|notes| notes.iter().map(serde_json::Value::to_string).collect())
+        .unwrap_or_default()
 }

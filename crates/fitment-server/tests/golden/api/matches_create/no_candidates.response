@@ -1,0 +1,21 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:UOLpGT8xY141hdB0g7Lbajd/ftUKyJoaQhgvv9jNzek=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/no_candidates",
+  "title": "The match names no candidate",
+  "status": 400,
+  "detail": "a match names files or components to judge",
+  "code": "no_candidates",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000008"
+}

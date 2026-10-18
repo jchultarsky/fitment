@@ -1,0 +1,24 @@
+422
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:p4CCrlj4BmzpTf+SNxHeJ+O+/EZL6GodUp4AS3n1+Q0=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/review_refused_document",
+  "title": "A refused socket document cannot be reviewed",
+  "status": 422,
+  "detail": "a refused socket document has nothing to review",
+  "code": "review_refused_document",
+  "class": "refused",
+  "exit_code": 3,
+  "retryable": false,
+  "details": {
+    "decision": 0,
+    "requirement": "bore:hole-427"
+  },
+  "request_id": "r_00000000000000000000000008"
+}

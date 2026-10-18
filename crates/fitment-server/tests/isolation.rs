@@ -345,3 +345,252 @@ async fn branches_take_like_time(server: &TestServer, ada: &str, bob: &str) {
         "held {held:?} against new {fresh:?}"
     );
 }
+
+/// What one user made for VT25: an assembly, its socket line and revision,
+/// an upload, a finished match over it, a queued job.
+struct Made {
+    token: String,
+    id: String,
+    assembly: String,
+    line: String,
+    revision: String,
+    upload: String,
+    matched: String,
+    queued: String,
+}
+
+/// `token`'s user registers s02, extracts BLOCK, uploads the committed
+/// block and matches it; a second match is left queued (the dispatcher
+/// held by the caller).
+async fn make(server: &TestServer, token: &str, id: &str) -> Made {
+    let bytes = support::assembly("s02_cbore.stp");
+    let assembly = fitment_core::sha256_hex(&bytes);
+    assert!(
+        server
+            .send(put_upload(&bytes).bearer(token))
+            .await
+            .status
+            .is_success()
+    );
+    let body = serde_json::json!({ "upload": format!("sha256:{assembly}") });
+    server
+        .send(support::waiting("/v1/assemblies", &body).bearer(token))
+        .await;
+    let body = serde_json::json!({ "assembly": format!("sha256:{assembly}"), "part": "BLOCK" });
+    let job = server
+        .send(support::waiting("/v1/sockets", &body).bearer(token))
+        .await
+        .json();
+    let revision = job["result"]["href"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("/v1/sockets/")
+        .to_owned();
+    let line = revision.split('@').next().unwrap().to_owned();
+    let candidate = support::candidate("m_block02.stp");
+    let upload = fitment_core::sha256_hex(&candidate);
+    assert!(
+        server
+            .send(put_upload(&candidate).bearer(token))
+            .await
+            .status
+            .is_success()
+    );
+    let body = serde_json::json!({ "socket": revision, "candidates": { "files": [
+        { "upload": format!("sha256:{upload}"), "label": "m_block02.stp" } ] } });
+    let matched = server
+        .send(support::waiting("/v1/matches", &body).bearer(token))
+        .await
+        .json();
+    assert_eq!(matched["state"], "succeeded", "{matched}");
+    Made {
+        token: token.to_owned(),
+        id: id.to_owned(),
+        assembly,
+        line,
+        revision,
+        upload,
+        matched: matched["id"].as_str().unwrap().to_owned(),
+        queued: String::new(),
+    }
+}
+
+/// VT25 in full (AU8, UP3, RA4): a non-owner cannot read, list, cancel,
+/// download or delete another's job, match, upload, assembly or socket
+/// line, and gets the `404` of an id that does not exist; two users with
+/// the same assembly hold two lines of one `sk_` id.
+#[tokio::test]
+async fn a_non_owner_meets_404_everywhere() {
+    let server = TestServer::fresh();
+    let ada = seed_user(server.server(), "ada", Role::Reader, None);
+    let bob = seed_user(server.server(), "bob", Role::Reader, None);
+    let (_, ada_token) = seed_token(server.server(), &ada, Role::Reader, 30);
+    let (_, bob_token) = seed_token(server.server(), &bob, Role::Reader, 30);
+    let mut ada_made = make(&server, &ada_token, &ada.id).await;
+    let bob_made = make(&server, &bob_token, &bob.id).await;
+    assert_eq!(
+        ada_made.line, bob_made.line,
+        "one id from the same data (RA4)"
+    );
+    server.server().hold_jobs();
+    let body = serde_json::json!({ "upload": format!("sha256:{}", ada_made.upload) });
+    let queued = server
+        .send(Call::json(Method::POST, "/v1/features", &body).bearer(&ada_token))
+        .await
+        .json();
+    ada_made.queued = queued["id"].as_str().unwrap().to_owned();
+    let a = &ada_made;
+    let reads = [
+        (Method::GET, format!("/v1/jobs/{}", a.matched)),
+        (Method::GET, format!("/v1/jobs/{}/document", a.matched)),
+        (Method::GET, format!("/v1/jobs/{}/events", a.matched)),
+        (Method::GET, format!("/v1/matches/{}", a.matched)),
+        (Method::GET, format!("/v1/matches/{}/document", a.matched)),
+        (Method::GET, format!("/v1/matches/{}/candidates", a.matched)),
+        (Method::POST, format!("/v1/jobs/{}/cancel", a.queued)),
+        (Method::GET, format!("/v1/uploads/sha256:{}", a.upload)),
+        (
+            Method::HEAD,
+            format!(
+                "/v1/uploads/sha256:{}",
+                fitment_core::sha256_hex(b"only ada's")
+            ),
+        ),
+        (
+            Method::GET,
+            format!(
+                "/v1/assemblies/sha256:{}/step",
+                fitment_core::sha256_hex(b"only ada's")
+            ),
+        ),
+        (Method::GET, format!("/v1/sockets/{}@r9", a.line)),
+    ];
+    assert!(
+        server
+            .send(put_upload(b"only ada's").bearer(&ada_token))
+            .await
+            .status
+            .is_success()
+    );
+    let charlie = seed_user(server.server(), "charlie", Role::Reader, None);
+    let (_, charlie_token) = seed_token(server.server(), &charlie, Role::Reader, 30);
+    for (method, path) in &reads {
+        let theirs = server
+            .send(Call::new(method.clone(), path).bearer(&charlie_token))
+            .await;
+        assert_eq!(theirs.status, 404, "{method} {path}");
+        if *method != Method::HEAD {
+            assert_eq!(
+                theirs.code(),
+                "not_found",
+                "{path}: an id that does not exist's answer"
+            );
+        }
+    }
+    let charlie_lists = [
+        "/v1/jobs",
+        "/v1/matches",
+        "/v1/uploads",
+        "/v1/assemblies",
+        "/v1/sockets",
+    ];
+    for path in charlie_lists {
+        let listed = server
+            .send(Call::get(path).bearer(&charlie_token))
+            .await
+            .json();
+        assert!(listed["items"].as_array().unwrap().is_empty(), "{path}");
+    }
+    let deletes = [
+        format!("/v1/sockets/{}", a.line),
+        format!("/v1/assemblies/sha256:{}", a.assembly),
+        format!("/v1/uploads/sha256:{}", a.upload),
+    ];
+    for path in &deletes {
+        let reply = server
+            .send(Call::new(Method::DELETE, path).bearer(&charlie_token))
+            .await;
+        assert_eq!(reply.status, 404, "{path}");
+    }
+    let _ = bob_made.token;
+}
+
+/// VT25, AU8: an admin reads another user's runs, lines, revisions and
+/// uploads with `?owner=` on `GET` and `HEAD` only, and names none of them
+/// in a job (`?owner=` on a write is `400 invalid_parameter`; another's
+/// socket is `404`); a user names neither another's upload (`404
+/// upload_not_found`) nor an assembly they did not register (`404
+/// not_found`).
+#[tokio::test]
+async fn an_admin_reads_another_users_work_and_names_none_of_it() {
+    let server = TestServer::fresh();
+    let ada = seed_user(server.server(), "ada", Role::Reader, None);
+    let root = seed_user(server.server(), "root", Role::Admin, None);
+    let charlie = seed_user(server.server(), "charlie", Role::Reader, None);
+    let (_, ada_token) = seed_token(server.server(), &ada, Role::Reader, 30);
+    let (_, admin) = seed_token(server.server(), &root, Role::Admin, 30);
+    let (_, charlie_token) = seed_token(server.server(), &charlie, Role::Reader, 30);
+    let a = make(&server, &ada_token, &ada.id).await;
+    assert!(
+        server
+            .send(put_upload(b"only ada's").bearer(&ada_token))
+            .await
+            .status
+            .is_success()
+    );
+    // An admin reads ada's with ?owner= on GET and HEAD.
+    for path in [
+        format!("/v1/matches?owner={}", a.id),
+        format!("/v1/sockets?owner={}", a.id),
+        format!("/v1/sockets/{}?owner={}", a.revision, a.id),
+        format!("/v1/uploads/sha256:{}?owner={}", a.upload, a.id),
+    ] {
+        let reply = server.send(Call::get(&path).bearer(&admin)).await;
+        assert_eq!(reply.status, 200, "{path}");
+    }
+    let head = server
+        .send(
+            Call::new(
+                Method::HEAD,
+                &format!("/v1/uploads/sha256:{}?owner={}", a.upload, a.id),
+            )
+            .bearer(&admin),
+        )
+        .await;
+    assert_eq!(head.status, 200);
+    // ... and cannot name them in a job.
+    let body = serde_json::json!({ "socket": a.revision, "candidates": { "files": [
+        { "upload": format!("sha256:{}", a.upload), "label": "x.stp" } ] } });
+    let owner = server
+        .send(
+            Call::json(Method::POST, &format!("/v1/matches?owner={}", a.id), &body).bearer(&admin),
+        )
+        .await;
+    assert_eq!(
+        (owner.status.as_u16(), owner.code()),
+        (400, "invalid_parameter".to_owned())
+    );
+    let named = server
+        .send(support::waiting("/v1/matches", &body).bearer(&admin))
+        .await;
+    assert_eq!(
+        (named.status.as_u16(), named.code()),
+        (404, "not_found".to_owned()),
+        "ada's socket is not the admin's"
+    );
+    let charlie_made = make(&server, &charlie_token, &charlie.id).await;
+    let charlie_sock = charlie_made.revision;
+    let body = serde_json::json!({ "socket": charlie_sock, "candidates": { "files": [
+        { "upload": format!("sha256:{}", fitment_core::sha256_hex(b"only ada's")), "label": "x.stp" } ] } });
+    let theirs = server
+        .send(support::waiting("/v1/matches", &body).bearer(&charlie_token))
+        .await;
+    assert_eq!(theirs.code(), "upload_not_found");
+    let body = serde_json::json!({ "socket": charlie_sock, "candidates": { "components": [
+        { "assembly": format!("sha256:{}", fitment_core::sha256_hex(&support::assembly("s01_bolted.stp"))), "part": "BRACKET" } ] } });
+    let theirs = server
+        .send(support::waiting("/v1/matches", &body).bearer(&charlie_token))
+        .await;
+    assert_eq!(theirs.code(), "not_found");
+    let _ = (a.token, charlie_made.token);
+}

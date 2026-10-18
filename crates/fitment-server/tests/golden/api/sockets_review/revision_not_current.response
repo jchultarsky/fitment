@@ -1,0 +1,23 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:CWjsRNKvZp3vBSLxmXtHdFiP97AFlQ7hDQsTvmle4YU=:
+x-request-id: r_00000000000000000000000009
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/revision_not_current",
+  "title": "The revision is not the current one",
+  "status": 409,
+  "detail": "the revision is not the line's current one: review the current revision",
+  "code": "revision_not_current",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "current": "sk_4c08cde1bddb3df26f3b@r2"
+  },
+  "request_id": "r_00000000000000000000000009"
+}

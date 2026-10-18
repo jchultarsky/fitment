@@ -9,9 +9,8 @@ use std::process::ExitCode;
 
 use clap::ValueEnum;
 use fitment_core::{
-    CandidateResult, CandidateSource, Clearance, ComponentRead, FailureCode, Grip, MatchDocument,
-    MatchOptions, MatchPolicy, Matcher, NoFitVerifier, Outcome, RefusalCode, SocketDocument,
-    SocketRefused, TolerancePolicy, read_assembly, sha256_hex,
+    CandidateResult, Clearance, Grip, MatchDocument, MatchOptions, MatchPolicy, Matcher,
+    NoFitVerifier, SelectedComponent, SocketDocument, SocketRefused, TolerancePolicy, sha256_hex,
 };
 use serde_json::Value;
 
@@ -102,8 +101,6 @@ enum ClearanceArg {
 /// The exit codes of VD14.
 const ERROR: u8 = 1;
 const USAGE: u8 = 2;
-const INTERFACE_MATCH: u8 = 4;
-const ALL_REJECTED: u8 = 5;
 
 pub fn run(args: &Args) -> ExitCode {
     // Usage first (section 7.12): the arguments alone decide these.
@@ -186,14 +183,11 @@ pub fn run(args: &Args) -> ExitCode {
             return ExitCode::from(ERROR);
         }
     }
+    // VD14, through core's mapping (CO2), as the server's jobs take it.
     let code = if failed {
         ExitCode::from(ERROR)
     } else {
-        match document_out.outcome() {
-            Outcome::Match => ExitCode::SUCCESS,
-            Outcome::InterfaceMatch => ExitCode::from(INTERFACE_MATCH),
-            _ => ExitCode::from(ALL_REJECTED),
-        }
+        ExitCode::from(document_out.outcome().exit_code())
     };
     let stdout = match (args.format, &args.output) {
         (Format::Json, Some(_)) => return code,
@@ -603,20 +597,13 @@ fn reported(label: &str, result: &CandidateResult) -> bool {
             printable(&first.message)
         ));
     }
-    let internal = result
-        .refusals
-        .iter()
-        .any(|r| r.code == RefusalCode::Internal);
-    // SL1: the shortlist never drops what verification passes.
-    let unsound = result.sockets.iter().any(|s| {
-        s.stage == fitment_core::Stage::Shortlist && s.checks.iter().all(|(_, c)| c.passed())
-    });
-    if unsound {
+    // SL1: the shortlist never drops what verification passes (CO2).
+    if result.shortlist_unsound() {
         note(&format!(
             "fitment: {label}: the shortlist dropped a candidate verification passes: this is a fitment bug"
         ));
     }
-    internal || unsound
+    result.is_fitment_bug()
 }
 
 /// VD15: the target read from its own assembly, judged as a candidate; it
@@ -641,76 +628,37 @@ fn judge_original(
         ));
         return Err(ExitCode::from(USAGE));
     }
-    let Some(instance) = document.extracted().map(|e| e.target.definition.instance) else {
-        return Ok(None);
-    };
-    let read = read_assembly(&bytes);
-    let part = read.listing().and_then(|listing| {
-        listing.definitions().iter().find_map(|d| match &d.read {
-            Some(ComponentRead::Accepted(part)) if d.definition.instance == instance => {
-                Some((**part).clone())
-            }
-            _ => None,
-        })
-    });
-    let Some(part) = part else {
+    // CO5: the target read and chosen by core, as the server reads it.
+    let Ok(original) = SelectedComponent::target(&bytes, document) else {
         note(&format!("fitment: {shown}: the original cannot be read"));
         return Ok(None);
     };
-    let result = matcher.judge_part(&part, CandidateSource::component(sha, instance));
+    let result = matcher.judge_component(&original, original.source());
     let bug = reported("original", &result) || original_bug(&result);
     Ok(Some((result, bug)))
 }
 
-/// VD15's test of the original's result: true, with a note, if it fails a
-/// requirement VD5 and VD6 do not explain, or the shortlist drops it
-/// where every requirement verification ran on passes or fails as
+/// VD15's test of the original's result (CO2): true, with a note, if it
+/// fails a requirement VD5 and VD6 do not explain, or the shortlist drops
+/// it where every requirement verification ran on passes or fails as
 /// expected (SL1). AL11's bounds are noted and excuse their socket.
 fn original_bug(result: &CandidateResult) -> bool {
-    let bug = |at: &str| {
+    let check = result.original_check();
+    for at in &check.exhausted {
+        // AL11's bounds are no bug: the run names them (VR21's s55).
         note(&format!(
-            "fitment: the original fails its own socket at {at}: this is a fitment bug"
+            "fitment: the original exhausts the search at {}: not checked",
+            printable(at)
         ));
-        true
-    };
-    for socket in &result.sockets {
-        let mut excused = false;
-        for (id, check) in &socket.checks {
-            if check.passed() {
-                continue;
-            }
-            let codes: Vec<FailureCode> =
-                check.evidence().failures().iter().map(|f| f.code).collect();
-            let at = format!("{}/{}", socket.socket, printable(id.as_str()));
-            let within = |allowed: &dyn Fn(&FailureCode) -> bool| {
-                !codes.is_empty() && codes.iter().all(allowed)
-            };
-            if within(&|c| {
-                matches!(
-                    c,
-                    FailureCode::AlignmentExhausted | FailureCode::CoverageExhausted
-                )
-            }) {
-                // AL11's bounds are no bug: the run names them (VR21's s55).
-                note(&format!(
-                    "fitment: the original exhausts the search at {at}: not checked"
-                ));
-                excused = true;
-            } else if !within(&|c| {
-                matches!(
-                    c,
-                    FailureCode::Unverifiable | FailureCode::FloorAboveTolerance
-                )
-            }) {
-                // A failure with no code is not one VD5 or VD6 explains.
-                return bug(&at);
-            }
-        }
-        if socket.stage == fitment_core::Stage::Shortlist && !excused {
-            return bug(&format!("{} (the shortlist dropped it)", socket.socket));
-        }
     }
-    false
+    let Some(at) = check.fails_at else {
+        return false;
+    };
+    note(&format!(
+        "fitment: the original fails its own socket at {}: this is a fitment bug",
+        printable(&at)
+    ));
+    true
 }
 
 /// MF10's stderr: the summary; a warning per socket every candidate fails

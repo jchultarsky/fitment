@@ -1,0 +1,6 @@
+POST /v1/sockets/import
+authorization: Bearer <ada's reader token>
+content-type: application/json
+prefer: wait=30
+
+{"upload": "sha256:8bc856fdc30c980297c7121cf8def6f7b2a387f15874b2cef8826ba950641d38"}

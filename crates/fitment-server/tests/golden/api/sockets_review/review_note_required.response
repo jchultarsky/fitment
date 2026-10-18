@@ -1,0 +1,24 @@
+422
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:u0iS1KZlk1Klh4Uq+tDMEDLwG4lDVOhT0PTTYAIe3Os=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/review_note_required",
+  "title": "A removal needs a note",
+  "status": 422,
+  "detail": "removing a requirement needs a note",
+  "code": "review_note_required",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "decision": 0,
+    "requirement": "bore:hole-427"
+  },
+  "request_id": "r_00000000000000000000000008"
+}

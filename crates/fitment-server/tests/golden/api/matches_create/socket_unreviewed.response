@@ -1,0 +1,29 @@
+422
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:pHeKhkS/GYInzm0GiPG85Ub9Xd5dfrEUfHtkVR6TAYQ=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/socket_unreviewed",
+  "title": "The socket has unreviewed requirements",
+  "status": 422,
+  "detail": "4 requirements are unreviewed, under require_reviewed: review them (POST /v1/sockets/{socket}/review)",
+  "code": "socket_unreviewed",
+  "class": "refused",
+  "exit_code": 3,
+  "retryable": false,
+  "details": {
+    "count": 4,
+    "first": [
+      "socket-1/seat:plane-387",
+      "socket-1/grip:plane-387+plane-477",
+      "socket-1/bore:hole-427",
+      "socket-1/seat:plane-477"
+    ]
+  },
+  "request_id": "r_00000000000000000000000008"
+}

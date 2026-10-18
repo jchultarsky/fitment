@@ -1472,3 +1472,747 @@ async fn metrics_count_requests_and_jobs() {
     assert!(text.contains("fitment_catalog_generation "));
     assert!(!text.contains(&sha), "no raw path in a label");
 }
+
+/// The committed BRACKET candidates of s01, uploaded: their `files`.
+async fn bracket_files(server: &TestServer) -> Vec<Value> {
+    let mut files = Vec::new();
+    for name in &support::candidates_by_socket()[&("s01_bolted".to_owned(), "BRACKET".to_owned())] {
+        let sha = server.upload(&support::candidate(name)).await;
+        files.push(json!({ "upload": format!("sha256:{sha}"), "label": name }));
+    }
+    files
+}
+
+/// Makes the stored object `sha256` writable and flips one byte at `at`.
+fn damage(server: &TestServer, sha256: &str, at: usize) {
+    let path = server
+        .dirs
+        .state
+        .join(format!("objects/sha256/{}/{sha256}", &sha256[..2]));
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&path, perms).unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[at] ^= 1;
+    std::fs::write(&path, bytes).unwrap();
+}
+
+/// VT46, DC12, SN5: a run's candidates paged two at a time are its
+/// document's own `candidates` elements, in order, each the same JSON as
+/// the document's and every page stating the document's digest, `view`,
+/// `complete` and `exit_code`; paging scans no document (a count the
+/// server keeps); a byte flipped inside one candidate's bytes makes that
+/// candidate's page `500 blob_damaged` while the others still serve.
+#[tokio::test]
+async fn candidate_pages_are_the_documents_bytes() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let files = bracket_files(&server).await;
+    let job = server
+        .run_match(&json!({ "socket": socket, "candidates": { "files": files } }))
+        .await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    let id = job["id"].as_str().unwrap();
+    let document = server.get(&format!("/v1/matches/{id}/document")).await;
+    let doc: Value = serde_json::from_slice(&document.body).unwrap();
+    let candidates = doc["candidates"].as_array().unwrap();
+    assert!(candidates.len() >= 5);
+    let scanned = server.server().seams().jobs.documents_indexed();
+    let mut next = Some(format!("/v1/matches/{id}/candidates?limit=2"));
+    let mut seen = Vec::new();
+    while let Some(url) = next {
+        let page = server.get(&url).await;
+        assert_eq!(page.status, 200);
+        let value = page.json();
+        assert_eq!(
+            (value["view"].as_bool(), value["complete"].as_bool()),
+            (Some(true), Some(true))
+        );
+        assert_eq!(value["digest"], doc["digest"]);
+        assert_eq!(value["exit_code"], job["exit_code"]);
+        for item in value["items"].as_array().unwrap() {
+            assert_eq!(item["index"].as_u64().unwrap(), seen.len() as u64);
+            seen.push(item["entry"].clone());
+        }
+        next = value["next"].as_str().map(str::to_owned);
+    }
+    assert_eq!(
+        &seen, candidates,
+        "the pages hold the document's candidates in order"
+    );
+    assert_eq!(
+        server.server().seams().jobs.documents_indexed(),
+        scanned,
+        "no page scans"
+    );
+    let ranges = fitment_server::runs::index(&document.body).unwrap();
+    for (range, element) in ranges.iter().zip(candidates) {
+        let at = |n: u64| usize::try_from(n).unwrap();
+        let slice = &document.body[at(range.start)..at(range.end)];
+        let read: Value = serde_json::from_slice(slice).unwrap();
+        assert_eq!(&read, element, "each range is one whole element");
+    }
+    let sha = document
+        .header("etag")
+        .unwrap()
+        .trim_matches('"')
+        .trim_start_matches("sha256:")
+        .to_owned();
+    damage(
+        &server,
+        &sha,
+        usize::try_from(ranges[1].start).unwrap() + 10,
+    );
+    let broken = server
+        .get(&format!("/v1/matches/{id}/candidates?offset=1&limit=1"))
+        .await;
+    assert_eq!(
+        (broken.status.as_u16(), broken.code()),
+        (500, "blob_damaged".to_owned())
+    );
+    let whole = server
+        .get(&format!("/v1/matches/{id}/candidates?offset=0&limit=1"))
+        .await;
+    assert_eq!(whole.status, 200, "the other candidates still serve");
+}
+
+/// The job `matched`, over `candidate` against `file`, is `fitment match
+/// S.json m_block02.stp --format json`'s: exit code and bytes.
+async fn the_clis_match(server: &TestServer, file: &[u8], candidate: &[u8], matched: &Value) {
+    let dir = server.dirs.root.join("cli");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("S.json"), file).unwrap();
+    std::fs::write(dir.join("m_block02.stp"), candidate).unwrap();
+    let (code, stdout, _) = support::cli(
+        &dir,
+        &["match", "S.json", "m_block02.stp", "--format", "json"],
+    );
+    assert_eq!(matched["exit_code"].as_i64(), code.map(i64::from));
+    assert_eq!(
+        server.document(matched).await.body,
+        stdout,
+        "the CLI's document either way"
+    );
+}
+
+/// `file`, a socket document, with one value edited and its digest
+/// recomputed: a forgery no extraction reproduces.
+fn forged(file: &[u8]) -> Vec<u8> {
+    let mut edited: Value = serde_json::from_slice(file).unwrap();
+    edited["extracted"]["sockets"][0]["requirements"][0]["floor_mm"] = json!(0.5);
+    let mut stated = edited.clone();
+    for key in ["digest", "review", "stale_reviews"] {
+        stated.as_object_mut().unwrap().remove(key);
+    }
+    edited["digest"] = json!(format!("sha256:{}", sha_of(stated.to_string().as_bytes())));
+    serde_json::to_vec_pretty(&edited).unwrap()
+}
+
+/// VT47, RA10, RA5, UP6: an import of the CLI's socket file with its
+/// assembly registered is a verified revision; the file with one value
+/// edited and its digest recomputed ends `refused`, exit 3,
+/// `socket_not_reproduced`, no revision written; without the assembly the
+/// revision is `verified: false`, which its listing and `fitment.run`
+/// state, and a match on it carries the note `unverified_socket` while its
+/// document is the CLI's for the same file; registering the assembly and
+/// importing again makes a new, verified revision of the same bytes.
+#[tokio::test]
+async fn imports_are_verified_or_marked() {
+    let server = TestServer::fresh();
+    let file = support::cli_golden("socket", "s02_cbore--BLOCK.json");
+    let upload = server.upload(&file).await;
+    let import = |sha: &str| {
+        waiting(
+            "/v1/sockets/import",
+            &json!({ "upload": format!("sha256:{sha}") }),
+        )
+    };
+    // Without the assembly: marked.
+    let job = server.send(import(&upload)).await.json();
+    assert_eq!(job["state"], "succeeded", "{job}");
+    let href = job["result"]["href"].as_str().unwrap().to_owned();
+    let line = href
+        .trim_start_matches("/v1/sockets/")
+        .split('@')
+        .next()
+        .unwrap()
+        .to_owned();
+    let revisions = server
+        .get(&format!("/v1/sockets/{line}/revisions"))
+        .await
+        .json();
+    assert_eq!(revisions["items"][0]["how"], "import");
+    assert_eq!(revisions["items"][0]["verified"], false);
+    assert_eq!(server.get(&href).await.body, file, "the imported bytes");
+    let candidate = support::candidate("m_block02.stp");
+    let sha = server.upload(&candidate).await;
+    let body = json!({ "socket": format!("{line}@r1"), "candidates": { "files": [
+        { "upload": format!("sha256:{sha}"), "label": "m_block02.stp" } ] } });
+    let matched = server.run_match(&body).await;
+    let codes: Vec<&str> = matched["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes.last(), Some(&"unverified_socket"));
+    let run = server
+        .get(&format!("/v1/matches/{}", matched["id"].as_str().unwrap()))
+        .await
+        .json();
+    assert_eq!(
+        (
+            run["socket"]["how"].as_str(),
+            run["socket"]["verified"].as_bool()
+        ),
+        (Some("import"), Some(false))
+    );
+    the_clis_match(&server, &file, &candidate, &matched).await;
+    // With the assembly registered: verified, a new revision of the same bytes.
+    server.register(&support::assembly(S02), S02).await;
+    let again = server.send(import(&upload)).await.json();
+    assert_eq!(
+        again["result"]["href"],
+        format!("/v1/sockets/{line}@r2"),
+        "{again}"
+    );
+    let revisions = server
+        .get(&format!("/v1/sockets/{line}/revisions"))
+        .await
+        .json();
+    assert_eq!(revisions["items"][1]["verified"], true);
+    assert_eq!(
+        revisions["items"][1]["sha256"],
+        revisions["items"][0]["sha256"]
+    );
+    let unchanged = server.send(import(&upload)).await.json();
+    assert_eq!(unchanged["outcome"], "unchanged");
+    // A value edited, the digest recomputed: not reproduced, nothing written.
+    let forged = forged(&file);
+    let forged_sha = server.upload(&forged).await;
+    let refused = server.send(import(&forged_sha)).await.json();
+    assert_eq!(
+        (
+            refused["state"].as_str(),
+            refused["exit_code"].as_u64(),
+            refused["error"]["code"].as_str()
+        ),
+        (Some("refused"), Some(3), Some("socket_not_reproduced")),
+        "{refused}"
+    );
+    assert!(refused["outcome"].is_null() && refused["result"].is_null());
+    let revisions = server
+        .get(&format!("/v1/sockets/{line}/revisions"))
+        .await
+        .json();
+    assert_eq!(
+        revisions["items"].as_array().unwrap().len(),
+        2,
+        "no revision written"
+    );
+}
+
+/// VT50, CO5: a component chosen in an assembly the gate refuses ends the
+/// job `refused`, exit 3, `component_refused`, with its refusals and no
+/// document; a selection naming no part, `refused`, exit 2, its own code.
+#[tokio::test]
+async fn a_component_of_a_refused_assembly_is_refused() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let junk = b"this assembly is no STEP file\n";
+    let registered = server.register(junk, "junk.stp").await;
+    assert_eq!(
+        registered["state"], "refused",
+        "a refused assembly is registered too (RA3)"
+    );
+    let body = json!({ "socket": socket, "candidates": { "components": [
+        { "assembly": format!("sha256:{}", sha_of(junk)), "part": "BRACKET" } ] } });
+    let job = server.run_match(&body).await;
+    assert_eq!(
+        (
+            job["state"].as_str(),
+            job["exit_code"].as_u64(),
+            job["error"]["code"].as_str()
+        ),
+        (Some("refused"), Some(3), Some("component_refused")),
+        "{job}"
+    );
+    assert!(job["document"].is_null() && job["outcome"].is_null());
+    assert_ne!(job["error"]["details"]["refusals"], json!([]));
+    let s01 = sha_of(&support::assembly("s01_bolted.stp"));
+    let body = json!({ "socket": socket, "candidates": { "components": [
+        { "assembly": format!("sha256:{s01}"), "part": "NOPE" } ] } });
+    let job = server.run_match(&body).await;
+    assert_eq!(
+        (
+            job["state"].as_str(),
+            job["exit_code"].as_u64(),
+            job["error"]["code"].as_str()
+        ),
+        (Some("refused"), Some(2), Some("part_not_found"))
+    );
+}
+
+/// VT50, VT44's checks, CO5, SN9, M6-59: an `original: true` whose stored
+/// assembly cannot be read fails the job `run_incomplete`, exit 1, its
+/// document kept and served with `Fitment-Exit-Code: 1`; `fitment.run`
+/// says `complete: false`, `summary` and `outcome` null and the document's
+/// counts under `problems.incomplete_summary`; every candidates page says
+/// `complete: false` and `exit_code: 1`; the notes say why.
+#[tokio::test]
+async fn an_unreadable_original_is_run_incomplete() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let files = bracket_files(&server).await;
+    damage(&server, &sha_of(&support::assembly("s01_bolted.stp")), 100);
+    let job = server
+        .run_match(&json!({ "socket": socket, "candidates": { "files": files }, "original": true }))
+        .await;
+    assert_eq!(
+        (
+            job["state"].as_str(),
+            job["exit_code"].as_u64(),
+            job["error"]["code"].as_str()
+        ),
+        (Some("failed"), Some(1), Some("run_incomplete")),
+        "{job}"
+    );
+    assert!(job["outcome"].is_null());
+    assert!(job["error"]["details"]["original"].is_string());
+    let codes: Vec<&str> = job["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes.first(), Some(&"original_unreadable"));
+    let id = job["id"].as_str().unwrap();
+    let document = server.get(&format!("/v1/matches/{id}/document")).await;
+    assert_eq!(document.header("fitment-exit-code"), Some("1"));
+    let doc: Value = serde_json::from_slice(&document.body).unwrap();
+    let run = server.get(&format!("/v1/matches/{id}")).await.json();
+    assert_eq!(run["complete"], false);
+    assert!(run["summary"].is_null() && run["outcome"].is_null());
+    assert_eq!(run["problems"]["incomplete_summary"], doc["summary"]);
+    assert_eq!(run["exit_code"], 1);
+    let page = server
+        .get(&format!("/v1/matches/{id}/candidates"))
+        .await
+        .json();
+    assert_eq!(
+        (page["complete"].as_bool(), page["exit_code"].as_u64()),
+        (Some(false), Some(1))
+    );
+}
+
+/// VT40, RA7: two reviews racing on `@r1`: one makes `@r2`, the other is
+/// `409 revision_not_current`; a bare id is `428 revision_required`; a
+/// review of `@r1` once `@r2` is current is `409`; a label `catalog:x` is
+/// `400 label_reserved` (RA8).
+#[tokio::test]
+async fn reviews_race_and_name_their_revision() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let line = socket.split('@').next().unwrap().to_owned();
+    let review = |status: &str| {
+        Call::json(
+            Method::POST,
+            &format!("/v1/sockets/{socket}/review"),
+            &json!({ "decisions": [{ "requirement": "bore:hole-427", "status": status }] }),
+        )
+    };
+    let (a, b) = tokio::join!(server.send(review("kept")), server.send(review("removed").body(
+        json!({ "decisions": [{ "requirement": "bore:hole-427", "status": "removed", "note": "by hand" }] })
+            .to_string()
+            .as_bytes()
+    )));
+    let mut statuses = [a.status.as_u16(), b.status.as_u16()];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [201, 409]);
+    let loser = if a.status == 409 { &a } else { &b };
+    assert_eq!(loser.code(), "revision_not_current");
+    let winner = if a.status == 201 { &a } else { &b };
+    assert_eq!(
+        winner.header("location"),
+        Some(
+            format!("{line}@r2")
+                .replace(&line, &format!("/v1/sockets/{line}"))
+                .as_str()
+        )
+    );
+    let bare = Call::json(
+        Method::POST,
+        &format!("/v1/sockets/{line}/review"),
+        &json!({ "decisions": [{ "requirement": "bore:hole-427", "status": "kept" }] }),
+    );
+    let bare = server.send(bare).await;
+    assert_eq!(
+        (bare.status.as_u16(), bare.code()),
+        (428, "revision_required".to_owned())
+    );
+    let old = server.send(review("unreviewed")).await;
+    assert_eq!(
+        (old.status.as_u16(), old.code()),
+        (409, "revision_not_current".to_owned())
+    );
+    let sha = server.upload(&support::candidate("m_block02.stp")).await;
+    let body = json!({ "socket": line, "candidates": { "files": [
+        { "upload": format!("sha256:{sha}"), "label": "catalog:BLOCK@r1" } ] } });
+    let reserved = server.send(waiting("/v1/matches", &body)).await;
+    assert_eq!(
+        (reserved.status.as_u16(), reserved.code()),
+        (400, "label_reserved".to_owned())
+    );
+}
+
+/// VT49, M6-64, OB4, UP3, SN6: after a file match ends and its uploads
+/// expire, its retained record still holds every candidate's object, and
+/// the same request submitted again, naming the same SHA-256s, gives the
+/// same document's bytes; once the records expire, the sweep unlinks them.
+#[tokio::test]
+async fn a_retained_match_runs_again_on_its_own_bytes() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let candidate = support::candidate("m_block02_cb_deep.stp");
+    let sha = server.upload(&candidate).await;
+    let body = json!({ "socket": socket, "candidates": { "files": [
+        { "upload": format!("sha256:{sha}"), "label": "deep.stp" } ] } });
+    let first = server.run_match(&body).await;
+    let bytes = server.document(&first).await.body;
+    let seams = server.server().seams();
+    let start = seams.ids.now_ms();
+    seams.ids.fix_time(start + 25 * 3_600_000);
+    server.server().sweep_store().unwrap();
+    let head = server
+        .send(Call::new(
+            Method::HEAD,
+            &format!("/v1/uploads/sha256:{sha}"),
+        ))
+        .await;
+    assert_eq!(
+        head.status, 200,
+        "an input of a retained record stays nameable (UP3)"
+    );
+    assert!(
+        server.object_files().contains(&sha),
+        "the record holds the bytes"
+    );
+    let again = server.run_match(&body).await;
+    assert_eq!(again["state"], "succeeded");
+    assert_eq!(
+        server.document(&again).await.body,
+        bytes,
+        "the same bytes again"
+    );
+    seams.ids.fix_time(start + 33 * 86_400_000);
+    server.server().sweep_jobs().unwrap();
+    server.server().sweep_store().unwrap();
+    assert!(
+        !server.object_files().contains(&sha),
+        "the records expired: the sweep unlinked them"
+    );
+}
+
+/// VT31, SN11, XH7: with the test-support fake verifier answering
+/// `verified`, a match on s01's good bracket ends `succeeded`, `match`,
+/// exit 0, and its document names the fake; with `NoFitVerifier` the best
+/// is an interface match. Neither the OpenAPI document nor `--help` names
+/// a way to choose a verifier.
+#[tokio::test]
+async fn the_fit_verifier_alone_makes_a_match() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let sha = server.upload(&support::candidate("m_bracket.stp")).await;
+    let body = json!({ "socket": socket, "candidates": { "files": [
+        { "upload": format!("sha256:{sha}"), "label": "m_bracket.stp" } ] } });
+    let plain = server.run_match(&body).await;
+    assert_eq!(
+        (plain["outcome"].as_str(), plain["exit_code"].as_u64()),
+        (Some("interface_match"), Some(4))
+    );
+    server.server().set_fit_verifier(std::sync::Arc::new(
+        fitment_server::matching::VerifiesEverything,
+    ));
+    let verified = server.run_match(&body).await;
+    assert_eq!(
+        (verified["outcome"].as_str(), verified["exit_code"].as_u64()),
+        (Some("match"), Some(0))
+    );
+    let doc: Value = serde_json::from_slice(&server.document(&verified).await.body).unwrap();
+    assert_eq!(doc["fit_verifier"], "test-support 1");
+    assert_eq!(doc["summary"]["match"], 1);
+    let openapi = String::from_utf8_lossy(fitment_server::OPENAPI);
+    assert!(!openapi.contains("test-support") && !openapi.contains("VerifiesEverything"));
+    let (_, help, _) = support::run(&["serve", "--help"], &[]);
+    assert!(!help.to_ascii_lowercase().contains("verifier"), "{help}");
+}
+
+/// VT32's socket half (MF11, JB2, SN3): a stored revision of lower socket
+/// rules than the build's (the test-support seam raises the build's) is
+/// refused for matching and for review, `422 socket_stale` with both
+/// versions; extracting again carries its decisions as MF11 does.
+#[tokio::test]
+async fn a_stale_socket_is_refused_for_matching_and_review() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let reviewed = server
+        .send(Call::json(
+            Method::POST,
+            &format!("/v1/sockets/{socket}/review"),
+            &json!({ "decisions": [{ "requirement": "bore:hole-427", "status": "kept" }] }),
+        ))
+        .await;
+    assert_eq!(reviewed.status, 201);
+    let current = reviewed
+        .header("location")
+        .unwrap()
+        .trim_start_matches("/v1/sockets/")
+        .to_owned();
+    server.server().set_rules_shift(1);
+    let sha = server.upload(&support::candidate("m_block02.stp")).await;
+    let body = json!({ "socket": current, "candidates": { "files": [
+        { "upload": format!("sha256:{sha}"), "label": "m_block02.stp" } ] } });
+    let refused = server.send(waiting("/v1/matches", &body)).await;
+    assert_eq!(
+        (refused.status.as_u16(), refused.code()),
+        (422, "socket_stale".to_owned())
+    );
+    let details = &refused.json()["details"];
+    assert_eq!(
+        details["build_socket_rules_version"],
+        fitment_core::SOCKET_RULES_VERSION + 1
+    );
+    let review = server
+        .send(Call::json(
+            Method::POST,
+            &format!("/v1/sockets/{current}/review"),
+            &json!({ "decisions": [{ "requirement": "bore:hole-427", "status": "unreviewed" }] }),
+        ))
+        .await;
+    assert_eq!(
+        (review.status.as_u16(), review.code()),
+        (422, "socket_stale".to_owned())
+    );
+    server.server().set_rules_shift(0);
+    let again = server
+        .extract(&sha_of(&support::assembly(S02)), "BLOCK")
+        .await;
+    assert_eq!(
+        again["outcome"], "unchanged",
+        "the decisions carried: the same bytes"
+    );
+}
+
+/// DC10, M6-25, VN3, AU8: a run's `fitment.run` states its socket (the
+/// revision, its digest, how it was made, verified), its candidates and
+/// the distinct ones, the document's policy, options, versions, summary,
+/// outcome and exit code, `complete`, no problems, and the document's
+/// link, SHA-256, length and digest; `GET /v1/matches?socket=` lists one
+/// line's runs (or one revision's); a job of another kind is no match.
+#[tokio::test]
+async fn a_run_is_recorded_beside_its_document() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let files = bracket_files(&server).await;
+    let job = server
+        .run_match(&json!({ "socket": socket, "candidates": { "files": files },
+                            "policy": { "clearance": "functional" } }))
+        .await;
+    let id = job["id"].as_str().unwrap();
+    let run = server.get(&format!("/v1/matches/{id}")).await;
+    assert_eq!(run.header("fitment-format"), Some("fitment.run/1"));
+    let run = run.json();
+    let document = server.document(&job).await;
+    let doc: Value = serde_json::from_slice(&document.body).unwrap();
+    assert_eq!(run["socket"]["ref"], socket);
+    assert_eq!(run["socket"]["digest"], doc["socket"]["digest"]);
+    assert_eq!(
+        (
+            run["socket"]["how"].as_str(),
+            run["socket"]["verified"].as_bool()
+        ),
+        (Some("extract"), Some(true))
+    );
+    assert_eq!(run["candidates"]["files"], files.len());
+    assert_eq!(run["candidates"]["distinct"], doc["summary"]["candidates"]);
+    assert_eq!(run["policy"], doc["policy"]);
+    assert_eq!(run["summary"], doc["summary"]);
+    assert_eq!(run["outcome"], job["outcome"]);
+    assert_eq!(
+        (run["complete"].as_bool(), run["exit_code"].as_u64()),
+        (Some(true), job["exit_code"].as_u64())
+    );
+    assert_eq!(run["document"]["sha256"], job["document"]["sha256"]);
+    assert_eq!(run["document"]["digest"], doc["digest"]);
+    assert_eq!(run["versions"]["server"], env!("CARGO_PKG_VERSION"));
+    // SN8: the socket's unreviewed requirements, every run.
+    assert_eq!(run["socket"]["unreviewed"], 7);
+    assert_eq!(run["problems"]["bugs"], json!([]));
+    let line = socket.split('@').next().unwrap();
+    let listed = server
+        .get(&format!("/v1/matches?socket={line}"))
+        .await
+        .json();
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["items"][0]["id"], id);
+    let other = server
+        .get(&format!("/v1/matches?socket={line}@r2"))
+        .await
+        .json();
+    assert_eq!(other["items"], json!([]));
+    let extraction = server.get("/v1/jobs?kind=socket_extract").await.json();
+    let extraction = extraction["items"][0]["id"].as_str().unwrap();
+    let not = server.get(&format!("/v1/matches/{extraction}")).await;
+    assert_eq!(
+        (not.status.as_u16(), not.code()),
+        (404, "not_found".to_owned())
+    );
+}
+
+/// RA6, OB4, SN6: a deleted line's revision a retained run cites stays
+/// readable and may be named by a match again, so the run can be
+/// submitted again; the revisions' sweep leaves it until the last record
+/// citing it expires, then deletes it.
+#[tokio::test]
+async fn a_cited_revision_outlives_its_line() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let line = socket.split('@').next().unwrap().to_owned();
+    let sha = server.upload(&support::candidate("m_block02.stp")).await;
+    let body = json!({ "socket": socket, "candidates": { "files": [
+        { "upload": format!("sha256:{sha}"), "label": "m_block02.stp" } ] } });
+    let first = server.run_match(&body).await;
+    let deleted = server
+        .send(Call::new(Method::DELETE, &format!("/v1/sockets/{line}")))
+        .await;
+    assert_eq!(deleted.status, 204);
+    server.server().sweep_jobs().unwrap();
+    assert_eq!(
+        server.get(&format!("/v1/sockets/{socket}")).await.status,
+        200,
+        "cited: kept"
+    );
+    let again = server.run_match(&body).await;
+    assert_eq!(
+        server.document(&again).await.body,
+        server.document(&first).await.body
+    );
+    let seams = server.server().seams();
+    seams.ids.fix_time(seams.ids.now_ms() + 31 * 86_400_000);
+    server.server().sweep_jobs().unwrap();
+    let gone = server.get(&format!("/v1/sockets/{socket}")).await;
+    assert_eq!(
+        (gone.status.as_u16(), gone.code()),
+        (404, "not_found".to_owned()),
+        "the last record went"
+    );
+}
+
+/// RA9, JB2: a match's inputs are frozen when its job is made: a bare
+/// `sk_X` is its current revision then, recorded exact; a review that
+/// makes `@r2` while the job waits changes nothing it judges.
+#[tokio::test]
+async fn a_match_judges_the_revision_it_was_given() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let line = socket.split('@').next().unwrap().to_owned();
+    let sha = server.upload(&support::candidate("m_block02.stp")).await;
+    let body = json!({ "socket": line, "candidates": { "files": [
+        { "upload": format!("sha256:{}", sha.to_ascii_uppercase()), "label": "m_block02.stp" } ] } });
+    server.server().hold_jobs();
+    let queued = server
+        .send(Call::json(Method::POST, "/v1/matches", &body))
+        .await
+        .json();
+    assert_eq!(
+        queued["request"]["socket"],
+        format!("{line}@r1"),
+        "resolved at creation"
+    );
+    assert_eq!(
+        queued["request"]["files"][0]["upload"],
+        format!("sha256:{sha}")
+    );
+    let review = json!({ "decisions": [{ "requirement": "bore:hole-427", "status": "removed", "note": "by hand" }] });
+    let reviewed = server
+        .send(Call::json(
+            Method::POST,
+            &format!("/v1/sockets/{line}@r1/review"),
+            &review,
+        ))
+        .await;
+    assert_eq!(reviewed.status, 201);
+    server.server().resume_jobs();
+    let job = server
+        .finished_job(queued["id"].as_str().unwrap(), Duration::from_secs(60))
+        .await;
+    let doc: Value = serde_json::from_slice(&server.document(&job).await.body).unwrap();
+    assert!(
+        doc["socket"]["sockets"][0]["removed"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "judged against @r1, as it was when the job was made"
+    );
+}
+
+/// SN3, M6-12: the operator's `require_reviewed` floor forces the option:
+/// an unreviewed socket is refused (`422 socket_unreviewed`) though the
+/// request asks nothing; once every requirement is reviewed the run's
+/// document states `require_reviewed: true`, and its `fitment.run` that the
+/// server forced it (`require_reviewed_by: "server"`); a request asking
+/// for it says `"request"`.
+#[tokio::test]
+async fn the_floor_tightens_and_is_recorded() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.matching.require_reviewed_floor = true;
+    let server = TestServer::in_process(dirs, config);
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let sha = server.upload(&support::candidate("m_block02.stp")).await;
+    let files = json!([{ "upload": format!("sha256:{sha}"), "label": "m_block02.stp" }]);
+    let refused = server
+        .send(waiting(
+            "/v1/matches",
+            &json!({ "socket": socket, "candidates": { "files": files } }),
+        ))
+        .await;
+    assert_eq!(refused.code(), "socket_unreviewed");
+    let doc: Value = server.get(&format!("/v1/sockets/{socket}")).await.json();
+    let decisions: Vec<Value> = doc["extracted"]["sockets"][0]["requirements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| json!({ "requirement": r["id"], "status": "kept" }))
+        .collect();
+    let reviewed = server
+        .send(Call::json(
+            Method::POST,
+            &format!("/v1/sockets/{socket}/review"),
+            &json!({ "decisions": decisions }),
+        ))
+        .await;
+    let current = reviewed
+        .header("location")
+        .unwrap()
+        .trim_start_matches("/v1/sockets/")
+        .to_owned();
+    for (asked, by) in [
+        (json!({}), "server"),
+        (json!({ "require_reviewed": true }), "request"),
+    ] {
+        let job = server
+            .run_match(
+                &json!({ "socket": current, "options": asked, "candidates": { "files": files } }),
+            )
+            .await;
+        let doc: Value = serde_json::from_slice(&server.document(&job).await.body).unwrap();
+        assert_eq!(doc["options"]["require_reviewed"], true);
+        let run = server
+            .get(&format!("/v1/matches/{}", job["id"].as_str().unwrap()))
+            .await
+            .json();
+        assert_eq!(run["options"]["require_reviewed_by"], by);
+    }
+}

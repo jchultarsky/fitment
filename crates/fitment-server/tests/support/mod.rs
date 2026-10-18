@@ -1057,6 +1057,35 @@ pub fn part(name: &str) -> Vec<u8> {
     .unwrap()
 }
 
+/// A committed candidate's bytes (`crates/fitment-core/tests/candidates`).
+pub fn candidate(name: &str) -> Vec<u8> {
+    std::fs::read(candidates_dir().join(name)).unwrap()
+}
+
+/// The committed candidates' directory.
+pub fn candidates_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests/candidates")
+}
+
+/// The committed candidates by the socket they are judged against:
+/// (source case, part) to their files, in the manifest's order.
+pub fn candidates_by_socket() -> std::collections::BTreeMap<(String, String), Vec<String>> {
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(candidates_dir().join("manifest.json")).unwrap())
+            .unwrap();
+    let mut out: std::collections::BTreeMap<(String, String), Vec<String>> =
+        std::collections::BTreeMap::new();
+    for case in manifest["cases"].as_array().unwrap() {
+        let key = (
+            case["socket"]["case"].as_str().unwrap().to_owned(),
+            case["socket"]["part"].as_str().unwrap().to_owned(),
+        );
+        let file = case["candidate"]["file"].as_str().unwrap().to_owned();
+        out.entry(key).or_default().push(file);
+    }
+    out
+}
+
 /// The CLI's golden of `kind` and `name` (`crates/fitment/tests/golden`).
 pub fn cli_golden(kind: &str, name: &str) -> Vec<u8> {
     std::fs::read(
@@ -1097,6 +1126,33 @@ impl TestServer {
         let body = serde_json::json!({ "assembly": format!("sha256:{sha}"), "part": part });
         let reply = self.send(waiting("/v1/sockets", &body)).await;
         reply.json()
+    }
+
+    /// Registers `case`'s committed assembly and extracts `part`, waiting:
+    /// the socket job's result, `sk_…@rN`.
+    pub async fn socket_of(&self, case: &str, part: &str) -> String {
+        let bytes = assembly(&format!("{case}.stp"));
+        self.register(&bytes, &format!("{case}.stp")).await;
+        let job = self.extract(&fitment_core::sha256_hex(&bytes), part).await;
+        assert_eq!(job["state"], "succeeded", "{job}");
+        job["result"]["href"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("/v1/sockets/")
+            .to_owned()
+    }
+
+    /// A match job of `body`, waiting: the job.
+    pub async fn run_match(&self, body: &serde_json::Value) -> serde_json::Value {
+        let reply = self.send(waiting("/v1/matches", body)).await;
+        assert!(
+            reply.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&reply.body)
+        );
+        let job = reply.json();
+        let id = job["id"].as_str().unwrap().to_owned();
+        self.finished_job(&id, Duration::from_secs(120)).await
     }
 
     /// The document of a job, as bytes.

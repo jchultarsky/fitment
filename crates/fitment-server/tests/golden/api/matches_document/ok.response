@@ -1,0 +1,11 @@
+200
+cache-control: private, max-age=31536000, immutable
+content-type: application/json
+etag: "sha256:735167136a18792b8aa7b2560e4e215686b18d58ed0f2bab9a8c9670bdf38e57"
+fitment-digest: sha256:ddd2fb8e113ad14f8008ac73298fd9c3c7babe5a0adf1ce0783d94a518a3d09c
+fitment-exit-code: 4
+fitment-format: fitment.match/1
+repr-digest: sha-256=:c1FnE2oYeSuKp7JWDk4hVoaxjVjtDyurmoyWcL3zjlc=:
+x-request-id: r_0000000000000000000000000a
+
+<the bytes of crates/fitment/tests/golden/match/s02_cbore--BLOCK.json>

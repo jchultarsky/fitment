@@ -354,6 +354,57 @@ impl Objects {
         }))
     }
 
+    /// DC12: the byte ranges `ranges` (start, end), in increasing order and
+    /// not overlapping, of the object `sha256` of `bytes` bytes, read in
+    /// one pass of the streaming reader up to the last range's end. The
+    /// object as a whole is not hashed: each range is checked by the
+    /// caller against the SHA-256 its index records for it. The seam has
+    /// no seek, so a page reads the bytes before its ranges too.
+    ///
+    /// # Errors
+    ///
+    /// [`ObjectError`]: a missing file, ranges out of order or past its
+    /// length, or the file system's.
+    pub fn read_ranges(
+        &self,
+        sha256: &str,
+        bytes: u64,
+        ranges: &[(u64, u64)],
+    ) -> Result<Vec<Vec<u8>>, ObjectError> {
+        let ordered = ranges.windows(2).all(|w| w[0].1 <= w[1].0);
+        if !ordered || ranges.iter().any(|(a, b)| a > b || *b > bytes) {
+            return Err(ObjectError::Damaged);
+        }
+        let mut reader = self
+            .fs
+            .open_stream(&self.path(sha256), bytes)
+            .map_err(missing)?;
+        let mut out: Vec<Vec<u8>> = ranges.iter().map(|_| Vec::new()).collect();
+        let last = ranges.last().map_or(0, |r| r.1);
+        let mut buf = vec![0_u8; 256 * 1024];
+        let mut at = 0_u64;
+        while at < last {
+            let n = reader.read_chunk(&mut buf).map_err(damaged)?;
+            if n == 0 {
+                return Err(ObjectError::Damaged);
+            }
+            let end = at + u64::try_from(n).unwrap_or(u64::MAX);
+            for ((from, to), range) in ranges.iter().zip(out.iter_mut()) {
+                let (lo, hi) = ((*from).max(at), (*to).min(end));
+                if lo < hi {
+                    let (lo, hi) = (lo - at, hi - at);
+                    let (lo, hi) = (
+                        usize::try_from(lo).unwrap_or(usize::MAX),
+                        usize::try_from(hi).unwrap_or(usize::MAX),
+                    );
+                    range.extend_from_slice(&buf[lo..hi]);
+                }
+            }
+            at = end;
+        }
+        Ok(out)
+    }
+
     /// The one-buffer cap in force (OB3).
     pub fn one_buffer_max(&self) -> u64 {
         self.one_buffer_max.load(Ordering::Relaxed)

@@ -4,6 +4,7 @@ mod assemblies;
 mod auth;
 mod features;
 pub(crate) mod jobs;
+mod matches;
 mod server;
 mod sockets;
 mod uploads;
@@ -64,6 +65,13 @@ pub(super) fn handler(op: &Operation) -> MethodRouter<Arc<Shared>> {
         "sockets_get" => on(filter, sockets::get),
         "sockets_revisions" => on(filter, sockets::revisions),
         "sockets_delete" => on(filter, sockets::delete),
+        "sockets_import" => on(filter, sockets::import),
+        "sockets_review" => on(filter, sockets::review),
+        "matches_create" => on(filter, matches::create),
+        "matches_list" => on(filter, matches::list),
+        "matches_get" => on(filter, matches::get),
+        "matches_document" => on(filter, matches::document),
+        "matches_candidates" => on(filter, matches::candidates),
         "features_create" => on(filter, features::create),
         "jobs_list" => on(filter, jobs::list),
         "jobs_get" => on(filter, jobs::get),
