@@ -398,26 +398,35 @@ fn prose(text: &str) -> String {
         .to_lowercase()
 }
 
-/// OP10, CC5: one server per catalog, with both volumes on a local disk,
-/// never a network file system or a sync folder, as the README, the
-/// Containerfile and the image's configuration say; the CLI on the same
-/// catalog is `concurrency.rs::a_cli_ingest_beside_the_server_is_consistent`.
+/// OP10, CC5: one server per catalog, with both volumes, the catalog's
+/// and the state's, on a local disk, never a network file system or a
+/// sync folder, as the README, the Containerfile and the image's
+/// configuration say, each naming both; the CLI on the same catalog is
+/// `concurrency.rs::a_cli_ingest_beside_the_server_is_consistent`.
 #[test]
 fn one_replica_on_local_disks_as_op10_says() {
-    for file in [
-        "README.md",
-        "deploy/Containerfile",
-        "deploy/fitment-server.toml",
+    for (file, both) in [
+        ("README.md", "both directories on a local disk"),
+        ("deploy/Containerfile", "both volumes on a local disk"),
+        ("deploy/fitment-server.toml", "both on a local disk"),
     ] {
         let text = prose(&std::fs::read_to_string(root().join(file)).unwrap());
         for words in [
             "one server per catalog",
-            "on a local disk",
+            both,
             "never a network file system or a sync folder",
         ] {
             assert!(text.contains(words), "{file} does not say {words:?}");
         }
     }
+    // The configuration's note stands over the two paths it covers.
+    let config = std::fs::read_to_string(root().join("deploy/fitment-server.toml")).unwrap();
+    let note = config.find("Both on a local disk").unwrap();
+    let paths = &config[note..];
+    assert!(paths.contains("\ncatalog = ") && paths.contains("\nstate = "));
+    // The README names what the two directories are.
+    let readme = prose(&std::fs::read_to_string(root().join("README.md")).unwrap());
+    assert!(readme.contains("serve --catalog dir --state dir"));
 }
 
 /// OP11: the seams exist under `test-support` only, which no default or

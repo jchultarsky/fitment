@@ -440,6 +440,7 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         .collect();
     for (id, entry) in rules {
         failures.extend(rule_problems(id, entry, &root));
+        failures.extend(m6_test_problems(id, entry, &m6));
         failures.extend(case_lists(id, entry, &by_id));
     }
     // Every rule the designs state in bold (`**G1.`, `**W7b.`, `**B8.`)
@@ -494,20 +495,49 @@ fn m6_list_problems(id: &str, tests: &[&str], deferred: bool) -> Vec<String> {
         .collect()
 }
 
+/// Section 11.1's gate at the exit: every M6 rule of the scorer (SC) and
+/// of the exit (XH) has a test; cases alone do not show one.
+fn m6_test_problems(id: &str, entry: &Value, m6: &[String]) -> Vec<String> {
+    let tested = entry["tests"].as_array().is_some_and(|t| !t.is_empty());
+    if m6.iter().any(|r| r == id) && (id.starts_with("SC") || id.starts_with("XH")) && !tested {
+        vec![format!("{id}: an M6 scorer or exit rule with no test")]
+    } else {
+        Vec::new()
+    }
+}
+
 /// VT30's controls for M6's deferrals and lists: since M6's exit no rule
 /// may wait for an M6 PR, whatever the PR, nor be cited by cases while it
-/// waits; a listed rule shown by cases alone, or by a test elsewhere, is
+/// waits, and an `"M6 PR"` reason is refused even for a rule a closed
+/// milestone left deferred; an SC or XH rule shown by cases alone is
+/// refused; a listed rule shown by cases alone, or by a test elsewhere, is
 /// refused.
 #[test]
 fn m6_deferrals_and_lists_hold() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for reason in ["M6 PR 9", "M6 PR 10", "M6 PR 1"] {
         let entry = serde_json::json!({ "cases": [], "deferred": reason });
-        assert_eq!(rule_problems("UP2", &entry, &root).len(), 1, "{reason}");
+        assert_eq!(rule_problems("UP2", &entry, &root).len(), 2, "{reason}");
         let cited =
             serde_json::json!({ "cases": ["m_review_s01_hole_waived"], "deferred": reason });
-        assert_eq!(rule_problems("XH1", &cited, &root).len(), 2, "{reason}");
+        assert_eq!(rule_problems("XH1", &cited, &root).len(), 3, "{reason}");
     }
+    let kept = serde_json::json!({ "cases": [], "deferred": "M6 PR 9" });
+    assert_eq!(
+        rule_problems("V1", &kept, &root).len(),
+        1,
+        "an M6 reason for V1"
+    );
+    let m6 = vec!["XH1".to_owned(), "SC1".to_owned(), "UP2".to_owned()];
+    let cases_alone = serde_json::json!({ "cases": ["m_review_s01_hole_waived"], "tests": [] });
+    assert_eq!(m6_test_problems("XH1", &cases_alone, &m6).len(), 1);
+    assert_eq!(m6_test_problems("SC1", &cases_alone, &m6).len(), 1);
+    assert_eq!(
+        m6_test_problems("UP2", &cases_alone, &m6),
+        Vec::<String>::new()
+    );
+    let tested = serde_json::json!({ "cases": [], "tests": ["crates/x.rs::t"] });
+    assert_eq!(m6_test_problems("XH1", &tested, &m6), Vec::<String>::new());
     let hostile = "crates/fitment-server/tests/hostile.rs::a_body_past_the_cap";
     let elsewhere = "crates/fitment-server/tests/api.rs::a_body_past_the_cap";
     assert_eq!(m6_list_problems("UP2", &[], false).len(), 1);
@@ -559,6 +589,9 @@ fn rule_problems(id: &str, entry: &Value, root: &Path) -> Vec<String> {
         failures.push(format!(
             "{id}: deferred, and not among the deferrals M4 and M5 closed with"
         ));
+    }
+    if reason.starts_with("M6 PR") {
+        failures.push(format!("{id}: deferred to an M6 PR after M6's exit"));
     }
     for test in &tests {
         let Some((file, name)) = test.split_once("::") else {

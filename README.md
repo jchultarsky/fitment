@@ -14,11 +14,12 @@ written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 > **Status: M6 done (the REST API).** `fitment-server` serves the catalog
 > and the matcher over HTTP, with jobs, uploads by SHA-256, sockets with
 > revisions, bearer tokens and roles; every result document it serves is
-> byte for byte what the CLI prints for the same inputs. Every match case
-> of the corpus passes through the API, under both policies, with no false
-> positive and the library's report to the byte. It ships as a container
-> image and is not published as a crate. Version 0.3.0 (M6) follows 0.2.0
-> (M5, the catalog) and 0.1.0 (M4).
+> byte for byte what the CLI prints for the same inputs. Every one of the
+> corpus's 125 gated match cases (its 129 less the socket gate's 4, which
+> run apart and pass) passes through the API, under both policies, with no
+> false positive and the library's report to the byte. It ships as a
+> container image and is not published as a crate. M6 is to be released as
+> 0.3.0, after 0.2.0 (M5, the catalog) and 0.1.0 (M4).
 >
 > `fitment features` reads one part from a
 > STEP file, refusing a file that is not a canonical part, with reasons.
@@ -243,11 +244,16 @@ Open CASCADE:
 $ docker build -f deploy/Containerfile -t fitment-server .
 $ docker run --rm -v cat:/var/lib/fitment/catalog --entrypoint fitment \
     fitment-server catalog init -C /var/lib/fitment/catalog
-$ docker run -d --name fitment --read-only -p 127.0.0.1:8080:8080 \
+$ docker run -d --name fitment --read-only --stop-timeout 45 -p 127.0.0.1:8080:8080 \
     -v cat:/var/lib/fitment/catalog -v state:/var/lib/fitment/state fitment-server
 $ docker exec fitment fitment-server admin bootstrap --username ada
 fitment_pat_…
 ```
+
+`--stop-timeout 45` gives a stop the time the server's drain needs: it
+gives requests 10 s and running jobs 25 s, side by side, before it exits,
+and Docker's default of 10 s would kill it while jobs are still being
+settled.
 
 Outside the image, `fitment-server serve --catalog DIR --state DIR`
 serves an existing catalog (make it with `fitment catalog init`) and keeps
@@ -272,7 +278,9 @@ short keeps the batches it committed and says so.
   presenting one's role and expiry (a read-only token for CI, say), and an
   admin manages users under `/v1/auth/users`. Every request but health,
   readiness, the OpenAPI document and login carries `Authorization: Bearer
-  TOKEN`; roles are reader, writer (changes the catalog) and admin.
+  TOKEN`; roles are reader, writer (changes the catalog) and admin. The
+  Prometheus metrics need no token either: they are served on their own
+  port, `metrics.listen`, off unless set; keep it on a private network.
 - **Passwords** are hashed with argon2id. Give the server a pepper, a file
   of 16 to 1,024 random bytes that only it can read (`auth.pepper_file`),
   and pass the same configuration to `fitment-server admin`; without one
@@ -294,6 +302,9 @@ work that reads STEP runs as a job, and `Prefer: wait=N` (at most 60 s)
 answers with the finished job:
 
 ```console
+$ AUTH="Authorization: Bearer $TOKEN"
+$ ASM=$(sha256sum s01_bolted.stp | cut -d' ' -f1)
+$ CAND=$(sha256sum m_bracket_blind.stp | cut -d' ' -f1)
 $ curl -X PUT --data-binary @s01_bolted.stp -H "$AUTH" \
     -H 'Content-Type: application/octet-stream' localhost:8080/v1/uploads/sha256:$ASM
 $ curl -H "$AUTH" -H 'Prefer: wait=30' -H 'Content-Type: application/json' \
@@ -335,7 +346,7 @@ that did not succeed has no verdict, anywhere.
 | M3 | Socket extraction |
 | M4 | Matching, evidence, and the known-answer corpus (done, 0.1.0) |
 | M5 | Catalog (done, 0.2.0) |
-| M6 | REST API (done, 0.3.0) |
+| M6 | REST API (done; 0.3.0 to come) |
 | M7 | Optional body-fit verifier |
 | M8 | Viewer |
 
