@@ -204,7 +204,7 @@ fn gc_removes_only_what_no_row_names() {
         temporaries,
         failed,
         ..
-    } = catalog.gc(false).unwrap();
+    } = catalog.gc(false, false).unwrap();
     assert_eq!(unlinked, [sha(&thick)]);
     assert_eq!(temporaries, ["1-1.part"]);
     assert_eq!(failed, Vec::<String>::new());
@@ -285,7 +285,7 @@ fn gc_vacuums_on_request() {
         .unwrap()
         .unwrap();
     let before = pages(&catalog);
-    catalog.gc(true).unwrap();
+    catalog.gc(false, true).unwrap();
     assert!(pages(&catalog) < before);
     assert_eq!(catalog.verify(false, false).unwrap(), Vec::new());
 }

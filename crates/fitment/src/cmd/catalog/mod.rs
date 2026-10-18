@@ -7,6 +7,7 @@ mod get;
 mod ingest;
 mod list;
 mod maintain;
+mod reindex;
 
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -73,6 +74,14 @@ enum Command {
     /// Exit codes: 0 done, 1 error (a file it could not remove), 2 not a
     /// catalog.
     Gc(maintain::GcArgs),
+    /// Write the rows this build reads where an entry lacks them: after a
+    /// fitment upgrade, a stale catalog refuses matches until this runs.
+    /// Without REF, every stale entry.
+    ///
+    /// Exit codes: 0 every entry current, 1 error (a missing or damaged
+    /// file: that entry stays stale), 2 usage (an unknown or stale
+    /// reference), 3 a part no longer searched (newly quarantined).
+    Reindex(reindex::Args),
     /// Check the catalog: its database, every stored file, row hash, part
     /// digest and posting; with --deep, every part extracted again.
     ///
@@ -185,6 +194,7 @@ pub fn run(args: &Args) -> ExitCode {
         Command::Delete(delete) => change::delete(delete, dir, &mut catalog),
         Command::Prune(prune) => change::prune(prune, dir, &mut catalog),
         Command::Gc(gc) => maintain::gc(gc, dir, &mut catalog),
+        Command::Reindex(reindex) => reindex::run(reindex, dir, &mut catalog),
         Command::Verify(verify) => maintain::verify(verify, dir, &mut catalog),
     }
 }

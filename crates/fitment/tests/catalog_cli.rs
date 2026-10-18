@@ -796,3 +796,165 @@ fn delete_properties(dir: &Path) -> bool {
         .unwrap()
         == 1
 }
+
+/// Rewrites the catalog in `dir/parts` as signature version 1 wrote it:
+/// each tokens row's version and preimage hash, and every posting.
+fn at_signature_one(dir: &Path) {
+    use fitment_catalog::{Sha256Hex, preimage};
+    let catalog =
+        fitment_catalog::Catalog::open(&dir.join("parts"), fitment_catalog::Options::default())
+            .unwrap();
+    let conn = catalog.connection();
+    conn.execute_batch("PRAGMA foreign_keys = OFF; DROP TRIGGER tokens_immutable;")
+        .unwrap();
+    let rows: Vec<(String, u32, Vec<u8>)> = conn
+        .prepare("SELECT sha256, extractor_version, tokens FROM tokens")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for (sha, ev, tokens) in rows {
+        let hash = preimage::tokens(&Sha256Hex::parse(&sha).unwrap(), ev, 1, &tokens);
+        conn.execute(
+            "UPDATE tokens SET signature_version = 1, tokens_sha256 = ?1 WHERE sha256 = ?2",
+            [hash.as_str(), sha.as_str()],
+        )
+        .unwrap();
+    }
+    conn.execute_batch("UPDATE posting SET signature_version = 1")
+        .unwrap();
+}
+
+/// CT8 and section 7.7: a stale catalog lists its entries stale; reindex
+/// prints each transition and a summary, exits 0, and leaves nothing
+/// stale; an unknown reference exits 2 before anything is done; a damaged
+/// file exits 1 and stays stale; gc --versions counts what it removes.
+#[test]
+fn reindex_brings_a_stale_catalog_back() {
+    let dir = scratch("reindex");
+    let inputs = prototype(&dir);
+    catalog(&dir, &["init", "-C", "parts"]);
+    catalog(&dir, &["ingest", "-C", "parts", inputs.to_str().unwrap()]);
+    at_signature_one(&dir);
+    let (_, table, _) = catalog(&dir, &["list", "-C", "parts", "--status", "stale"]);
+    assert!(table.contains("stale (signature 1)"), "{table}");
+
+    let (code, _, err) = catalog(&dir, &["reindex", "-C", "parts", "nothing"]);
+    assert_eq!(code, 2, "{err}");
+    let (code, out, err) = catalog(&dir, &["reindex", "-C", "parts"]);
+    assert_eq!(code, 0, "{err}");
+    let line = out
+        .lines()
+        .find(|l| l.contains(" m_bracket "))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(line.starts_with("indexed "), "{line}");
+    assert!(line.ends_with("stale (signature 1) -> indexed"), "{line}");
+    assert!(
+        err.contains(
+            "2 reindexed: 2 indexed, 0 quarantined; 0 newly searched, 0 no longer searched"
+        ),
+        "{err}"
+    );
+    let (_, table, _) = catalog(&dir, &["list", "-C", "parts", "--status", "stale"]);
+    assert!(!table.contains("stale"), "{table}");
+    let (code, out, _) = catalog(
+        &dir,
+        &["reindex", "-C", "parts", "--all", "--format", "json"],
+    );
+    assert_eq!(code, 0);
+    let doc: Value = serde_json::from_str(&out).unwrap();
+    let changes = doc["changes"].as_array().unwrap();
+    assert!(
+        changes
+            .iter()
+            .all(|c| c["detail"].as_str().unwrap().ends_with("(nothing missing)"))
+    );
+
+    // A damaged file: reindex cannot rebuild it, and says so.
+    let catalog_root = dir.join("parts");
+    let conn =
+        fitment_catalog::Catalog::open(&catalog_root, fitment_catalog::Options::default()).unwrap();
+    let sha: String = conn
+        .connection()
+        .query_row("SELECT sha256 FROM live WHERE id = 'm_bracket'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    conn.connection()
+        .execute_batch("DELETE FROM properties")
+        .unwrap();
+    drop(conn);
+    let blob = catalog_root.join("blobs/sha256").join(&sha[..2]).join(&sha);
+    writable(&catalog_root);
+    fs::write(&blob, "not the bytes").unwrap();
+    let (code, out, err) = catalog(&dir, &["reindex", "-C", "parts", "m_bracket"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(out.starts_with("damaged "), "{out}");
+    assert!(
+        err.contains("m_bracket: damaged: the file's SHA-256 is not its name: left stale"),
+        "{err}"
+    );
+
+    let (code, _, err) = catalog(&dir, &["gc", "-C", "parts", "--versions"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("rows of older versions removed"), "{err}");
+}
+
+/// RX6 (the PR 6 review): a part an older gate accepted and this one
+/// refuses leaves the search loudly: its line, its reason on stderr, and
+/// exit 3.
+#[test]
+fn a_part_that_leaves_the_search_exits_3() {
+    use fitment_catalog::Sha256Hex;
+    use fitment_catalog::preimage::{self, Status};
+    let dir = scratch("leaves");
+    let inputs = prototype(&dir);
+    catalog(&dir, &["init", "-C", "parts"]);
+    catalog(&dir, &["ingest", "-C", "parts", inputs.to_str().unwrap()]);
+    let opened =
+        fitment_catalog::Catalog::open(&dir.join("parts"), fitment_catalog::Options::default())
+            .unwrap();
+    let conn = opened.connection();
+    let sha = |id: &str| -> String {
+        conn.query_row("SELECT sha256 FROM live WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap()
+    };
+    // junk, as an older extractor that accepted it as a bracket stored it.
+    let (junk, bracket) = (sha("junk"), sha("m_bracket"));
+    let (digest, doc): (String, Vec<u8>) = conn
+        .query_row(
+            "SELECT part_digest, doc FROM features WHERE sha256 = ?1",
+            [&bracket],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let old = fitment_core::EXTRACTOR_VERSION - 1;
+    let hash = preimage::features(
+        &Sha256Hex::parse(&junk).unwrap(),
+        old,
+        Status::Accepted,
+        Some(&Sha256Hex::parse(&digest).unwrap()),
+        &doc,
+    );
+    conn.execute("DELETE FROM features WHERE sha256 = ?1", [&junk])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO features SELECT ?1, ?2, status, encoding, doc, ?3, part_digest, product_id,
+                product_name, holes, shafts, planes, cones, other_faces, complete, first_refusal
+         FROM features WHERE sha256 = ?4",
+        (junk.as_str(), old, hash.as_str(), bracket.as_str()),
+    )
+    .unwrap();
+    drop(opened);
+    let (code, out, err) = catalog(&dir, &["reindex", "-C", "parts"]);
+    assert_eq!(code, 3, "{err}");
+    let line = out.lines().find(|l| l.contains(" junk ")).unwrap();
+    assert!(line.starts_with("quarantined "), "{line}");
+    assert!(line.ends_with("(no longer searched)"), "{line}");
+    assert!(err.contains("1 no longer searched"), "{err}");
+    assert!(
+        err.contains("junk: no longer searched: unparseable: "),
+        "{err}"
+    );
+}

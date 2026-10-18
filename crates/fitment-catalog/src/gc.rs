@@ -30,6 +30,8 @@ pub struct Collected {
     pub temporaries: Vec<String>,
     /// Files it could not remove, with why.
     pub failed: Vec<String>,
+    /// With `versions`, the older versions' derived rows deleted (RX8).
+    pub old_rows: usize,
 }
 
 impl Catalog {
@@ -93,7 +95,9 @@ impl Catalog {
     }
 
     /// `fitment catalog gc`: unlinks orphan blobs and temporary files over
-    /// an hour old, then truncates the WAL (CC3); with `vacuum`, runs
+    /// an hour old, then truncates the WAL (CC3); with `versions`, first
+    /// deletes the derived rows of versions older than this build's where
+    /// current ones exist, never a newer version's (RX8); with `vacuum`, runs
     /// `VACUUM` (SZ4), which needs free space about the database's size and
     /// fails whole without it.
     ///
@@ -101,10 +105,15 @@ impl Catalog {
     ///
     /// [`Error::Linked`] for a planted link (PH2, checked again before any
     /// unlink); the file system's or the database's.
-    pub fn gc(&mut self, vacuum: bool) -> Result<Collected, Error> {
+    pub fn gc(&mut self, versions: bool, vacuum: bool) -> Result<Collected, Error> {
         self.layout
             .check_links(self.fs.as_ref())
             .map_err(|linked| Error::Linked(linked.0))?;
+        let old_rows = if versions {
+            crate::reindex::drop_old_versions(&mut self.conn)?
+        } else {
+            0
+        };
         let mut candidates = Vec::new();
         for fan in self.layout.fan_outs() {
             let files = self.fs.read_dir(&fan).map_err(|e| Error::Io {
@@ -135,6 +144,7 @@ impl Catalog {
             unlinked,
             temporaries,
             failed,
+            old_rows,
         })
     }
 

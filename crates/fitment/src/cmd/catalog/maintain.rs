@@ -12,6 +12,10 @@ use crate::cmd::text::{note, printable};
 
 #[derive(clap::Args)]
 pub struct GcArgs {
+    /// Also delete the rows of older fitment versions where this build's
+    /// exist; a newer version's rows are never touched.
+    #[arg(long)]
+    versions: bool,
     /// Also run VACUUM, which needs free space about the database's size.
     #[arg(long)]
     vacuum: bool,
@@ -29,12 +33,17 @@ pub struct VerifyArgs {
 }
 
 pub(super) fn gc(args: &GcArgs, dir: &Path, catalog: &mut Catalog) -> ExitCode {
-    let collected = match catalog.gc(args.vacuum) {
+    let collected = match catalog.gc(args.versions, args.vacuum) {
         Ok(c) => c,
         Err(error) => return fail(dir, &error),
     };
+    let old = if args.versions {
+        format!(", {} rows of older versions removed", collected.old_rows)
+    } else {
+        String::new()
+    };
     note(&format!(
-        "fitment: {}: {} orphan files removed, {} temporary files removed",
+        "fitment: {}: {} orphan files removed, {} temporary files removed{old}",
         shown(dir),
         collected.unlinked.len(),
         collected.temporaries.len()
