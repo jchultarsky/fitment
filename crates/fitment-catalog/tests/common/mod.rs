@@ -353,6 +353,9 @@ impl fitment_catalog::Fs for Shared {
     fn remove_file(&self, path: &Path) -> io::Result<()> {
         self.0.remove_file(path)
     }
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        self.0.remove_dir(path)
+    }
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
         self.0.sync_dir(path)
     }

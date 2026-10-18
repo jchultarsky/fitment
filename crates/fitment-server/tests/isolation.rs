@@ -186,12 +186,14 @@ fn shape(call: &FsCall) -> String {
     }
 }
 
-/// UP8's comparison: the call lists of an upload of new bytes and of
-/// bytes the store holds are the same calls in the same order, but for
-/// one `rename` of the temporary file into place against one removal of
-/// it, and neither reads the existing object.
+/// UP8's comparison (PR 4's review): the call lists of an upload of new
+/// bytes and of bytes the store holds are the same calls in the same
+/// order: both rename the temporary file over the final name. Windows'
+/// one exception is the read-only flag cleared on a standing object before
+/// it is renamed over, which its rename needs; neither branch reads the
+/// existing object.
 fn same_work(new: &[FsCall], held: &[FsCall]) -> Result<(), String> {
-    let (new, held): (Vec<String>, Vec<String>) = (
+    let (new, mut held): (Vec<String>, Vec<String>) = (
         new.iter().map(shape).collect(),
         held.iter().map(shape).collect(),
     );
@@ -203,17 +205,15 @@ fn same_work(new: &[FsCall], held: &[FsCall]) -> Result<(), String> {
             return Err(format!("the object is read on the upload path: {read}"));
         }
     }
-    if new.len() != held.len() {
-        return Err(format!(
-            "{} calls against {}: {new:?} {held:?}",
-            new.len(),
-            held.len()
-        ));
+    if cfg!(windows) {
+        if let Some(at) = held.iter().position(|c| c == "readonly object false") {
+            held.remove(at);
+        }
     }
-    let differ: Vec<(&String, &String)> = new.iter().zip(&held).filter(|(a, b)| a != b).collect();
-    match differ.as_slice() {
-        [(a, b)] if *a == "rename tmp object" && *b == "remove tmp" => Ok(()),
-        _ => Err(format!("the lists differ by {differ:?}")),
+    if new == held {
+        Ok(())
+    } else {
+        Err(format!("the lists differ: {new:?} against {held:?}"))
     }
 }
 
@@ -234,11 +234,16 @@ fn headers(reply: &Reply) -> Vec<(String, String)> {
 
 /// VT48, UP8, UP3, OB2: one user uploads bytes another user holds, and
 /// bytes nobody holds, of one length, under a `CountingFs`: the two call
-/// lists are equal but for one rename against one removal, neither reads
-/// the existing object, and the two answers have the same status and
-/// headers, the bodies differing only in the SHA-256. The control: a
-/// store that re-hashes the existing object on the upload path, or does
-/// any other work in one branch, fails the comparison.
+/// lists are the same (PR 4's review: both rename over the final name,
+/// whose fan-out directory the state made), neither reads the existing
+/// object, and the two answers have the same status and headers, the
+/// bodies differing only in the SHA-256. `DELETE` of bytes another user
+/// holds and of bytes nobody else holds makes no file call at all, and
+/// answers the same (M1: only the sweep unlinks). The control: a store
+/// that re-hashes the existing object, or does other work in one branch,
+/// fails the comparison. Call shapes cannot see the disk's own time (a
+/// dirty directory's sync, say); the branches' medians are held within a
+/// generous bound, a regression's tripwire rather than a proof.
 #[tokio::test]
 async fn both_upload_branches_do_the_same_work() {
     let dirs = Dirs::new();
@@ -251,13 +256,8 @@ async fn both_upload_branches_do_the_same_work() {
     let (_, bob_token) = seed_token(server.server(), &bob, Role::Reader, 30);
     let held = vec![b'h'; 3000];
     let fresh = vec![b'f'; 3000];
-    assert_eq!(
-        server
-            .send(put_upload(&held).bearer(&ada_token))
-            .await
-            .status,
-        201
-    );
+    let put = server.send(put_upload(&held).bearer(&ada_token)).await;
+    assert_eq!(put.status, 201);
     let at = seam.calls().len();
     let reused = server.send(put_upload(&held).bearer(&bob_token)).await;
     let middle = seam.calls().len();
@@ -266,6 +266,7 @@ async fn both_upload_branches_do_the_same_work() {
     let (reused_calls, new_calls) = (&calls[at..middle], &calls[middle..]);
     same_work(new_calls, reused_calls).unwrap();
     assert!(new_calls.iter().any(|c| matches!(c, FsCall::Rename(..))));
+    assert!(!calls.iter().any(|c| matches!(c, FsCall::CreateDir(_))));
     assert_eq!(
         (reused.status, new.status),
         (new.status, axum::http::StatusCode::CREATED)
@@ -275,6 +276,20 @@ async fn both_upload_branches_do_the_same_work() {
     a["sha256"] = serde_json::Value::Null;
     b["sha256"] = serde_json::Value::Null;
     assert_eq!(a, b);
+    // DELETE: bob's row of the bytes ada holds, and of the bytes only he
+    // holds: no file call either way, and the same answer.
+    let delete = |bytes: &[u8]| {
+        let path = format!("/v1/uploads/sha256:{}", fitment_core::sha256_hex(bytes));
+        Call::new(Method::DELETE, &path).bearer(&bob_token)
+    };
+    let before = seam.calls().len();
+    let shared_gone = server.send(delete(&held)).await;
+    let own_gone = server.send(delete(&fresh)).await;
+    assert_eq!(seam.calls().len(), before, "a delete makes no file call");
+    assert_eq!(
+        (shared_gone.status, headers(&shared_gone)),
+        (own_gone.status, headers(&own_gone))
+    );
     // The control: a re-hash of the existing object, or one more call in
     // one branch, is caught.
     let object = server
@@ -287,11 +302,46 @@ async fn both_upload_branches_do_the_same_work() {
     rehashed.insert(3, FsCall::Read(object.clone()));
     assert!(same_work(new_calls, &rehashed).is_err());
     let mut streamed = reused_calls.to_vec();
-    streamed.insert(3, FsCall::OpenStream(object));
+    streamed.insert(3, FsCall::OpenStream(object.clone()));
     assert!(same_work(new_calls, &streamed).is_err());
     assert!(same_work(new_calls, &reused_calls[1..]).is_err());
+    let mut removed = reused_calls.to_vec();
+    let rename = removed
+        .iter()
+        .position(|c| matches!(c, FsCall::Rename(..)))
+        .unwrap();
+    removed[rename] = FsCall::Remove(object);
     assert!(
-        same_work(new_calls, new_calls).is_err(),
-        "no branch differs"
+        same_work(new_calls, &removed).is_err(),
+        "the old remove branch"
+    );
+    branches_take_like_time(&server, &ada_token, &bob_token).await;
+}
+
+/// VT48's timing tripwire: the median of 15 uploads of bytes another user
+/// holds, and of 15 of new bytes, are within three times each other and
+/// 20 ms.
+async fn branches_take_like_time(server: &TestServer, ada: &str, bob: &str) {
+    let mut times = [Vec::new(), Vec::new()];
+    for i in 0..15_u32 {
+        let held = format!("held {i:04} {}", "x".repeat(2000));
+        let fresh = format!("new! {i:04} {}", "x".repeat(2000));
+        server.send(put_upload(held.as_bytes()).bearer(ada)).await;
+        for (k, bytes) in [held, fresh].iter().enumerate() {
+            let started = std::time::Instant::now();
+            let reply = server.send(put_upload(bytes.as_bytes()).bearer(bob)).await;
+            times[k].push(started.elapsed());
+            assert_eq!(reply.status, 201);
+        }
+    }
+    let median = |list: &mut Vec<std::time::Duration>| {
+        list.sort();
+        list[list.len() / 2]
+    };
+    let (held, fresh) = (median(&mut times[0]), median(&mut times[1]));
+    let slack = std::time::Duration::from_millis(20);
+    assert!(
+        held <= fresh * 3 + slack && fresh <= held * 3 + slack,
+        "held {held:?} against new {fresh:?}"
     );
 }

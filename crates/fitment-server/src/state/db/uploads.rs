@@ -53,11 +53,22 @@ impl From<rusqlite::Error> for StoreError {
     }
 }
 
+/// What one batch of the sweep's candidates gave (OB4).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Unnamed {
+    /// Objects unlinked with their rows.
+    pub gone: Vec<String>,
+    /// Objects whose unlink failed, left candidates.
+    pub failed: Vec<String>,
+    /// Candidates looked at.
+    pub looked: usize,
+}
+
 /// How a delete ended (RA6, UP5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Deleted {
-    /// The user's row is gone, and the object with it if nothing else held
-    /// it.
+    /// The user's row is gone; the object, if nothing else holds it, is
+    /// the sweep's to unlink.
     Gone,
     /// A job that is not terminal names it: `409 upload_in_use`.
     InUse,
@@ -69,14 +80,30 @@ pub enum Deleted {
 const LIVE_JOB: &str = "('queued', 'running', 'cancelling')";
 
 /// True if a row of any table names the object `?1` (OB4): every table
-/// with a foreign key to `object`, so an object row is deleted only when
-/// nothing could refer to it.
+/// with a foreign key to `object`, each probed through its index on the
+/// column, so an object row is deleted only when nothing could refer to
+/// it, in one probe a table.
 const NAMED: &str = "EXISTS (SELECT 1 FROM upload WHERE sha256 = ?1)
     OR EXISTS (SELECT 1 FROM assembly WHERE sha256 = ?1)
     OR EXISTS (SELECT 1 FROM assembly_parts WHERE document_sha256 = ?1)
     OR EXISTS (SELECT 1 FROM socket_revision WHERE document_sha256 = ?1)
     OR EXISTS (SELECT 1 FROM job_input WHERE sha256 = ?1)
-    OR EXISTS (SELECT 1 FROM job WHERE result_sha256 = ?1 OR index_sha256 = ?1)";
+    OR EXISTS (SELECT 1 FROM job WHERE result_sha256 = ?1)
+    OR EXISTS (SELECT 1 FROM job WHERE index_sha256 = ?1)";
+
+/// UP4 (PR 4's review): what an object counts against its holder's quota:
+/// its length, at least [`CHARGE_MIN`] (a file's least use of the disk),
+/// and [`CHARGE_ROW`] for its rows, so tiny objects cannot exhaust the
+/// disk's inodes within a quota of bytes.
+pub const CHARGE_MIN: u64 = 4096;
+
+/// The per-object overhead charged against a quota (UP4).
+pub const CHARGE_ROW: u64 = 512;
+
+/// The charge of an object of `bytes` bytes (UP4).
+pub fn charge(bytes: u64) -> u64 {
+    bytes.max(CHARGE_MIN).saturating_add(CHARGE_ROW)
+}
 
 /// The holding of the object `?2` for the user `?1` at `?3`.
 const HOLDING: &str = "SELECT o.sha256, o.bytes,
@@ -136,12 +163,14 @@ fn nameable(
 
 impl Db {
     /// UP8, OB2: stores an upload of `owner` whose temporary file is
-    /// synced, in one `BEGIN IMMEDIATE`: the object's row looked for,
-    /// `place` called with whether it exists (it renames the file into
-    /// place or removes it), then the object's row inserted if new and the
-    /// user's upload row inserted or its lifetime extended to
-    /// `expires_ms`. A sweep cannot unlink the object between the look and
-    /// the rows (OB2).
+    /// synced, in one `BEGIN IMMEDIATE` that does the same work whether or
+    /// not the object exists (PR 4's review): the caller's own row looked
+    /// for (theirs alone, which tells nothing of another user's), `place`
+    /// called (it renames the file over the final name), the object's row
+    /// inserted unless there (`ON CONFLICT DO NOTHING`), and the caller's
+    /// upload row inserted or its lifetime extended to `expires_ms`. A
+    /// sweep cannot unlink the object between the rename and the rows
+    /// (OB2).
     ///
     /// # Errors
     ///
@@ -154,23 +183,11 @@ impl Db {
         bytes: u64,
         now_ms: i64,
         expires_ms: i64,
-        place: impl FnOnce(bool) -> std::io::Result<()>,
+        place: impl FnOnce() -> std::io::Result<()>,
     ) -> Result<Stored, StoreError> {
         let size = i64::try_from(bytes).unwrap_or(i64::MAX);
         let mut conn = lock(&self.writer);
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let row: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM object WHERE sha256 = ?1)",
-            [sha256],
-            |r| r.get(0),
-        )?;
-        place(row).map_err(StoreError::Place)?;
-        if !row {
-            tx.execute(
-                "INSERT INTO object (sha256, bytes, added_ms) VALUES (?1, ?2, ?3)",
-                params![sha256, size, now_ms],
-            )?;
-        }
         let prior: Option<i64> = tx
             .query_row(
                 "SELECT expires_ms FROM upload WHERE owner = ?1 AND sha256 = ?2",
@@ -178,28 +195,58 @@ impl Db {
                 |r| r.get(0),
             )
             .optional()?;
-        let stored = if let Some(expires) = prior {
-            tx.execute(
-                "UPDATE upload SET expires_ms = max(expires_ms, ?3),
-                   created_ms = CASE WHEN expires_ms > ?4 THEN created_ms ELSE ?4 END
-                 WHERE owner = ?1 AND sha256 = ?2",
-                params![owner, sha256, expires_ms, now_ms],
-            )?;
-            if expires > now_ms {
-                Stored::Refreshed
-            } else {
-                Stored::New
-            }
-        } else {
-            tx.execute(
-                "INSERT INTO upload (owner, sha256, created_ms, expires_ms)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![owner, sha256, now_ms, expires_ms],
-            )?;
-            Stored::New
-        };
+        place().map_err(StoreError::Place)?;
+        tx.execute(
+            "INSERT INTO object (sha256, bytes, added_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT (sha256) DO NOTHING",
+            params![sha256, size, now_ms],
+        )?;
+        tx.execute(
+            "INSERT INTO upload (owner, sha256, created_ms, expires_ms) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (owner, sha256) DO UPDATE SET
+               created_ms = CASE WHEN expires_ms > ?3 THEN created_ms ELSE ?3 END,
+               expires_ms = max(expires_ms, ?4)",
+            params![owner, sha256, now_ms, expires_ms],
+        )?;
         tx.commit()?;
-        Ok(stored)
+        Ok(match prior {
+            Some(expires) if expires > now_ms => Stored::Refreshed,
+            _ => Stored::New,
+        })
+    }
+
+    /// True if `owner` holds a live upload of `sha256` at `now_ms` (L1 of
+    /// PR 4's review: a `PUT` of bytes the caller holds only extends their
+    /// lifetime, and is not charged again).
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn holds_upload(&self, owner: i64, sha256: &str, now_ms: i64) -> Result<bool, DbError> {
+        self.read(|conn| {
+            conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM upload WHERE owner = ?1 AND sha256 = ?2
+                                AND expires_ms > ?3)",
+                params![owner, sha256, now_ms],
+                |r| r.get(0),
+            )
+        })
+    }
+
+    /// UP4: `owner`'s live uploads at `now_ms`.
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn live_uploads(&self, owner: i64, now_ms: i64) -> Result<u64, DbError> {
+        self.read(|conn| {
+            conn.query_row(
+                "SELECT count(*) FROM upload WHERE owner = ?1 AND expires_ms > ?2",
+                params![owner, now_ms],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| u64::try_from(n).unwrap_or(0))
+        })
     }
 
     /// The object `sha256` as `owner` may name it at `now_ms` (UP3), with
@@ -251,17 +298,17 @@ impl Db {
         })
     }
 
-    /// UP4: the bytes `owner` holds at `now_ms`, each object once: their
-    /// unexpired uploads, and the inputs and documents of their retained
-    /// jobs (OB4).
+    /// UP4: what `owner`'s holdings at `now_ms` count against their quota,
+    /// each object once and charged as [`charge`] says: their unexpired
+    /// uploads, and the inputs and documents of their retained jobs (OB4).
     ///
     /// # Errors
     ///
     /// SQLite's.
-    pub fn held_bytes(&self, owner: i64, now_ms: i64) -> Result<u64, DbError> {
+    pub fn charged_bytes(&self, owner: i64, now_ms: i64) -> Result<u64, DbError> {
         self.read(|conn| {
             conn.query_row(
-                "SELECT coalesce(sum(bytes), 0) FROM object WHERE sha256 IN (
+                "SELECT coalesce(sum(max(bytes, ?3) + ?4), 0) FROM object WHERE sha256 IN (
                    SELECT sha256 FROM upload WHERE owner = ?1 AND expires_ms > ?2
                    UNION SELECT i.sha256 FROM job_input i JOIN job j ON j.key = i.job
                          WHERE j.owner = ?1
@@ -269,29 +316,28 @@ impl Db {
                          AND result_sha256 IS NOT NULL
                    UNION SELECT index_sha256 FROM job WHERE owner = ?1
                          AND index_sha256 IS NOT NULL)",
-                params![owner, now_ms],
+                params![
+                    owner,
+                    now_ms,
+                    i64::try_from(CHARGE_MIN).unwrap_or(0),
+                    i64::try_from(CHARGE_ROW).unwrap_or(0)
+                ],
                 |r| r.get::<_, i64>(0),
             )
             .map(|n| u64::try_from(n).unwrap_or(0))
         })
     }
 
-    /// `DELETE /v1/uploads/sha256:{hex}` (RA6, UP5, OB2): `owner`'s live
+    /// `DELETE /v1/uploads/sha256:{hex}` (RA6, UP5, UP3): `owner`'s live
     /// upload row deleted unless a job of theirs that is not terminal names
-    /// the object; then, if no row names it, `unlink` is called and its
-    /// row deleted, in the same `BEGIN IMMEDIATE` (ST5).
+    /// the object. Only the row: the object, if nothing else holds it, is
+    /// the sweep's to unlink (PR 4's review), so a delete's time never
+    /// tells whether another user holds the bytes.
     ///
     /// # Errors
     ///
-    /// SQLite's; an unlink that fails leaves the object and its row, for
-    /// the sweep.
-    pub fn delete_upload(
-        &self,
-        owner: i64,
-        sha256: &str,
-        now_ms: i64,
-        unlink: impl FnOnce() -> std::io::Result<()>,
-    ) -> Result<Deleted, DbError> {
+    /// SQLite's.
+    pub fn delete_upload(&self, owner: i64, sha256: &str, now_ms: i64) -> Result<Deleted, DbError> {
         let mut conn = lock(&self.writer);
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let live: bool = tx.query_row(
@@ -318,10 +364,6 @@ impl Db {
             "DELETE FROM upload WHERE owner = ?1 AND sha256 = ?2",
             params![owner, sha256],
         )?;
-        let named: bool = tx.query_row(&format!("SELECT {NAMED}"), [sha256], |r| r.get(0))?;
-        if !named && unlink().is_ok() {
-            tx.execute("DELETE FROM object WHERE sha256 = ?1", [sha256])?;
-        }
         tx.commit()?;
         Ok(Deleted::Gone)
     }
@@ -337,17 +379,19 @@ impl Db {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let deleted = tx.execute(
             "DELETE FROM upload WHERE key IN (
-               SELECT key FROM upload WHERE expires_ms <= ?1 ORDER BY key LIMIT ?2)",
+               SELECT key FROM upload WHERE expires_ms <= ?1 ORDER BY expires_ms LIMIT ?2)",
             params![now_ms, batch],
         )?;
         tx.commit()?;
         Ok(deleted)
     }
 
-    /// OB2, OB4: up to `batch` objects no row names, each unlinked by
-    /// `unlink` and its row deleted, in one `BEGIN IMMEDIATE` that has
-    /// just found no row naming it (ST5). Returns those unlinked and the
-    /// names whose unlink failed (left, row and all, for the next sweep).
+    /// OB2, OB4: up to `batch` of the candidates (objects whose naming
+    /// row went, `object_candidate`), each looked at in one `BEGIN
+    /// IMMEDIATE`: one no row names is unlinked by `unlink` and its row
+    /// deleted (ST5); one a row names is no candidate any more. Returns
+    /// those unlinked, those whose unlink failed (left, a candidate still,
+    /// for the next sweep) and how many candidates were looked at.
     ///
     /// # Errors
     ///
@@ -356,31 +400,40 @@ impl Db {
         &self,
         batch: u32,
         mut unlink: impl FnMut(&str) -> std::io::Result<()>,
-    ) -> Result<(Vec<String>, Vec<String>), DbError> {
+    ) -> Result<Unnamed, DbError> {
         let mut conn = lock(&self.writer);
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let unnamed: Vec<String> = {
-            let mut statement = tx.prepare(&format!(
-                "SELECT o.sha256 FROM object o WHERE NOT ({})
-                 ORDER BY o.sha256 LIMIT ?1",
-                NAMED.replace("?1", "o.sha256")
-            ))?;
+        let candidates: Vec<String> = {
+            let mut statement =
+                tx.prepare("SELECT sha256 FROM object_candidate ORDER BY sha256 LIMIT ?1")?;
             statement
                 .query_map([batch], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
-        let (mut gone, mut failed) = (Vec::new(), Vec::new());
-        for sha in unnamed {
-            match unlink(&sha) {
-                Ok(()) => {
-                    tx.execute("DELETE FROM object WHERE sha256 = ?1", [&sha])?;
-                    gone.push(sha);
+        let mut out = Unnamed {
+            looked: candidates.len(),
+            ..Unnamed::default()
+        };
+        let named_sql = format!("SELECT {NAMED}");
+        for sha in candidates {
+            let row: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM object WHERE sha256 = ?1)",
+                [&sha],
+                |r| r.get(0),
+            )?;
+            let named: bool = tx.query_row(&named_sql, [&sha], |r| r.get(0))?;
+            if row && !named {
+                if unlink(&sha).is_err() {
+                    out.failed.push(sha);
+                    continue;
                 }
-                Err(_) => failed.push(sha),
+                tx.execute("DELETE FROM object WHERE sha256 = ?1", [&sha])?;
+                out.gone.push(sha.clone());
             }
+            tx.execute("DELETE FROM object_candidate WHERE sha256 = ?1", [&sha])?;
         }
         tx.commit()?;
-        Ok((gone, failed))
+        Ok(out)
     }
 
     /// OB2, OB4: of `names` (files found in the store), each with no

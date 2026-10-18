@@ -59,7 +59,7 @@ pub(super) async fn put(
 ) -> Result<Response, ApiError> {
     let named = reference(&name)?;
     let (parts, body) = request.into_parts();
-    let received = uploads::receive(&shared, caller.user.key, &parts.headers, body)
+    let received = uploads::receive(&shared, caller.user.key, &parts.headers, Some(&named), body)
         .await
         // ER6: an upload's PUT may be sent again unchanged.
         .map_err(|e| match e.code() {
@@ -91,7 +91,7 @@ pub(super) async fn post(
     request: Request,
 ) -> Result<Response, ApiError> {
     let (parts, body) = request.into_parts();
-    let received = uploads::receive(&shared, caller.user.key, &parts.headers, body).await?;
+    let received = uploads::receive(&shared, caller.user.key, &parts.headers, None, body).await?;
     store(&shared, &caller, received).await
 }
 
@@ -120,7 +120,7 @@ async fn store(
             synced.bytes,
             now,
             now.saturating_add(ttl),
-            |row| writing.objects.place(&synced, row),
+            || writing.objects.place(&synced),
         );
         let sha256 = synced.sha256.clone();
         let stored = match stored {
@@ -273,9 +273,11 @@ pub(super) async fn list(
     Ok(super::page(&Page::new(UPLOAD_FORMAT, items, next)))
 }
 
-/// `DELETE /v1/uploads/sha256:{hex}` (RA6, UP5): `204`, the object
-/// unlinked with it when nothing else holds it (OB2); `409 upload_in_use`
-/// while a job that is not terminal names it.
+/// `DELETE /v1/uploads/sha256:{hex}` (RA6, UP5, UP3): `204`, the
+/// caller's row gone; the object, if nothing else holds it, the sweep's to
+/// unlink, so the answer's time never tells whether another user holds the
+/// bytes (PR 4's review); `409 upload_in_use` while a job that is not
+/// terminal names it.
 pub(super) async fn delete(
     State(shared): State<Arc<Shared>>,
     Reader(caller): Reader,
@@ -287,7 +289,7 @@ pub(super) async fn delete(
         let now = writing.ids.now_ms();
         writing
             .db
-            .delete_upload(owner, &sha256, now, || writing.objects.unlink(&sha256))
+            .delete_upload(owner, &sha256, now)
             .map_err(|e| crate::http::db_error(&e))
     })
     .await?;

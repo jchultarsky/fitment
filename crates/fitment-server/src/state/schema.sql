@@ -130,3 +130,32 @@ CREATE TABLE job_cites (job INTEGER NOT NULL REFERENCES job(key) ON DELETE CASCA
 CREATE TABLE job_event (job INTEGER NOT NULL REFERENCES job(key) ON DELETE CASCADE,
   seq INTEGER NOT NULL, at_ms INTEGER NOT NULL, type TEXT NOT NULL,
   data TEXT NOT NULL, PRIMARY KEY (job, seq)) STRICT;                      -- persisted events only (JB8)
+
+-- OB2, OB4 (PR 4's review): every column naming an object is indexed, so
+-- a lookup of what holds an object is one index probe per table; and an
+-- object whose naming row goes becomes a candidate, so the sweep looks
+-- only at candidates, never at every object.
+CREATE INDEX upload_object ON upload(sha256);
+CREATE INDEX upload_expiry ON upload(expires_ms);
+CREATE INDEX assembly_object ON assembly(sha256);
+CREATE INDEX assembly_parts_object ON assembly_parts(document_sha256);
+CREATE INDEX socket_revision_object ON socket_revision(document_sha256);
+CREATE INDEX job_input_object ON job_input(sha256);
+CREATE INDEX job_result ON job(result_sha256);
+CREATE INDEX job_index ON job(index_sha256);
+CREATE TABLE object_candidate (sha256 TEXT PRIMARY KEY) STRICT;            -- OB4: the sweep's to look at
+CREATE TRIGGER upload_gone AFTER DELETE ON upload
+BEGIN INSERT OR IGNORE INTO object_candidate VALUES (OLD.sha256); END;
+CREATE TRIGGER assembly_gone AFTER DELETE ON assembly
+BEGIN INSERT OR IGNORE INTO object_candidate VALUES (OLD.sha256); END;
+CREATE TRIGGER assembly_parts_gone AFTER DELETE ON assembly_parts
+BEGIN INSERT OR IGNORE INTO object_candidate VALUES (OLD.document_sha256); END;
+CREATE TRIGGER socket_revision_gone AFTER DELETE ON socket_revision
+BEGIN INSERT OR IGNORE INTO object_candidate VALUES (OLD.document_sha256); END;
+CREATE TRIGGER job_input_gone AFTER DELETE ON job_input
+BEGIN INSERT OR IGNORE INTO object_candidate VALUES (OLD.sha256); END;
+CREATE TRIGGER job_gone AFTER DELETE ON job
+BEGIN
+  INSERT OR IGNORE INTO object_candidate SELECT OLD.result_sha256 WHERE OLD.result_sha256 IS NOT NULL;
+  INSERT OR IGNORE INTO object_candidate SELECT OLD.index_sha256 WHERE OLD.index_sha256 IS NOT NULL;
+END;

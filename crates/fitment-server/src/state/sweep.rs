@@ -1,18 +1,22 @@
 //! The store's part of JS9's sweep (docs/research/m6-api.md, JS9, OB2,
-//! OB4, UP5): expired uploads deleted, then the objects no row names
-//! unlinked, each inside a `BEGIN IMMEDIATE` that has just found no row
-//! naming it, at most 1,000 to a transaction (ST5); then the files of the
-//! store that no row names (a crash between an upload's rename and its
-//! commit), and temporary files older than any upload lives. Blocking
-//! (SV3). PR 5's sweep adds the jobs, which hold objects too.
+//! OB4, UP5): expired uploads deleted, then the candidates (objects whose
+//! naming row went, recorded by `server.db`'s triggers) looked at, one no
+//! row names unlinked inside the `BEGIN IMMEDIATE` that has just found
+//! none (ST5), in short batches, so the sweep's work follows what changed,
+//! never the store's size, and an upload waits at most one batch (PR 4's
+//! review); then the files of the store that no row names (a crash between
+//! an upload's rename and its commit), and temporary files older than any
+//! upload lives. Blocking (SV3). PR 5's sweep adds the jobs, which hold
+//! objects too.
 
 use std::time::Duration;
 
 use super::{Db, DbError, Objects};
 
-/// At most this many objects unlinked per transaction, so an upload waits
-/// at most one batch (ST5).
-pub const UNLINK_BATCH: u32 = 1000;
+/// At most this many candidates looked at, and files checked, per
+/// transaction, so an upload waits at most one short batch (ST5's 1,000 at
+/// most).
+pub const UNLINK_BATCH: u32 = 256;
 
 /// At most this many expired upload rows deleted per transaction.
 pub const EXPIRE_BATCH: u32 = 500;
@@ -54,11 +58,12 @@ pub fn sweep(
         }
     }
     loop {
-        let (gone, failed) = db.unlink_unnamed(UNLINK_BATCH, |sha| objects.unlink(sha))?;
-        let done = gone.len() + failed.len() < usize::try_from(UNLINK_BATCH).unwrap_or(usize::MAX);
-        swept.unlinked.extend(gone);
-        let stuck = !failed.is_empty();
-        swept.failed.extend(failed);
+        let batch = db.unlink_unnamed(UNLINK_BATCH, |sha| objects.unlink(sha))?;
+        let done = batch.looked < usize::try_from(UNLINK_BATCH).unwrap_or(usize::MAX);
+        swept.unlinked.extend(batch.gone);
+        // A failed unlink stays a candidate: the next sweep tries it again.
+        let stuck = !batch.failed.is_empty();
+        swept.failed.extend(batch.failed);
         if done || stuck {
             break;
         }

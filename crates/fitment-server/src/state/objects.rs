@@ -38,6 +38,10 @@ pub enum ObjectError {
     /// A file whose SHA-256 or length is not its row's.
     #[error("damaged: the file is not the object's bytes")]
     Damaged,
+    /// Larger than one buffer takes (OB3): read it through
+    /// [`Objects::open_checked`].
+    #[error("larger than one buffer: the object is streamed")]
+    TooLargeForBuffer,
     /// The file could not be read.
     #[error("cannot read the object: {}", .0.kind())]
     Io(#[from] io::Error),
@@ -139,35 +143,41 @@ impl Objects {
     }
 
     /// UP8, OB2: the file half of storing `synced`, called inside the
-    /// `server.db` transaction that will name it, with `row` true if an
-    /// object row of its SHA-256 exists. The same calls in the same order
-    /// whatever `row` says, but for one `rename` against one `remove_file`:
-    /// the fan-out directory made, the final name's metadata (never its
-    /// bytes: the existing object is not read or hashed), the temporary
-    /// file renamed into place or removed, the object made read-only
-    /// (ST4) and the fan-out directory synced (ST3). The temporary file is
-    /// renamed unless a row names the object and a regular file of its
-    /// length stands there, so a re-upload repairs a missing file.
+    /// `server.db` transaction that will name it. The same calls in the
+    /// same order whether or not the store holds the object (PR 4's
+    /// review): the final name's metadata (never its bytes: the existing
+    /// object is not read or hashed), the temporary file renamed over the
+    /// final name (an atomic replacement of identical bytes, which also
+    /// repairs a missing or wrong file there), the object made read-only
+    /// (ST4) and its fan-out directory, made with the state (all 256),
+    /// synced (ST3). Before the rename, whatever stands at the name that a
+    /// rename cannot replace is cleared, as the catalog's blobs are: a
+    /// directory removed, another non-regular entry unlinked, and on
+    /// Windows a regular file's read-only flag cleared, which its rename
+    /// needs; elsewhere a regular file is renamed over as it is, so the
+    /// two branches make the same calls.
     ///
     /// # Errors
     ///
     /// The file system's: the transaction then rolls back, and the caller
     /// discards the temporary file; a file renamed into place without a
     /// row is an orphan the sweep unlinks.
-    pub fn place(&self, synced: &Synced, row: bool) -> io::Result<()> {
+    pub fn place(&self, synced: &Synced) -> io::Result<()> {
         let fan = self.fan_out(&synced.sha256);
         let path = self.path(&synced.sha256);
-        self.fs.create_dir_all(&fan)?;
-        let standing = match self.fs.symlink_metadata(&path) {
-            Ok(meta) => meta.is_file() && meta.len() == synced.bytes,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
-            Err(e) => return Err(e),
+        let gone = |r: io::Result<()>| match r {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
         };
-        if row && standing {
-            self.fs.remove_file(&synced.path)?;
-        } else {
-            self.fs.rename(&synced.path, &path)?;
+        match self.fs.symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() => gone(self.fs.remove_dir(&path))?,
+            Ok(meta) if !meta.is_file() => gone(self.fs.remove_file(&path))?,
+            Ok(_) if cfg!(windows) => gone(self.fs.set_readonly(&path, false))?,
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
         }
+        self.fs.rename(&synced.path, &path)?;
         self.fs.set_readonly(&path, true)?;
         self.fs.sync_dir(&fan)
     }
@@ -241,9 +251,11 @@ impl Objects {
         Ok(names)
     }
 
-    /// Removes temporary files: every one when `older_than` is `None` (a
-    /// start, which no upload survives: SD2, SD4), else those last changed
-    /// before it (the sweep: no upload lives past `limits.upload_minutes`).
+    /// Removes temporary files: at a start (`older_than` `None`), every
+    /// upload's (`<32 hex>.part`), since no upload survives its connection
+    /// (SD2, SD4), and nothing else (a concurrent first start's marker may
+    /// be on its way into place); in the sweep, every file last changed
+    /// before `older_than` (no upload lives past `limits.upload_minutes`).
     /// Returns how many were removed.
     ///
     /// # Errors
@@ -262,12 +274,20 @@ impl Objects {
             let Ok(meta) = self.fs.symlink_metadata(&path) else {
                 continue;
             };
-            let old = older_than.is_none_or(|age| {
-                meta.modified()
+            let old = match older_than {
+                None => path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.strip_suffix(PART))
+                    .is_some_and(|stem| {
+                        stem.len() == 32 && stem.bytes().all(|b| b.is_ascii_hexdigit())
+                    }),
+                Some(age) => meta
+                    .modified()
                     .ok()
                     .and_then(|m| now.duration_since(m).ok())
-                    .is_some_and(|elapsed| elapsed > age)
-            });
+                    .is_some_and(|elapsed| elapsed > age),
+            };
             if meta.is_file() && old && self.fs.remove_file(&path).is_ok() {
                 removed += 1;
             }
@@ -281,11 +301,11 @@ impl Objects {
     ///
     /// # Errors
     ///
-    /// [`ObjectError`]; [`ObjectError::Damaged`] for an object above the
-    /// cap, which must be streamed.
+    /// [`ObjectError`]; [`ObjectError::TooLargeForBuffer`] for an object
+    /// above the cap, which must be streamed.
     pub fn read(&self, sha256: &str, bytes: u64) -> Result<Vec<u8>, ObjectError> {
         if bytes > self.one_buffer_max.load(Ordering::Relaxed) {
-            return Err(ObjectError::Damaged);
+            return Err(ObjectError::TooLargeForBuffer);
         }
         let path = self.path(sha256);
         let content = self.fs.read_capped(&path, bytes).map_err(missing)?;
@@ -295,10 +315,14 @@ impl Objects {
         }
     }
 
-    /// OB3: an object above the one-buffer cap, hashed in one pass through
-    /// the streaming reader and opened again for the second, so a mismatch
-    /// stops before the caller sends its first byte. An object within the
-    /// cap is read whole by [`Objects::read`] instead.
+    /// OB3: an object above the one-buffer cap, hashed in one pass of the
+    /// streaming reader, then rewound on the same open file for the second,
+    /// so a mismatch stops before the caller sends its first byte and the
+    /// second pass reads the file the first one checked; the second pass is
+    /// hashed again as it goes and fails its last read on a mismatch, so a
+    /// file changed in place between the passes is never sent whole as the
+    /// object (PR 4's review). An object within the cap is read whole by
+    /// [`Objects::read`] instead.
     ///
     /// # Errors
     ///
@@ -320,12 +344,56 @@ impl Objects {
         if seen != bytes || hasher.finish_hex() != sha256 {
             return Err(ObjectError::Damaged);
         }
-        self.fs.open_stream(&path, bytes).map_err(missing)
+        reader.rewind()?;
+        Ok(Box::new(Checked {
+            inner: reader,
+            hasher: Sha256::new(),
+            sha256: sha256.to_owned(),
+            bytes,
+            seen: 0,
+        }))
     }
 
     /// The one-buffer cap in force (OB3).
     pub fn one_buffer_max(&self) -> u64 {
         self.one_buffer_max.load(Ordering::Relaxed)
+    }
+}
+
+/// OB3's second pass: the bytes hashed again as they are read; the read
+/// that meets the end fails, `InvalidData`, if they are not the object's,
+/// so its caller aborts rather than finish sending.
+struct Checked {
+    inner: Box<dyn FsRead>,
+    hasher: Sha256,
+    sha256: String,
+    bytes: u64,
+    seen: u64,
+}
+
+impl FsRead for Checked {
+    fn read_chunk(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read_chunk(buf)?;
+        if n == 0 {
+            let hash = std::mem::take(&mut self.hasher).finish_hex();
+            if self.seen != self.bytes || hash != self.sha256 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the object changed between its check and its sending",
+                ));
+            }
+            return Ok(0);
+        }
+        self.hasher.update(&buf[..n]);
+        self.seen += u64::try_from(n).unwrap_or(u64::MAX);
+        Ok(n)
+    }
+
+    fn rewind(&mut self) -> io::Result<()> {
+        self.inner.rewind()?;
+        self.hasher = Sha256::new();
+        self.seen = 0;
+        Ok(())
     }
 }
 

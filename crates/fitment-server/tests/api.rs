@@ -438,8 +438,8 @@ async fn bytes_enter_only_through_uploads() {
 /// names them, written lower-case; the caller's own bytes again are `200`
 /// with the lifetime extended; `POST` names them and says where;
 /// `fitment.upload` states the caller's holdings; a wrong type or any
-/// `Content-Encoding` is `415`; `DELETE` removes the row and, with nothing
-/// else holding it, the object.
+/// `Content-Encoding` is `415`; `DELETE` removes the row, and the sweep
+/// the object nothing else holds.
 #[tokio::test]
 async fn an_upload_is_named_by_its_sha256_and_kept_once() {
     let server = TestServer::fresh();
@@ -518,6 +518,8 @@ async fn an_upload_is_named_by_its_sha256_and_kept_once() {
     assert_eq!(server.send(missing).await.code(), "unsupported_media_type");
     let deleted = server.send(Call::new(Method::DELETE, &location)).await;
     assert_eq!(deleted.status, 204);
+    assert_eq!(server.object_files().len(), 1, "the sweep's to unlink");
+    server.server().sweep_store().unwrap();
     assert!(
         server.object_files().is_empty(),
         "the object went with its last row"
@@ -582,9 +584,10 @@ async fn every_corpus_file_uploads_with_its_sha256() {
 
 /// OB3: an object leaves the store only checked: read into one buffer and
 /// hashed against its name; a byte flipped is damaged and a removed file
-/// missing; above the one-buffer cap it is hashed in one pass of the
-/// streaming reader and opened again for the second, so damage stops it
-/// before its first byte; both passes go through the seam (CA7).
+/// missing; above the one-buffer cap `read` refuses it
+/// (`TooLargeForBuffer`), and it is hashed in one pass of the streaming
+/// reader and rewound on the same open file for the second, so damage
+/// stops it before its first byte; both passes go through the seam (CA7).
 #[tokio::test]
 async fn objects_leave_the_store_only_checked() {
     let dirs = Dirs::new();
@@ -619,18 +622,23 @@ async fn objects_leave_the_store_only_checked() {
     assert!(
         matches!(
             objects.read(&sha256, n),
-            Err(fitment_server::state::ObjectError::Damaged)
+            Err(fitment_server::state::ObjectError::TooLargeForBuffer)
         ),
         "above the cap, never one buffer"
     );
     let calls = seam.calls().len();
     let mut stream = objects.open_checked(&sha256, n).unwrap();
     assert_eq!(read_whole(&mut stream), bytes);
-    let streamed = seam.calls()[calls..]
-        .iter()
-        .filter(|c| matches!(c, fitment_catalog::fs::Call::OpenStream(_)))
-        .count();
-    assert_eq!(streamed, 2, "one pass to hash, one to send");
+    let after = &seam.calls()[calls..];
+    let count =
+        |want: fn(&fitment_catalog::fs::Call) -> bool| after.iter().filter(|c| want(c)).count();
+    let opens = count(|c| matches!(c, fitment_catalog::fs::Call::OpenStream(_)));
+    let rewinds = count(|c| matches!(c, fitment_catalog::fs::Call::Rewind(_)));
+    assert_eq!(
+        (opens, rewinds),
+        (1, 1),
+        "one open file, rewound for the second pass"
+    );
     let path = server
         .dirs
         .state
@@ -668,4 +676,60 @@ async fn objects_leave_the_store_only_checked() {
         1,
         "the row's file is missing"
     );
+}
+
+/// OB3 (L3 of PR 4's review): the second pass of a streamed object is
+/// hashed again as it is read, so a file changed in place between the
+/// passes fails the read that meets its end, and its sender aborts rather
+/// than finish sending other bytes as the object.
+#[tokio::test]
+async fn a_file_changed_between_the_passes_fails_the_second() {
+    let dirs = Dirs::new();
+    let config = dirs.config();
+    let object = std::sync::Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+    let seam = {
+        let object = std::sync::Arc::clone(&object);
+        fitment_catalog::fs::CountingFs::with_hook(move |call| {
+            if matches!(call, fitment_catalog::fs::Call::Rewind(_)) {
+                if let Some(path) = object.lock().unwrap().clone() {
+                    use std::io::{Seek as _, Write as _};
+                    let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+                    file.seek(std::io::SeekFrom::Start(10)).unwrap();
+                    file.write_all(b"X").unwrap();
+                }
+            }
+        })
+    };
+    let server = TestServer::in_process_with_fs(dirs, config, std::sync::Arc::new(seam));
+    let ada = support::seed_user(
+        server.server(),
+        "ada",
+        fitment_server::auth::Role::Reader,
+        None,
+    );
+    let bytes = vec![b'b'; 5000];
+    let sha256 = support::seed_upload(server.server(), ada.key, &bytes);
+    let path = server
+        .dirs
+        .state
+        .join("objects/sha256")
+        .join(&sha256[..2])
+        .join(&sha256);
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    *object.lock().unwrap() = Some(path);
+    let objects = server.server().seams().objects;
+    objects.set_one_buffer_max(100);
+    let mut stream = objects.open_checked(&sha256, 5000).unwrap();
+    let mut buf = [0_u8; 1024];
+    let error = loop {
+        match stream.read_chunk(&mut buf) {
+            Ok(0) => panic!("the changed file was sent whole"),
+            Ok(_) => {}
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }

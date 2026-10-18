@@ -59,6 +59,14 @@ pub trait FsRead: Send {
     /// The file system's; `InvalidData` once the file holds more than the
     /// cap (it grew after it was opened).
     fn read_chunk(&mut self, buf: &mut [u8]) -> io::Result<usize>;
+
+    /// Goes back to the file's first byte, on the same open file, so a
+    /// second pass reads the bytes the first one did (OB3).
+    ///
+    /// # Errors
+    ///
+    /// The file system's.
+    fn rewind(&mut self) -> io::Result<()>;
 }
 
 /// Every file operation the catalog makes.
@@ -121,6 +129,14 @@ pub trait Fs: Send + Sync {
     ///
     /// The file system's.
     fn remove_file(&self, path: &Path) -> io::Result<()>;
+
+    /// Removes an empty directory (CA7: one standing at a name a file is
+    /// renamed to).
+    ///
+    /// # Errors
+    ///
+    /// The file system's.
+    fn remove_dir(&self, path: &Path) -> io::Result<()>;
 
     /// Syncs a directory, so the names in it are durable (ST3). Windows
     /// cannot open a directory to sync it; there it does nothing (R7).
@@ -225,9 +241,11 @@ impl FsWrite for StdWrite {
     }
 }
 
-/// [`StdFs`]'s streaming reader: a file, and what it may still give.
+/// [`StdFs`]'s streaming reader: a file, its cap, and what it may still
+/// give.
 struct StdRead {
     file: File,
+    cap: u64,
     left: u64,
 }
 
@@ -251,6 +269,12 @@ impl FsRead for StdRead {
         let n = self.file.read(&mut buf[..room])?;
         self.left -= u64::try_from(n).unwrap_or(self.left);
         Ok(n)
+    }
+
+    fn rewind(&mut self) -> io::Result<()> {
+        io::Seek::rewind(&mut self.file)?;
+        self.left = self.cap;
+        Ok(())
     }
 }
 
@@ -311,6 +335,10 @@ impl Fs for StdFs {
         std::fs::remove_file(path)
     }
 
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        std::fs::remove_dir(path)
+    }
+
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
         if cfg!(windows) {
             return Ok(());
@@ -350,7 +378,11 @@ impl Fs for StdFs {
                 "not a regular file",
             ));
         }
-        Ok(Box::new(StdRead { file, left: cap }))
+        Ok(Box::new(StdRead {
+            file,
+            cap,
+            left: cap,
+        }))
     }
 }
 
@@ -400,6 +432,10 @@ mod support {
         OpenStream(PathBuf),
         /// A stream's `read_chunk`, with the room it was given.
         ReadChunk(PathBuf, usize),
+        /// A stream's `rewind`.
+        Rewind(PathBuf),
+        /// `remove_dir`.
+        RemoveDir(PathBuf),
     }
 
     type Hook = Box<dyn Fn(&Call) + Send + Sync>;
@@ -519,6 +555,12 @@ mod support {
             let file = &mut self.file;
             self.inner.run(&call, || file.read_chunk(buf))
         }
+
+        fn rewind(&mut self) -> io::Result<()> {
+            let call = Call::Rewind(self.path.clone());
+            let file = &mut self.file;
+            self.inner.run(&call, || file.rewind())
+        }
     }
 
     impl Fs for CountingFs {
@@ -564,6 +606,10 @@ mod support {
 
         fn remove_file(&self, path: &Path) -> io::Result<()> {
             self.run(&Call::Remove(path.to_owned()), || StdFs.remove_file(path))
+        }
+
+        fn remove_dir(&self, path: &Path) -> io::Result<()> {
+            self.run(&Call::RemoveDir(path.to_owned()), || StdFs.remove_dir(path))
         }
 
         fn sync_dir(&self, path: &Path) -> io::Result<()> {

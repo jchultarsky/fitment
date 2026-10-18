@@ -73,15 +73,26 @@ impl UploadDocument {
     }
 }
 
+/// Uploads running on the server, and per user how many and what they
+/// charge.
+type Running = (usize, BTreeMap<i64, (usize, u64)>);
+
 /// UP4's counts: uploads at once, per server and per user over all their
-/// tokens (review F5), and the bytes of open temporary files.
+/// tokens (review F5), what each user's running uploads charge against
+/// their quota (PR 4's review, L1), and the bytes of open temporary files.
 #[derive(Debug)]
 pub struct Uploads {
     all: usize,
     per_user: usize,
-    running: Mutex<(usize, BTreeMap<i64, usize>)>,
+    /// Uploads running on the server, and per user: how many, and what
+    /// they charge.
+    running: Mutex<Running>,
     staged: AtomicU64,
     staging_cap: u64,
+    /// OP11: the most throughput samples an upload has held (H1 of PR 4's
+    /// review).
+    #[cfg(feature = "test-support")]
+    most_samples: std::sync::atomic::AtomicUsize,
 }
 
 /// Why an upload found no slot (UP4).
@@ -102,6 +113,8 @@ impl Uploads {
             running: Mutex::new((0, BTreeMap::new())),
             staged: AtomicU64::new(0),
             staging_cap: limits.staging_gib.saturating_mul(1024 * MIB),
+            #[cfg(feature = "test-support")]
+            most_samples: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -115,15 +128,16 @@ impl Uploads {
         if running.0 >= self.all {
             return Err(Busy::Server);
         }
-        let mine = running.1.entry(user).or_insert(0);
-        if *mine >= self.per_user {
+        let mine = running.1.entry(user).or_insert((0, 0));
+        if mine.0 >= self.per_user {
             return Err(Busy::User);
         }
-        *mine += 1;
+        mine.0 += 1;
         running.0 += 1;
         Ok(Slot {
             uploads: Arc::clone(self),
             user,
+            charged: 0,
         })
     }
 
@@ -170,15 +184,60 @@ impl Uploads {
     /// The uploads running: on the server, and for `user`.
     pub fn running(&self, user: i64) -> (usize, usize) {
         let running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
-        (running.0, running.1.get(&user).copied().unwrap_or(0))
+        (running.0, running.1.get(&user).map_or(0, |m| m.0))
+    }
+
+    /// What `user`'s running uploads charge against their quota (L1).
+    pub fn charged(&self, user: i64) -> u64 {
+        let running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        running.1.get(&user).map_or(0, |m| m.1)
+    }
+
+    /// OP11: the most throughput samples one upload has held (H1).
+    #[cfg(feature = "test-support")]
+    pub fn most_samples(&self) -> usize {
+        self.most_samples.load(Ordering::SeqCst)
+    }
+
+    #[cfg(feature = "test-support")]
+    fn saw_samples(&self, n: usize) {
+        self.most_samples.fetch_max(n, Ordering::SeqCst);
     }
 }
 
-/// An upload's slot (UP4); dropped, the slot is free.
+/// An upload's slot (UP4) and what it charges against its user's quota
+/// while it runs (L1); dropped, both are free.
 #[derive(Debug)]
 pub struct Slot {
     uploads: Arc<Uploads>,
     user: i64,
+    charged: u64,
+}
+
+impl Slot {
+    /// Raises this upload's charge to `charge` if the user's running
+    /// uploads then charge at most `room`; false, the charge unchanged,
+    /// otherwise (L1: two uploads of one user share one quota).
+    fn charge_to(&mut self, charge: u64, room: u64) -> bool {
+        if charge <= self.charged {
+            return true;
+        }
+        let mut running = self
+            .uploads
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(mine) = running.1.get_mut(&self.user) else {
+            return false;
+        };
+        let total = mine.1 - self.charged + charge;
+        if total > room {
+            return false;
+        }
+        mine.1 = total;
+        self.charged = charge;
+        true
+    }
 }
 
 impl Drop for Slot {
@@ -190,8 +249,9 @@ impl Drop for Slot {
             .unwrap_or_else(PoisonError::into_inner);
         running.0 = running.0.saturating_sub(1);
         if let Some(mine) = running.1.get_mut(&self.user) {
-            *mine = mine.saturating_sub(1);
-            if *mine == 0 {
+            mine.0 = mine.0.saturating_sub(1);
+            mine.1 = mine.1.saturating_sub(self.charged);
+            if mine.0 == 0 {
                 running.1.remove(&self.user);
             }
         }
@@ -343,13 +403,23 @@ fn check_type(headers: &HeaderMap) -> Result<(), ApiError> {
     }
 }
 
-/// HX3's minimum throughput: the bytes received in the last window, from
-/// the samples of (time, bytes so far), must be at least `need` once the
-/// upload is a window old.
+/// HX3's minimum throughput (review F5 and PR 4's review): no first byte
+/// within `upload_first_byte_seconds` (or the window, if shorter) is too
+/// slow; from then until the
+/// upload is a window old, it must have sent `upload_min_kib_s` for every
+/// second it ran; after, the bytes of the last window, from the samples of
+/// (time, bytes so far), must be the minimum's over the window. Samples
+/// closer than a 64th of the window are one (the later count kept on the
+/// earlier time, which errs only toward the stricter answer), so an upload
+/// of tiny frames holds about 64 a window, not one a frame (H1).
 #[derive(Debug)]
 struct Throughput {
     started: Instant,
     window: Duration,
+    first_byte: Duration,
+    /// The minimum, in bytes a second.
+    rate: u64,
+    /// The minimum over a whole window.
     need: u64,
     samples: VecDeque<(Instant, u64)>,
 }
@@ -357,31 +427,46 @@ struct Throughput {
 impl Throughput {
     fn new(started: Instant, limits: &Limits) -> Self {
         let window = Duration::from_secs(limits.upload_window_seconds);
-        let need = limits
-            .upload_min_kib_s
-            .saturating_mul(1024)
-            .saturating_mul(limits.upload_window_seconds);
+        let rate = limits.upload_min_kib_s.saturating_mul(1024);
         Self {
             started,
             window,
-            need,
+            first_byte: Duration::from_secs(limits.upload_first_byte_seconds),
+            rate,
+            need: rate.saturating_mul(limits.upload_window_seconds),
             samples: VecDeque::from([(started, 0)]),
         }
     }
 
-    /// Records `total` bytes received at `now`.
+    /// Records `total` bytes received at `now`: a new sample a 64th of the
+    /// window after the last, else the last's count raised. The base,
+    /// `(started, 0)`, stays.
     fn record(&mut self, now: Instant, total: u64) {
-        self.samples.push_back((now, total));
+        let close = self.window / 64;
+        let more = self.samples.len() > 1;
+        match self.samples.back_mut() {
+            Some(last) if more && now.duration_since(last.0) < close => last.1 = total,
+            _ => self.samples.push_back((now, total)),
+        }
     }
 
-    /// True if, at `now` with `total` bytes, the last window fell short.
+    /// How many samples it holds.
+    #[cfg(feature = "test-support")]
+    fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// True if, at `now` with `total` bytes, the upload is too slow.
     fn short(&mut self, now: Instant, total: u64) -> bool {
-        let Some(since) = now.checked_sub(self.window) else {
-            return false;
-        };
-        if since < self.started {
+        let elapsed = now.duration_since(self.started);
+        if elapsed < self.first_byte.min(self.window) {
             return false;
         }
+        if elapsed < self.window {
+            let owed = u128::from(self.rate) * elapsed.as_millis() / 1000;
+            return u128::from(total) < owed.max(1);
+        }
+        let since = now.checked_sub(self.window).unwrap_or(self.started);
         // The base is the last sample at or before the window's start;
         // older ones are no longer needed.
         while self.samples.len() > 1 && self.samples[1].0 <= since {
@@ -397,13 +482,33 @@ impl Throughput {
     }
 }
 
+/// What an upload may still charge against its user's quota (UP4): the
+/// room left by their holdings, or none to check for a `PUT` of bytes they
+/// hold already, which only extends their lifetime (L1).
+#[derive(Debug, Clone, Copy)]
+struct Budget {
+    room: Option<u64>,
+}
+
+/// `507 quota_exceeded` for the user's bytes (UP4).
+fn user_quota() -> ApiError {
+    over_quota(
+        "user_quota_gib",
+        "this user's stored bytes are at their quota: delete some first",
+    )
+}
+
 /// The checks before a byte is read (UP4): the body's type, a slot, the
-/// user's quota and the staging quota for a declared length.
+/// user's live uploads and quota (their holdings charged as
+/// `state::charge` says, beside what their running uploads charge), and
+/// the staging quota, for a declared length. `named` is a `PUT`'s name:
+/// bytes the caller holds already are not charged again (L1).
 async fn admit(
     shared: &Arc<Shared>,
     user: i64,
     headers: &HeaderMap,
-) -> Result<(Slot, Reservation, u64), ApiError> {
+    named: Option<&str>,
+) -> Result<(Slot, Reservation, Budget), ApiError> {
     check_type(headers)?;
     let limits = &shared.config.limits;
     check_declared(headers, limits)?;
@@ -416,7 +521,7 @@ async fn admit(
         .with("reason", "draining")
         .retry_after(5));
     }
-    let slot = shared.uploads.take(user).map_err(|busy| {
+    let mut slot = shared.uploads.take(user).map_err(|busy| {
         let (limit, detail) = match busy {
             Busy::Server => (
                 "upload_concurrency",
@@ -431,21 +536,44 @@ async fn admit(
             .with("limit", limit)
             .retry_after(1)
     })?;
-    let reading = Arc::clone(shared);
-    let held = blocking(move || {
-        reading
-            .db
-            .held_bytes(user, reading.ids.now_ms())
-            .map_err(|e| crate::http::db_error(&e))
+    let (reading, named) = (Arc::clone(shared), named.map(str::to_owned));
+    let (held, count, holds) = blocking(move || {
+        let now = reading.ids.now_ms();
+        let db = &reading.db;
+        let holds = match &named {
+            Some(sha256) => db.holds_upload(user, sha256, now),
+            None => Ok(false),
+        };
+        let read = (|| {
+            Ok((
+                db.charged_bytes(user, now)?,
+                db.live_uploads(user, now)?,
+                holds?,
+            ))
+        })();
+        read.map_err(|e: crate::state::DbError| crate::http::db_error(&e))
     })
     .await?;
     let declared = declared(headers).unwrap_or(0);
-    let quota = limits.user_quota_gib.saturating_mul(1024 * MIB);
-    if held.saturating_add(declared) > quota {
-        return Err(over_quota(
-            "user_quota_gib",
-            "this user's stored bytes are at their quota: delete some first",
-        ));
+    let budget = Budget {
+        room: (!holds).then(|| {
+            limits
+                .user_quota_gib
+                .saturating_mul(1024 * MIB)
+                .saturating_sub(held)
+        }),
+    };
+    if let Some(room) = budget.room {
+        if count >= limits.user_max_uploads {
+            return Err(over_quota(
+                "user_max_uploads",
+                "this user holds the most uploads allowed: delete some first",
+            )
+            .with("max_uploads", limits.user_max_uploads));
+        }
+        if !slot.charge_to(crate::state::charge(declared), room) {
+            return Err(user_quota());
+        }
     }
     let mut reservation = Reservation {
         uploads: Arc::clone(&shared.uploads),
@@ -457,7 +585,7 @@ async fn admit(
             "the server's staging space is full: try again later",
         ));
     }
-    Ok((slot, reservation, held))
+    Ok((slot, reservation, budget))
 }
 
 /// UP2, UP4, HX3: receives `body` for `user` into a temporary file,
@@ -473,13 +601,19 @@ pub(crate) async fn receive(
     shared: &Arc<Shared>,
     user: i64,
     headers: &HeaderMap,
+    named: Option<&str>,
     body: Body,
 ) -> Result<Received, ApiError> {
-    let (slot, mut reservation, held) = admit(shared, user, headers).await?;
+    let (mut slot, mut reservation, budget) = admit(shared, user, headers, named).await?;
     let staging = Arc::clone(shared);
     let staged = blocking(move || staging.objects.stage().map_err(|e| storage(&e))).await?;
     let mut pending = Pending(Some(staged));
-    let streamed = stream(shared, &mut pending, &mut reservation, held, headers, body).await;
+    let counts = Counts {
+        slot: &mut slot,
+        reservation: &mut reservation,
+        budget,
+    };
+    let streamed = stream(shared, &mut pending, counts, headers, body).await;
     let finished = match streamed {
         Ok(()) => match pending.0.take() {
             Some(staged) => blocking(move || staged.finish().map_err(|e| storage(&e))).await,
@@ -507,22 +641,31 @@ pub(crate) async fn receive(
     }
 }
 
+/// What an upload counts as it streams (UP4): its slot's charge, its
+/// staged bytes and its budget.
+struct Counts<'a> {
+    slot: &'a mut Slot,
+    reservation: &'a mut Reservation,
+    budget: Budget,
+}
+
 /// The streaming half of [`receive`]: the body read frame by frame under
 /// HX3's waits and UP2's and UP4's counts, written in pieces of at most
 /// [`FLUSH`] bytes.
 async fn stream(
     shared: &Arc<Shared>,
     pending: &mut Pending,
-    reservation: &mut Reservation,
-    held: u64,
+    counts: Counts<'_>,
     headers: &HeaderMap,
     mut body: Body,
 ) -> Result<(), ApiError> {
+    let Counts {
+        slot,
+        reservation,
+        budget,
+    } = counts;
     let limits = &shared.config.limits;
-    let (cap, quota) = (
-        cap(limits),
-        limits.user_quota_gib.saturating_mul(1024 * MIB),
-    );
+    let cap = cap(limits);
     let started = Instant::now();
     let deadline = started + Duration::from_secs(limits.upload_minutes.saturating_mul(60));
     let chunk_wait = Duration::from_secs(limits.upload_chunk_seconds);
@@ -558,11 +701,10 @@ async fn stream(
         if received > cap {
             return Err(too_large(cap));
         }
-        if held.saturating_add(received) > quota {
-            return Err(over_quota(
-                "user_quota_gib",
-                "this user's stored bytes are at their quota: delete some first",
-            ));
+        if let Some(room) = budget.room {
+            if !slot.charge_to(crate::state::charge(received), room) {
+                return Err(user_quota());
+            }
         }
         if received > reservation.bytes && !reservation.grow(received - reservation.bytes) {
             return Err(over_quota(
@@ -571,6 +713,8 @@ async fn stream(
             ));
         }
         throughput.record(now, received);
+        #[cfg(feature = "test-support")]
+        shared.uploads.saw_samples(throughput.len());
         if throughput.short(now, received) {
             return Err(slow(limits, received));
         }
@@ -605,9 +749,18 @@ fn whole_upload(limits: &Limits) -> ApiError {
 
 /// `408 upload_too_slow` for an upload that received `received` bytes.
 fn slow(limits: &Limits, received: u64) -> ApiError {
+    if received == 0 {
+        return too_slow(format!(
+            "an upload's first bytes come within {} s; none came",
+            limits
+                .upload_first_byte_seconds
+                .min(limits.upload_window_seconds)
+        ))
+        .with("received", 0);
+    }
     too_slow(format!(
-        "an upload sends at least {} KiB/s over any {} s, and a chunk within {} s; \
-         {received} bytes came",
+        "an upload sends at least {} KiB/s for every second it runs and over any {} s, \
+         and a chunk within {} s; {received} bytes came",
         limits.upload_min_kib_s, limits.upload_window_seconds, limits.upload_chunk_seconds
     ))
     .with("received", received)

@@ -131,9 +131,13 @@ pub struct Limits {
     pub upload_min_kib_s: u64,
     /// HX3: the longest wait for an upload's next chunk.
     pub upload_chunk_seconds: u64,
-    /// HX3: the window `upload_min_kib_s` is averaged over, and the time
-    /// an upload runs before it applies.
+    /// HX3: the window `upload_min_kib_s` is averaged over; before it
+    /// passes, the minimum applies pro rata.
     pub upload_window_seconds: u64,
+    /// HX3 (PR 4's review): the time an upload's first bytes have.
+    pub upload_first_byte_seconds: u64,
+    /// UP4 (PR 4's review): a user's live uploads at most.
+    pub user_max_uploads: u64,
     pub page_max: u32,
     pub wait_max_seconds: u32,
 }
@@ -158,6 +162,8 @@ impl Default for Limits {
             upload_min_kib_s: 64,
             upload_chunk_seconds: 30,
             upload_window_seconds: 30,
+            upload_first_byte_seconds: 5,
+            user_max_uploads: 10_000,
             page_max: 1000,
             wait_max_seconds: 60,
         }
@@ -182,6 +188,8 @@ impl Limits {
             self.upload_min_kib_s,
             self.upload_chunk_seconds,
             self.upload_window_seconds,
+            self.upload_first_byte_seconds,
+            self.user_max_uploads,
         ];
         if counts.contains(&0) || sizes.contains(&0) {
             return Err(value_error(

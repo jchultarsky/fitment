@@ -748,8 +748,8 @@ pub fn seed_upload(server: &Server, owner: i64, bytes: &[u8]) -> String {
     let sha256 = synced.sha256.clone();
     seams
         .db
-        .store_upload(owner, &sha256, synced.bytes, now, now + 86_400_000, |row| {
-            seams.objects.place(&synced, row)
+        .store_upload(owner, &sha256, synced.bytes, now, now + 86_400_000, || {
+            seams.objects.place(&synced)
         })
         .unwrap();
     synced.kept();

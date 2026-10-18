@@ -88,7 +88,17 @@ Until 1.0, minor versions may contain breaking changes.
   (`create_new_stream`, `open_stream`, the traits `FsWrite` and `FsRead`):
   a breaking change for an implementor of `Fs`, which must add the two
   methods; `CountingFs` records and fails their calls and is now `Clone`.
-  No output of `fitment` changes.
+  No output of `fitment` changes. After review: an upload's throughput
+  samples are coalesced (tiny frames no longer grow its memory), its first
+  bytes must come within 5 s and the minimum applies pro rata before the
+  window; every column naming an object is indexed and the sweep looks
+  only at objects whose naming row went; `DELETE` never unlinks (only the
+  sweep does), and both of an upload's branches rename over the final name
+  in fan-out directories made with the state; an object is charged at
+  least 4 KiB plus 512 bytes against the quota, a user holds at most
+  10,000 uploads, a user's concurrent uploads share one quota and a `PUT`
+  of held bytes is not charged again. `fitment-catalog`'s `Fs` also gains
+  `remove_dir` and `FsRead::rewind`.
 
 ## [0.2.0] - 2026-10-17
 

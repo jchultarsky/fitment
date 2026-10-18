@@ -11,7 +11,7 @@ pub use auth::{
     CreateUserError, MintError, MintFrom, NewToken, PasswordSet, Presented, SWEEP_BATCH, TokenRow,
     UpdateUserError, UserRow,
 };
-pub use uploads::{Deleted, Holding, StoreError, Stored};
+pub use uploads::{CHARGE_MIN, CHARGE_ROW, Deleted, Holding, StoreError, Stored, Unnamed, charge};
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};

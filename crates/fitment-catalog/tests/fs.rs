@@ -141,3 +141,43 @@ fn streams_are_new_private_regular_and_capped() {
     let grown = reader.read_chunk(&mut buf).err().map(|e| e.kind());
     assert_eq!(grown, Some(io::ErrorKind::InvalidData));
 }
+
+/// CA7 (PR 4's review): a stream rewinds on its open file, so a second
+/// pass reads the bytes the first did, and an empty directory standing at
+/// a name is removed; both are calls the seam records and fails.
+#[test]
+fn a_stream_rewinds_and_a_directory_is_removed_through_the_seam() {
+    let dir = Dir::new("rewind");
+    let path = dir.0.join("r.part");
+    let seam = CountingFs::new();
+    let mut writer = seam.create_new_stream(&path).unwrap();
+    writer.write_chunk(b"0123456789").unwrap();
+    writer.sync().unwrap();
+    drop(writer);
+    let mut reader = seam.open_stream(&path, 10).unwrap();
+    let mut buf = [0_u8; 16];
+    assert_eq!(reader.read_chunk(&mut buf).unwrap(), 10);
+    reader.rewind().unwrap();
+    assert_eq!(reader.read_chunk(&mut buf).unwrap(), 10, "the cap again");
+    assert_eq!(&buf[..10], b"0123456789");
+    let standing = dir.0.join("standing");
+    std::fs::create_dir(&standing).unwrap();
+    seam.remove_dir(&standing).unwrap();
+    assert!(!standing.exists());
+    let calls = seam.calls();
+    assert!(calls.contains(&Call::Rewind(path.clone())));
+    assert!(calls.contains(&Call::RemoveDir(standing.clone())));
+    let k = calls
+        .iter()
+        .position(|c| *c == Call::Rewind(path.clone()))
+        .unwrap();
+    let failing = CountingFs::failing_at(k, io::ErrorKind::Other);
+    let other = dir.0.join("f.part");
+    let mut writer = failing.create_new_stream(&other).unwrap();
+    writer.write_chunk(b"0123456789").unwrap();
+    writer.sync().unwrap();
+    drop(writer);
+    let mut reader = failing.open_stream(&other, 10).unwrap();
+    reader.read_chunk(&mut buf).unwrap();
+    assert!(reader.rewind().is_err());
+}

@@ -327,9 +327,10 @@ async fn a_jobs_inputs_hold_its_uploads_from_submission() {
         .await;
     assert_eq!(held.json()["held_by"], serde_json::json!(["upload", "job"]));
     assert_eq!(held.json()["pinned_by_jobs"], 1);
-    let total = u64::try_from(matched.len() + read.len()).unwrap();
+    let charge = |bytes: &[u8]| fitment_server::state::charge(u64::try_from(bytes.len()).unwrap());
+    let total = charge(matched) + charge(read);
     assert_eq!(
-        seams.db.held_bytes(ada.key, seams.ids.now_ms()).unwrap(),
+        seams.db.charged_bytes(ada.key, seams.ids.now_ms()).unwrap(),
         total
     );
     for id in &jobs {
@@ -349,7 +350,7 @@ async fn a_jobs_inputs_hold_its_uploads_from_submission() {
         "not a match's"
     );
     assert_eq!(
-        seams.db.held_bytes(ada.key, seams.ids.now_ms()).unwrap(),
+        seams.db.charged_bytes(ada.key, seams.ids.now_ms()).unwrap(),
         total
     );
     let swept = server.server().sweep_store().unwrap();
@@ -360,4 +361,156 @@ async fn a_jobs_inputs_hold_its_uploads_from_submission() {
     let swept = server.server().sweep_store().unwrap();
     assert_eq!(swept.unlinked.len(), 2, "no row names them now");
     assert_eq!(server.object_files(), Vec::<String>::new());
+}
+
+/// OB2, OB4 (H2 of PR 4's review): every column naming an object is
+/// indexed, and the sweep looks only at candidates (objects whose naming
+/// row went), in short batches: over a store of 20,000 objects a sweep
+/// with nothing to do is quick, one that unlinks half of them is bounded,
+/// a `PUT` beside it waits at most a batch, and a `DELETE` and a `HEAD`
+/// are one indexed probe each.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sweep_follows_its_candidates_not_the_store() {
+    let server = TestServer::fresh();
+    let ada = seed_user(server.server(), "ada", Role::Reader, None);
+    let (_, token) = seed_token(server.server(), &ada, Role::Reader, 30);
+    let mut conn = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+    let tx = conn.transaction().unwrap();
+    for i in 0..20_000_u32 {
+        let sha256 = fitment_core::sha256_hex(&i.to_be_bytes());
+        tx.execute(
+            "INSERT INTO object (sha256, bytes, added_ms) VALUES (?1, 10, 0)",
+            [&sha256],
+        )
+        .unwrap();
+        // Half expire at 1, half live on.
+        let expires = if i % 2 == 0 { 1_i64 } else { i64::MAX };
+        tx.execute(
+            "INSERT INTO upload (owner, sha256, created_ms, expires_ms) VALUES (?1, ?2, 0, ?3)",
+            rusqlite::params![ada.key, sha256, expires],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+    drop(conn);
+    let bound = Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 5 });
+    let started = std::time::Instant::now();
+    let sweeping = server.server().clone();
+    let sweep = tokio::task::spawn_blocking(move || sweeping.sweep_store().unwrap());
+    // Another user's: ada holds 10,000 live uploads, the most allowed.
+    let bob = seed_user(server.server(), "bob", Role::Reader, None);
+    let (_, bob_token) = seed_token(server.server(), &bob, Role::Reader, 30);
+    let put = std::time::Instant::now();
+    assert_eq!(
+        server
+            .send(put_upload(BYTES).bearer(&bob_token))
+            .await
+            .status,
+        201
+    );
+    assert!(
+        put.elapsed() < Duration::from_secs(2),
+        "a PUT waited {:?}",
+        put.elapsed()
+    );
+    let swept = sweep.await.unwrap();
+    assert_eq!((swept.expired, swept.unlinked.len()), (10_000, 10_000));
+    assert!(
+        started.elapsed() < bound,
+        "the sweep took {:?}",
+        started.elapsed()
+    );
+    let idle = std::time::Instant::now();
+    let swept = server.server().sweep_store().unwrap();
+    assert!(swept.unlinked.is_empty() && swept.expired == 0);
+    assert!(
+        idle.elapsed() < Duration::from_secs(2),
+        "an idle sweep took {:?}",
+        idle.elapsed()
+    );
+    let live = fitment_core::sha256_hex(&1_u32.to_be_bytes());
+    let path = format!("/v1/uploads/sha256:{live}");
+    let probes = std::time::Instant::now();
+    assert_eq!(
+        server
+            .send(Call::new(Method::HEAD, &path).bearer(&token))
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        server
+            .send(Call::new(Method::DELETE, &path).bearer(&token))
+            .await
+            .status,
+        204
+    );
+    assert!(
+        probes.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        probes.elapsed()
+    );
+}
+
+/// OB2, UP8 (M2 and L2 of PR 4's review): an upload renames its file over
+/// whatever stands at the object's name: a directory planted there is
+/// removed, and a file of the right length but the wrong bytes under
+/// another user's row is replaced by the bytes just hashed, so the store
+/// heals; the read-only object is renamed over on every platform.
+#[tokio::test]
+async fn whatever_stands_at_an_objects_name_is_replaced() {
+    let server = TestServer::fresh();
+    let ada = seed_user(server.server(), "ada", Role::Reader, None);
+    let bob = seed_user(server.server(), "bob", Role::Reader, None);
+    let (_, ada_token) = seed_token(server.server(), &ada, Role::Reader, 30);
+    let (_, bob_token) = seed_token(server.server(), &bob, Role::Reader, 30);
+    let sha256 = fitment_core::sha256_hex(BYTES);
+    let object = server
+        .dirs
+        .state
+        .join("objects/sha256")
+        .join(&sha256[..2])
+        .join(&sha256);
+    std::fs::create_dir(&object).unwrap();
+    assert_eq!(
+        server
+            .send(put_upload(BYTES).bearer(&ada_token))
+            .await
+            .status,
+        201
+    );
+    assert_eq!(
+        std::fs::read(&object).unwrap(),
+        BYTES,
+        "the directory replaced"
+    );
+    let mut permissions = std::fs::metadata(&object).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&object, permissions).unwrap();
+    let wrong = vec![b'w'; BYTES.len()];
+    std::fs::write(&object, &wrong).unwrap();
+    assert_eq!(server.store_problems().len(), 1, "damaged under ada's row");
+    assert_eq!(
+        server
+            .send(put_upload(BYTES).bearer(&bob_token))
+            .await
+            .status,
+        201
+    );
+    assert_eq!(
+        std::fs::read(&object).unwrap(),
+        BYTES,
+        "healed by bob's upload"
+    );
+    assert!(std::fs::metadata(&object).unwrap().permissions().readonly());
+    assert_eq!(server.store_problems(), Vec::<String>::new());
+    assert_eq!(
+        server
+            .send(put_upload(BYTES).bearer(&bob_token))
+            .await
+            .status,
+        200
+    );
+    assert_eq!(server.temporaries(), Vec::<std::path::PathBuf>::new());
 }
