@@ -84,17 +84,38 @@ check "fitment-server does not say publish = false" \
 check "fitment-server does not say dist = false" \
   sh -c "! grep -A1 -x '\[package.metadata.dist\]' $server/Cargo.toml | grep -qx 'dist = false'"
 # M6-43, OP8: the image is pushed only by image.yml, run by hand from a
-# release's tag: no trigger but workflow_dispatch, and no permission but
-# reading the repository and writing its packages.
+# release's tag: no trigger but workflow_dispatch; `contents: read` at the
+# top level and for `check` and `build`, which build and test the image;
+# `packages: write` for `push` alone, which checks out nothing. Each block
+# is read as written, every line indented under its key, so a quoted key,
+# `key :`, a column-0 comment or flow style cannot hide an entry.
 image=.github/workflows/image.yml
-triggers=$(sed -n '/^on:/,/^[^ ]/p' "$image" | grep -E '^  [a-z_]+:' | tr -d ' ' | tr '\n' ' ')
+entries() { # a top-level key: its entries, comments and spaces dropped
+  awk -v key="$1" '
+    $0 ~ "^" key ":" { inside = 1; next }
+    inside && /^[^[:space:]#]/ { exit }
+    inside && !/^[[:space:]]*(#|$)/ { print }' "$image" |
+    { grep -E '^  [^ ]' || true; } | sed -E 's/[[:space:]]+#.*//' | tr -d ' ' | tr '\n' ' '
+}
+triggers=$(entries on)
 check "image.yml's triggers are not workflow_dispatch alone: $triggers" \
   test "$triggers" != "workflow_dispatch: "
-granted=$(sed -n '/^permissions:/,/^[^ ]/p' "$image" | grep -E '^  [a-z-]+:' | tr -d ' ' | tr '\n' ' ')
-check "image.yml's permissions are not contents: read and packages: write alone: $granted" \
-  test "$granted" != "contents:read packages:write "
-check "image.yml gives a job permissions of its own" \
-  grep -qE '^ +permissions:' "$image"
+# Every grant as `<top or job>=<entries>;`, in the file's order.
+grants=$(awk '
+  /^[[:space:]]*(#|$)/ { next }
+  { match($0, /^ */); indent = RLENGTH }
+  inside && indent > at { line = $0; sub(/[[:space:]]+#.*/, "", line)
+                          gsub(/[[:space:]]/, "", line); got = got line " "; next }
+  inside { printf "%s=%s;", where, got; inside = 0 }
+  indent == 0 { top = $0 }
+  indent == 2 && top == "jobs:" { job = $0; sub(/:.*/, "", job); gsub(/[[:space:]]/, "", job) }
+  /^permissions:$/ { inside = 1; at = 0; where = "top"; got = ""; next }
+  /^    permissions:$/ && top == "jobs:" { inside = 1; at = 4; where = job; got = ""; next }
+  END { if (inside) printf "%s=%s;", where, got }' "$image")
+check "image.yml's grants are not the four it may hold: $grants" \
+  test "$grants" != "top=contents:read ;check=contents:read ;build=contents:read ;push=packages:write ;"
+check "image.yml names permissions other than as a top-level or a job's key" \
+  sh -c "grep -nE 'permissions' '$image' | grep -vE '^[0-9]+:((    )?permissions:|[[:space:]]*#.*)\$'"
 # SV4: catalog.rs is the only module naming fitment_catalog (with its
 # submodules under catalog/, as SV6 reads state::db), matching.rs the only
 # one building a Matcher or a MatchDocument (the OpenAPI generator names the

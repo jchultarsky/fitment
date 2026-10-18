@@ -108,7 +108,7 @@ toward `fitment-core`, and only `fitment-core` reads STEP (through stepq).
 ```
 crates/
   fitment-core/   lib: the matcher and every shared type (verdicts, fit
-                  status, tolerances; later features, sockets, evidence)
+                  status, tolerances, features, sockets, evidence)
     clippy.toml   source-level bans for this crate only, tests included
   fitment-catalog/ lib: the catalog (M5): a SQLite database and a store of
                   files by content; internal, the CLI and the server its
@@ -124,7 +124,9 @@ deny.toml         workspace policy: licences, sources, D1 crate bans
 deny/core.toml    the exact crates fitment-core may depend on
 deny/sync.toml    no async runtime in fitment or fitment-catalog
 fuzz/             the API's fuzz targets, a workspace of its own
-tools/            check-core.sh and core-deps.py: the crates' checks
+tools/            check-core.sh and core-deps.py (the crates' checks), the
+                  corpus generator, the Open CASCADE oracle, the fixtures'
+                  fetch and the output and comparison scripts
 docs/             PLAN.md, the Vectera audit, decision research, the spike
 ```
 
@@ -165,7 +167,8 @@ questioned in review.
 `fitment-core`'s tests take their inputs only from `include_bytes!` or
 `include_str!`, because its bans apply to its tests too. Any test that
 reads or writes files at run time (fixtures, the corpus, golden files)
-lives in `crates/fitment/tests`.
+lives in `crates/fitment/tests`, `crates/fitment-catalog/tests` or
+`crates/fitment-server/tests`.
 
 The small unit parts in `crates/fitment-core/tests/data` are the only
 committed STEP files; the package's `include` list keeps them out of

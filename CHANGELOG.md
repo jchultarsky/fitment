@@ -10,27 +10,30 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [0.3.0] - 2026-10-18
 
-M6: the REST API. `fitment-server` serves the catalog and the matcher over
-HTTP: uploads by SHA-256, jobs for every operation that reads STEP, judges
-a candidate or scans the catalog, sockets with revisions, bearer tokens
-and three roles, and every result document byte for byte what the CLI
-prints for the same inputs. Every match case of the corpus passes through
-the built server under both policies, its report the library's to the
-byte. `fitment-server` is not published: it ships as a container image
-(`deploy/Containerfile`) with the CLI of the same version,
+M6: the REST API. `fitment-server` serves the catalog and the matcher
+over HTTP: uploads by SHA-256, jobs for every operation that reads STEP,
+judges a candidate or scans the catalog, sockets with revisions, bearer
+tokens and three roles, and every result document byte for byte what the
+CLI prints for the same inputs. Every match case of the corpus passes
+through the built server under both policies, its report the library's
+to the byte. `fitment-server` is not published: it ships as a container
+image (`deploy/Containerfile`) with the CLI of the same version,
 `ghcr.io/jchultarsky/fitment-server:0.3.0` for linux/amd64 and
-linux/arm64, which `.github/workflows/image.yml`, run by hand from the tag
-`v0.3.0`, smoke-tests and pushes. Publish `fitment-core` first, then
+linux/arm64, which `.github/workflows/image.yml`, run by hand from the
+tag `v0.3.0`, smoke-tests and pushes. Publish `fitment-core` first, then
 `fitment-catalog` (internal and unstable: the CLI and the server are its
 users), then `fitment`, from the commit that merges M6's release PR into
-main, and tag it `v0.3.0`. The document formats of 0.2.0 keep their
-layouts and versions; `fitment.verify` and `fitment.gc` v1 are new, and
-the API adds its own envelope documents. `fitment match` and `fitment
-review` now exit 3, not 1, for a socket file whose bytes are not UTF-8
-(below, under Changed). `fitment-catalog`'s `Fs` trait gains three
-required methods (PR 4: `create_new_stream`, `open_stream` and
-`remove_dir`), a breaking change for an implementor of it; every other
-change to `fitment-catalog` and `fitment-core` is an addition.
+main, and tag it `v0.3.0`. After the image's first push, set the
+`fitment-server` package to public in GHCR, and check that an anonymous
+`docker pull ghcr.io/jchultarsky/fitment-server:0.3.0` works. The
+document formats of 0.2.0 keep their layouts and versions;
+`fitment.verify` and `fitment.gc` v1 are new, and the API adds its own
+envelope documents. `fitment match` and `fitment review` now exit 3, not
+1, for a socket file whose bytes are not UTF-8 (below, under Changed).
+`fitment-catalog`'s `Fs` trait gains three required methods (PR 4:
+`create_new_stream`, `open_stream` and `remove_dir`), a breaking change
+for an implementor of it; every other change to `fitment-catalog` and
+`fitment-core` is an addition.
 
 ### Added
 
@@ -110,7 +113,8 @@ change to `fitment-catalog` and `fitment-core` is an addition.
   same compression function (`sha256` and `sha256_hex` unchanged).
   `fitment-catalog`'s `Fs` gains a streaming writer and reader
   (`create_new_stream`, `open_stream`, the traits `FsWrite` and `FsRead`):
-  a breaking change for an implementor of `Fs`, which must add them; `CountingFs` records and fails their calls and is now `Clone`.
+  a breaking change for an implementor of `Fs`, which must add them;
+  `CountingFs` records and fails their calls and is now `Clone`.
   No output of `fitment` changes. After review: an upload's throughput
   samples are coalesced (tiny frames no longer grow its memory), its first
   bytes must come within 5 s and the minimum applies pro rata before the
@@ -336,14 +340,16 @@ change to `fitment-catalog` and `fitment-core` is an addition.
 
 ## [0.2.0] - 2026-10-17
 
-M5: the catalog, from commit 7207750 on main (M5's release PR, #45). `fitment catalog` stores STEP parts by content, gated
-and indexed, and `fitment match --catalog` searches them: a catalog run is
-the file run over the parts its index admits, digest for digest. Publish
-`fitment-core` first, then `fitment-catalog` (new, internal and unstable:
-the CLI is its one user), then `fitment`. The four document formats of
-0.1.0 keep their layouts and versions, and `fitment.catalog` v1 is new;
-`signature_version` is 2, and since a `fitment.match` document records it
-inside its digest, a match document's digest changes with it.
+M5: the catalog, from commit 7207750 on main (M5's release PR, #45).
+`fitment catalog` stores STEP parts by content, gated and indexed, and
+`fitment match --catalog` searches them: a catalog run is the file run
+over the parts its index admits, digest for digest. Publish
+`fitment-core` first, then `fitment-catalog` (new, internal and
+unstable: the CLI is its one user), then `fitment`. The four document
+formats of 0.1.0 keep their layouts and versions, and `fitment.catalog`
+v1 is new; `signature_version` is 2, and since a `fitment.match`
+document records it inside its digest, a match document's digest changes
+with it.
 
 ### Added
 
