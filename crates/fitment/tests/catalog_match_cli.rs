@@ -66,6 +66,16 @@ fn setup(dir: &Path) -> PathBuf {
     socket
 }
 
+/// The catalog's generation: DB3 also cuts a batch after a second, so
+/// the setup's one ingest of 13 files is one batch or more on a slow
+/// runner, and the line names whichever generation it made.
+fn generation(dir: &Path) -> u64 {
+    let (_, out, _) = run(dir, &["catalog", "list", "-C", "parts", "--format", "json"]);
+    serde_json::from_str::<Value>(&out).unwrap()["generation"]
+        .as_u64()
+        .unwrap()
+}
+
 fn json(text: &str) -> Value {
     let doc: Value = serde_json::from_str(text).unwrap();
     assert_eq!(
@@ -130,10 +140,11 @@ fn catalog_runs_are_file_runs() {
         &["match", "bracket.json", "-C", "parts", "--format", "json"],
     );
     assert_eq!(code, 4, "{err}");
-    assert!(
-        err.contains("catalog parts  generation 2  entries 13: 13 searched, 0 quarantined"),
-        "{err}"
+    let line = format!(
+        "catalog parts  generation {}  entries 13: 13 searched, 0 quarantined",
+        generation(&dir)
     );
+    assert!(err.contains(&line), "{err}");
     let full = json(&out);
     let survivors = labels(&full);
     assert!(
@@ -210,10 +221,8 @@ fn the_table_says_what_was_searched() {
         ],
     );
     let lines: Vec<&str> = table.lines().collect();
-    assert!(
-        lines[1].starts_with("catalog parts  generation 2"),
-        "{table}"
-    );
+    let line = format!("catalog parts  generation {}  ", generation(&dir));
+    assert!(lines[1].starts_with(&line), "{table}");
     assert!(table.contains("more rejects (in the document)"), "{table}");
     assert_eq!(
         lines.iter().filter(|l| l.starts_with("reject")).count(),

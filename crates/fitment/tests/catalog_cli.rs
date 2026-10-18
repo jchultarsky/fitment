@@ -177,11 +177,14 @@ fn list_writes_a_catalog_document() {
     catalog(&dir, &["ingest", "-C", "parts", "in"]);
     let (code, out, err) = catalog(&dir, &["list", "-C", "parts", "--format", "json"]);
     assert_eq!(code, 0);
-    assert!(
-        err.contains("generation 2: 4 entries: 2 indexed, 2 quarantined, 0 stale"),
-        "{err}"
-    );
     let doc: Value = serde_json::from_str(&out).unwrap();
+    // DB3 also cuts a batch after a second: the one ingest is one batch or
+    // more on a slow runner, and the line names the generation it made.
+    let line = format!(
+        "generation {}: 4 entries: 2 indexed, 2 quarantined, 0 stale",
+        doc["generation"]
+    );
+    assert!(err.contains(&line), "{err}");
     assert_eq!(doc["format"], "fitment.catalog");
     assert_eq!(doc["counts"]["entries"], 4);
     let ids: Vec<&str> = doc["entries"]
