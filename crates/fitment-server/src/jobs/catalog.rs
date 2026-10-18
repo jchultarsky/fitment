@@ -16,8 +16,9 @@
 //! when readers pin it past `catalog.wal_barrier_mib` (CX6).
 //!
 //! Hook points (OP11): `catalog.batch` (after a batch commits, before the
-//! next is read) and `job.read`, `job.ran`, `job.stored`,
-//! `job.committing`, `job.committed`.
+//! next is read), `catalog.vacuum` (a gc's, under the WAL barrier, before
+//! `VACUUM`) and `job.read`, `job.ran`, `job.stored`, `job.committing`,
+//! `job.committed`.
 
 use std::io;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ use serde_json::{Map, Value, json};
 
 use super::Control;
 use super::documents;
-use super::model::{Kind, Lane, State, Stop};
+use super::model::{Kind, State, Stop};
 use super::notes::Notes;
 use super::request::{GcJob, IngestJob, PruneJob, ReindexJob, ReplaceJob, VerifyJob};
 use super::run::{self, Halt, Ran, hook};
@@ -35,10 +36,6 @@ use crate::Shared;
 use crate::catalog::{self, Done, Event, IngestFile, Watch};
 use crate::http::error::ErrorCode;
 use crate::state::{DbError, End, JobRow, ObjectError, Rows, Synced};
-
-/// The bytes of one page of the catalog's database: what CX6's threshold
-/// counts the log's pages in (SQLite's default page size).
-const PAGE_BYTES: i64 = 4096;
 
 /// An input's reader, as the catalog asks it for a file's bytes (CA1).
 type Reader = Box<dyn Fn(u64) -> io::Result<Option<Vec<u8>>> + Sync>;
@@ -220,32 +217,48 @@ fn replace(
         &shared.catalog,
         &job.entry,
         &file,
-        cap,
+        (cap, job.if_generation),
         watch,
     ))
 }
 
-/// `catalog_gc` (CU2): with `vacuum`, the WAL barrier taken first (CX6);
-/// one it could not take within `catalog.barrier_max_seconds` fails the
-/// job `catalog_busy`, retryable, nothing done.
+/// `catalog_gc` (CU2): its collection, then with `vacuum` the WAL barrier
+/// taken around `VACUUM` alone (CX6, the review of PR 7b), so
+/// `catalog.barrier_max_seconds` bounds one barrier; one it could not
+/// take fails the job `catalog_busy`, retryable, what it collected kept
+/// and its document with it. Hook point (OP11): `catalog.vacuum`, under
+/// the barrier, before `VACUUM`.
 fn gc(
     shared: &Arc<Shared>,
     row: &JobRow,
     watch: &Watch<'_>,
 ) -> Result<Result<Done, crate::http::error::ApiError>, Halt> {
     let job: GcJob = run::request(row)?;
-    if job.vacuum && !barrier(shared, true) {
-        return Ok(Err(crate::http::error::ApiError::new(
-            ErrorCode::CatalogBusy,
-            "VACUUM could not take the WAL barrier: running queries pin the log; submit it again",
-        )
-        .with("limit", "barrier_max_seconds")));
+    let mut done = match catalog::gc(&shared.catalog, job.versions, job.vacuum, watch) {
+        Ok(done) => done,
+        Err(error) => return Ok(Err(error)),
+    };
+    if !job.vacuum || done.cancelled || done.document.is_none() {
+        return Ok(Ok(done));
     }
-    let done = catalog::gc(&shared.catalog, job.versions, job.vacuum, watch);
-    if job.vacuum {
-        lower(shared, true);
+    let vacuumed = match Barrier::take(shared, true) {
+        Some(_held) => {
+            hook(shared, "catalog.vacuum");
+            catalog::vacuum(&shared.catalog)
+        }
+        None => Err(catalog::JobFailure::of(
+            &crate::http::error::ApiError::new(
+                ErrorCode::CatalogBusy,
+                "VACUUM could not take the WAL barrier: running queries pin the log; submit it again",
+            )
+            .with("limit", "barrier_max_seconds"),
+        )),
+    };
+    if let Err(failure) = vacuumed {
+        done.exit = 1;
+        done.failure = Some(failure);
     }
-    Ok(done)
+    Ok(Ok(done))
 }
 
 /// The end of a catalog job that ran (JB3, JB5, SD1): its document kept,
@@ -348,9 +361,11 @@ pub(crate) fn interrupted(shared: &Shared, row: &JobRow, why: &str) -> End {
 
 /// The finishing transaction (JS13): `ending`, or a stop that committed
 /// first (JB5). A pure job (verify) ends as any: its stop leaves nothing,
-/// a drain queues it again (SD1). A write job is never queued again: a
-/// cancel keeps `ending`'s document, its committed changes; a drain made
-/// `ending` its interruption already.
+/// a drain queues it again (SD1). A write job is never queued again and
+/// always ends as `ending` says: a cancel it heard made `ending` its
+/// `cancelled`, keeping the document of its committed changes; one it did
+/// not hear leaves its true end; a drain made `ending` its interruption
+/// already.
 fn finish(
     shared: &Arc<Shared>,
     row: &JobRow,
@@ -361,12 +376,12 @@ fn finish(
     let finished = if row.kind.pure() {
         run::end(shared, row, control, ending, staged, &Rows::None)?
     } else {
+        // A cancel that came after the work's last check of its flag
+        // stops nothing: the work ran to its end, which stands as it
+        // ended, outcome and exit code (the review of PR 7b); a cancel
+        // it heard made `ending` its `cancelled` already.
         let mut stopped = documents::stopped(row.kind);
-        stopped.cancelled = End {
-            document: ending.document.clone(),
-            notes: ending.notes.clone(),
-            ..stopped.cancelled
-        };
+        stopped.cancelled = ending.clone();
         run::finish_with(shared, row, ending, &stopped, staged.into_iter().collect())?
     };
     run::conclude(shared, row, control, finished)
@@ -374,7 +389,7 @@ fn finish(
 
 /// CX6: after a write, the log checkpointed; one above
 /// `catalog.wal_barrier_mib` that readers keep from completing raises the
-/// barrier.
+/// barrier, the log's pages counted in the database's page size.
 fn pressure(shared: &Arc<Shared>) {
     let Ok(checkpoint) = shared.catalog.checkpoint_passive() else {
         return;
@@ -388,46 +403,62 @@ fn pressure(shared: &Arc<Shared>) {
         shared.catalog.set_barrier(false);
         return;
     }
-    if checkpoint.1.saturating_mul(PAGE_BYTES) > limit && barrier(shared, false) {
-        lower(shared, false);
+    let page = i64::try_from(shared.catalog.page_bytes()).unwrap_or(i64::MAX);
+    if checkpoint.1.saturating_mul(page) > limit {
+        // Taken, the log truncated; the guard lowers it at once.
+        drop(Barrier::take(shared, false));
     }
 }
 
-/// CX6: the barrier: query dispatch stops, running queries are given up to
-/// `catalog.barrier_max_seconds` to finish, then the log is truncated and
-/// dispatch resumes. If they still pin it, dispatch resumes without the
-/// truncate, `fitment.info`'s flag stays set, and the barrier is tried no
-/// sooner than the bound again; `vacuum`'s barrier is taken whatever the
-/// last try. True when it was taken (and dispatch stays stopped until
-/// [`lower`]).
-fn barrier(shared: &Arc<Shared>, vacuum: bool) -> bool {
-    let bound = Duration::from_secs(shared.config.catalog.barrier_max_seconds);
-    if !vacuum && !shared.jobs.barrier_due() {
-        return false;
+/// CX6: the barrier, held while it lives and lowered when it drops, a
+/// panic's unwinding included, so nothing leaves query dispatch stopped
+/// (the review of PR 7b).
+struct Barrier<'a> {
+    shared: &'a Arc<Shared>,
+    vacuum: bool,
+}
+
+impl<'a> Barrier<'a> {
+    /// Query dispatch stops (a query picked before stays held, JS4), the
+    /// running queries that started are given up to
+    /// `catalog.barrier_max_seconds` to finish, then the log is truncated
+    /// (for `vacuum`, after it). If they still pin it, dispatch resumes
+    /// without the truncate, `fitment.info`'s flag stays set, and the
+    /// barrier is tried no sooner than the bound again; `vacuum`'s is taken
+    /// whatever the last try. `None` when it was not taken.
+    fn take(shared: &'a Arc<Shared>, vacuum: bool) -> Option<Self> {
+        let bound = Duration::from_secs(shared.config.catalog.barrier_max_seconds);
+        if !vacuum && !shared.jobs.barrier_due() {
+            return None;
+        }
+        shared.jobs.set_barrier(true);
+        shared.catalog.set_barrier(true);
+        let started = Instant::now();
+        while shared.jobs.queries_started() > 0 && started.elapsed() < bound {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let taken = shared.jobs.queries_started() == 0
+            && (vacuum || shared.catalog.checkpoint_truncate().is_ok_and(|busy| !busy));
+        if !taken {
+            tracing::warn!("the WAL barrier was not taken: running queries pin the log");
+            shared.jobs.barrier_missed(bound);
+            shared.jobs.set_barrier(false);
+            shared.jobs.kick(shared);
+            return None;
+        }
+        Some(Self { shared, vacuum })
     }
-    shared.jobs.set_barrier(true);
-    shared.catalog.set_barrier(true);
-    let started = Instant::now();
-    while shared.jobs.counts(Lane::Query).1 > 0 && started.elapsed() < bound {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let taken = shared.jobs.counts(Lane::Query).1 == 0
-        && (vacuum || shared.catalog.checkpoint_truncate().is_ok_and(|busy| !busy));
-    if !taken {
-        tracing::warn!("the WAL barrier was not taken: running queries pin the log");
-        shared.jobs.barrier_missed(bound);
+}
+
+impl Drop for Barrier<'_> {
+    /// The barrier lowered, dispatch resumed; after a vacuum, the flag
+    /// cleared once the log was truncated as gc left it.
+    fn drop(&mut self) {
+        let shared = self.shared;
+        if !self.vacuum || shared.catalog.checkpoint_truncate().is_ok_and(|busy| !busy) {
+            shared.catalog.set_barrier(false);
+        }
         shared.jobs.set_barrier(false);
         shared.jobs.kick(shared);
     }
-    taken
-}
-
-/// CX6: the barrier lowered, dispatch resumed; after a vacuum, the log
-/// truncated as gc left it.
-fn lower(shared: &Arc<Shared>, vacuum: bool) {
-    if !vacuum || shared.catalog.checkpoint_truncate().is_ok_and(|busy| !busy) {
-        shared.catalog.set_barrier(false);
-    }
-    shared.jobs.set_barrier(false);
-    shared.jobs.kick(shared);
 }

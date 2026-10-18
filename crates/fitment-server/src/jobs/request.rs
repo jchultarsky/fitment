@@ -801,6 +801,10 @@ pub struct ReplaceJob {
     pub input: String,
     #[allow(missing_docs)]
     pub max_mib: Option<u64>,
+    /// RA7: the generation an `If-Match` named, checked in the replace's
+    /// transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_generation: Option<i64>,
 }
 
 /// `catalog_reindex`'s normalized request.

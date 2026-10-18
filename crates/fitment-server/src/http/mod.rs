@@ -329,6 +329,76 @@ pub(crate) async fn catalog_read<T: Send + 'static>(
     .await
 }
 
+/// M6-50: the synchronous deletes run at once; past them a delete waits
+/// for one as a read waits for its slot, then `503 catalog_busy` (the
+/// review of PR 7b).
+pub(crate) const DELETE_CONCURRENCY: usize = 2;
+
+/// What one user holds of a shared pool of slots: the catalog's reads
+/// and its `limit=all` listings (the review of PR 7b), by user.
+#[derive(Debug, Default)]
+pub(crate) struct Shares {
+    held: std::sync::Mutex<std::collections::HashMap<(i64, &'static str), usize>>,
+}
+
+/// One share of a user's, given back when it drops.
+pub(crate) struct Share {
+    shared: Arc<Shared>,
+    key: (i64, &'static str),
+}
+
+impl Drop for Share {
+    fn drop(&mut self) {
+        let mut held = self
+            .shared
+            .catalog_shares
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = held.get_mut(&self.key) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                held.remove(&self.key);
+            }
+        }
+    }
+}
+
+/// A share of `pool` (the key its `details.limit` names) for user `user`,
+/// at most `cap` held at once: past it, `429 too_many_streams`,
+/// retryable, `details.per_user` true, as UP4's per-user slots answer.
+///
+/// # Errors
+///
+/// `too_many_streams`.
+pub(crate) fn share(
+    shared: &Arc<Shared>,
+    user: i64,
+    pool: &'static str,
+    cap: usize,
+) -> Result<Share, ApiError> {
+    let mut held = shared
+        .catalog_shares
+        .held
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let n = held.entry((user, pool)).or_insert(0);
+    if *n >= cap.max(1) {
+        return Err(ApiError::new(
+            ErrorCode::TooManyStreams,
+            "you hold your share of the catalog's reads: try again once one ends",
+        )
+        .with("limit", pool)
+        .with("per_user", true)
+        .retry_after(1));
+    }
+    *n += 1;
+    Ok(Share {
+        shared: Arc::clone(shared),
+        key: (user, pool),
+    })
+}
+
 /// `500 io_error` for a `server.db` failure, logged, never sent (ER3).
 pub(crate) fn db_error(error: &crate::state::DbError) -> ApiError {
     tracing::error!(error = %error, "server.db failed");

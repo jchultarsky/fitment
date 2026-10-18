@@ -29,9 +29,17 @@ pub(crate) struct Entry {
     pub cpu: u32,
     /// Its memory estimate, in MiB (JS3).
     pub memory_mib: u32,
-    /// A catalog match's selection and named count: its memory is
-    /// estimated again from the catalog's counts at dispatch (JS3).
-    pub catalog: Option<(String, usize)>,
+    /// Whose memory is estimated again from the catalog at dispatch (JS3).
+    pub catalog: Option<Reestimate>,
+}
+
+/// JS3: a job whose memory the catalog decides, at dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Reestimate {
+    /// A catalog match: its selection and named count.
+    Match(String, usize),
+    /// A reindex or a deep verify: the catalog's largest file.
+    LargestFile,
 }
 
 /// Why a submission was refused for load (JS5).

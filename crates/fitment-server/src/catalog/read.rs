@@ -9,7 +9,10 @@
 use super::CatalogDir;
 use crate::http::error::{ApiError, ErrorCode};
 use fitment_catalog::document::{CatalogDocument, Entry};
-use fitment_catalog::{BadBlob, BadName, BadRow, Catalog, EntryStatus, Listed, Reference, Unnamed};
+use fitment_catalog::{
+    BadBlob, BadName, BadRow, Catalog, EntryStatus, FsRead, Id, Listed, Reference, Sha256Hex,
+    Unnamed,
+};
 
 /// `list --status S` (CL3's statuses): which live entries a list shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +89,6 @@ pub struct Got {
 }
 
 /// `get --format step`'s bytes, re-hashed (ST11).
-#[derive(Debug, Clone)]
 pub struct Step {
     /// The id as stored.
     pub id: String,
@@ -94,8 +96,30 @@ pub struct Step {
     pub revision: u32,
     /// The content's SHA-256.
     pub sha256: String,
-    /// The bytes.
-    pub bytes: Vec<u8>,
+    /// Their length.
+    pub length: u64,
+    /// The bytes, or a reader of them.
+    pub bytes: StepBytes,
+}
+
+/// A step's bytes (OB3): read whole and checked within the one-buffer
+/// size, else hashed in one pass and read in a second that fails if they
+/// changed (the review of PR 7b).
+pub enum StepBytes {
+    /// Read whole, checked.
+    Whole(Vec<u8>),
+    /// The second pass's reader, its first pass done.
+    Stream(Box<dyn FsRead>),
+}
+
+impl std::fmt::Debug for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Step")
+            .field("id", &self.id)
+            .field("revision", &self.revision)
+            .field("length", &self.length)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What a delete answers (M6-50, CU1): `fitment.catalog` with `changes`.
@@ -163,6 +187,12 @@ pub(crate) fn unnamed(unnamed: &Unnamed) -> ApiError {
             ErrorCode::NotAnId,
             "a delete names ids, or their current ID@rN, never a content reference",
         ),
+        // RA7: an `If-Match` of another generation; nothing changed.
+        Unnamed::Changed { generation, .. } => ApiError::new(
+            ErrorCode::PreconditionFailed,
+            "the catalog changed since the entity tag If-Match names: nothing was changed",
+        )
+        .with("generation", *generation),
         _ => ApiError::new(ErrorCode::EntryNotFound, "no catalog entry of that name"),
     }
 }
@@ -328,60 +358,71 @@ impl CatalogDir {
         })?
     }
 
-    /// `get REF --format step` (ST11): the revision's kept bytes, read
-    /// after the snapshot closes and re-hashed; pruned or deleted bytes are
-    /// `410 bytes_not_kept`, bytes that are not their name's `500
-    /// blob_damaged`, nothing sent.
+    /// `get REF --format step` (ST11, OB3): the revision's kept bytes,
+    /// read after the snapshot closes and checked: within `whole_max`
+    /// bytes read whole, above it hashed in one pass and handed back as a
+    /// reader for the second; `between` runs between the snapshot and the
+    /// read (OP11's `catalog.step`). Pruned or deleted bytes are `410
+    /// bytes_not_kept`. A file missing or not its name's is looked for
+    /// again in a fresh snapshot, as CC4 does (the review of PR 7b): a
+    /// delete or a prune that released it since is `410` too; `500
+    /// blob_damaged`, nothing sent, only when the fresh snapshot still
+    /// keeps the revision's bytes.
     ///
     /// # Errors
     ///
     /// As the paragraph says; the catalog's, mapped.
-    pub fn step(&self, named: &str) -> Result<Step, ApiError> {
+    pub fn step(&self, named: &str, whole_max: u64, between: &dyn Fn()) -> Result<Step, ApiError> {
         let reference = reference(named)?;
         self.read(|catalog| {
-            let named = {
-                let snapshot = catalog.snapshot()?;
-                let named = match snapshot.resolve(&reference)? {
-                    Ok(named) => named,
-                    Err(bad) => return Ok(Err(bad_name(&bad))),
-                };
-                let listed = snapshot.entry(&named)?;
-                let kept = snapshot
-                    .history(&named)?
-                    .iter()
-                    .any(|s| s.revision == named.revision && s.bytes_kept);
-                if listed.bytes.is_none() || !kept {
-                    return Ok(Err(ApiError::new(
-                        ErrorCode::BytesNotKept,
-                        format!(
-                            "{} r{}'s bytes are no longer kept",
-                            named.id, named.revision
-                        ),
-                    )));
-                }
-                named
+            let (id, revision, sha256, length) = match kept(catalog, &reference)? {
+                Ok(found) => found,
+                Err(refused) => return Ok(Err(refused)),
             };
-            Ok(match catalog.read_blob(&named.sha256) {
-                Ok(bytes) => Ok(Step {
-                    id: named.id,
-                    revision: named.revision,
-                    sha256: named.sha256.as_str().to_owned(),
-                    bytes,
-                }),
-                Err(bad) => Err(blob_error(named.sha256.as_str(), &bad)),
-            })
+            between();
+            let read = if length <= whole_max {
+                catalog.read_blob(&sha256).map(StepBytes::Whole)
+            } else {
+                catalog
+                    .open_blob(&sha256)
+                    .map(|(_, reader)| StepBytes::Stream(reader))
+            };
+            let bad = match read {
+                Ok(bytes) => {
+                    return Ok(Ok(Step {
+                        id,
+                        revision,
+                        sha256: sha256.as_str().to_owned(),
+                        length,
+                        bytes,
+                    }));
+                }
+                Err(bad) => bad,
+            };
+            if matches!(bad, BadBlob::Missing | BadBlob::Damaged) {
+                let again = Id::parse(&id).map(|i| Reference::Revision(i, revision));
+                let still = match again {
+                    Ok(again) => kept(catalog, &again)?.is_ok_and(|k| k.2 == sha256),
+                    Err(_) => false,
+                };
+                if !still {
+                    return Ok(Err(not_kept(&id, revision)));
+                }
+            }
+            Ok(Err(blob_error(sha256.as_str(), &bad)))
         })?
     }
 
     /// M6-50, CX3, CU1: `delete ID… --format json`, all or none (CR2), on a
     /// short-lived writer that waits at most `catalog.delete_busy_ms`, then
-    /// `503 catalog_busy`; `inputs` are the references as given.
+    /// `503 catalog_busy`; `inputs` are the references as given; `at`,
+    /// `If-Match`'s generation (RA7), checked in its transaction.
     ///
     /// # Errors
     ///
     /// The references' refusals (RA2), nothing deleted; the catalog's,
     /// mapped.
-    pub fn delete(&self, inputs: &[String]) -> Result<Deleted, ApiError> {
+    pub fn delete(&self, inputs: &[String], at: Option<i64>) -> Result<Deleted, ApiError> {
         let mut references = Vec::with_capacity(inputs.len());
         for text in inputs {
             references.push(reference(text)?);
@@ -389,7 +430,7 @@ impl CatalogDir {
         self.inspect().map_err(ApiError::from)?;
         let mut catalog = Catalog::open(self.root(), self.options_with(self.delete_busy_ms))
             .map_err(|e| self.mapped(&e))?;
-        let deletion = match catalog.delete(&references) {
+        let deletion = match catalog.delete_at(&references, at) {
             Ok(Ok(deletion)) => deletion,
             Ok(Err(list)) => return Err(unnamed_all(&list)),
             Err(error) => return Err(self.mapped(&error)),
@@ -445,9 +486,11 @@ fn get_json(
             Err(other) => return Err(other),
         }
     }
-    let all = snapshot.list()?;
+    // The counts in one query (the review of PR 7b): `page` states what
+    // `new` over the whole listing would, byte for byte.
+    let counts = snapshot.status_counts()?;
     let generation = snapshot.generation();
-    let json = CatalogDocument::new(generation, &all, vec![entry], None).to_json();
+    let json = CatalogDocument::page(generation, &counts, vec![entry]).to_json();
     Ok(Ok(Got {
         generation,
         id: named.id,
@@ -455,6 +498,36 @@ fn get_json(
         json,
         exit,
     }))
+}
+
+/// What `step` reads (ST11): the revision `reference` names, its bytes
+/// kept, as id, revision, content and length; else its refusal (`404`,
+/// `409`, `410 bytes_not_kept`). One snapshot, closed on return.
+type Kept = Result<(String, u32, Sha256Hex, u64), ApiError>;
+
+fn kept(catalog: &mut Catalog, reference: &Reference) -> Result<Kept, fitment_catalog::Error> {
+    let snapshot = catalog.snapshot()?;
+    let named = match snapshot.resolve(reference)? {
+        Ok(named) => named,
+        Err(bad) => return Ok(Err(bad_name(&bad))),
+    };
+    let listed = snapshot.entry(&named)?;
+    let kept = snapshot
+        .history(&named)?
+        .iter()
+        .any(|s| s.revision == named.revision && s.bytes_kept);
+    match listed.bytes {
+        Some(length) if kept => Ok(Ok((named.id, named.revision, named.sha256, length))),
+        _ => Ok(Err(not_kept(&named.id, named.revision))),
+    }
+}
+
+/// `410 bytes_not_kept` (ST11): a pruned or deleted revision's bytes.
+fn not_kept(id: &str, revision: u32) -> ApiError {
+    ApiError::new(
+        ErrorCode::BytesNotKept,
+        format!("{id} r{revision}'s bytes are no longer kept"),
+    )
 }
 
 /// ST11, OB3: a stored file that is missing or not its name's is `500

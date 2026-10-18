@@ -2489,10 +2489,10 @@ async fn catalog_views_are_tagged_by_instance_and_generation() {
         .await;
     assert_eq!(again.status, 304);
     let info = one.get("/v1/catalog").await;
-    assert_eq!(
-        view_etag(&info),
-        etag,
-        "the catalog's view and its list agree"
+    let tagged = view_etag(&info);
+    assert!(
+        tagged.starts_with(etag.trim_end_matches('"')) && tagged != etag,
+        "the catalog's tag is its views', its state's flags folded in: {tagged}"
     );
     one.ingest(&[(
         support::candidate("m_block02_cb_deep.stp"),
@@ -2724,4 +2724,159 @@ async fn the_daily_gc_is_the_system_users() {
         .finished_job(&queued, std::time::Duration::from_secs(60))
         .await;
     assert_eq!(done["state"], "succeeded", "{done}");
+}
+
+/// VN5, DC11 (the review of PR 7b): `GET /v1/catalog`'s ETag folds in its
+/// state's flags: a reindex queued at one generation is a new tag, never a
+/// stale `304`, and the body says it is queued.
+#[tokio::test]
+async fn the_catalogs_tag_follows_its_state() {
+    let server = TestServer::fresh();
+    server
+        .ingest(&[(
+            support::candidate("m_block02.stp"),
+            "m_block02.stp".to_owned(),
+        )])
+        .await;
+    let first = server.get("/v1/catalog").await;
+    let etag = view_etag(&first);
+    let same = server
+        .send(Call::get("/v1/catalog").header("if-none-match", &etag))
+        .await;
+    assert_eq!(same.status, 304);
+    server.server().hold_jobs();
+    server
+        .submit("/v1/catalog/reindex", &json!({ "all": true }))
+        .await;
+    let after = server
+        .send(Call::get("/v1/catalog").header("if-none-match", &etag))
+        .await;
+    assert_eq!(after.status, 200, "a new state, a new tag");
+    assert_eq!(after.json()["generation"], first.json()["generation"]);
+    assert_eq!(after.json()["state"]["reindex"], "queued");
+    assert_ne!(view_etag(&after), etag);
+    server.server().resume_jobs();
+}
+
+/// RA8, CL2 (the review of PR 7b): an ingest's lines are tied to their own
+/// inputs by ID4's order, never by their labels, which several may share.
+/// Two files of one label and one file name: the second is a conflict
+/// under its file's id, the CLI's exit 2 with no code, nothing internal. A
+/// conflict under its file's own id beside a file the request gave an id
+/// is no `id_conflict`; a conflict under an id the request gave is.
+#[tokio::test]
+async fn ingest_lines_are_their_own_inputs() {
+    let server = TestServer::fresh();
+    let mut shas = Vec::new();
+    for bytes in [
+        support::candidate("m_block02.stp"),
+        support::candidate("m_block02_cb_deep.stp"),
+        support::candidate("m_bracket.stp"),
+        b"not STEP".to_vec(),
+    ] {
+        shas.push(server.upload(&bytes).await);
+    }
+    let file = |sha: &str, name: &str, id: Option<&str>| {
+        let mut file =
+            json!({ "upload": format!("sha256:{sha}"), "file_name": name, "input": "same.stp" });
+        if let Some(id) = id {
+            file["id"] = json!(id);
+        }
+        file
+    };
+    let run = |files: Vec<Value>| {
+        let server = &server;
+        async move {
+            let job = server
+                .submit("/v1/catalog/entries", &json!({ "files": files }))
+                .await;
+            server
+                .finished_job(job["id"].as_str().unwrap(), Duration::from_secs(60))
+                .await
+        }
+    };
+    let alike = run(vec![
+        file(&shas[0], "p.stp", None),
+        file(&shas[1], "p.stp", None),
+    ])
+    .await;
+    assert_eq!(
+        (alike["state"].as_str(), alike["exit_code"].as_i64()),
+        (Some("refused"), Some(2)),
+        "{alike}"
+    );
+    assert!(alike["error"].is_null(), "{alike}");
+    let own = run(vec![
+        file(&shas[2], "p.stp", None),
+        file(&shas[1], "q.stp", Some("q")),
+    ])
+    .await;
+    assert_eq!(own["exit_code"], 2, "{own}");
+    assert!(own["error"].is_null(), "no id the request gave: {own}");
+    let given = run(vec![
+        file(&shas[2], "z.stp", Some("p")),
+        file(&shas[3], "r.stp", None),
+    ])
+    .await;
+    assert_eq!(
+        (given["exit_code"].as_i64(), given["error"]["code"].as_str()),
+        (Some(2), Some("id_conflict")),
+        "{given}"
+    );
+}
+
+/// RA7, as the review of PR 7b amends it: a delete or a replace under
+/// `If-Match` is made on condition of the catalog's generation, which a
+/// view's tag names: a tag of an older generation, or of no view of this
+/// catalog, is `412 precondition_failed`, nothing changed; the current
+/// tag, or `*`, makes the change; without the header it is unconditional.
+#[tokio::test]
+async fn catalog_writes_honour_if_match() {
+    let server = TestServer::fresh();
+    let files: Vec<(Vec<u8>, String)> = ["m_block02.stp", "m_block02_cb_deep.stp"]
+        .iter()
+        .map(|n| (support::candidate(n), (*n).to_owned()))
+        .collect();
+    server.ingest(&files).await;
+    let old = view_etag(&server.get("/v1/catalog/entries/m_block02").await);
+    server
+        .ingest(&[(
+            support::candidate("m_bracket.stp"),
+            "m_bracket.stp".to_owned(),
+        )])
+        .await;
+    let delete = |tag: &str, entry: &str| {
+        Call::new(Method::DELETE, &format!("/v1/catalog/entries/{entry}")).header("if-match", tag)
+    };
+    for tag in [old.as_str(), "\"0123.g1.abcdef\"", "W/\"x\""] {
+        let refused = server.send(delete(tag, "m_block02")).await;
+        assert_eq!(
+            (refused.status.as_u16(), refused.code()),
+            (412, "precondition_failed".into()),
+            "{tag}"
+        );
+    }
+    assert_eq!(server.get("/v1/catalog").await.json()["entries"], 3);
+    let current = view_etag(&server.get("/v1/catalog/entries/m_block02").await);
+    assert_eq!(server.send(delete(&current, "m_block02")).await.status, 200);
+    assert_eq!(
+        server.send(delete("*", "m_block02_cb_deep")).await.status,
+        200
+    );
+    let p01 = server.upload(&support::part("p01_through.stp")).await;
+    let body = json!({ "upload": format!("sha256:{p01}"), "file_name": "p01_through.stp" });
+    let put = |tag: &str| {
+        Call::json(Method::PUT, "/v1/catalog/entries/m_bracket", &body).header("if-match", tag)
+    };
+    let stale = server.send(put(&current)).await;
+    assert_eq!(
+        (stale.status.as_u16(), stale.code()),
+        (412, "precondition_failed".into())
+    );
+    let fresh = view_etag(&server.get("/v1/catalog/entries/m_bracket").await);
+    let job = server.send(put(&fresh)).await.json();
+    let job = server
+        .finished_job(job["id"].as_str().unwrap(), Duration::from_secs(60))
+        .await;
+    assert_eq!(job["state"], "succeeded", "{job}");
 }

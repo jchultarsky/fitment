@@ -20,7 +20,7 @@ mod read;
 mod watch;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use fitment_catalog::{Catalog, Error, Options};
@@ -31,9 +31,9 @@ use crate::http::error::{ApiError, CatalogReason, ErrorCode};
 
 pub use jobs::{
     Done, IngestFile, JobFailure, Matched, Searched, Selection, check_id, check_reference, gc,
-    generation, ingest, prune, reindex, replace, search, selection, verify,
+    generation, ingest, prune, reindex, replace, search, selection, vacuum, verify,
 };
-pub use read::{Deleted, Got, ListPage, StatusFilter, Step};
+pub use read::{Deleted, Got, ListPage, StatusFilter, Step, StepBytes};
 pub use watch::{Event, Watch};
 
 /// The catalog's schema this build reads (DC11).
@@ -78,6 +78,9 @@ pub struct CatalogDir {
     instance: OnceLock<String>,
     /// CX6: the WAL barrier is up (`fitment.info`'s `wal_barrier`).
     barrier: AtomicBool,
+    /// CX6: the database's page size, read once at start: what the log's
+    /// pages are counted in (the review of PR 7b).
+    page_bytes: AtomicU64,
     /// VN5: the first 12 hex of the SHA-256 of the build's versions.
     build: String,
 }
@@ -132,7 +135,8 @@ pub struct CatalogState {
     /// Some entry is stale: catalog matches are refused until a reindex
     /// (RX3, CX5).
     pub stale: bool,
-    /// A reindex job's state, `queued` or `running`, or null (M6-28).
+    /// The newest unended reindex job's state, `queued`, `running` or
+    /// `cancelling`, or null (M6-28).
     pub reindex: Option<String>,
     /// The WAL barrier is up (CX6).
     pub wal_barrier: bool,
@@ -177,6 +181,7 @@ impl CatalogDir {
             writer: Mutex::new(None),
             instance: OnceLock::new(),
             barrier: AtomicBool::new(false),
+            page_bytes: AtomicU64::new(4096),
             build: build_tag(),
         }
     }
@@ -202,6 +207,8 @@ impl CatalogDir {
         .map_err(|e| self.unavailable(&e))?;
         let instance = writer.instance(mint).map_err(|e| self.unavailable(&e))?;
         let _ = self.instance.set(instance);
+        let page = writer.page_size().map_err(|e| self.unavailable(&e))?;
+        self.page_bytes.store(page.max(1), Ordering::SeqCst);
         *lock(&self.writer) = Some(writer);
         self.pool_size.store(pool_size.max(1), Ordering::SeqCst);
         Ok(())
@@ -238,6 +245,65 @@ impl CatalogDir {
     /// generation never share one, nor two builds.
     pub fn etag(&self, generation: i64) -> String {
         format!("\"{}.g{generation}.{}\"", self.instance(), self.build)
+    }
+
+    /// RA7: the generation a view's entity tag `tag` names, if it is one
+    /// of this catalog's and this build's (a strong tag, quoted); `None`
+    /// for any other, `GET /v1/catalog`'s included.
+    pub fn tag_generation(&self, tag: &str) -> Option<i64> {
+        let inner = tag.strip_prefix('"')?.strip_suffix('"')?;
+        let mut parts = inner.split('.');
+        let (instance, generation, build) = (parts.next()?, parts.next()?, parts.next()?);
+        let ours = parts.next().is_none() && instance == self.instance() && build == self.build;
+        ours.then(|| generation.strip_prefix('g')?.parse().ok())?
+    }
+
+    /// VN5, M6-63: `GET /v1/catalog`'s entity tag: the views' at
+    /// `info`'s generation, with 8 hex of the SHA-256 of its state's flags
+    /// (a reindex's state, the barrier, a full queue, stale entries), so a
+    /// change of state is a new tag at one generation (the review of PR
+    /// 7b).
+    pub fn info_etag(&self, info: &CatalogInfo) -> String {
+        let state = &info.state;
+        let text = format!(
+            "stale {}\nreindex {}\nwal_barrier {}\nqueues_full {}\n",
+            state.stale,
+            state.reindex.as_deref().unwrap_or("-"),
+            state.wal_barrier,
+            state.queues_full
+        );
+        let hash = fitment_core::sha256_hex(text.as_bytes());
+        format!(
+            "\"{}.g{}.{}.{}\"",
+            self.instance(),
+            info.generation,
+            self.build,
+            &hash[..8]
+        )
+    }
+
+    /// The generation as a reader reads it now (RA7).
+    ///
+    /// # Errors
+    ///
+    /// The catalog's, mapped (CX7).
+    pub fn generation_now(&self) -> Result<i64, ApiError> {
+        self.read(|catalog| catalog.generation())
+    }
+
+    /// CX6: the bytes of one of the database's pages.
+    pub fn page_bytes(&self) -> u64 {
+        self.page_bytes.load(Ordering::SeqCst)
+    }
+
+    /// JS3 (the review of PR 7b): the largest stored file's length, what a
+    /// reindex or a deep verify holds of one file at a time.
+    ///
+    /// # Errors
+    ///
+    /// The catalog's, mapped (CX7).
+    pub fn largest_blob(&self) -> Result<u64, ApiError> {
+        self.read(|catalog| catalog.snapshot()?.largest_blob())
     }
 
     /// CX6: whether the WAL barrier is up.

@@ -8,10 +8,20 @@
 //! `limits.list_all_concurrency` at once (VN3, HX8); `get`, its features
 //! and its bytes. A catalog view's ETag is `"<instance>.g<generation>.
 //! <build>"` (VN5, M6-63); a page of another generation than `If-Match`
-//! names is `412 precondition_failed` (VN4). A delete is synchronous, one
-//! transaction on a short-lived writer (M6-50); every other change is a
-//! write-lane job, verify a maintenance-lane one (JS1), for writers;
-//! `gc` and `prune` for admins (AU5).
+//! names is `412 precondition_failed` (VN4). One user holds at most half
+//! the read slots and one `limit=all` listing (the review of PR 7b). A
+//! delete is synchronous, one transaction on a short-lived writer, at
+//! most two at once (M6-50); a delete or a replace under `If-Match` is
+//! made on condition of its generation (RA7); every other change is a
+//! write-lane job, verify a maintenance-lane one (JS1), for writers; `gc`
+//! and `prune` for admins (AU5). Every body is hashed, and gzipped, where
+//! it was built, on the blocking pool; a step above
+//! [`cache::SEND_BUFFER_MAX`] is checked in one pass and streamed in a
+//! second (OB3).
+//!
+//! Hook points (OP11): `catalog.list` (a whole listing, in its slot),
+//! `catalog.step` (between a step's snapshot and its read) and
+//! `catalog.delete` (a delete, in its slot, before its writer opens).
 
 use std::sync::Arc;
 
@@ -22,6 +32,7 @@ use axum::response::Response;
 
 use super::jobs::{self, Id, Input, Submission};
 use crate::Shared;
+use crate::catalog::StepBytes;
 use crate::catalog::{self, StatusFilter};
 use crate::http::cache;
 use crate::http::error::{ApiError, ErrorCode};
@@ -35,14 +46,24 @@ use crate::jobs::request::{
 };
 
 /// A catalog read on the blocking pool behind a read slot (OB3's,
-/// `limits.read_concurrency`), so concurrent reads are bounded; a busy
-/// catalog is counted (OP6).
+/// `limits.read_concurrency`), so concurrent reads are bounded, and of
+/// user `user`'s share of them, half the slots at most, so one user
+/// cannot hold them all (the review of PR 7b); a busy catalog is counted
+/// (OP6).
 async fn read<T: Send + 'static>(
     shared: &Arc<Shared>,
+    user: i64,
     work: impl FnOnce(&catalog::CatalogDir) -> Result<T, ApiError> + Send + 'static,
 ) -> Result<T, ApiError> {
+    let half = usize::try_from(shared.config.limits.read_concurrency / 2).unwrap_or(1);
+    let share = crate::http::share(shared, user, "read_concurrency", half)?;
     let reading = Arc::clone(shared);
-    let result = crate::http::catalog_read(shared, move || work(&reading.catalog)).await;
+    let result = crate::http::catalog_read(shared, move || {
+        let result = work(&reading.catalog);
+        drop(share);
+        result
+    })
+    .await;
     if let Err(error) = &result {
         if error.code() == ErrorCode::CatalogBusy {
             shared.metrics.catalog_busy();
@@ -79,14 +100,24 @@ fn conditions(headers: &HeaderMap, etag: &str) -> Result<Option<Response>, ApiEr
     Ok(None)
 }
 
+/// A catalog document and its `Repr-Digest`, made where it was built.
+type Digested = (String, String);
+
+/// `json` with its `Repr-Digest`, on the blocking pool.
+fn digested(json: String) -> Digested {
+    let digest = json::repr_digest(json.as_bytes());
+    (json, digest)
+}
+
 /// A catalog document's response: its bytes, `Fitment-Format`,
 /// `Fitment-Exit-Code` (DC3, DC4), the view's ETag and `no-cache` (VN5).
-fn view(json: String, etag: &str, exit: u8) -> Response {
-    let mut response = json::bytes(
+fn view((json, digest): Digested, etag: &str, exit: u8) -> Response {
+    let mut response = json::bytes_digested(
         StatusCode::OK,
         json::JSON,
         Some((catalog::FORMAT, catalog::FORMAT_VERSION)),
         Bytes::from(json),
+        &digest,
     );
     let headers = response.headers_mut();
     if let Ok(value) = HeaderValue::from_str(etag) {
@@ -98,14 +129,17 @@ fn view(json: String, etag: &str, exit: u8) -> Response {
 }
 
 /// `GET /v1/catalog` (DC11): the catalog's generation, counts and state,
-/// `fitment.info`'s `catalog` object alone; its ETag the views'.
+/// `fitment.info`'s `catalog` object alone; its ETag the views' with its
+/// state's flags folded in, so a reindex queued or the barrier raised at
+/// one generation is a new tag, never a stale `304` (the review of PR
+/// 7b).
 pub(super) async fn info(
     State(shared): State<Arc<Shared>>,
     _: Reader,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let info = super::server::catalog_info(&shared).await?;
-    let etag = shared.catalog.etag(info.generation);
+    let etag = shared.catalog.info_etag(&info);
     if let Some(answer) = conditions(&headers, &etag)? {
         return Ok(answer);
     }
@@ -125,9 +159,14 @@ pub(super) async fn info(
 }
 
 /// HX8: a `limit=all` listing's slot, taken without waiting: past
-/// `limits.list_all_concurrency`, `429 too_many_streams`, retryable.
-fn list_all_slot(shared: &Shared) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
-    Arc::clone(&shared.list_all_slots)
+/// `limits.list_all_concurrency`, or a second of one user's (the review of
+/// PR 7b), `429 too_many_streams`, retryable.
+fn list_all_slot(
+    shared: &Arc<Shared>,
+    user: i64,
+) -> Result<(crate::http::Share, tokio::sync::OwnedSemaphorePermit), ApiError> {
+    let share = crate::http::share(shared, user, "list_all_concurrency", 1)?;
+    let slot = Arc::clone(&shared.list_all_slots)
         .try_acquire_owned()
         .map_err(|_| {
             ApiError::new(
@@ -136,7 +175,8 @@ fn list_all_slot(shared: &Shared) -> Result<tokio::sync::OwnedSemaphorePermit, A
             )
             .with("limit", "list_all_concurrency")
             .retry_after(1)
-        })
+        })?;
+    Ok((share, slot))
 }
 
 /// `GET /v1/catalog/entries?status=&after=&limit=` (VN3, VN4, VN5): a page
@@ -145,10 +185,11 @@ fn list_all_slot(shared: &Shared) -> Result<tokio::sync::OwnedSemaphorePermit, A
 /// sent from memory (HX8).
 pub(super) async fn list(
     State(shared): State<Arc<Shared>>,
-    _: Reader,
+    Reader(caller): Reader,
     uri: Uri,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let user = caller.user.key;
     let params = query::params(uri.query(), &["status", "after", "limit"])?;
     let filter = match params.get("status") {
         Some(name) => StatusFilter::parse(name).ok_or_else(|| {
@@ -168,13 +209,13 @@ pub(super) async fn list(
             )
             .with("parameter", "after"));
         }
-        let slot = list_all_slot(&shared)?;
+        let slot = list_all_slot(&shared, user)?;
         let hooked = Arc::clone(&shared);
-        let (generation, json) = read(&shared, move |dir| {
+        let (generation, json) = read(&shared, user, move |dir| {
             crate::jobs::run::hook(&hooked, "catalog.list");
             let built = dir.list_all(filter);
             drop(slot);
-            built
+            built.map(|(generation, json)| (generation, digested(json)))
         })
         .await?;
         let etag = shared.catalog.etag(generation);
@@ -187,15 +228,17 @@ pub(super) async fn list(
     let after = query::after(&params)?;
     let cursor = (!after.is_empty()).then_some(after);
     let size = usize::try_from(limit).unwrap_or(usize::MAX);
-    let page = read(&shared, move |dir| {
-        dir.list_page(filter, cursor.as_deref(), size)
+    let (page, json) = read(&shared, user, move |dir| {
+        let mut page = dir.list_page(filter, cursor.as_deref(), size)?;
+        let json = digested(std::mem::take(&mut page.json));
+        Ok((page, json))
     })
     .await?;
     let etag = shared.catalog.etag(page.generation);
     if let Some(answer) = conditions(&headers, &etag)? {
         return Ok(answer);
     }
-    let mut response = view(page.json, &etag, 0);
+    let mut response = view(json, &etag, 0);
     if let Some(next) = page.next {
         let url = format!(
             "/v1/catalog/entries?after={}&limit={limit}&status={}",
@@ -219,18 +262,23 @@ fn asked_id(reference: &str) -> Option<&str> {
 /// case-folded match carries `Content-Location` naming the id as stored.
 pub(super) async fn get(
     State(shared): State<Arc<Shared>>,
-    _: Reader,
+    Reader(caller): Reader,
     Path(entry): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     catalog::check_reference(&entry)?;
     let named = entry.clone();
-    let got = read(&shared, move |dir| dir.get(&named)).await?;
+    let (got, json) = read(&shared, caller.user.key, move |dir| {
+        let mut got = dir.get(&named)?;
+        let json = digested(std::mem::take(&mut got.json));
+        Ok((got, json))
+    })
+    .await?;
     let etag = shared.catalog.etag(got.generation);
     if let Some(answer) = conditions(&headers, &etag)? {
         return Ok(answer);
     }
-    let mut response = view(got.json, &etag, got.exit);
+    let mut response = view(json, &etag, got.exit);
     if asked_id(&entry).is_some_and(|asked| asked != got.id) {
         let revision = if entry.contains('@') {
             format!("@r{}", got.revision)
@@ -252,16 +300,24 @@ pub(super) async fn get(
 /// quarantined entry's refused document with `Fitment-Exit-Code: 3`.
 pub(super) async fn features(
     State(shared): State<Arc<Shared>>,
-    _: Reader,
+    Reader(caller): Reader,
     Path(entry): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     catalog::check_reference(&entry)?;
-    let got = read(&shared, move |dir| dir.features(&entry)).await?;
-    let body = got.json.into_bytes();
+    let gz = cache::wants_gzip(&headers);
+    let (got, sha256, bytes, ready) = read(&shared, caller.user.key, move |dir| {
+        let mut got = dir.features(&entry)?;
+        let body = std::mem::take(&mut got.json).into_bytes();
+        let sha256 = fitment_core::sha256_hex(&body);
+        let bytes = u64::try_from(body.len()).unwrap_or(u64::MAX);
+        let ready = cache::ready(body, &sha256, gz);
+        Ok((got, sha256, bytes, ready))
+    })
+    .await?;
     let served = cache::Served {
-        sha256: fitment_core::sha256_hex(&body),
-        bytes: u64::try_from(body.len()).unwrap_or(u64::MAX),
+        sha256,
+        bytes,
         content_type: json::JSON,
         format: Some((
             fitment_core::FEATURES_FORMAT.to_owned(),
@@ -272,24 +328,45 @@ pub(super) async fn features(
         cache: cache::Cache::NoCache,
         disposition: None,
     };
-    Ok(cache::memory(&headers, &served, body))
+    Ok(cache::memory(&headers, &served, ready))
 }
 
-/// `GET /v1/catalog/entries/{entry}/step` (ST11, HX6, VN5): the stored
-/// bytes, re-hashed first; `immutable` when the URL names an exact
-/// revision or content, `no-cache` for a bare id.
+/// `GET /v1/catalog/entries/{entry}/step` (ST11, OB3, HX6, VN5): the
+/// stored bytes, re-hashed first: within [`cache::SEND_BUFFER_MAX`] read
+/// whole, else hashed in one pass and streamed in a second that fails on
+/// a change, a chunk per blocking read, nothing large held (the review of
+/// PR 7b); `immutable` when the URL names an exact revision or content,
+/// `no-cache` for a bare id.
 pub(super) async fn step(
     State(shared): State<Arc<Shared>>,
-    _: Reader,
+    Reader(caller): Reader,
     Path(entry): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     catalog::check_reference(&entry)?;
     let exact = entry.contains('@') || entry.starts_with("sha256:");
-    let step = read(&shared, move |dir| dir.step(&entry)).await?;
+    let gz = cache::wants_gzip(&headers);
+    let hooked = Arc::clone(&shared);
+    let (step, body) = read(&shared, caller.user.key, move |dir| {
+        let between = || crate::jobs::run::hook(&hooked, "catalog.step");
+        let catalog::Step {
+            id,
+            revision,
+            sha256,
+            length,
+            bytes,
+        } = dir.step(&entry, cache::SEND_BUFFER_MAX, &between)?;
+        let body = match bytes {
+            StepBytes::Whole(bytes) => Ok(cache::ready(bytes, &sha256, gz)),
+            StepBytes::Stream(reader) => Err(reader),
+        };
+        Ok(((id, revision, sha256, length), body))
+    })
+    .await?;
+    let (id, revision, sha256, length) = step;
     let served = cache::Served {
-        sha256: step.sha256.clone(),
-        bytes: u64::try_from(step.bytes.len()).unwrap_or(u64::MAX),
+        sha256,
+        bytes: length,
         content_type: "application/octet-stream",
         format: None,
         exit_code: Some(0),
@@ -299,9 +376,35 @@ pub(super) async fn step(
         } else {
             cache::Cache::NoCache
         },
-        disposition: Some(format!("{}_r{}.stp", step.id, step.revision)),
+        disposition: Some(format!("{id}_r{revision}.stp")),
     };
-    Ok(cache::memory(&headers, &served, step.bytes))
+    Ok(match body {
+        Ok(ready) => cache::memory(&headers, &served, ready),
+        Err(reader) => cache::stream(&headers, &served, reader),
+    })
+}
+
+/// RA7: the generation a write's `If-Match` makes it conditional on:
+/// none without the header or with `*` (any current entry, which the
+/// write needs anyway); a tag of this catalog's views its generation (of
+/// several, the latest); a tag of none, `-1`, a generation the catalog
+/// is never at, so the write answers `412` once its references name what
+/// it changes (RFC 9110, 13.1.1 and 13.2.2).
+fn if_match(shared: &Shared, headers: &HeaderMap) -> Option<i64> {
+    let values: Vec<&str> = headers
+        .get_all(header::IF_MATCH)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .collect();
+    if values.is_empty() || values.contains(&"*") {
+        return None;
+    }
+    let generations = values
+        .iter()
+        .filter_map(|tag| shared.catalog.tag_generation(tag));
+    Some(generations.max().unwrap_or(-1))
 }
 
 /// RA8, SZ1: an ingested file's names and its id, checked before any job;
@@ -394,7 +497,9 @@ pub(super) async fn ingest(
 
 /// `PUT /v1/catalog/entries/{entry}` (CA1, CR3, RA2): the job
 /// `catalog_replace`, `catalog replace REF FILE --format json`; `ID@rN`
-/// only for the current revision, decided in the job's transaction.
+/// only for the current revision, decided in the job's transaction, as is
+/// `If-Match`'s generation (RA7): another ends the job `refused`,
+/// `precondition_failed`, nothing changed.
 pub(super) async fn replace(
     State(shared): State<Arc<Shared>>,
     Writer(caller): Writer,
@@ -409,6 +514,23 @@ pub(super) async fn replace(
         return Ok(replayed);
     }
     catalog::check_reference(&entry)?;
+    let if_generation = if_match(&shared, &headers);
+    if let Some(asked) = if_generation {
+        // RA7: false now is `412` now; the job's transaction checks again.
+        let now = read(
+            &shared,
+            caller.user.key,
+            catalog::CatalogDir::generation_now,
+        )
+        .await?;
+        if now != asked {
+            return Err(ApiError::new(
+                ErrorCode::PreconditionFailed,
+                "the catalog changed since the entity tag If-Match names: nothing was changed",
+            )
+            .with("generation", now));
+        }
+    }
     let max_mib = max_mib(&shared, body.max_mib)?;
     let (sha256, file_name, input) = file_of(&body.upload, &body.file_name, body.input.as_deref())?;
     let bytes = super::nameable(&shared, caller.user.key, &sha256).await?;
@@ -418,6 +540,7 @@ pub(super) async fn replace(
         file_name,
         input,
         max_mib,
+        if_generation,
     });
     let submission = Submission {
         kind: Kind::CatalogReplace,
@@ -432,20 +555,49 @@ pub(super) async fn replace(
 
 /// M6-50, CX3, CU1: a delete, synchronous, on a short-lived writer: `200`
 /// with `fitment.catalog` and its `changes`; `503 catalog_busy` past
-/// `catalog.delete_busy_ms`.
-async fn delete_ids(shared: &Arc<Shared>, ids: Vec<String>) -> Result<Response, ApiError> {
+/// `catalog.delete_busy_ms`. At most two run at once; one that waits for
+/// a slot past the parse slots' wait is `503 catalog_busy`, `Retry-After:
+/// 1`, before any writer opens (the review of PR 7b). `at`: `If-Match`'s
+/// generation (RA7).
+async fn delete_ids(
+    shared: &Arc<Shared>,
+    ids: Vec<String>,
+    at: Option<i64>,
+) -> Result<Response, ApiError> {
+    let slots = Arc::clone(&shared.delete_slots);
+    let slot = tokio::time::timeout(crate::gate::slot_wait(shared), slots.acquire_owned())
+        .await
+        .map_err(|_| {
+            shared.metrics.catalog_busy();
+            ApiError::new(
+                ErrorCode::CatalogBusy,
+                "the most deletes are running at once: try again",
+            )
+            .with("limit", "delete_concurrency")
+            .retry_after(1)
+        })?
+        .map_err(|_| ApiError::internal())?;
     let writing = Arc::clone(shared);
-    let deleted = blocking(move || writing.catalog.delete(&ids)).await;
+    let deleted = blocking(move || {
+        crate::jobs::run::hook(&writing, "catalog.delete");
+        let deleted = writing.catalog.delete(&ids, at);
+        let deleted = deleted.map(|d| (d.generation, digested(d.json)));
+        drop(slot);
+        deleted
+    })
+    .await;
     let deleted = deleted.inspect_err(|e| {
         if e.code() == ErrorCode::CatalogBusy {
             shared.metrics.catalog_busy();
         }
     })?;
-    let mut response = json::bytes(
+    let (_, (json, digest)) = deleted;
+    let mut response = json::bytes_digested(
         StatusCode::OK,
         json::JSON,
         Some((catalog::FORMAT, catalog::FORMAT_VERSION)),
-        Bytes::from(deleted.json),
+        Bytes::from(json),
+        &digest,
     );
     response
         .headers_mut()
@@ -454,13 +606,17 @@ async fn delete_ids(shared: &Arc<Shared>, ids: Vec<String>) -> Result<Response, 
 }
 
 /// `DELETE /v1/catalog/entries/{entry}` (M6-50, CU1): `catalog delete ID
-/// --format json`; a content reference is `400 not_an_id` (RA2).
+/// --format json`; a content reference is `400 not_an_id` (RA2); under
+/// `If-Match`, on condition of its generation, else `412
+/// precondition_failed`, nothing deleted (RA7).
 pub(super) async fn delete(
     State(shared): State<Arc<Shared>>,
     _: Writer,
     Path(entry): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    delete_ids(&shared, vec![entry]).await
+    let at = if_match(&shared, &headers);
+    delete_ids(&shared, vec![entry], at).await
 }
 
 /// `POST /v1/catalog/delete` (CR2, CU1): `catalog delete ID… --format
@@ -482,7 +638,7 @@ pub(super) async fn delete_many(
         )
         .with("parameter", "ids"));
     }
-    delete_ids(&shared, body.ids).await
+    delete_ids(&shared, body.ids, None).await
 }
 
 /// A job of the catalog's with nothing to hold: its kind and normalized

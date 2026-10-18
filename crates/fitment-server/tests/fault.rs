@@ -1797,12 +1797,15 @@ async fn cancel(server: &TestServer, id: &str) -> support::Reply {
 
 /// JS8, JB5, JB8, VT41, XH12: a cancel reaches each catalog kind where JS8
 /// says it may stop. An ingest of 70 files stopped after its first batch
-/// of 64 (CA2's check before each file) keeps that batch, its document
-/// listing exactly those lines, `exit_code` null, its `change` and
-/// `batch` events persisted; a reindex likewise; a gc asked before it
-/// began unlinks nothing and says so; a verify and a catalog match leave
-/// nothing; a running replace or prune is one transaction, `409
-/// job_finished`, and ends as it ran; a queued job is `cancelled` at once.
+/// (CA2's check before each file) keeps that batch, its document listing
+/// exactly those lines, `exit_code` null, its `change` and `batch` events
+/// persisted; a reindex likewise; a gc asked before it began unlinks
+/// nothing and says so; a verify and a catalog match leave nothing; a
+/// running replace or prune is one transaction, `409 job_finished`, which
+/// says it runs to its end, and ends as it ran; a queued job is
+/// `cancelled` at once. The first batch's size is what its `batch` event
+/// says: at most 64 files, fewer when DB3's second ends it under load (the
+/// review of PR 7b).
 #[tokio::test(flavor = "multi_thread")]
 async fn catalog_jobs_stop_where_js8_says() {
     let server = TestServer::fresh();
@@ -1828,26 +1831,43 @@ async fn catalog_jobs_stop_where_js8_says() {
     let ended = server.finished_job(&id, Duration::from_secs(60)).await;
     assert_eq!(ended["state"], "cancelled", "{ended}");
     assert!(ended["exit_code"].is_null());
-    let document: Value = serde_json::from_slice(&server.document(&ended).await.body).unwrap();
-    assert_eq!(
-        document["changes"].as_array().unwrap().len(),
-        64,
-        "its committed batch"
-    );
-    assert_eq!(document["counts"]["entries"], 64);
     let events = events_of(&server, &id).await;
     let changes = events.iter().filter(|e| e["type"] == "change").count();
     let batches: Vec<&Value> = events.iter().filter(|e| e["type"] == "batch").collect();
-    assert_eq!((changes, batches.len()), (64, 1));
-    assert_eq!(batches[0]["lines"], 64);
+    assert_eq!(batches.len(), 1, "{batches:?}");
+    let first = usize::try_from(batches[0]["lines"].as_u64().unwrap()).unwrap();
+    assert!((1..=64).contains(&first), "{first}");
+    assert_eq!(changes, first);
+    let document: Value = serde_json::from_slice(&server.document(&ended).await.body).unwrap();
+    assert_eq!(
+        document["changes"].as_array().unwrap().len(),
+        first,
+        "its committed batch"
+    );
+    assert_eq!(document["counts"]["entries"], first);
     catalog_xh12(&server, &ended).await;
-    // A reindex of the 64, stale, stopped after its first batch.
+    // A reindex of those and 70 more, stale, stopped after its first
+    // batch: more than one batch's 64, so a second was still to come (a
+    // cancel after the last batch stops nothing, the review of PR 7b).
+    let more: Vec<(Vec<u8>, String)> = (0..70)
+        .map(|n| {
+            (
+                format!("more {n:04}\n").into_bytes(),
+                format!("more{n:04}.stp"),
+            )
+        })
+        .collect();
+    server.ingest(&more).await;
     support::stale_catalog(&server.dirs.catalog, fitment_core::EXTRACTOR_VERSION - 1);
     let reindexed = stopped_at_batch(&server, "/v1/catalog/reindex", &json!({ "all": true })).await;
     assert_eq!(reindexed["state"], "cancelled", "{reindexed}");
     let document: Value = serde_json::from_slice(&server.document(&reindexed).await.body).unwrap();
     let changes = document["changes"].as_array().unwrap();
-    assert_ne!(changes.len(), 0, "its committed batch's lines");
+    assert!(
+        (1..first + 70).contains(&changes.len()),
+        "its committed batch's lines: {}",
+        changes.len()
+    );
     catalog_xh12(&server, &reindexed).await;
     for (path, body, kept) in [
         ("/v1/catalog/gc", json!({}), true),
@@ -1875,6 +1895,11 @@ async fn catalog_jobs_stop_where_js8_says() {
         assert!(gate.arrived(1, Duration::from_secs(30)).await);
         let refused = cancel(&server, &id).await;
         assert_eq!(refused.code(), "job_finished", "{path}: one transaction");
+        let detail = refused.json()["detail"].as_str().unwrap().to_owned();
+        assert!(
+            detail.contains("cannot be stopped once running"),
+            "{path}: not ended, running to its end: {detail}"
+        );
         gate.open();
         seams.hooks.clear("job.read");
         let ended = server.finished_job(&id, Duration::from_secs(60)).await;
@@ -2070,6 +2095,9 @@ async fn the_wal_barrier_is_bounded() {
         "{vacuum}"
     );
     assert_eq!(vacuum["error"]["retryable"], true);
+    // The barrier is taken around `VACUUM` alone (the review of PR 7b):
+    // what the gc collected before it stands, its document kept.
+    assert!(!vacuum["document"].is_null(), "{vacuum}");
     gate.open();
     seams.hooks.clear("catalog.judge");
     let held = server
@@ -2128,8 +2156,20 @@ async fn an_aborted_ingest_is_interrupted_and_converges() {
         details["generation_at_recovery"].as_i64() > details["generation_at_start"].as_i64(),
         "{details}"
     );
+    // Its first batch, however DB3 cut it (the review of PR 7b): what its
+    // persisted `batch` event says.
+    let id = job["id"].as_str().unwrap();
+    let events = server.get(&format!("/v1/jobs/{id}/events")).await;
+    let batch = String::from_utf8_lossy(&events.body)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|e| e["type"] == "batch")
+        .expect("its committed batch's event");
     let listed_now = server.get("/v1/catalog").await.json();
-    assert_eq!(listed_now["entries"], 64, "its committed batch stays");
+    assert_eq!(
+        listed_now["entries"], batch["lines"],
+        "its committed batch stays"
+    );
     assert_eq!(support::verified(&server.dirs.catalog), Some(0));
     let again = server.send(call).await.json();
     assert_ne!(again["id"], job["id"], "the key was released");
@@ -2184,7 +2224,13 @@ async fn a_drained_ingest_is_interrupted_with_its_committed_lines() {
         e["type"] == "batch"
     })
     .await;
-    assert_eq!(seen.last().unwrap()["lines"], 64, "{seen:?}");
+    // Its first batch, however DB3 cut it (the review of PR 7b).
+    let first = seen.last().unwrap()["lines"].clone();
+    let at_batch = seen.last().unwrap()["generation"].clone();
+    assert!(
+        first.as_u64().is_some_and(|n| (1..=64).contains(&n)),
+        "{seen:?}"
+    );
     let child = server.child.take().unwrap();
     let (code, _, stderr) = tokio::task::spawn_blocking(move || child.stop())
         .await
@@ -2197,12 +2243,435 @@ async fn a_drained_ingest_is_interrupted_with_its_committed_lines() {
         (Some("interrupted"), Some("job_interrupted")),
         "{job}"
     );
+    let details = &job["error"]["details"];
+    assert!(details["generation_at_start"].is_i64(), "{job}");
+    assert_eq!(
+        details["generation_at_stop"], at_batch,
+        "where its committed batch left the catalog: {job}"
+    );
     assert!(
-        job["error"]["details"]["generation_at_start"].is_i64(),
+        details["generation_at_stop"].as_i64() > details["generation_at_start"].as_i64(),
         "{job}"
     );
     let document: Value = serde_json::from_slice(&server.document(&job).await.body).unwrap();
-    assert_eq!(document["changes"].as_array().unwrap().len(), 64);
-    assert_eq!(server.get("/v1/catalog").await.json()["entries"], 64);
+    assert_eq!(
+        Value::from(document["changes"].as_array().unwrap().len()),
+        first
+    );
+    assert_eq!(server.get("/v1/catalog").await.json()["entries"], first);
     catalog_xh12(&server, &job).await;
+}
+
+// ------------------------------------------------- the review of PR 7b
+
+/// `m_block02`, `m_block02_cb_deep` and `m_bracket`, as files to ingest.
+fn three_parts() -> Vec<(Vec<u8>, String)> {
+    ["m_block02.stp", "m_block02_cb_deep.stp", "m_bracket.stp"]
+        .iter()
+        .map(|n| (support::candidate(n), (*n).to_owned()))
+        .collect()
+}
+
+/// Job `id` as it is now, once it has left `queued`, within 30 s.
+async fn left_the_queue(server: &TestServer, id: &str) -> Value {
+    for _ in 0..1500 {
+        let job = server.get(&format!("/v1/jobs/{id}")).await.json();
+        if job["state"] != "queued" {
+            return job;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("{id} stayed queued");
+}
+
+/// ST11, CC4: a step read racing a delete. The read's snapshot named the
+/// bytes; a delete released them before they were read: the file missing,
+/// the read looks again in a fresh snapshot and answers `410
+/// bytes_not_kept`, never `500 blob_damaged`. Eight reads beside a delete
+/// each answer the bytes or `410`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_step_racing_a_delete_is_gone_never_damaged() {
+    let server = Arc::new(TestServer::fresh());
+    server.ingest(&three_parts()).await;
+    let seams = server.server().seams();
+    let gate = Gate::new();
+    seams.hooks.set("catalog.step", Action::Pause(gate.clone()));
+    let reading = Arc::clone(&server);
+    let held = tokio::spawn(async move { reading.get("/v1/catalog/entries/m_block02/step").await });
+    assert!(gate.arrived(1, Duration::from_secs(30)).await);
+    let deleted = server
+        .send(Call::new(Method::DELETE, "/v1/catalog/entries/m_block02"))
+        .await;
+    assert_eq!(deleted.status, 200);
+    gate.open();
+    seams.hooks.clear("catalog.step");
+    let reply = held.await.unwrap();
+    assert_eq!(
+        (reply.status.as_u16(), reply.code()),
+        (410, "bytes_not_kept".into())
+    );
+    let mut reads = Vec::new();
+    for _ in 0..8 {
+        let reading = Arc::clone(&server);
+        reads.push(tokio::spawn(async move {
+            reading.get("/v1/catalog/entries/m_bracket/step").await
+        }));
+    }
+    let deleted = server
+        .send(Call::new(Method::DELETE, "/v1/catalog/entries/m_bracket"))
+        .await;
+    assert_eq!(deleted.status, 200);
+    for read in reads {
+        let reply = read.await.unwrap();
+        assert!(
+            matches!(reply.status.as_u16(), 200 | 410),
+            "{}: {}",
+            reply.status,
+            String::from_utf8_lossy(&reply.body)
+        );
+    }
+}
+
+/// CX6, M6-50: a gc truncates the log on a reader, whose wait for readers
+/// is `catalog.read_busy_ms`, never on its writer, so a match pinning the
+/// log holds no write lock for `catalog.write_busy_ms`: a delete during
+/// the gc succeeds within `catalog.delete_busy_ms`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delete_during_a_gc_is_not_held_by_pinned_readers() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.catalog.write_busy_ms = 5_000;
+    config.catalog.delete_busy_ms = 1_000;
+    config.catalog.read_busy_ms = 200;
+    let server = TestServer::in_process(dirs, config);
+    server.ingest(&three_parts()).await;
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let seams = server.server().seams();
+    let gate = Gate::new();
+    seams
+        .hooks
+        .set("catalog.judge", Action::Pause(gate.clone()));
+    let body =
+        json!({ "socket": socket, "candidates": { "catalog": { "selection": "exhaustive" } } });
+    let held = server.submit("/v1/matches", &body).await;
+    assert!(gate.arrived(1, Duration::from_secs(60)).await);
+    // A write after the match's snapshot: the log holds frames it pins.
+    server.ingest(&support::junk_files(1)).await;
+    let gc = server.submit("/v1/catalog/gc", &json!({})).await;
+    let gc_id = gc["id"].as_str().unwrap().to_owned();
+    left_the_queue(&server, &gc_id).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let deleted = server
+        .send(Call::new(Method::DELETE, "/v1/catalog/entries/m_bracket"))
+        .await;
+    assert_eq!(
+        deleted.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&deleted.body)
+    );
+    gate.open();
+    seams.hooks.clear("catalog.judge");
+    let gc = server.finished_job(&gc_id, Duration::from_secs(60)).await;
+    assert_eq!(gc["state"], "succeeded", "{gc}");
+    let held = server
+        .finished_job(held["id"].as_str().unwrap(), Duration::from_secs(60))
+        .await;
+    assert_eq!(held["state"], "succeeded", "{held}");
+    catalog_xh12(&server, &gc).await;
+}
+
+/// M6-50: at most two synchronous deletes run at once; a third waits for
+/// a slot as long as a read waits for its slot (half the handler's time),
+/// then answers `503 catalog_busy`, `Retry-After`, before any writer
+/// opens; the two then succeed, and so does the third again.
+#[tokio::test(flavor = "multi_thread")]
+async fn deletes_run_two_at_a_time() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.server.handler_timeout_seconds = 4;
+    let server = Arc::new(TestServer::in_process(dirs, config));
+    server.ingest(&three_parts()).await;
+    let seams = server.server().seams();
+    let gate = Gate::new();
+    seams
+        .hooks
+        .set("catalog.delete", Action::Pause(gate.clone()));
+    let mut held = Vec::new();
+    for entry in ["m_block02", "m_block02_cb_deep"] {
+        let deleting = Arc::clone(&server);
+        held.push(tokio::spawn(async move {
+            deleting
+                .send(Call::new(
+                    Method::DELETE,
+                    &format!("/v1/catalog/entries/{entry}"),
+                ))
+                .await
+        }));
+    }
+    assert!(gate.arrived(2, Duration::from_secs(30)).await);
+    let third = tokio::time::timeout(
+        Duration::from_secs(10),
+        server.send(Call::new(Method::DELETE, "/v1/catalog/entries/m_bracket")),
+    )
+    .await
+    .expect("answered without the two");
+    assert_eq!(
+        (third.status.as_u16(), third.code()),
+        (503, "catalog_busy".into())
+    );
+    assert_eq!(third.json()["details"]["limit"], "delete_concurrency");
+    assert!(third.header("retry-after").is_some());
+    gate.open();
+    seams.hooks.clear("catalog.delete");
+    for delete in held {
+        assert_eq!(delete.await.unwrap().status, 200);
+    }
+    let again = server
+        .send(Call::new(Method::DELETE, "/v1/catalog/entries/m_bracket"))
+        .await;
+    assert_eq!(again.status, 200);
+}
+
+/// CX6, JS4: a query job picked before the WAL barrier rose, its permits
+/// held, waits for the barrier to lower before it starts (it stays
+/// `queued`), and the barrier counts only queries that started; once it
+/// lowers, the job runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_query_picked_before_the_barrier_waits_for_it() {
+    let server = TestServer::fresh();
+    server.ingest(&three_parts()).await;
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let seams = server.server().seams();
+    let gate = Gate::new();
+    seams
+        .hooks
+        .set("job.permitted", Action::Pause(gate.clone()));
+    let body = json!({ "socket": socket, "candidates": { "catalog": {} } });
+    let job = server.submit("/v1/matches", &body).await;
+    let id = job["id"].as_str().unwrap().to_owned();
+    assert!(gate.arrived(1, Duration::from_secs(30)).await);
+    seams.jobs.hold_queries(true);
+    gate.open();
+    seams.hooks.clear("job.permitted");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let waiting = server.get(&format!("/v1/jobs/{id}")).await.json();
+    assert_eq!(waiting["state"], "queued", "held by the barrier: {waiting}");
+    seams.jobs.hold_queries(false);
+    let ended = server.finished_job(&id, Duration::from_secs(60)).await;
+    assert_eq!(ended["state"], "succeeded", "{ended}");
+}
+
+/// CX6: the barrier is held by a guard, so a panic under it (in `VACUUM`)
+/// lowers it as the job fails `internal`: query dispatch goes on, a
+/// catalog match runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panic_under_the_barrier_lowers_it() {
+    let server = TestServer::fresh();
+    server.ingest(&three_parts()).await;
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let seams = server.server().seams();
+    seams.hooks.set(
+        "catalog.vacuum",
+        Action::Panic("a planted panic under the barrier".into()),
+    );
+    let gc = server
+        .submit("/v1/catalog/gc", &json!({ "vacuum": true }))
+        .await;
+    let gc = server
+        .finished_job(gc["id"].as_str().unwrap(), Duration::from_secs(60))
+        .await;
+    assert_eq!(
+        (gc["state"].as_str(), gc["error"]["code"].as_str()),
+        (Some("failed"), Some("internal")),
+        "{gc}"
+    );
+    seams.hooks.clear("catalog.vacuum");
+    let matched = server
+        .run_match(&json!({ "socket": socket, "candidates": { "catalog": {} } }))
+        .await;
+    assert_eq!(matched["state"], "succeeded", "dispatch went on: {matched}");
+}
+
+/// JB5: a cancel that lands after a write job's last check of its flag
+/// stops nothing: the ingest ran to its end, a refused file's exit 3, and
+/// the job ends as it ran, `refused`, exit 3, its document kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_late_cancel_leaves_a_finished_ingest_as_it_ended() {
+    let server = TestServer::fresh();
+    let seams = server.server().seams();
+    let (bytes, name) = support::junk_files(1).remove(0);
+    let sha = server.upload(&bytes).await;
+    let gate = Gate::new();
+    seams.hooks.set("job.ran", Action::Pause(gate.clone()));
+    let body = json!({ "files": [{ "upload": format!("sha256:{sha}"), "file_name": name }] });
+    let job = server.submit("/v1/catalog/entries", &body).await;
+    let id = job["id"].as_str().unwrap().to_owned();
+    assert!(gate.arrived(1, Duration::from_secs(30)).await);
+    let cancelling = cancel(&server, &id).await;
+    assert_eq!(cancelling.status, 202);
+    assert_eq!(cancelling.json()["state"], "cancelling");
+    gate.open();
+    seams.hooks.clear("job.ran");
+    let ended = server.finished_job(&id, Duration::from_secs(60)).await;
+    assert_eq!(
+        (ended["state"].as_str(), ended["exit_code"].as_i64()),
+        (Some("refused"), Some(3)),
+        "{ended}"
+    );
+    assert!(!ended["document"].is_null(), "{ended}");
+    catalog_xh12(&server, &ended).await;
+}
+
+/// The review of PR 7b: one user holds at most half the catalog's read
+/// slots and one `limit=all` listing: past them, `429 too_many_streams`,
+/// `details.per_user`, retryable, without waiting; another user reads on.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_user_holds_a_share_of_the_catalogs_reads() {
+    let dirs = Dirs::new();
+    let mut config = dirs.config();
+    config.limits.read_concurrency = 4;
+    let server = Arc::new(TestServer::in_process(dirs, config));
+    server.ingest(&three_parts()).await;
+    let ada = seed_user(server.server(), "ada", Role::Reader, None);
+    let (_, ada) = seed_token(server.server(), &ada, Role::Reader, 30);
+    let seams = server.server().seams();
+    for (point, path, limit, share) in [
+        (
+            "catalog.step",
+            "/v1/catalog/entries/m_block02/step",
+            "read_concurrency",
+            2,
+        ),
+        (
+            "catalog.list",
+            "/v1/catalog/entries?limit=all",
+            "list_all_concurrency",
+            1,
+        ),
+    ] {
+        let gate = Gate::new();
+        seams.hooks.set(point, Action::Pause(gate.clone()));
+        let mut held = Vec::new();
+        for _ in 0..share {
+            let reading = Arc::clone(&server);
+            held.push(tokio::spawn(async move { reading.get(path).await }));
+        }
+        assert!(gate.arrived(share, Duration::from_secs(30)).await);
+        let over = tokio::time::timeout(Duration::from_secs(10), server.get(path))
+            .await
+            .expect("answered without waiting");
+        assert_eq!(
+            (over.status.as_u16(), over.code()),
+            (429, "too_many_streams".into()),
+            "{path}"
+        );
+        assert_eq!(over.json()["details"]["limit"], limit);
+        assert_eq!(over.json()["details"]["per_user"], true);
+        assert!(over.header("retry-after").is_some());
+        let other = server
+            .send(Call::get("/v1/catalog/entries/m_block02").bearer(&ada))
+            .await;
+        assert_eq!(other.status, 200, "another user reads on");
+        gate.open();
+        seams.hooks.clear(point);
+        for read in held {
+            assert_eq!(read.await.unwrap().status, 200, "{path}");
+        }
+    }
+}
+
+/// VT10, XH12, JB6, SD4: the built binary aborted around each write and
+/// maintenance kind's commits: after its catalog call (`job.ran`), and
+/// after its end committed (`job.committed`), then started again. Each
+/// job has one terminal state: a write job cut short before its end is
+/// `interrupted`, `job_interrupted`, with the generations it started at
+/// and at recovery; one whose end committed keeps it; a verify, pure, is
+/// run again to its end; and the catalog is consistent every time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jobs_aborted_around_their_commits_are_settled() {
+    const RESTART: &str = "[test]\nlease_stale_ms = 1\n";
+    let mut server = TestServer::process(Dirs::new(), RESTART);
+    server.ingest(&three_parts()).await;
+    let p01 = server.upload(&support::part("p01_through.stp")).await;
+    let replace = json!({ "upload": format!("sha256:{p01}"), "file_name": "p01_through.stp" });
+    let cases = [
+        (
+            "catalog_replace",
+            Method::PUT,
+            "/v1/catalog/entries/m_block02",
+            replace,
+        ),
+        (
+            "catalog_prune",
+            Method::POST,
+            "/v1/catalog/prune",
+            json!({ "revisions": true }),
+        ),
+        (
+            "catalog_reindex",
+            Method::POST,
+            "/v1/catalog/reindex",
+            json!({ "all": true }),
+        ),
+        ("catalog_gc", Method::POST, "/v1/catalog/gc", json!({})),
+        (
+            "catalog_verify",
+            Method::POST,
+            "/v1/catalog/verify",
+            json!({ "deep": true }),
+        ),
+    ];
+    for point in ["job.ran", "job.committed"] {
+        for (kind, method, path, body) in &cases {
+            let hooks = format!("{RESTART}hooks = {{ \"{point}\" = \"abort\" }}\n");
+            server.restart_process(&hooks);
+            let call = Call::json(method.clone(), path, body).header("prefer", "wait=60");
+            assert!(
+                server.try_send(call).await.is_none(),
+                "{kind} at {point}: the abort answered"
+            );
+            server.restart_process(RESTART);
+            let jobs = server.get(&format!("/v1/jobs?kind={kind}")).await.json();
+            let job = jobs["items"].as_array().unwrap().last().unwrap().clone();
+            let id = job["id"].as_str().unwrap();
+            let job = server.finished_job(id, Duration::from_secs(120)).await;
+            let state = job["state"].as_str().unwrap();
+            match (*kind, point) {
+                ("catalog_verify", _) | (_, "job.committed") => {
+                    assert_eq!(state, "succeeded", "{kind} at {point}: {job}");
+                }
+                _ => {
+                    assert_eq!(
+                        (state, job["error"]["code"].as_str()),
+                        ("interrupted", Some("job_interrupted")),
+                        "{kind} at {point}: {job}"
+                    );
+                    let details = &job["error"]["details"];
+                    assert!(details["generation_at_start"].is_i64(), "{job}");
+                    assert!(details["generation_at_recovery"].is_i64(), "{job}");
+                }
+            }
+            catalog_xh12(&server, &job).await;
+        }
+    }
+}
+
+/// CX6 (the review of PR 7b): the log's pages are counted in the
+/// database's own page size, read once at start, not an assumed 4,096
+/// bytes: a catalog made with pages of 8,192 bytes is counted so.
+#[tokio::test]
+async fn the_barrier_counts_the_catalogs_own_pages() {
+    let dirs = Dirs::new();
+    let db = rusqlite::Connection::open(dirs.catalog.join("catalog.db")).unwrap();
+    db.execute_batch(
+        "PRAGMA journal_mode = DELETE; PRAGMA page_size = 8192; VACUUM; PRAGMA journal_mode = WAL;",
+    )
+    .unwrap();
+    drop(db);
+    let config = dirs.config();
+    let server = TestServer::in_process(dirs, config);
+    assert_eq!(server.server().seams().catalog.page_bytes(), 8192);
+    server.ingest(&three_parts()).await;
+    assert_eq!(support::verified(&server.dirs.catalog), Some(0));
 }

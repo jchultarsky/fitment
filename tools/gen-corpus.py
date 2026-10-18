@@ -1577,6 +1577,31 @@ for rule, tests in {
     "JS9": [f"{S_API}::the_daily_gc_is_the_system_users", f"{S_JOBS}/mod.rs::the_daily_gc_waits_for_its_minute"],
 }.items():
     RULES[rule]["tests"] = RULES[rule]["tests"] + tests
+# The review of PR 7b's tests, each of a finding its fix answers.
+for rule, tests in {
+    "RA7": [f"{S_API}::catalog_writes_honour_if_match",
+            f"{T}/change.rs::conditional_changes_are_made_only_at_their_generation"],
+    "RA8": [f"{S_API}::ingest_lines_are_their_own_inputs"],
+    "CA1": [f"{S_API}::ingest_lines_are_their_own_inputs", f"{T}/change.rs::ingest_order_ties_each_line_to_its_input"],
+    "ST11": [f"{S_FAULT}::a_step_racing_a_delete_is_gone_never_damaged",
+             f"{T}/change.rs::a_streamed_blob_is_checked_in_both_passes"],
+    "CC4": [f"{S_FAULT}::a_step_racing_a_delete_is_gone_never_damaged"],
+    "OB3": [f"{S_WIRE}::a_large_catalog_file_is_streamed_and_a_small_one_buffered",
+            f"{T}/change.rs::a_streamed_blob_is_checked_in_both_passes"],
+    "CX3": [f"{S_FAULT}::a_delete_during_a_gc_is_not_held_by_pinned_readers", f"{S_FAULT}::deletes_run_two_at_a_time"],
+    "CX6": [f"{S_FAULT}::a_delete_during_a_gc_is_not_held_by_pinned_readers",
+            f"{S_FAULT}::a_query_picked_before_the_barrier_waits_for_it", f"{S_FAULT}::a_panic_under_the_barrier_lowers_it",
+            f"{S_FAULT}::the_barrier_counts_the_catalogs_own_pages",
+            f"{T}/change.rs::gc_collects_without_truncating_and_vacuums_apart"],
+    "CX1": [f"{S_FAULT}::one_user_holds_a_share_of_the_catalogs_reads"],
+    "HX8": [f"{S_FAULT}::one_user_holds_a_share_of_the_catalogs_reads"],
+    "VN5": [f"{S_API}::the_catalogs_tag_follows_its_state"],
+    "JS3": [f"{S_HOST}::a_reindex_takes_the_memory_its_largest_file_implies"],
+    "JB5": [f"{S_FAULT}::a_late_cancel_leaves_a_finished_ingest_as_it_ended"],
+    "JB6": [f"{S_FAULT}::jobs_aborted_around_their_commits_are_settled"],
+    "XH12": [f"{S_FAULT}::jobs_aborted_around_their_commits_are_settled"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],

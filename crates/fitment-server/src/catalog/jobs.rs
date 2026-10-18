@@ -247,9 +247,10 @@ fn ingest_notes(lines: &[Ingested]) -> Vec<(&'static str, String)> {
 /// conflict under an id the request gave is `id_conflict`, the bytes of
 /// another entry under one `duplicate_content`; an internal refusal a
 /// fitment bug; an unreadable file `io_error`. Other refusals are the
-/// document's lines (ER7): no code.
-fn ingest_failure(run: &Ingest, named: &[&str]) -> Option<JobFailure> {
-    let given = |line: &Ingested| named.contains(&line.input.to_string_lossy().as_ref());
+/// document's lines (ER7): no code. `given[k]`: the `k`th line's input
+/// gave its id (each line tied to its own input by ID4's order, never by
+/// its label, which several may share: the review of PR 7b).
+fn ingest_failure(run: &Ingest, given: &[bool]) -> Option<JobFailure> {
     let lines = &run.lines;
     if lines
         .iter()
@@ -271,7 +272,8 @@ fn ingest_failure(run: &Ingest, named: &[&str]) -> Option<JobFailure> {
     }
     if lines
         .iter()
-        .any(|l| matches!(l.outcome, Outcome::Conflict { .. }) && given(l))
+        .zip(given)
+        .any(|(l, given)| matches!(l.outcome, Outcome::Conflict { .. }) && *given)
     {
         return Some(JobFailure::new(
             ErrorCode::IdConflict,
@@ -313,11 +315,9 @@ pub fn ingest(
             None => input,
         });
     }
-    let named: Vec<&str> = files
-        .iter()
-        .filter(|f| f.id.is_some())
-        .map(|f| f.input.as_str())
-        .collect();
+    // The `k`th line is the line of `files[order[k]]` (ID4, RA8).
+    let order = fitment_catalog::ingest_order(&inputs);
+    let given: Vec<bool> = order.iter().map(|&at| files[at].id.is_some()).collect();
     dir.write(|catalog| {
         let run = catalog
             .ingest_inputs(&inputs, max_bytes, watch)
@@ -332,16 +332,13 @@ pub fn ingest(
             .lines
             .iter()
             .any(|l| matches!(l.outcome, Outcome::Added));
-        done.failure = ingest_failure(&run, &named);
+        done.failure = ingest_failure(&run, &given);
         // UP7, ST2: the catalog hashed its own buffer of each upload's
         // verified bytes; another SHA-256 is a broken invariant.
-        let differs = run.lines.iter().any(|line| {
-            let input = line.input.to_string_lossy();
-            line.sha256.as_ref().is_some_and(|sha| {
-                files
-                    .iter()
-                    .any(|f| f.input == input && f.sha256 != sha.as_str())
-            })
+        let differs = run.lines.iter().zip(&order).any(|(line, &at)| {
+            line.sha256
+                .as_ref()
+                .is_some_and(|sha| files[at].sha256 != sha.as_str())
         });
         if differs {
             done.exit = ERROR;
@@ -379,7 +376,8 @@ fn change_document(
 /// as codes: a reference naming no entry it may replace (RA2), another
 /// entry's bytes (`duplicate_content`), a refused file (`file_refused`,
 /// exit 3) or an unreadable one (exit 1); nothing changed then, and no
-/// document, as the CLI prints none.
+/// document, as the CLI prints none. `at`: `If-Match`'s generation (RA7),
+/// checked in its transaction; another is `precondition_failed`, exit 2.
 ///
 /// # Errors
 ///
@@ -388,7 +386,7 @@ pub fn replace(
     dir: &CatalogDir,
     named: &str,
     file: &IngestFile<'_>,
-    max_bytes: Option<u64>,
+    (max_bytes, at): (Option<u64>, Option<i64>),
     watch: &Watch<'_>,
 ) -> Result<Done, ApiError> {
     let reference = reference(named)?;
@@ -396,7 +394,7 @@ pub fn replace(
     let input = Input::new(&source, &file.input, &file.file_name);
     dir.write(|catalog| {
         let mut done = Done::of(super::FORMAT);
-        let replaced = match catalog.replace_input(&reference, &input, max_bytes, watch) {
+        let replaced = match catalog.replace_input_at(&reference, &input, max_bytes, at, watch) {
             Ok(Ok(replaced)) => replaced,
             Ok(Err(refused)) => {
                 not_replaced(&mut done, &refused);
@@ -650,7 +648,11 @@ pub fn prune(dir: &CatalogDir) -> Result<Done, ApiError> {
 
 /// `catalog gc [--versions] [--vacuum] --format json` (CU2): exit 1 for a
 /// file it could not remove; a cancel keeps what it unlinked, the document
-/// counting exactly that (JB5).
+/// counting exactly that (JB5). Its collection runs on the job writer; the
+/// log's `TRUNCATE` on a reader, whose wait for readers is
+/// `catalog.read_busy_ms`, so it never holds the writer that long (CX6,
+/// the review of PR 7b); `VACUUM` is the caller's, under the barrier
+/// ([`vacuum`]).
 ///
 /// # Errors
 ///
@@ -661,9 +663,9 @@ pub fn gc(
     vacuum: bool,
     watch: &Watch<'_>,
 ) -> Result<Done, ApiError> {
-    dir.write(|catalog| {
+    let done = dir.write(|catalog| -> Result<Done, ApiError> {
         let mut done = Done::of(GC_FORMAT);
-        let collected = match catalog.gc_observed(versions, vacuum, watch) {
+        let collected = match catalog.gc_collect_observed(versions, watch) {
             Ok(collected) => collected,
             Err(error) => {
                 done.exit = ERROR;
@@ -698,7 +700,37 @@ pub fn gc(
             && collected.old_rows == 0;
         done.document = Some(GcDocument::new(&collected, versions, vacuum).to_json());
         Ok(done)
-    })?
+    })??;
+    if !done.cancelled && done.document.is_some() {
+        truncate(dir);
+    }
+    Ok(done)
+}
+
+/// CC3, CX6: the log truncated on a reader within `catalog.read_busy_ms`;
+/// readers that still pin it leave it, as the barrier would (logged).
+fn truncate(dir: &CatalogDir) {
+    match dir.checkpoint_truncate() {
+        Ok(false) => {}
+        Ok(true) => tracing::info!("the log was not truncated: readers pin it"),
+        Err(error) => tracing::warn!(code = error.code().name(), "the log was not truncated"),
+    }
+}
+
+/// SZ4: `gc --vacuum`'s `VACUUM`, on the job writer, then the log
+/// truncated; the caller holds the WAL barrier (CX6).
+///
+/// # Errors
+///
+/// `catalog_busy` past `catalog.write_busy_ms`; the catalog's, mapped
+/// (CX7), a full disk `storage_full`.
+pub fn vacuum(dir: &CatalogDir) -> Result<(), JobFailure> {
+    let vacuumed = dir
+        .write(|catalog| catalog.vacuum())
+        .map_err(|e| JobFailure::of(&e))?;
+    vacuumed.map_err(|error| stopped_failure(dir, &error))?;
+    truncate(dir);
+    Ok(())
 }
 
 /// `catalog verify [--deep] [--full] --format json` (CU2, M5-25) on a fresh

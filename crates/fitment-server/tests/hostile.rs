@@ -2155,23 +2155,26 @@ async fn a_named_run_is_bounded_as_a_file_run() {
 }
 
 /// HX8, VN3 (VT45): a `limit=all` listing is built whole in one snapshot,
-/// at most `limits.list_all_concurrency` at once: a third while two are
-/// built is `429 too_many_streams`, retryable, without waiting; one built
+/// at most `limits.list_all_concurrency` at once: a third while two of
+/// other users are built is `429 too_many_streams`, retryable, without
+/// waiting (one user holds one at most, the review of PR 7b); one built
 /// and unread holds no snapshot (a `TRUNCATE` checkpoint completes
 /// meanwhile). A page's `limit` is 1 to `limits.page_max`; `all` takes no
 /// cursor.
 #[tokio::test(flavor = "multi_thread")]
 async fn whole_listings_are_built_two_at_a_time() {
-    let (server, ..) = catalog_world(|c| c.limits.list_all_concurrency = 2).await;
+    let (server, reader, writer, _) = catalog_world(|c| c.limits.list_all_concurrency = 2).await;
     let server = std::sync::Arc::new(server);
     let gate = Gate::new();
     let seams = server.server().seams();
     seams.hooks.set("catalog.list", Action::Pause(gate.clone()));
     let mut held = Vec::new();
-    for _ in 0..2 {
+    for token in [reader, writer] {
         let server = std::sync::Arc::clone(&server);
         held.push(tokio::spawn(async move {
-            server.get("/v1/catalog/entries?limit=all").await
+            server
+                .send(Call::get("/v1/catalog/entries?limit=all").bearer(&token))
+                .await
         }));
     }
     assert!(gate.arrived(2, Duration::from_secs(30)).await);
@@ -2181,6 +2184,10 @@ async fn whole_listings_are_built_two_at_a_time() {
         (429, "too_many_streams".into())
     );
     assert_eq!(third.json()["details"]["limit"], "list_all_concurrency");
+    assert!(
+        third.json()["details"]["per_user"].is_null(),
+        "the server's cap"
+    );
     assert_eq!(third.json()["retryable"], true);
     assert!(third.header("retry-after").is_some());
     gate.open();
@@ -2273,5 +2280,37 @@ async fn a_verify_past_its_deadline_fails_with_no_document() {
             "{job}"
         );
         assert!(job["document"].is_null() && job["exit_code"].is_null());
+    }
+}
+
+/// JS3 (the review of PR 7b): a reindex and a deep verify each hold one
+/// stored file whole at a time, so each takes the memory permits the
+/// catalog's largest file implies (21 times its bytes, in MiB), read at
+/// dispatch; a plain verify takes the least.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reindex_takes_the_memory_its_largest_file_implies() {
+    let (server, ..) = catalog_world(|c| c.jobs.memory_mib = 4096).await;
+    let large: Vec<u8> = (0..(2_u32 << 20))
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    server.ingest(&[(large, "large.stp".into())]).await;
+    let seams = server.server().seams();
+    let total = usize::try_from(seams.jobs.memory_free().1).unwrap();
+    for (path, body, mib) in [
+        ("/v1/catalog/reindex", json!({ "all": true }), 42),
+        ("/v1/catalog/verify", json!({ "deep": true }), 42),
+        ("/v1/catalog/verify", json!({}), 1),
+    ] {
+        let gate = Gate::new();
+        seams.hooks.set("job.read", Action::Pause(gate.clone()));
+        let job = server.submit(path, &body).await;
+        assert!(gate.arrived(1, Duration::from_secs(30)).await);
+        assert_eq!(seams.jobs.memory_free().0, total - mib, "{path} {body}");
+        gate.open();
+        seams.hooks.clear("job.read");
+        let done = server
+            .finished_job(job["id"].as_str().unwrap(), Duration::from_secs(120))
+            .await;
+        assert!(done["state"] != "failed", "{done}");
     }
 }

@@ -9,6 +9,7 @@ use fitment_core::{
 };
 use rusqlite::{OptionalExtension as _, Transaction, params};
 
+use crate::fs::FsRead;
 use crate::hex::Sha256Hex;
 use crate::ids::{Id, Reference};
 use crate::ingest::Counts;
@@ -246,6 +247,18 @@ impl Catalog {
     pub fn read_blob(&self, sha256: &Sha256Hex) -> Result<Vec<u8>, BadBlob> {
         self.blobs().read(sha256)
     }
+
+    /// ST11 for a stream (`docs/research/m6-api.md`, OB3): the bytes of
+    /// `sha256` hashed in one pass, then a reader of them on the same open
+    /// file, whose last read fails, `InvalidData`, if they changed since;
+    /// with their length. Nothing larger than a chunk is held.
+    ///
+    /// # Errors
+    ///
+    /// [`BadBlob`]: missing, damaged or unreadable.
+    pub fn open_blob(&self, sha256: &Sha256Hex) -> Result<(u64, Box<dyn FsRead>), BadBlob> {
+        self.blobs().open_checked(sha256)
+    }
 }
 
 /// A revision's columns: id, revision, content, file name, and the
@@ -284,6 +297,19 @@ impl Snapshot<'_> {
     /// The generation it reads.
     pub fn generation(&self) -> i64 {
         self.generation
+    }
+
+    /// The largest stored file's length, 0 for none (`docs/research/
+    /// m6-api.md`, JS3: what a reindex or a deep verify holds of one file).
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    pub fn largest_blob(&self) -> Result<u64, Error> {
+        let bytes: i64 =
+            self.tx
+                .query_row("SELECT coalesce(max(bytes), 0) FROM blob", [], |r| r.get(0))?;
+        u64::try_from(bytes).map_err(|_| corrupt("a length"))
     }
 
     /// Live entries by status, in one query (docs/research/m6-api.md,

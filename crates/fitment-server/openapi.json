@@ -4199,7 +4199,7 @@
                 "type": "boolean"
               },
               "reindex": {
-                "description": "A reindex job's state, `queued` or `running`, or null (M6-28).",
+                "description": "The newest unended reindex job's state, `queued`, `running` or\n`cancelling`, or null (M6-28).",
                 "type": [
                   "string",
                   "null"
@@ -14143,9 +14143,10 @@
                 }
               }
             },
-            "description": "rate_limited",
+            "description": "rate_limited, too_many_streams",
             "x-fitment-codes": [
-              "rate_limited"
+              "rate_limited",
+              "too_many_streams"
             ]
           },
           "500": {
@@ -14296,6 +14297,19 @@
               "reference_ambiguous",
               "revision_not_current",
               "entry_deleted"
+            ]
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "precondition_failed",
+            "x-fitment-codes": [
+              "precondition_failed"
             ]
           },
           "413": {
@@ -14875,6 +14889,19 @@
               "entry_deleted"
             ]
           },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "precondition_failed",
+            "x-fitment-codes": [
+              "precondition_failed"
+            ]
+          },
           "413": {
             "content": {
               "application/problem+json": {
@@ -14963,7 +14990,7 @@
             "bearer": []
           }
         ],
-        "summary": "catalog delete ID --format json, synchronous: a tombstone (M6-50, CU1)",
+        "summary": "catalog delete ID --format json, synchronous: a tombstone; under If-Match, on condition of its generation (M6-50, CU1, RA7)",
         "x-fitment-mode": "sync",
         "x-fitment-role": "writer",
         "x-fitment-role-fields": []
@@ -15093,9 +15120,10 @@
                 }
               }
             },
-            "description": "rate_limited",
+            "description": "rate_limited, too_many_streams",
             "x-fitment-codes": [
-              "rate_limited"
+              "rate_limited",
+              "too_many_streams"
             ]
           },
           "500": {
@@ -15252,6 +15280,19 @@
               "not_acceptable"
             ]
           },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fitment.error"
+                }
+              }
+            },
+            "description": "precondition_failed",
+            "x-fitment-codes": [
+              "precondition_failed"
+            ]
+          },
           "413": {
             "content": {
               "application/problem+json": {
@@ -15314,8 +15355,9 @@
                 }
               }
             },
-            "description": "io_error, internal",
+            "description": "catalog_damaged, io_error, internal",
             "x-fitment-codes": [
+              "catalog_damaged",
               "io_error",
               "internal"
             ]
@@ -15328,11 +15370,13 @@
                 }
               }
             },
-            "description": "request_timeout, queue_full, shutting_down",
+            "description": "request_timeout, queue_full, shutting_down, catalog_unavailable, catalog_busy",
             "x-fitment-codes": [
               "request_timeout",
               "queue_full",
-              "shutting_down"
+              "shutting_down",
+              "catalog_unavailable",
+              "catalog_busy"
             ]
           },
           "507": {
@@ -15354,7 +15398,7 @@
             "bearer": []
           }
         ],
-        "summary": "Replaces an entry's bytes: the job catalog_replace, catalog replace REF FILE --format json (CA1, CR3)",
+        "summary": "Replaces an entry's bytes: the job catalog_replace, catalog replace REF FILE --format json; under If-Match, on condition of its generation (CA1, CR3, RA7)",
         "x-fitment-mode": "job",
         "x-fitment-role": "writer",
         "x-fitment-role-fields": []
@@ -15487,9 +15531,10 @@
                 }
               }
             },
-            "description": "rate_limited",
+            "description": "rate_limited, too_many_streams",
             "x-fitment-codes": [
-              "rate_limited"
+              "rate_limited",
+              "too_many_streams"
             ]
           },
           "500": {
@@ -15658,9 +15703,10 @@
                 }
               }
             },
-            "description": "rate_limited",
+            "description": "rate_limited, too_many_streams",
             "x-fitment-codes": [
-              "rate_limited"
+              "rate_limited",
+              "too_many_streams"
             ]
           },
           "500": {

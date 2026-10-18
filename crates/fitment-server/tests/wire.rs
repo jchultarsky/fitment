@@ -361,3 +361,49 @@ fn unread_downloads_hold_no_blocking_thread() {
         drop(held);
     });
 }
+
+/// ST11, OB3, DC6 (the review of PR 7b): a catalog file above
+/// `SEND_BUFFER_MAX` is checked in one pass and streamed in a second (no
+/// `Content-Length`, chunked), never gzipped, its bytes and `Repr-Digest`
+/// the file's; one within it is sent from one buffer and gzipped on
+/// request, its digest the gzipped bytes'.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_large_catalog_file_is_streamed_and_a_small_one_buffered() {
+    let dirs = Dirs::new();
+    let config = dirs.config();
+    let server = TestServer::bound(dirs, config).await;
+    let files = [
+        (junk(2 << 20, 4), "large.stp"),
+        (junk(512 << 10, 5), "small.stp"),
+    ];
+    let listed: Vec<(Vec<u8>, String)> = files
+        .iter()
+        .map(|(bytes, name)| (bytes.clone(), (*name).to_owned()))
+        .collect();
+    server.ingest(&listed).await;
+    for ((bytes, _), streamed) in files.iter().zip([true, false]) {
+        let path = format!(
+            "/v1/catalog/entries/sha256:{}/step",
+            fitment_core::sha256_hex(bytes)
+        );
+        let plain = server.get(&path).await;
+        assert_eq!(&plain.body, bytes);
+        assert_eq!(
+            plain.header("content-length").is_none(),
+            streamed,
+            "{streamed}"
+        );
+        assert_eq!(
+            plain.header("repr-digest"),
+            Some(fitment_server::http::json::repr_digest(bytes).as_str())
+        );
+        let asked = server
+            .send(Call::get(&path).header("accept-encoding", "gzip"))
+            .await;
+        assert_eq!(
+            asked.header("content-encoding").is_some(),
+            !streamed,
+            "{streamed}"
+        );
+    }
+}

@@ -171,6 +171,11 @@ pub(crate) struct Shared {
     /// HX8: the `limit=all` listings built at once,
     /// `limits.list_all_concurrency`.
     pub(crate) list_all_slots: Arc<tokio::sync::Semaphore>,
+    /// The catalog's read slots and `limit=all` slots each user holds (the
+    /// review of PR 7b): at most half the read slots, and one listing.
+    pub(crate) catalog_shares: http::Shares,
+    /// M6-50: the synchronous deletes run at once (the review of PR 7b).
+    pub(crate) delete_slots: Arc<tokio::sync::Semaphore>,
     /// How often the lease is renewed, in milliseconds (SD6; a
     /// `test-support` seam shortens it).
     pub(crate) lease_renewal_ms: std::sync::atomic::AtomicU64,
@@ -385,6 +390,8 @@ impl Server {
                 lease_ok: AtomicBool::new(true),
                 released: AtomicBool::new(false),
                 list_all_slots: Arc::new(tokio::sync::Semaphore::new(list_all_slots)),
+                catalog_shares: http::Shares::default(),
+                delete_slots: Arc::new(tokio::sync::Semaphore::new(http::DELETE_CONCURRENCY)),
                 lease_renewal_ms: std::sync::atomic::AtomicU64::new(
                     u64::try_from(net::LEASE_RENEWAL.as_millis()).unwrap_or(10_000),
                 ),

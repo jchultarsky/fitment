@@ -439,7 +439,9 @@ impl CatalogDocument {
         inputs: &[&str],
         deletion: &Deletion,
     ) -> Result<Self, Error> {
-        let all = snapshot.list()?;
+        // The counts in one query, not a listing (docs/research/m6-api.md,
+        // the review of PR 7b): what `new` counts over every entry.
+        let counts = snapshot.status_counts()?;
         let mut tombstones = Vec::new();
         let mut changes = Vec::new();
         for d in &deletion.deleted {
@@ -459,12 +461,9 @@ impl CatalogDocument {
             fold(a).cmp(&fold(b)).then_with(|| a.id.cmp(&b.id))
         });
         let entries = tombstones.iter().map(|l| Entry::of(l, None)).collect();
-        Ok(Self::new(
-            snapshot.generation(),
-            &all,
-            entries,
-            Some(changes),
-        ))
+        let mut document = Self::page(snapshot.generation(), &counts, entries);
+        document.changes = Some(changes);
+        Ok(document)
     }
 
     /// `prune --revisions --format json` (CU1): the entries whose kept

@@ -59,7 +59,7 @@ pub use fs::{Content, Fs, FsRead, FsWrite, Point, StdFs};
 pub use gc::Collected;
 pub use hex::{NotHex, Sha256Hex};
 pub use ids::{BadReference, Id, Reference};
-pub use ingest::{Counts, Ingest, Ingested, Input, InputBytes, Outcome, Summary};
+pub use ingest::{Counts, Ingest, Ingested, Input, InputBytes, Outcome, Summary, ingest_order};
 pub use observe::{NoObserver, Observer, Progress};
 pub use preimage::Status;
 pub use query::{CatalogRun, NotRun, Selection};
@@ -532,6 +532,17 @@ impl Catalog {
             schema::Kind::Foreign => Err(Error::NotACatalog(self.root().to_owned())),
             _ => Ok(()),
         }
+    }
+
+    /// The database's page size in bytes (`PRAGMA page_size`), what a
+    /// [`Checkpoint`]'s pages count (`docs/research/m6-api.md`, CX6).
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    pub fn page_size(&self) -> Result<u64, Error> {
+        let bytes: i64 = self.conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        u64::try_from(bytes).map_err(|_| Error::Corrupt("the page size"))
     }
 
     /// The generation as it stands (DB8).

@@ -227,20 +227,43 @@ pub(crate) async fn object(
     Ok(response)
 }
 
-/// Bytes already read and checked (a catalog file re-hashed, ST11; a
-/// derived document): sent as [`object`] sends a small object, `304` for
-/// its ETag, gzipped when the client asks and they are within
-/// [`SEND_BUFFER_MAX`] (DC6).
-pub(crate) fn memory(request: &HeaderMap, served: &Served, body: Vec<u8>) -> Response {
-    let small = served.bytes <= SEND_BUFFER_MAX;
-    let zipped = (small && wants_gzip(request))
-        .then(|| gzip(&body).ok())
-        .flatten();
-    let (body, gz) = match zipped {
-        Some(zipped) => (zipped, true),
-        None => (body, false),
-    };
-    let etag = if gz {
+/// Bytes ready to send from memory (a catalog file re-hashed, ST11; a
+/// derived document): gzipped if asked, with their `Repr-Digest`, both
+/// made where they were read, on the blocking pool, never on the
+/// runtime's workers (the review of PR 7b).
+#[derive(Debug)]
+pub(crate) struct Ready {
+    body: Vec<u8>,
+    gz: bool,
+    digest: String,
+}
+
+/// `body`, whose SHA-256 is `sha256`, made [`Ready`]: gzipped when `gz`
+/// and within [`SEND_BUFFER_MAX`] (DC6), its digest the gzipped bytes'
+/// then, else its own name's. Blocking: run it where the bytes were read.
+pub(crate) fn ready(body: Vec<u8>, sha256: &str, gz: bool) -> Ready {
+    let small = u64::try_from(body.len()).unwrap_or(u64::MAX) <= SEND_BUFFER_MAX;
+    match (small && gz).then(|| gzip(&body).ok()).flatten() {
+        Some(zipped) => {
+            let digest = json::repr_digest(&zipped);
+            Ready {
+                body: zipped,
+                gz: true,
+                digest,
+            }
+        }
+        None => Ready {
+            body,
+            gz: false,
+            digest: format!("sha-256=:{}:", json::base64(&unhex(sha256))),
+        },
+    }
+}
+
+/// [`Ready`] bytes sent as [`object`] sends a small object, `304` for
+/// their ETag.
+pub(crate) fn memory(request: &HeaderMap, served: &Served, ready: Ready) -> Response {
+    let etag = if ready.gz {
         format!("\"sha256:{}-gz\"", served.sha256)
     } else {
         format!("\"sha256:{}\"", served.sha256)
@@ -248,10 +271,24 @@ pub(crate) fn memory(request: &HeaderMap, served: &Served, body: Vec<u8>) -> Res
     if not_modified(request, &etag) {
         return not_modified_response(&etag, served.cache.value());
     }
-    let digest = json::repr_digest(&body);
-    let mut response = (StatusCode::OK, Body::from(Bytes::from(body))).into_response();
-    headers(&mut response, served, &etag, &digest, gz);
+    let mut response = (StatusCode::OK, Body::from(Bytes::from(ready.body))).into_response();
+    headers(&mut response, served, &etag, &ready.digest, ready.gz);
     response
+}
+
+/// A file checked in one pass, sent from `reader`'s second (OB3): its
+/// ETag `304`'d first, never gzipped; each chunk read in its own short
+/// blocking call.
+pub(crate) fn stream(
+    request: &HeaderMap,
+    served: &Served,
+    reader: Box<dyn crate::catalog::FsRead>,
+) -> Response {
+    let etag = format!("\"sha256:{}\"", served.sha256);
+    if not_modified(request, &etag) {
+        return not_modified_response(&etag, served.cache.value());
+    }
+    sent(reader, served, &etag)
 }
 
 /// OB3's two passes, the second fed to the body by an async task: each
@@ -267,6 +304,11 @@ async fn streamed(shared: &Arc<Shared>, served: Served, etag: &str) -> Result<Re
             .map_err(|e| object_error(&sha256, &e))
     })
     .await?;
+    Ok(sent(reader, &served, etag))
+}
+
+/// The response whose body `reader` feeds, a chunk per blocking read.
+fn sent(reader: Box<dyn crate::catalog::FsRead>, served: &Served, etag: &str) -> Response {
     let (body, out) = ChannelBody::new(4);
     tokio::spawn(async move {
         let mut reader = reader;
@@ -300,6 +342,6 @@ async fn streamed(shared: &Arc<Shared>, served: Served, etag: &str) -> Result<Re
     });
     let mut response = (StatusCode::OK, Body::new(body)).into_response();
     let digest = format!("sha-256=:{}:", json::base64(&unhex(&served.sha256)));
-    headers(&mut response, &served, etag, &digest, false);
-    Ok(response)
+    headers(&mut response, served, etag, &digest, false);
+    response
 }

@@ -6,7 +6,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use crate::fs::{Content, Fs};
+use crate::fs::{Content, Fs, FsRead};
 use crate::hex::Sha256Hex;
 use crate::layout::Layout;
 
@@ -161,5 +161,94 @@ impl Blobs<'_> {
             Content::Bytes(bytes) if Sha256Hex::of(&bytes) == *sha256 => Ok(bytes),
             _ => Err(BadBlob::Damaged),
         }
+    }
+
+    /// ST11 for a stream (`docs/research/m6-api.md`, OB3): the blob hashed
+    /// in one pass of a reader, then rewound on the same open file for the
+    /// caller's pass, which is hashed again as it goes and fails its last
+    /// read, `InvalidData`, if the file changed meanwhile; nothing is held
+    /// but a chunk. Answers its length and the reader.
+    pub(crate) fn open_checked(
+        &self,
+        sha256: &Sha256Hex,
+    ) -> Result<(u64, Box<dyn FsRead>), BadBlob> {
+        let path = self.layout.blob(sha256);
+        let length = match self.fs.symlink_metadata(&path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(BadBlob::Missing),
+            Err(e) => return Err(BadBlob::Io(e)),
+            Ok(meta) if !meta.is_file() => return Err(BadBlob::Damaged),
+            Ok(meta) => meta.len(),
+        };
+        let opened = self.fs.open_stream(&path, length).map_err(stream_error);
+        let mut reader = opened?;
+        let mut hasher = fitment_core::Sha256::new();
+        let mut buf = vec![0_u8; 256 * 1024];
+        let mut seen = 0_u64;
+        loop {
+            let n = reader.read_chunk(&mut buf).map_err(stream_error)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            seen += u64::try_from(n).unwrap_or(u64::MAX);
+        }
+        if seen != length || hasher.finish_hex() != sha256.as_str() {
+            return Err(BadBlob::Damaged);
+        }
+        reader.rewind()?;
+        let checked = Checked {
+            inner: reader,
+            hasher: fitment_core::Sha256::new(),
+            sha256: sha256.clone(),
+            length,
+            seen: 0,
+        };
+        Ok((length, Box::new(checked)))
+    }
+}
+
+/// A blob's file gone is [`BadBlob::Missing`]; one not regular, or longer
+/// than it was, damaged.
+fn stream_error(error: io::Error) -> BadBlob {
+    match error.kind() {
+        io::ErrorKind::NotFound => BadBlob::Missing,
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => BadBlob::Damaged,
+        _ => BadBlob::Io(error),
+    }
+}
+
+/// OB3's second pass over a blob: hashed again as it is read; the read
+/// that meets the end fails if the bytes were not the blob's.
+struct Checked {
+    inner: Box<dyn FsRead>,
+    hasher: fitment_core::Sha256,
+    sha256: Sha256Hex,
+    length: u64,
+    seen: u64,
+}
+
+impl FsRead for Checked {
+    fn read_chunk(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read_chunk(buf)?;
+        if n == 0 {
+            let hash = std::mem::take(&mut self.hasher).finish_hex();
+            if self.seen != self.length || hash != self.sha256.as_str() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the blob changed between its check and its reading",
+                ));
+            }
+            return Ok(0);
+        }
+        self.hasher.update(&buf[..n]);
+        self.seen += u64::try_from(n).unwrap_or(u64::MAX);
+        Ok(n)
+    }
+
+    fn rewind(&mut self) -> io::Result<()> {
+        self.inner.rewind()?;
+        self.hasher = fitment_core::Sha256::new();
+        self.seen = 0;
+        Ok(())
     }
 }
