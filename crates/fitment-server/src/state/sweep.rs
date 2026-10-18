@@ -21,6 +21,9 @@ pub const UNLINK_BATCH: u32 = 256;
 /// At most this many expired upload rows deleted per transaction.
 pub const EXPIRE_BATCH: u32 = 500;
 
+/// And an unlink batch ends once this has passed, however few it unlinked.
+pub const UNLINK_BUDGET: Duration = Duration::from_millis(100);
+
 /// What a sweep did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -59,8 +62,8 @@ pub fn sweep(
         }
     }
     loop {
-        let batch = db.unlink_unnamed(UNLINK_BATCH, |sha| objects.unlink(sha))?;
-        let done = batch.looked < usize::try_from(UNLINK_BATCH).unwrap_or(usize::MAX);
+        let batch = db.unlink_unnamed(UNLINK_BATCH, UNLINK_BUDGET, |sha| objects.unlink(sha))?;
+        let done = !batch.cut && batch.looked < usize::try_from(UNLINK_BATCH).unwrap_or(usize::MAX);
         swept.unlinked.extend(batch.gone);
         // A failed unlink stays a candidate: the next sweep tries it again.
         let stuck = !batch.failed.is_empty();
