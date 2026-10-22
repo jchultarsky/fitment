@@ -22,6 +22,7 @@ use crate::ids::{Id, Reference};
 use crate::ingest::{
     BATCH_FILES, BATCH_TIME, Prepared, derive, insert_features, insert_properties, insert_tokens,
 };
+use crate::observe::{NoObserver, Observer, Progress};
 use crate::preimage::Status;
 use crate::snapshot::{BadRow, EntryStatus, Listed, check};
 use crate::{Catalog, Error, schema};
@@ -104,6 +105,45 @@ impl Reindexed {
     fn written(&self) -> bool {
         matches!(self.rebuilt, Rebuilt::Written { .. })
     }
+
+    /// The first word of its line (section 7.7): the status after, or
+    /// what went wrong; the `result` of its change in `fitment.catalog`.
+    pub fn result(&self) -> &'static str {
+        match &self.rebuilt {
+            Rebuilt::Damaged(_) => "damaged",
+            Rebuilt::TooLarge => "too_large",
+            Rebuilt::Changed => "changed",
+            Rebuilt::Failed(_) => "failed",
+            Rebuilt::Current | Rebuilt::Written { .. } => self.after.map_or("-", EntryStatus::name),
+        }
+    }
+
+    /// What its line says after its result: the transition, or what went
+    /// wrong; the `detail` of its change in `fitment.catalog`.
+    pub fn detail(&self) -> String {
+        let status = |s: Option<EntryStatus>| s.map_or_else(|| "-".to_owned(), EntryStatus::text);
+        let mut text = format!("{} -> {}", status(self.before), status(self.after));
+        match &self.rebuilt {
+            Rebuilt::Damaged(why) => return format!("{}: {why}", status(self.before)),
+            Rebuilt::TooLarge => {
+                return "derived_too_large: its features document is too large to store".into();
+            }
+            Rebuilt::Changed => return "replaced or deleted while reindex ran".into(),
+            Rebuilt::Failed(why) => return why.clone(),
+            Rebuilt::Current => return text + " (nothing missing)",
+            Rebuilt::Written { .. } => {}
+        }
+        if let (Some(EntryStatus::Quarantined), Some(first)) = (self.after, &self.first_refusal) {
+            text.push_str(": ");
+            text.push_str(first);
+        }
+        if self.left_search() {
+            text.push_str(" (no longer searched)");
+        } else if self.joined_search() {
+            text.push_str(" (now searched)");
+        }
+        text
+    }
 }
 
 /// What `reindex` did.
@@ -112,8 +152,9 @@ impl Reindexed {
 pub struct Reindex {
     /// One line per entry processed, in order.
     pub lines: Vec<Reindexed>,
-    /// The error that stopped the run, if one did (CC6): the batches
-    /// before it are committed (RX7).
+    /// The error that stopped the run, if one did (CC6), or
+    /// [`Error::Cancelled`] (CA2): the batches before it are committed
+    /// (RX7).
     pub stopped: Option<Error>,
 }
 
@@ -213,10 +254,27 @@ impl Catalog {
     /// entries cannot be read. An error during the run stops it, and is
     /// [`Reindex::stopped`].
     pub fn reindex(&mut self, scope: &Scope) -> Result<Result<Reindex, Unnamed>, Error> {
+        self.reindex_observed(scope, &NoObserver)
+    }
+
+    /// [`Catalog::reindex`], `observer` asked before each entry and each
+    /// batch commit and told of each batch committed (CA2): a cancelled
+    /// reindex keeps the batches it committed, stopped with
+    /// [`Error::Cancelled`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Catalog::reindex`].
+    pub fn reindex_observed(
+        &mut self,
+        scope: &Scope,
+        observer: &dyn Observer,
+    ) -> Result<Result<Reindex, Unnamed>, Error> {
         let targets = match self.targets(scope)? {
             Ok(targets) => targets,
             Err(unnamed) => return Ok(Err(unnamed)),
         };
+        let total = targets.len();
         let mut out = Reindex::default();
         let budget = self.options.max_bytes.saturating_mul(2);
         let mut rest = targets.as_slice();
@@ -231,6 +289,10 @@ impl Catalog {
                 if full || started.elapsed() > BATCH_TIME {
                     break;
                 }
+                if observer.cancelled() {
+                    planning = Some(Error::Cancelled);
+                    break;
+                }
                 rest = tail;
                 match self.plan(listed) {
                     Ok(planned) => batch.push(planned),
@@ -241,8 +303,21 @@ impl Catalog {
                 }
                 held = held.saturating_add(listed.bytes.unwrap_or_default());
             }
-            let (lines, stopped) = self.commit_reindex(batch);
+            // Nothing of a cancelled batch is written: it planned only.
+            if planning.is_none() && observer.cancelled() {
+                planning = Some(Error::Cancelled);
+            }
+            if matches!(planning, Some(Error::Cancelled)) {
+                out.stopped = planning;
+                break;
+            }
+            let (lines, generation, stopped) = self.commit_reindex(batch);
             out.lines.extend(lines);
+            observer.progress(Progress::Committed {
+                generation,
+                done: out.lines.len(),
+                total,
+            });
             // Committed batches stay reported whatever stops the run.
             if let Some(error) = stopped.or(planning) {
                 out.stopped = Some(error);
@@ -317,8 +392,11 @@ impl Catalog {
                         BadBlob::Damaged => {
                             damaged("damaged: the file's SHA-256 is not its name".into())
                         }
-                        // A read that failed says nothing of the file.
-                        other => Rebuilt::Failed(format!("cannot read its file: {other}")),
+                        // A read that failed says nothing of the file;
+                        // its error by its kind alone (CA4).
+                        other => {
+                            Rebuilt::Failed(format!("cannot read its file: {}", other.kind_text()))
+                        }
                     };
                     return Ok(planned);
                 }
@@ -396,13 +474,16 @@ impl Catalog {
 
     /// One write transaction for a batch: each entry checked again to be
     /// live, current and lacking the rows (DB2, RX7), then its rows.
-    fn commit_reindex(&mut self, batch: Vec<Planned>) -> (Vec<Reindexed>, Option<Error>) {
+    fn commit_reindex(
+        &mut self,
+        batch: Vec<Planned>,
+    ) -> (Vec<Reindexed>, Option<i64>, Option<Error>) {
+        let mut generation = None;
         let result = (|| -> Result<Vec<Reindexed>, Error> {
             let tx = self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
             let mut lines = Vec::new();
-            let mut generation = None;
             let mut n = 0_i64;
             for planned in &batch {
                 let mut line = planned.line.clone();
@@ -463,9 +544,11 @@ impl Catalog {
             Ok(lines)
         })();
         match result {
-            Ok(lines) => (lines, None),
+            Ok(lines) => (lines, generation, None),
             Err(error) => {
-                let message = error.to_string();
+                // CA4: the error's kind, never its text, which names the
+                // database's path or a statement.
+                let message = error.kind_name().to_owned();
                 let lines = batch
                     .into_iter()
                     .map(|planned| {
@@ -476,7 +559,7 @@ impl Catalog {
                         line
                     })
                     .collect();
-                (lines, Some(error))
+                (lines, None, Some(error))
             }
         }
     }

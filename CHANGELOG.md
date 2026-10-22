@@ -162,6 +162,26 @@ Until 1.0, minor versions may contain breaking changes.
   tests and its original's reading from them; none of its output
   changes but the one below. `fitment-catalog`'s `FsRead` gains
   `seek_to`, provided by default, so a candidate page reads its own bytes.
+- **M6, PR 7a (the catalog's library and CLI for the API):** `fitment
+  catalog delete` and `prune --revisions` gain `--format table|json`, JSON
+  being `fitment.catalog` with `changes`; `verify` and `gc` gain it too,
+  JSON being the new `fitment.verify` and `fitment.gc` v1 documents, which
+  hold no path and no time. Exit codes are unchanged, and so is every
+  other output of a 0.2.0 command but the lines below. `fitment-catalog`
+  gains ingest and replace from bytes, each input named by the caller for
+  its line, id and stored name (`Input`, `InputBytes`,
+  `Catalog::ingest_inputs`, `replace_input`); an `Observer` that ingest,
+  reindex, a catalog match, verify and gc ask whether to stop and tell of
+  their progress (`*_observed`; `Error::Cancelled`, `NotRun::Cancelled`);
+  the WAL's state after a checkpoint (`checkpoint_passive`,
+  `checkpoint_truncate`); a catalog instance id in the `meta` table, minted
+  once (`Catalog::instance`); and each change's `fitment.catalog`, built by
+  the library for the CLI and the server alike
+  (`CatalogDocument::ingested`, `replaced`, `deleted`, `pruned`,
+  `reindexed`), with keyset pages of entries (`Snapshot::list_page`,
+  `CatalogDocument::page`) and a size cap per call (`max_bytes` on
+  `ingest_inputs` and `replace_input`). All
+  additions; the catalog's schema is unchanged.
 
 ### Changed
 
@@ -170,6 +190,25 @@ Until 1.0, minor versions may contain breaking changes.
   exit 3 (`refused: not a socket document`), as the API refuses it
   (`422 socket_unreadable`); they exited 1 before, as for a file that
   cannot be read, which is still exit 1.
+- **M6, PR 7a: no catalog document or line holds a library error's text
+  or an absolute path** (docs/research/m6-api.md, CA4). An error is
+  written as its kind (`io: not found`, `io: permission denied`, `storage
+  full`, `database: busy`, `database: corrupt`, …), the same on every OS:
+  - an `ingest` or `replace` line for a file that cannot be read, `cannot
+    read nowhere.stp: No such file or directory (os error 2)`, is now
+    `cannot read nowhere.stp: io: not found`, in the table and in the
+    document's `detail`; `cannot store it: …` and `cannot list it: …`
+    likewise;
+  - each line of a batch that could not commit, the error's text before
+    (for a file of the store, `/abs/catalog/…: Permission denied (os error
+    13)`; for the database, `the catalog's database: database or disk is
+    full`), is now its kind (`io: permission denied`, `storage full`);
+  - a `reindex` line whose batch failed, or whose file could not be read
+    (`cannot read its file: cannot read the file: …`), likewise;
+  - a `verify` problem for a blob that cannot be read says the error's
+    kind, and one for a missing fan-out directory names it from the
+    catalog's root (`blobs/sha256/ab`), no longer by its absolute path;
+  - each file `gc` could not remove, on stderr, says the error's kind.
 
 ## [0.2.0] - 2026-10-17
 

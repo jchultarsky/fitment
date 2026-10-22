@@ -336,3 +336,94 @@ fn a_key_that_is_no_sha256_builds_no_path() {
         "{found:?}"
     );
 }
+
+/// CA4 (`docs/research/m6-api.md`, VT38): no problem names an absolute
+/// path or a library error's text. A missing fan-out directory is named
+/// as the catalog's root names it (`blobs/sha256/ab`, absolute before);
+/// a blob that cannot be read says its error's kind.
+#[test]
+fn no_problem_names_an_absolute_path() {
+    let (mut catalog, sha) = one("absolute");
+    let root = catalog.root().to_owned();
+    let fan = if sha.fan_out() == "00" { "01" } else { "00" };
+    fs::remove_dir(root.join("blobs/sha256").join(fan)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let blob = root
+            .join("blobs/sha256")
+            .join(sha.fan_out())
+            .join(sha.as_str());
+        fs::set_permissions(&blob, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    let problems = catalog.verify(false, false).unwrap();
+    let absolute = root.to_string_lossy();
+    let parent = root.parent().unwrap().to_string_lossy();
+    for p in &problems {
+        let text = format!("{} {}", p.what, p.detail);
+        assert!(!text.contains(absolute.as_ref()), "{p:?}");
+        assert!(!text.contains(parent.as_ref()), "{p:?}");
+    }
+    let missing: Vec<&str> = problems
+        .iter()
+        .filter(|p| p.kind == ProblemKind::Missing)
+        .map(|p| p.what.as_str())
+        .collect();
+    assert_eq!(missing, [format!("blobs/sha256/{fan}")]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let unreadable: Vec<&str> = problems
+            .iter()
+            .filter(|p| p.what == sha.as_str())
+            .map(|p| p.detail.as_str())
+            .collect();
+        assert_eq!(unreadable, ["cannot read the file: io: permission denied"]);
+        let blob = root
+            .join("blobs/sha256")
+            .join(sha.fan_out())
+            .join(sha.as_str());
+        fs::set_permissions(&blob, fs::Permissions::from_mode(0o444)).unwrap();
+    }
+}
+
+/// The review of PR 7a: what gc could not remove is listed in order,
+/// whatever order the directories give their files in, as what it removed
+/// is. Several orphans in a fan-out directory gc may not write.
+#[cfg(unix)]
+#[test]
+fn gc_failures_are_in_order() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (mut catalog, _) = one("gc-order");
+    let root = catalog.root().to_owned();
+    let fan = root.join("blobs/sha256/ee");
+    let mut names: Vec<String> = (0..12_u64)
+        .map(|n| {
+            format!(
+                "ee{:062x}",
+                n.wrapping_mul(0x9e37_79b9_7f4a_7c15) % 0xffff_ffff
+            )
+        })
+        .collect();
+    for name in &names {
+        fs::write(fan.join(name), b"orphan").unwrap();
+    }
+    fs::set_permissions(&fan, fs::Permissions::from_mode(0o555)).unwrap();
+    let collected = catalog.gc(false, false).unwrap();
+    fs::set_permissions(&fan, fs::Permissions::from_mode(0o755)).unwrap();
+    let document = fitment_catalog::document::GcDocument::new(&collected, false, false);
+    let json: serde_json::Value = serde_json::from_str(&document.to_json()).unwrap();
+    let failed: Vec<String> = json["failed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap().to_owned())
+        .collect();
+    names.sort();
+    let want: Vec<String> = names
+        .iter()
+        .map(|n| format!("{n}: io: permission denied"))
+        .collect();
+    assert_eq!(failed, want);
+    assert_eq!(json["cancelled"], false);
+}

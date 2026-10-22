@@ -476,7 +476,10 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// The M6 PR this tree builds: a deferral names a later one.
+/// The M6 PR this tree builds: a deferral names a later one. PR 7 lands
+/// in two parts; after 7a (the catalog's library and CLI) this stays 6,
+/// since the rules 7b builds still wait for "M6 PR 7", and rises to 7 with
+/// 7b, when none may.
 const M6_PR_NOW: u32 = 6;
 
 /// The last M6 PR a rule may wait for: PR 9, M6's exit, removes the

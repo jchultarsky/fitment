@@ -1,0 +1,57 @@
+{
+  "format": "fitment.catalog",
+  "format_version": 1,
+  "schema_version": 1,
+  "generation": 6,
+  "build": {
+    "extractor_version": 6,
+    "signature_version": 2,
+    "properties_version": 1
+  },
+  "counts": {
+    "entries": 3,
+    "indexed": 2,
+    "quarantined": 1,
+    "stale": 0
+  },
+  "entries": [
+    {
+      "id": "BRKT",
+      "revision": 2,
+      "status": "indexed",
+      "sha256": "46cd8a915536c6a99b131673568cf1e4e4b3304eedeaa6dad68eabf483a59cd9",
+      "bytes": 14729,
+      "file_name": "m_bracket_thick.stp",
+      "product": {
+        "id": "m_bracket_thick",
+        "name": "m_bracket_thick"
+      },
+      "versions": {
+        "extractor_version": 6,
+        "signature_version": 2,
+        "properties_version": 1
+      },
+      "complete": true,
+      "features": {
+        "planes": 6,
+        "holes": 5,
+        "shafts": 0,
+        "cones": 0,
+        "other_faces": 0
+      },
+      "refusals": [],
+      "properties": null,
+      "history": null
+    }
+  ],
+  "changes": [
+    {
+      "input": "BRKT@r1",
+      "result": "pruned",
+      "id": "BRKT",
+      "revision": 1,
+      "sha256": "1b77ea9724e67c4bdc709a871a00a05580dfebb36e4109f3c027d84afe826c33",
+      "detail": "14698 bytes"
+    }
+  ]
+}

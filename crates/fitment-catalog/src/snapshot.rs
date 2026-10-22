@@ -44,6 +44,17 @@ impl EntryStatus {
             Self::StaleExtractor(_) | Self::StaleSignature(_) | Self::StaleProperties(_) => "stale",
         }
     }
+
+    /// RX2's status as people read it: which version made it stale
+    /// (`stale (extractor 6)`), as `list`'s table and a reindex line show it.
+    pub fn text(self) -> String {
+        match self {
+            Self::StaleExtractor(v) => format!("stale (extractor {v})"),
+            Self::StaleSignature(v) => format!("stale (signature {v})"),
+            Self::StaleProperties(_) => "stale (properties)".into(),
+            status => status.name().into(),
+        }
+    }
 }
 
 /// A refusal as stored: its code, message and `#id` (VD10).
@@ -193,6 +204,21 @@ pub enum BadRow {
     Corrupt(&'static str),
 }
 
+/// [`Snapshot::list_page`]'s first page: the live entries from the start
+/// of `entry_live_id`, folded id order (ID2, CL3).
+const PAGE_FIRST: &str = "SELECT e.id, r.revision, r.sha256, r.file_name, e.deleted_generation,
+        r.superseded_generation, r.pruned_generation
+    FROM entry e JOIN revision r ON r.entry = e.key AND r.superseded_generation IS NULL
+    WHERE e.deleted_generation IS NULL
+    ORDER BY e.id_fold LIMIT ?1";
+
+/// A later page: a search of `entry_live_id` past the cursor's folded id.
+const PAGE_AFTER: &str = "SELECT e.id, r.revision, r.sha256, r.file_name, e.deleted_generation,
+        r.superseded_generation, r.pruned_generation
+    FROM entry e JOIN revision r ON r.entry = e.key AND r.superseded_generation IS NULL
+    WHERE e.deleted_generation IS NULL AND e.id_fold > ?1
+    ORDER BY e.id_fold LIMIT ?2";
+
 /// One read transaction, at one generation.
 pub struct Snapshot<'a> {
     tx: Transaction<'a>,
@@ -336,6 +362,65 @@ impl Snapshot<'_> {
             })?
             .collect::<Result<_, _>>()?;
         rows.into_iter().map(|row| self.listed(row, true)).collect()
+    }
+
+    /// One page of [`Snapshot::list`] (`docs/research/m6-api.md`, VN3): at
+    /// most `limit` live entries after the entry whose id is `after`, in
+    /// `list`'s order. Live ids are unique case-folded (ID2), so the
+    /// cursor is the folded id alone and the page is a search of the
+    /// `entry_live_id` index from it: each page costs its own entries,
+    /// and an entry deleted and added again in another case between two
+    /// pages is never listed twice. The pages, each read from where the
+    /// last ended, are `list` whole.
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    pub fn list_page(&self, after: Option<&str>, limit: usize) -> Result<Vec<Listed>, Error> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let read = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Row> {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        };
+        let rows: Vec<Row> = match after {
+            None => self
+                .tx
+                .prepare(PAGE_FIRST)?
+                .query_map([limit], read)?
+                .collect::<Result<_, _>>()?,
+            Some(after) => self
+                .tx
+                .prepare(PAGE_AFTER)?
+                .query_map(params![after.to_ascii_lowercase(), limit], read)?
+                .collect::<Result<_, _>>()?,
+        };
+        rows.into_iter().map(|row| self.listed(row, true)).collect()
+    }
+
+    /// The plans of [`Snapshot::list_page`]'s two statements, first page
+    /// and later ones, as `EXPLAIN QUERY PLAN` gives them, for the tests.
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    #[cfg(feature = "test-support")]
+    pub fn list_page_plans(&self) -> Result<[Vec<String>; 2], Error> {
+        let plan = |sql: &str| -> Result<Vec<String>, Error> {
+            let mut stmt = self.tx.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+            let unbound = vec![rusqlite::types::Null; stmt.parameter_count()];
+            let rows = stmt.query_map(rusqlite::params_from_iter(unbound), |r| {
+                r.get::<_, String>(3)
+            })?;
+            Ok(rows.collect::<Result<_, _>>()?)
+        };
+        Ok([plan(PAGE_FIRST)?, plan(PAGE_AFTER)?])
     }
 
     /// The revisions released by no prune of live entries, superseded:

@@ -6,9 +6,18 @@
 //! per batch, every decision is made again on what the database holds,
 //! each blob the commit names is checked to be there (ST6) and its fan-out
 //! directory synced, and the rows are written.
+//!
+//! CA1 (`docs/research/m6-api.md`): a file is an [`Input`], its bytes read
+//! through [`InputBytes`] and named by the caller: `input` for its line and
+//! `file_name` for ID3's default id and PH3's stored name, so no path the
+//! catalog did not receive as `input` reaches a document or a line (DC2).
+//! [`Catalog::ingest`] makes a path an input read through the catalog's
+//! seam, and [`Catalog::ingest_inputs`] takes the server's.
 
 use std::collections::BTreeSet;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use fitment_core::{
@@ -18,11 +27,12 @@ use fitment_core::{
 use rusqlite::{OptionalExtension as _, Transaction, params};
 
 use crate::blobs::Placed;
-use crate::fs::{Content, Point};
+use crate::fs::{Content, Fs, Point};
 use crate::hex::Sha256Hex;
 use crate::ids::{Id, default_id, is_exact};
+use crate::observe::{NoObserver, Observer, Progress};
 use crate::preimage::{self, Status};
-use crate::{Catalog, Error, MAX_DOCUMENT_BYTES, schema};
+use crate::{Catalog, Error, MAX_DOCUMENT_BYTES, io_kind, schema};
 
 /// At most this many files per write transaction (DB3).
 pub(crate) const BATCH_FILES: usize = 64;
@@ -109,7 +119,8 @@ pub struct Summary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Ingested {
-    /// The path read: an argument, or a file of a directory argument.
+    /// The input as given (CA1): for the CLI the path read, an argument or
+    /// a file of a directory argument; for the server the client's name.
     pub input: PathBuf,
     /// The id it was given or would get.
     pub id: Option<Id>,
@@ -127,9 +138,9 @@ pub struct Ingested {
 }
 
 impl Ingested {
-    pub(crate) fn failed(input: &Path, id: Option<Id>, outcome: Outcome) -> Self {
+    pub(crate) fn failed(input: PathBuf, id: Option<Id>, outcome: Outcome) -> Self {
         Self {
-            input: input.to_owned(),
+            input,
             id,
             revision: None,
             sha256: None,
@@ -141,8 +152,8 @@ impl Ingested {
 }
 
 /// What an ingest did: a line per file read, in ID4's order, and why the
-/// run stopped early, if it did (the catalog busy, or its database
-/// failing): the files after it were not read.
+/// run stopped early, if it did (the catalog busy, its database failing,
+/// or its observer cancelling it, CA2): the files after it were not read.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Ingest {
@@ -169,6 +180,114 @@ impl std::ops::Deref for Ingest {
     }
 }
 
+/// Where an input's bytes come from (CA1): a path read by the CLI, an
+/// object of the server's store.
+pub trait InputBytes: Sync {
+    /// Reads the file once, when its batch reaches it, so memory holds one
+    /// file at a time (ST2), keeping at most `cap` bytes (SZ1): its bytes,
+    /// or [`Content::TooLarge`] past the cap, or [`Content::NotRegular`]
+    /// for what is not a regular file (PH4).
+    ///
+    /// # Errors
+    ///
+    /// The source's: the input's line is an error, and the run goes on.
+    fn read(&self, cap: u64) -> io::Result<Content>;
+}
+
+/// Bytes already in memory: a test's, or a small object's.
+impl InputBytes for Vec<u8> {
+    fn read(&self, cap: u64) -> io::Result<Content> {
+        let over = u64::try_from(self.len()).map_or(true, |n| n > cap);
+        Ok(if over {
+            Content::TooLarge
+        } else {
+            Content::Bytes(self.clone())
+        })
+    }
+}
+
+/// A path read through the catalog's seam: a regular file only, its type
+/// checked before the open and on the open handle, its length before and
+/// while reading (PH4, SZ1). The old entry points' inputs (CU3).
+pub(crate) struct PathBytes {
+    pub(crate) fs: Arc<dyn Fs>,
+    pub(crate) path: PathBuf,
+}
+
+impl InputBytes for PathBytes {
+    fn read(&self, cap: u64) -> io::Result<Content> {
+        self.fs.read_capped(&self.path, cap)
+    }
+}
+
+/// One file to ingest, or to replace an entry's bytes with (CA1).
+#[derive(Clone)]
+#[non_exhaustive]
+pub struct Input<'a> {
+    /// Its bytes, read once when its batch reaches it.
+    pub bytes: &'a dyn InputBytes,
+    /// Its line's `input` and the name in its error lines: the argument as
+    /// given, or the client's label (RA8).
+    pub input: &'a str,
+    /// ID3's default id, PH3's stored name and ID4's stem test.
+    pub file_name: &'a str,
+    /// Its id (ID1), for this file alone; without one, ID3's from
+    /// `file_name`.
+    pub id: Option<Id>,
+    /// The path read, for the old entry points: a line's `input` is then
+    /// the path as given, byte for byte, as 0.2.0 kept it, where `input`
+    /// is its text, lossily if it is not Unicode.
+    path: Option<&'a Path>,
+}
+
+impl std::fmt::Debug for Input<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Input")
+            .field("input", &self.input)
+            .field("file_name", &self.file_name)
+            .field("id", &self.id)
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> Input<'a> {
+    /// `bytes` named `input` for its line and `file_name` for its id and
+    /// stored name, without an id of its own.
+    pub fn new(bytes: &'a dyn InputBytes, input: &'a str, file_name: &'a str) -> Self {
+        Self {
+            bytes,
+            input,
+            file_name,
+            id: None,
+            path: None,
+        }
+    }
+
+    /// The path `bytes` reads, as given (the old entry points, CU3).
+    pub(crate) fn at(bytes: &'a PathBytes, input: &'a str, file_name: &'a str) -> Self {
+        Self {
+            path: Some(&bytes.path),
+            ..Self::new(bytes, input, file_name)
+        }
+    }
+
+    /// Its line's `input`: the path as given, or the text given.
+    pub(crate) fn given(&self) -> PathBuf {
+        self.path
+            .map_or_else(|| PathBuf::from(self.input), Path::to_owned)
+    }
+
+    /// The input under `id` (ID1).
+    #[must_use]
+    pub fn with_id(self, id: Id) -> Self {
+        Self {
+            id: Some(id),
+            ..self
+        }
+    }
+}
+
 /// A file read and gated, ready to be decided on.
 pub(crate) struct Prepared {
     pub(crate) input: PathBuf,
@@ -190,11 +309,18 @@ pub(crate) struct Prepared {
 }
 
 /// PH3: the final component, lossily if not UTF-8, at most 4096 bytes.
-fn file_name(path: &Path) -> String {
-    let mut name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+pub(crate) fn file_name(path: &Path) -> String {
+    stored_name(
+        &path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    )
+}
+
+/// PH3: a name as stored, at most 4096 bytes.
+fn stored_name(name: &str) -> String {
+    let mut name = name.to_owned();
     while name.len() > MAX_FILE_NAME {
         name.pop();
     }
@@ -286,10 +412,10 @@ fn expand(catalog: &Catalog, input: &Path) -> Result<Vec<PathBuf>, Box<Ingested>
     }
     let entries = catalog.fs.read_dir(input).map_err(|e| {
         Box::new(Ingested::failed(
-            input,
+            input.to_owned(),
             None,
             Outcome::Error {
-                message: format!("cannot list it: {e}"),
+                message: format!("cannot list it: {}", io_kind(&e)),
             },
         ))
     })?;
@@ -326,9 +452,19 @@ fn order(files: &mut [PathBuf]) {
     });
 }
 
+/// ID4 for inputs (CA1): an input whose stem is already an id, or that
+/// names its own id, first; then the others; each group in byte order of
+/// `input`.
+fn mapped(input: &Input<'_>) -> bool {
+    input.id.is_none() && !is_exact(&stored_name(input.file_name))
+}
+
 impl Catalog {
     /// `fitment catalog ingest`: each file of `inputs`, under `id` if given
-    /// (then exactly one file), in ID4's order, in batches (DB3).
+    /// (then exactly one file), in ID4's order, in batches (DB3). Each path
+    /// is an [`Input`] named by the path as given and its final component,
+    /// read through the catalog's seam (CU3): one path with
+    /// [`Catalog::ingest_inputs`].
     ///
     /// # Errors
     ///
@@ -351,45 +487,173 @@ impl Catalog {
         if id.is_some() && (files.len() != 1 || !out.is_empty()) {
             return Err(Error::IdNeedsOneFile(files.len() + out.len()));
         }
+        // ID4 on the paths' own bytes, as `ingest_inputs` orders by its
+        // inputs' (the same for every path that is Unicode).
         order(&mut files);
-        let budget = self.options.max_bytes.saturating_mul(2);
-        let mut rest = files.as_slice();
-        while !rest.is_empty() {
-            let started = Instant::now();
-            let mut batch = Vec::new();
-            let mut held = 0_u64;
-            while let Some((file, tail)) = rest.split_first() {
-                // A batch takes one file at least, whatever the budget.
-                let full = !batch.is_empty() && (batch.len() >= BATCH_FILES || held >= budget);
-                if full || started.elapsed() > BATCH_TIME {
-                    break;
-                }
-                rest = tail;
-                let prepared = self.prepare(file, id);
-                if let Ok(p) = &prepared {
-                    held = held.saturating_add(u64::try_from(p.bytes.len()).unwrap_or(u64::MAX));
-                }
-                batch.push(prepared);
-            }
-            let (lines, stopped) = self.commit(batch);
-            out.extend(lines);
-            if stopped.is_some() {
-                return Ok(Ingest {
-                    lines: out,
-                    stopped,
-                });
-            }
-        }
+        let read: Vec<(PathBytes, String, String)> = files
+            .into_iter()
+            .map(|path| {
+                let input = path.to_string_lossy().into_owned();
+                let name = file_name(&path);
+                let fs = Arc::clone(&self.fs);
+                (PathBytes { fs, path }, input, name)
+            })
+            .collect();
+        let inputs: Vec<Input<'_>> = read
+            .iter()
+            .map(|(bytes, input, name)| Input {
+                id: id.cloned(),
+                ..Input::at(bytes, input, name)
+            })
+            .collect();
+        let ordered: Vec<&Input<'_>> = inputs.iter().collect();
+        let cap = self.options.max_bytes;
+        let run = self.ingest_in_order(&ordered, cap, &NoObserver);
+        out.extend(run.lines);
         Ok(Ingest {
             lines: out,
-            stopped: None,
+            stopped: run.stopped,
         })
+    }
+
+    /// CA1: each of `inputs`, under its own id if it names one, in ID4's
+    /// order (an input naming its id among the exact stems; each group in
+    /// byte order of `input`), in batches (DB3), each input's bytes read
+    /// once when its batch reaches it, at most `max_bytes` of each (SZ1;
+    /// `None` for the catalog's [`Options`](crate::Options)), for this
+    /// call alone. `observer` is asked before each file and each batch
+    /// commit, and told of each line once its batch was tried and of each
+    /// batch (CA2); a cancelled ingest keeps the batches it committed,
+    /// stopped with [`Error::Cancelled`]. A panic in an input's source or
+    /// in the observer leaves no blob of the batch it struck behind.
+    ///
+    /// # Errors
+    ///
+    /// None yet: a file's own failure is its [`Outcome`], and a run that
+    /// cannot go on is [`Ingest::stopped`].
+    pub fn ingest_inputs(
+        &mut self,
+        inputs: &[Input<'_>],
+        max_bytes: Option<u64>,
+        observer: &dyn Observer,
+    ) -> Result<Ingest, Error> {
+        let mut ordered: Vec<&Input<'_>> = inputs.iter().collect();
+        ordered.sort_by(|a, b| {
+            mapped(a)
+                .cmp(&mapped(b))
+                .then_with(|| a.input.as_bytes().cmp(b.input.as_bytes()))
+        });
+        let cap = max_bytes.unwrap_or(self.options.max_bytes);
+        Ok(self.ingest_in_order(&ordered, cap, observer))
+    }
+
+    /// The batches of `inputs`, in the order given (DB3), each file of at
+    /// most `cap` bytes.
+    fn ingest_in_order(
+        &mut self,
+        inputs: &[&Input<'_>],
+        cap: u64,
+        observer: &dyn Observer,
+    ) -> Ingest {
+        let total = inputs.len();
+        let mut out = Vec::new();
+        let mut rest = inputs;
+        while !rest.is_empty() {
+            let mut batch = Vec::new();
+            // A panic in an input's source or the observer discards the
+            // batch being built, as a cancel does, and goes on: its blobs
+            // are never left behind (ST5).
+            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.build_batch(&mut rest, &mut batch, cap, observer)
+            }));
+            let cancelled = built.unwrap_or_else(|panic| {
+                self.discard(&batch);
+                std::panic::resume_unwind(panic)
+            });
+            if cancelled {
+                self.discard(&batch);
+                return Ingest {
+                    lines: out,
+                    stopped: Some(Error::Cancelled),
+                };
+            }
+            let (lines, generation, stopped) = self.commit(batch);
+            for line in &lines {
+                observer.progress(Progress::Ingested(line));
+            }
+            out.extend(lines);
+            observer.progress(Progress::Committed {
+                generation,
+                done: out.len(),
+                total,
+            });
+            if stopped.is_some() {
+                return Ingest {
+                    lines: out,
+                    stopped,
+                };
+            }
+        }
+        Ingest {
+            lines: out,
+            stopped: None,
+        }
+    }
+
+    /// The next batch, taken from `rest` into `batch`: at most 64 files,
+    /// twice the cap in bytes or a second's work (DB3), one at least.
+    /// True when `observer` cancelled it, asked before each file and once
+    /// it is built.
+    fn build_batch(
+        &self,
+        rest: &mut &[&Input<'_>],
+        batch: &mut Vec<Result<Prepared, Box<Ingested>>>,
+        cap: u64,
+        observer: &dyn Observer,
+    ) -> bool {
+        let started = Instant::now();
+        let budget = cap.saturating_mul(2);
+        let mut held = 0_u64;
+        while let Some((input, tail)) = rest.split_first() {
+            // A batch takes one file at least, whatever the budget.
+            let full = !batch.is_empty() && (batch.len() >= BATCH_FILES || held >= budget);
+            if full || started.elapsed() > BATCH_TIME {
+                break;
+            }
+            if observer.cancelled() {
+                return true;
+            }
+            *rest = tail;
+            let prepared = self.prepare(input, cap);
+            if let Ok(p) = &prepared {
+                held = held.saturating_add(u64::try_from(p.bytes.len()).unwrap_or(u64::MAX));
+            }
+            batch.push(prepared);
+        }
+        observer.cancelled()
+    }
+
+    /// A cancelled batch's blobs, put in place by `prepare`, unlinked
+    /// where no row names them (ST5): nothing of the batch committed.
+    fn discard(&mut self, batch: &[Result<Prepared, Box<Ingested>>]) {
+        let placed: Vec<(Sha256Hex, u64)> = batch
+            .iter()
+            .filter_map(|p| p.as_ref().ok())
+            .filter(|p| p.placed)
+            .map(|p| {
+                let size = u64::try_from(p.bytes.len()).unwrap_or(u64::MAX);
+                (p.sha256.clone(), size)
+            })
+            .collect();
+        if !placed.is_empty() {
+            let _ = self.unlink(&placed);
+        }
     }
 
     /// Reads, hashes and gates one file, and puts its blob in place unless
     /// it is surely not added.
-    fn prepare(&self, path: &Path, id: Option<&Id>) -> Result<Prepared, Box<Ingested>> {
-        let mut prepared = self.read_file(path, id)?;
+    fn prepare(&self, input: &Input<'_>, cap: u64) -> Result<Prepared, Box<Ingested>> {
+        let mut prepared = read_input(input, input.id.as_ref(), cap)?;
         if self.likely_added(&prepared) {
             match self.blobs().put(&prepared.sha256, &prepared.bytes) {
                 Ok(placed) => {
@@ -398,10 +662,10 @@ impl Catalog {
                 }
                 Err(e) => {
                     let mut failed = Box::new(Ingested::failed(
-                        path,
+                        input.given(),
                         Some(prepared.id),
                         Outcome::Error {
-                            message: format!("cannot store it: {e}"),
+                            message: format!("cannot store it: {}", io_kind(&e)),
                         },
                     ));
                     failed.sha256 = Some(prepared.sha256);
@@ -413,46 +677,6 @@ impl Catalog {
         Ok(prepared)
     }
 
-    /// Reads, hashes and gates one file (ST2, SZ1, PH4, GT1, GT6), under
-    /// `id` or the id its name gives (ID3).
-    pub(crate) fn read_file(
-        &self,
-        path: &Path,
-        id: Option<&Id>,
-    ) -> Result<Prepared, Box<Ingested>> {
-        let name = file_name(path);
-        let (id, explicit) = match id {
-            Some(id) => (Some(id.clone()), true),
-            None => (default_id(&name), false),
-        };
-        let fail = |id: Option<Id>, outcome| Box::new(Ingested::failed(path, id, outcome));
-        let bytes = match self.fs.read_capped(path, self.options.max_bytes) {
-            Ok(Content::Bytes(bytes)) => bytes,
-            Ok(Content::NotRegular) => {
-                let reason = "not a regular file: not added".to_owned();
-                return Err(fail(id, Outcome::Refused { reason }));
-            }
-            Ok(Content::TooLarge) => {
-                let mib = self.options.max_bytes / (1024 * 1024);
-                let reason = format!("larger than --max-mib {mib}: not added");
-                return Err(fail(id, Outcome::Refused { reason }));
-            }
-            Err(e) => {
-                let message = format!("cannot read {name}: {e}");
-                return Err(fail(id, Outcome::Error { message }));
-            }
-        };
-        let Some(id) = id else {
-            let reason = "no valid id: give --id".to_owned();
-            return Err(fail(None, Outcome::Conflict { reason }));
-        };
-        let sha256 = Sha256Hex::of(&bytes);
-        derive(bytes, sha256, path.to_owned(), name, id, explicit).map_err(|(id, reason)| {
-            let reason = reason.to_owned();
-            fail(Some(id), Outcome::Refused { reason })
-        })
-    }
-
     /// A first look, outside the transaction, so a file surely not added
     /// writes no blob; the transaction decides again.
     fn likely_added(&self, p: &Prepared) -> bool {
@@ -461,21 +685,23 @@ impl Catalog {
 
     /// One write transaction for a batch: every decision taken again on
     /// what the database holds now (DB2), every named blob checked (ST6)
-    /// and its directory synced (ST3), then the rows.
+    /// and its directory synced (ST3), then the rows. Returns the lines,
+    /// the generation the batch raised if it added anything, and the error
+    /// that stops the run, if one does.
     fn commit(
         &mut self,
         batch: Vec<Result<Prepared, Box<Ingested>>>,
-    ) -> (Vec<Ingested>, Option<Error>) {
+    ) -> (Vec<Ingested>, Option<i64>, Option<Error>) {
         let blobs = crate::blobs::Blobs {
             layout: &self.layout,
             fs: self.fs.as_ref(),
         };
+        let mut generation = None;
         let result = (|| -> Result<Vec<Ingested>, Error> {
             let tx = self
                 .conn
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let mut lines = Vec::new();
-            let mut generation = None;
             let mut synced = BTreeSet::new();
             let mut n = 0_i64;
             for item in &batch {
@@ -530,33 +756,86 @@ impl Catalog {
             Ok(lines)
         })();
         match result {
-            Ok(lines) => (lines, None),
-            Err(error) => {
-                let message = error.to_string();
-                let lines = batch
-                    .into_iter()
-                    .map(|item| match item {
-                        Err(failed) => *failed,
-                        Ok(p) => Ingested {
-                            input: p.input,
-                            id: Some(p.id),
-                            revision: None,
-                            sha256: Some(p.sha256),
-                            summary: Some(p.summary),
-                            outcome: Outcome::Error {
-                                message: message.clone(),
-                            },
-                            replaced_blob: p.replaced_blob,
-                        },
-                    })
-                    .collect();
-                // A file's own I/O fails its batch; the lock or the database
-                // failing stops the run (CC6).
-                let fatal = !matches!(error, Error::Io { .. });
-                (lines, fatal.then_some(error))
-            }
+            Ok(lines) => (lines, generation, None),
+            Err(error) => (failed_batch(batch, &error), None, fatal(error)),
         }
     }
+}
+
+/// A batch that could not commit: each line an error, its text the
+/// error's kind (CA4), never its `Display`, which names the database's
+/// path or a statement.
+fn failed_batch(batch: Vec<Result<Prepared, Box<Ingested>>>, error: &Error) -> Vec<Ingested> {
+    let message = error.kind_name().to_owned();
+    batch
+        .into_iter()
+        .map(|item| match item {
+            Err(failed) => *failed,
+            Ok(p) => Ingested {
+                input: p.input,
+                id: Some(p.id),
+                revision: None,
+                sha256: Some(p.sha256),
+                summary: Some(p.summary),
+                outcome: Outcome::Error {
+                    message: message.clone(),
+                },
+                replaced_blob: p.replaced_blob,
+            },
+        })
+        .collect()
+}
+
+/// A file's own I/O fails its batch; the lock or the database failing
+/// stops the run (CC6).
+fn fatal(error: Error) -> Option<Error> {
+    (!matches!(error, Error::Io { .. })).then_some(error)
+}
+
+/// Reads, hashes and gates one input of at most `cap` bytes (ST2, SZ1,
+/// PH4, GT1, GT6), under `id` or the id its file name gives (ID3).
+pub(crate) fn read_input(
+    input: &Input<'_>,
+    id: Option<&Id>,
+    cap: u64,
+) -> Result<Prepared, Box<Ingested>> {
+    let name = stored_name(input.file_name);
+    let (id, explicit) = match id {
+        Some(id) => (Some(id.clone()), true),
+        None => (default_id(&name), false),
+    };
+    let fail = |id: Option<Id>, outcome| Box::new(Ingested::failed(input.given(), id, outcome));
+    let too_large = || {
+        let mib = cap / (1024 * 1024);
+        let reason = format!("larger than --max-mib {mib}: not added");
+        Outcome::Refused { reason }
+    };
+    let bytes = match input.bytes.read(cap) {
+        // A source that kept more than it was asked for is held to it.
+        Ok(Content::Bytes(bytes)) if u64::try_from(bytes.len()).map_or(true, |n| n > cap) => {
+            return Err(fail(id, too_large()));
+        }
+        Ok(Content::Bytes(bytes)) => bytes,
+        Ok(Content::NotRegular) => {
+            let reason = "not a regular file: not added".to_owned();
+            return Err(fail(id, Outcome::Refused { reason }));
+        }
+        Ok(Content::TooLarge) => return Err(fail(id, too_large())),
+        Err(e) => {
+            let message = format!("cannot read {name}: {}", io_kind(&e));
+            return Err(fail(id, Outcome::Error { message }));
+        }
+    };
+    let Some(id) = id else {
+        let reason = "no valid id: give --id".to_owned();
+        return Err(fail(None, Outcome::Conflict { reason }));
+    };
+    let sha256 = Sha256Hex::of(&bytes);
+    let from = input.given();
+    derive(bytes, sha256, from, name, id, explicit).map_err(|(id, reason)| {
+        let reason = reason.to_owned();
+        fail(Some(id), Outcome::Refused { reason })
+    })
 }
 
 /// What the database says of a file (ID5).

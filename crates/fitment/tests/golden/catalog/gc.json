@@ -1,0 +1,16 @@
+{
+  "format": "fitment.gc",
+  "format_version": 1,
+  "generation": 3,
+  "versions": true,
+  "vacuum": false,
+  "unlinked": [
+    "46cd8a915536c6a99b131673568cf1e4e4b3304eedeaa6dad68eabf483a59cd9"
+  ],
+  "temporaries": [
+    "old.part"
+  ],
+  "old_rows": 0,
+  "failed": [],
+  "cancelled": false
+}

@@ -1014,3 +1014,138 @@ fn vacuum_says_what_it_needs() {
         "{err}"
     );
 }
+
+/// `actual` against `tests/golden/catalog/<name>`; written when missing
+/// under `FITMENT_BLESS=1`, never rewritten: a changed golden is a
+/// changed output, which the design must record first (VT39).
+fn golden(name: &str, actual: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden/catalog")
+        .join(name);
+    match fs::read_to_string(&path) {
+        Ok(expected) => assert!(expected == actual, "{name}:\n{actual}\nis not\n{expected}"),
+        Err(_) if std::env::var_os("FITMENT_BLESS").is_some_and(|v| v == "1") => {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, actual).unwrap();
+        }
+        Err(e) => panic!("{name}: no golden ({e}): run with FITMENT_BLESS=1"),
+    }
+}
+
+/// CU1 (`docs/research/m6-api.md`, VT39): `delete` and `prune --revisions`
+/// with `--format json` print `fitment.catalog` with `changes` (goldens),
+/// each change's `input` the reference as given (delete) or the revision
+/// pruned; the table, stderr and exit codes are as without it.
+#[test]
+fn delete_and_prune_print_their_documents() {
+    let dir = scratch("cu1");
+    brkt(&dir);
+    catalog(
+        &dir,
+        &["replace", "-C", "parts", "BRKT", "in/m_bracket_thick.stp"],
+    );
+    catalog(&dir, &["ingest", "-C", "parts", "in/junk.stp"]);
+    let twin = scratch("cu1-table");
+    brkt(&twin);
+    catalog(
+        &twin,
+        &["replace", "-C", "parts", "BRKT", "in/m_bracket_thick.stp"],
+    );
+    catalog(&twin, &["ingest", "-C", "parts", "in/junk.stp"]);
+    let (code, out, err) = catalog(
+        &dir,
+        &["prune", "-C", "parts", "--revisions", "--format", "json"],
+    );
+    assert_eq!(code, 0);
+    golden("prune.json", &out);
+    let (table_code, table, table_err) = catalog(&twin, &["prune", "-C", "parts", "--revisions"]);
+    assert_eq!((table_code, table_err), (code, err));
+    assert!(table.starts_with("pruned       BRKT  r1"), "{table}");
+    let delete = ["delete", "-C", "parts", "a", "JUNK@r1", "junk"];
+    let (code, out, err) = catalog(&dir, &[&delete[..], &["--format", "json"]].concat());
+    assert_eq!(code, 0);
+    golden("delete.json", &out);
+    let (table_code, table, table_err) = catalog(&twin, &delete);
+    assert_eq!((table_code, table_err), (code, err));
+    assert_eq!(table.lines().count(), 2, "{table}");
+    // A refusal prints no document: exit 2, as before.
+    let (code, out, _) = catalog(
+        &dir,
+        &["delete", "-C", "parts", "nobody", "--format", "json"],
+    );
+    assert_eq!((code, out.as_str()), (2, ""));
+    let (code, out, _) = catalog(&dir, &["prune", "-C", "parts", "--format", "json"]);
+    assert_eq!((code, out.as_str()), (2, ""));
+}
+
+/// Marks `file` as written long ago: abandoned, not in flight.
+fn abandoned(file: &Path) {
+    fs::File::options()
+        .write(true)
+        .open(file)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(86_400))
+        .unwrap();
+}
+
+/// CU2 and CA5 (VT39): `verify` and `gc` with `--format json` print
+/// `fitment.verify` and `fitment.gc` (goldens), exit codes unchanged:
+/// `verify` exits 3 on a problem, and its table is as before.
+#[test]
+fn verify_and_gc_print_their_documents() {
+    let dir = scratch("cu2");
+    let inputs = brkt(&dir);
+    let (code, out, _) = catalog(&dir, &["verify", "-C", "parts", "--format", "json"]);
+    assert_eq!(code, 0);
+    golden("verify-clean.json", &out);
+    let sha = sha256(&inputs.join("m_bracket.stp"));
+    let blobs = dir.join("parts/blobs/sha256");
+    writable(&blobs);
+    fs::write(blobs.join(&sha[..2]).join(&sha), b"other").unwrap();
+    let temporary = dir.join("parts/tmp/old.part");
+    fs::write(&temporary, b"abandoned").unwrap();
+    abandoned(&temporary);
+    let (code, table, err) = catalog(&dir, &["verify", "-C", "parts"]);
+    assert_eq!(code, 3);
+    golden("verify.txt", &table);
+    let (json_code, out, json_err) = catalog(&dir, &["verify", "-C", "parts", "--format", "json"]);
+    assert_eq!((json_code, json_err), (code, err));
+    golden("verify.json", &out);
+    // gc: an orphan and the temporary file, both abandoned long ago.
+    let bracket = fs::read(inputs.join("m_bracket.stp")).unwrap();
+    fs::write(blobs.join(&sha[..2]).join(&sha), bracket).unwrap();
+    let orphan = sha256(&inputs.join("m_bracket_thick.stp"));
+    let path = blobs.join(&orphan[..2]).join(&orphan);
+    fs::copy(inputs.join("m_bracket_thick.stp"), &path).unwrap();
+    abandoned(&path);
+    let (code, out, err) = catalog(
+        &dir,
+        &["gc", "-C", "parts", "--versions", "--format", "json"],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        err.contains("1 orphan files removed, 1 temporary files removed"),
+        "{err}"
+    );
+    golden("gc.json", &out);
+    let (code, out, _) = catalog(&dir, &["gc", "-C", "parts"]);
+    assert_eq!((code, out.as_str()), (0, ""), "the table prints nothing");
+    assert_eq!(catalog(&dir, &["verify", "-C", "parts"]).0, 0);
+}
+
+/// CA4 (VT39): a file that cannot be read says its error's kind, not the
+/// operating system's text, in the table and the document (goldens).
+#[test]
+fn an_unreadable_file_says_its_errors_kind() {
+    let dir = scratch("ca4");
+    catalog(&dir, &["init", "-C", "parts"]);
+    let (code, table, _) = catalog(&dir, &["ingest", "-C", "parts", "nowhere.stp"]);
+    assert_eq!(code, 1);
+    golden("ingest-unreadable.txt", &table);
+    let (code, out, _) = catalog(
+        &dir,
+        &["ingest", "-C", "parts", "nowhere.stp", "--format", "json"],
+    );
+    assert_eq!(code, 1);
+    golden("ingest-unreadable.json", &out);
+}

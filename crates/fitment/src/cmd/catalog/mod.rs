@@ -90,7 +90,7 @@ enum Command {
     Verify(maintain::VerifyArgs),
 }
 
-/// How `ingest`, `list` and `get` print (CL3).
+/// How every catalog command that prints does (CL3; CU1, CU2).
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Format {
     /// For people; not a stable format.

@@ -1,0 +1,81 @@
+{
+  "format": "fitment.catalog",
+  "format_version": 1,
+  "schema_version": 1,
+  "generation": 7,
+  "build": {
+    "extractor_version": 6,
+    "signature_version": 2,
+    "properties_version": 1
+  },
+  "counts": {
+    "entries": 1,
+    "indexed": 1,
+    "quarantined": 0,
+    "stale": 0
+  },
+  "entries": [
+    {
+      "id": "a",
+      "revision": 1,
+      "status": null,
+      "sha256": "e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945",
+      "bytes": null,
+      "file_name": "a.stp",
+      "product": {
+        "id": null,
+        "name": null
+      },
+      "versions": {
+        "extractor_version": null,
+        "signature_version": null,
+        "properties_version": null
+      },
+      "complete": null,
+      "features": null,
+      "refusals": [],
+      "properties": null,
+      "history": null
+    },
+    {
+      "id": "junk",
+      "revision": 1,
+      "status": null,
+      "sha256": "fd76cc99c903f60264665da57143b57311324f2e47cd403fa49443227e9f8161",
+      "bytes": null,
+      "file_name": "junk.stp",
+      "product": {
+        "id": null,
+        "name": null
+      },
+      "versions": {
+        "extractor_version": null,
+        "signature_version": null,
+        "properties_version": null
+      },
+      "complete": null,
+      "features": null,
+      "refusals": [],
+      "properties": null,
+      "history": null
+    }
+  ],
+  "changes": [
+    {
+      "input": "a",
+      "result": "deleted",
+      "id": "a",
+      "revision": 1,
+      "sha256": "e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945",
+      "detail": null
+    },
+    {
+      "input": "JUNK@r1",
+      "result": "deleted",
+      "id": "junk",
+      "revision": 1,
+      "sha256": "fd76cc99c903f60264665da57143b57311324f2e47cd403fa49443227e9f8161",
+      "detail": null
+    }
+  ]
+}

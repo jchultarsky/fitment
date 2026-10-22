@@ -1,13 +1,15 @@
 //! `fitment catalog gc` and `verify` (`docs/research/m5-catalog.md`,
-//! sections 7.8 and 7.9).
+//! sections 7.8 and 7.9). With `--format json` they print `fitment.gc`
+//! and `fitment.verify` (CU2, CA5, `docs/research/m6-api.md`).
 
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
-use fitment_catalog::Catalog;
+use fitment_catalog::document::{GcDocument, VerifyDocument};
+use fitment_catalog::{Catalog, NoObserver};
 
-use super::{ERROR, REFUSED, emit, fail, shown};
+use super::{ERROR, Format, REFUSED, emit, fail, shown};
 use crate::cmd::text::{note, printable};
 
 #[derive(clap::Args)]
@@ -19,6 +21,9 @@ pub struct GcArgs {
     /// Also run VACUUM, which needs free space about the database's size.
     #[arg(long)]
     vacuum: bool,
+    /// How to print the result: `table` prints nothing on stdout.
+    #[arg(long, value_enum, default_value_t = Format::Table)]
+    format: Format,
 }
 
 #[derive(clap::Args)]
@@ -30,6 +35,9 @@ pub struct VerifyArgs {
     /// SQLite's whole integrity check, not its quick one.
     #[arg(long)]
     full: bool,
+    /// How to print the result.
+    #[arg(long, value_enum, default_value_t = Format::Table)]
+    format: Format,
 }
 
 pub(super) fn gc(args: &GcArgs, dir: &Path, catalog: &mut Catalog) -> ExitCode {
@@ -66,20 +74,28 @@ pub(super) fn gc(args: &GcArgs, dir: &Path, catalog: &mut Catalog) -> ExitCode {
             printable(failed)
         ));
     }
-    ExitCode::from(if collected.failed.is_empty() {
+    let code = if collected.failed.is_empty() {
         0
     } else {
         ERROR
-    })
+    };
+    match args.format {
+        Format::Table => ExitCode::from(code),
+        Format::Json => {
+            let document = GcDocument::new(&collected, args.versions, args.vacuum);
+            emit(&document.to_json(), code)
+        }
+    }
 }
 
 pub(super) fn verify(args: &VerifyArgs, dir: &Path, catalog: &mut Catalog) -> ExitCode {
-    let problems = match catalog.verify(args.deep, args.full) {
-        Ok(p) => p,
+    let verified = match catalog.verify_observed(args.deep, args.full, &NoObserver) {
+        Ok(v) => v,
         Err(error) => return fail(dir, &error),
     };
+    let problems = &verified.problems;
     let mut out = String::new();
-    for p in &problems {
+    for p in problems {
         // A SHA-256 shortened; anything else, as stored. Both escaped, ids
         // too: verify reads a catalog it does not trust.
         let what = if fitment_catalog::Sha256Hex::parse(&p.what).is_ok() {
@@ -106,5 +122,12 @@ pub(super) fn verify(args: &VerifyArgs, dir: &Path, catalog: &mut Catalog) -> Ex
             if n == 1 { "problem" } else { "problems" }
         )
     });
-    emit(&out, if n == 0 { 0 } else { REFUSED })
+    let code = if n == 0 { 0 } else { REFUSED };
+    match args.format {
+        Format::Table => emit(&out, code),
+        Format::Json => {
+            let document = VerifyDocument::new(&verified, args.deep, args.full);
+            emit(&document.to_json(), code)
+        }
+    }
 }

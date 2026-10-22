@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fitment_core::{
     Admitted, Blocked, CandidateResult, CandidateSource, EXTRACTOR_VERSION, FeaturesDocument,
@@ -18,6 +19,7 @@ use crate::Error;
 use crate::change::{Unnamed, live_entry};
 use crate::hex::Sha256Hex;
 use crate::ids::Reference;
+use crate::observe::{NoObserver, Observer, Progress};
 use crate::preimage;
 use crate::snapshot::{Snapshot, check, stored_id};
 
@@ -60,6 +62,9 @@ pub enum NotRun {
     },
     /// A named entry that is not a live entry's current revision (exit 2).
     Unnamed(Vec<Unnamed>),
+    /// Its observer stopped it (CA2, `docs/research/m6-api.md`): no
+    /// result, not even a partial one.
+    Cancelled,
 }
 
 /// What a catalog run judged.
@@ -233,6 +238,27 @@ impl Snapshot<'_> {
         selection: &Selection,
         jobs: usize,
     ) -> Result<Result<CatalogRun, NotRun>, Error> {
+        self.match_catalog_observed(matcher, selection, jobs, &NoObserver)
+    }
+
+    /// [`Snapshot::match_catalog`], `observer` asked before the run and
+    /// before each group a judging thread takes, and told of each group
+    /// judged (CA2): a cancelled run is [`NotRun::Cancelled`], with no
+    /// results.
+    ///
+    /// # Errors
+    ///
+    /// As [`Snapshot::match_catalog`].
+    pub fn match_catalog_observed(
+        &self,
+        matcher: &Matcher<'_>,
+        selection: &Selection,
+        jobs: usize,
+        observer: &dyn Observer,
+    ) -> Result<Result<CatalogRun, NotRun>, Error> {
+        if observer.cancelled() {
+            return Ok(Err(NotRun::Cancelled));
+        }
         let conn: &Connection = self.connection();
         let (entries, indexed, quarantined) = tally(conn)?;
         let mut run = CatalogRun {
@@ -259,7 +285,9 @@ impl Snapshot<'_> {
                 Err(id) => run.corrupt.push(id),
             }
         }
-        let judged = judge(matcher, rows, jobs);
+        let Some(judged) = judge(matcher, rows, jobs, observer) else {
+            return Ok(Err(NotRun::Cancelled));
+        };
         run.results = judged.results;
         run.judged = judged.made;
         run.corrupt.extend(judged.corrupt);
@@ -533,6 +561,8 @@ enum Judgment {
     NotCurrent,
     /// The judgment panicked: a fitment bug.
     Panicked,
+    /// The observer stopped the run before it.
+    Cancelled,
 }
 
 /// What judging the groups came to: the results, the judgments made, the
@@ -547,8 +577,13 @@ struct Judged {
 /// QR6 to QR8: the rows grouped by their recomputed part digest (only
 /// while the fit verifier names no kernel), one representative of each,
 /// its lowest key, judged on `jobs` threads; each member gets a copy with
-/// its own source.
-fn judge(matcher: &Matcher<'_>, rows: Vec<CheckedRow>, jobs: usize) -> Judged {
+/// its own source. `None` when the observer stopped it (CA2).
+fn judge(
+    matcher: &Matcher<'_>,
+    rows: Vec<CheckedRow>,
+    jobs: usize,
+    observer: &dyn Observer,
+) -> Option<Judged> {
     let share = matcher.fit_kernel().is_none();
     let mut groups: BTreeMap<String, Vec<CheckedRow>> = BTreeMap::new();
     for row in rows {
@@ -568,10 +603,11 @@ fn judge(matcher: &Matcher<'_>, rows: Vec<CheckedRow>, jobs: usize) -> Judged {
         corrupt: Vec::new(),
         bugs: Vec::new(),
     };
-    for (group, judgment) in groups
-        .iter()
-        .zip(judge_representatives(matcher, &groups, jobs))
-    {
+    let judgments = judge_representatives(matcher, &groups, jobs, observer);
+    if judgments.iter().any(|j| matches!(j, Judgment::Cancelled)) {
+        return None;
+    }
+    for (group, judgment) in groups.iter().zip(judgments) {
         let labels = group.iter().map(|r| r.label.clone());
         match judgment {
             Judgment::Done(result) => {
@@ -586,29 +622,41 @@ fn judge(matcher: &Matcher<'_>, rows: Vec<CheckedRow>, jobs: usize) -> Judged {
             }
             Judgment::NotCurrent => judged.corrupt.extend(labels),
             Judgment::Panicked => judged.bugs.extend(labels),
+            Judgment::Cancelled => {}
         }
     }
-    judged
+    Some(judged)
 }
 
 /// No more threads than this, whatever `jobs` asks.
 const MAX_JOBS: usize = 256;
 
 /// Each group's representative judged, on up to `jobs` threads, in order.
-/// A panic is caught per group, the same on one thread or many, so the
-/// result never depends on `jobs` (QR8).
+/// A judgment's panic is caught per group, the same on one thread or
+/// many, so the result never depends on `jobs` (QR8). Each thread asks
+/// `observer` before each group it takes, and tells it of each judged
+/// (CA2); a panic of the observer's goes on to the caller, on one thread
+/// or many.
 fn judge_representatives(
     matcher: &Matcher<'_>,
     groups: &[Vec<CheckedRow>],
     jobs: usize,
+    observer: &dyn Observer,
 ) -> Vec<Judgment> {
+    let total = groups.len();
+    let done = AtomicUsize::new(0);
     let one = |group: &Vec<CheckedRow>| {
+        if observer.cancelled() {
+            return Judgment::Cancelled;
+        }
         let Some(row) = group.first() else {
             return Judgment::NotCurrent;
         };
         let judged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             matcher.judge_document(&row.document, row.source.clone())
         }));
+        let done = done.fetch_add(1, Ordering::Relaxed) + 1;
+        observer.progress(Progress::Judged { done, total });
         match judged {
             Ok(Ok(result)) => Judgment::Done(Box::new(result)),
             Ok(Err(_)) => Judgment::NotCurrent,
@@ -623,19 +671,14 @@ fn judge_representatives(
     std::thread::scope(|scope| {
         let handles: Vec<_> = groups
             .chunks(chunk)
-            .map(|part| {
-                (
-                    part.len(),
-                    scope.spawn(move || part.iter().map(one).collect::<Vec<_>>()),
-                )
-            })
+            .map(|part| scope.spawn(move || part.iter().map(one).collect::<Vec<_>>()))
             .collect();
         handles
             .into_iter()
-            .flat_map(|(n, h)| {
-                h.join()
-                    .unwrap_or_else(|_| (0..n).map(|_| Judgment::Panicked).collect())
-            })
+            // A judgment's own panic is caught in `one`: what reaches the
+            // join is the observer's, which goes on as it does on one
+            // thread, never read as the groups' bugs.
+            .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect()
     })
 }
