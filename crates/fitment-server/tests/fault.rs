@@ -446,8 +446,13 @@ async fn the_sweep_follows_its_candidates_not_the_store() {
             .status,
         201
     );
+    // The writer is held at most one batch of 100 ms (UNLINK_BUDGET, and
+    // Db::yield_writer between batches); on CI's Windows runner the PUT's
+    // own file writes, beside the sweep's 10,000 file calls, still took
+    // 3.6 to 4.3 s, so Windows has its own bound, as the sweep has.
+    let put_bound = Duration::from_secs(if cfg!(windows) { 15 } else { 2 });
     assert!(
-        put.elapsed() < Duration::from_secs(2),
+        put.elapsed() < put_bound,
         "a PUT waited {:?}",
         put.elapsed()
     );
