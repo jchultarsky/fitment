@@ -1,0 +1,21 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:lv+fYecJ/ACoPntT9jCQcAsvj14YRKDl9aa8wQXsIw0=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/original_not_stored",
+  "title": "The socket's assembly is not stored",
+  "status": 409,
+  "detail": "the original is read from the socket's own assembly: register it (POST /v1/assemblies)",
+  "code": "original_not_stored",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

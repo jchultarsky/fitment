@@ -6,7 +6,7 @@
 //! listener until its shutdown future ends. `main.rs` alone reads the
 //! process's arguments, installs the log subscriber and exits.
 //!
-//! This is M6's PR 5: PR 2's skeleton (configuration, the four server
+//! This is M6's PR 6: PR 2's skeleton (configuration, the four server
 //! routes `/v1/health`, `/v1/ready`, `/v1/info` and `/v1/openapi.json`,
 //! the hardening layers, the error registry, `server.db` with its lease,
 //! the OpenAPI document), PR 3's authentication (users and bearer tokens,
@@ -16,8 +16,10 @@
 //! and fairness, events, idempotency, waits, cancellation, deadlines,
 //! retention, shutdown and recovery, with `features`, `assembly_read` and
 //! `socket_extract` as their first kinds, assemblies and socket lines
-//! ([`assemblies`]), and metrics ([`metrics`]). Matching and the catalog's
-//! routes come in the PRs of the design's section 12.
+//! ([`assemblies`]), and metrics ([`metrics`]); then reviews, imports and
+//! matches over files and components ([`matching`], the socket gate in
+//! [`gate`], `fitment.run` and the candidates view in [`runs`]). The
+//! catalog's routes come in the PRs of the design's section 12.
 #![forbid(unsafe_code)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
@@ -26,6 +28,7 @@ pub mod assemblies;
 pub mod auth;
 pub mod catalog;
 pub mod config;
+pub mod gate;
 #[cfg(feature = "test-support")]
 pub mod hooks;
 pub mod http;
@@ -37,6 +40,7 @@ pub mod metrics;
 mod net;
 #[cfg(feature = "schema")]
 pub mod openapi;
+pub mod runs;
 pub mod state;
 pub mod uploads;
 
@@ -139,7 +143,19 @@ pub(crate) struct Shared {
     /// Authentication's state (AU1 to AU7).
     pub(crate) auth: Arc<auth::Auth>,
     pub(crate) trusted_proxies: Vec<IpAddr>,
-    pub(crate) verifier: matching::Verifier,
+    /// The fit verifier (SV8, SN11): a lock so a `test-support` seam can
+    /// set the fake one (VT31); read once per job.
+    pub(crate) verifier: std::sync::RwLock<matching::Verifier>,
+    /// HX8: the socket documents parsed at once by requests.
+    pub(crate) parse_slots: Arc<tokio::sync::Semaphore>,
+    /// OB3, DC12: the reads of stored bytes requests make at once (a
+    /// document served whole or hashed before it streams, a candidate
+    /// page), `limits.read_concurrency`.
+    pub(crate) read_slots: Arc<tokio::sync::Semaphore>,
+    /// OP11, VT32: how far the build's socket rules version is raised, so
+    /// a test meets a socket stored by an older build.
+    #[cfg(feature = "test-support")]
+    pub(crate) rules_shift: std::sync::atomic::AtomicU32,
     /// The object store (OB2, OB3).
     pub(crate) objects: state::Objects,
     /// Uploads' slots and staged bytes (UP4).
@@ -167,6 +183,16 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    /// The fit verifier in force (SV8).
+    pub(crate) fn verifier(&self) -> matching::Verifier {
+        Arc::clone(
+            &self
+                .verifier
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     /// The auth part of JS9's sweep (AU6): blocking.
     pub(crate) fn sweep_auth(&self) -> Result<usize, state::DbError> {
         self.auth.sweep(&self.db, self.ids.now_ms())
@@ -313,6 +339,8 @@ impl Server {
             .map(|a| a.to_canonical())
             .collect();
         let verifier = matching::verifier(&config.fit);
+        let parse_slots = usize::try_from(config.limits.parse_concurrency.max(1)).unwrap_or(1);
+        let read_slots = usize::try_from(config.limits.read_concurrency.max(1)).unwrap_or(1);
         let objects = state::Objects::new(&config.paths.state, fs);
         // SD2: no upload survives its connection, so a start finds only
         // abandoned temporary files.
@@ -333,7 +361,11 @@ impl Server {
                 ids,
                 auth,
                 trusted_proxies,
-                verifier,
+                verifier: std::sync::RwLock::new(verifier),
+                parse_slots: Arc::new(tokio::sync::Semaphore::new(parse_slots)),
+                read_slots: Arc::new(tokio::sync::Semaphore::new(read_slots)),
+                #[cfg(feature = "test-support")]
+                rules_shift: std::sync::atomic::AtomicU32::new(0),
                 objects,
                 uploads,
                 jobs,
@@ -448,6 +480,24 @@ impl Server {
     #[cfg(feature = "test-support")]
     pub fn hold_jobs(&self) {
         self.shared.jobs.hold(true);
+    }
+
+    /// OP11, SN11, VT31: judges with `verifier` from now on, the fake that
+    /// verifies every fit among them.
+    #[cfg(feature = "test-support")]
+    pub fn set_fit_verifier(&self, verifier: matching::Verifier) {
+        *self
+            .shared
+            .verifier
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = verifier;
+    }
+
+    /// OP11, VT32: raises the build's socket rules version by `shift`, as
+    /// an upgraded build would see every stored socket (MF11, JB2).
+    #[cfg(feature = "test-support")]
+    pub fn set_rules_shift(&self, shift: u32) {
+        self.shared.rules_shift.store(shift, Ordering::SeqCst);
     }
 
     /// OP11: lets a held dispatcher go on, starting what may run.

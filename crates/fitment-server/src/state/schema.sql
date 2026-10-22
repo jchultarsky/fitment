@@ -117,6 +117,7 @@ CREATE TABLE job (
   result TEXT,                                                             -- what it made: fitment.job's result.href
   index_sha256 TEXT REFERENCES object(sha256),                             -- DC12: a match's candidates index
   catalog_generation INTEGER, catalog_counts TEXT,                         -- M6-25; a write job's at dispatch (JB6)
+  run TEXT,                                                                -- DC10: a match's run facts (PR 6)
   notes TEXT NOT NULL DEFAULT '[]',                                        -- JB10
   pinned INTEGER NOT NULL DEFAULT 0, expires_ms INTEGER,
   UNIQUE (owner, idempotency_key)) STRICT;

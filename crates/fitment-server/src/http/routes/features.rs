@@ -39,7 +39,7 @@ pub(super) async fn create(
         kind: Kind::Features,
         request,
         request_sha256,
-        inputs: vec![(sha256, bytes)],
+        inputs: vec![super::jobs::Input::upload(sha256, bytes)],
         fingerprint,
         cites: Vec::new(),
     };

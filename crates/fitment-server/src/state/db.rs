@@ -10,7 +10,7 @@ mod auth;
 mod jobs;
 mod uploads;
 
-pub use assemblies::{AssemblyDeleted, AssemblyRow, LineRow, PartsRow, RevisionRow};
+pub use assemblies::{AssemblyDeleted, AssemblyRow, LineRow, PartsRow, Reviewed, RevisionRow};
 pub use auth::{
     CreateUserError, MintError, MintFrom, NewToken, PasswordSet, Presented, SWEEP_BATCH, TokenRow,
     UpdateUserError, UserRow,

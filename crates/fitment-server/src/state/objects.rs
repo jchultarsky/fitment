@@ -354,6 +354,54 @@ impl Objects {
         }))
     }
 
+    /// DC12: the byte ranges `ranges` (start, end), in increasing order and
+    /// not overlapping, of the object `sha256` of `bytes` bytes, each read
+    /// where it starts on one open file: the seam's `seek_to` goes past
+    /// what lies before and between them, so a page reads its own bytes
+    /// only. The object as a whole is not hashed: each range is checked by
+    /// the caller against the SHA-256 its index records for it.
+    ///
+    /// # Errors
+    ///
+    /// [`ObjectError`]: a missing file, ranges out of order or past its
+    /// length, or the file system's.
+    pub fn read_ranges(
+        &self,
+        sha256: &str,
+        bytes: u64,
+        ranges: &[(u64, u64)],
+    ) -> Result<Vec<Vec<u8>>, ObjectError> {
+        let ordered = ranges.windows(2).all(|w| w[0].1 <= w[1].0);
+        if !ordered || ranges.iter().any(|(a, b)| a > b || *b > bytes) {
+            return Err(ObjectError::Damaged);
+        }
+        let mut reader = self
+            .fs
+            .open_stream(&self.path(sha256), bytes)
+            .map_err(missing)?;
+        let mut out = Vec::with_capacity(ranges.len());
+        let mut at = None;
+        for (from, to) in ranges {
+            // Each range read where it starts: what lies before or between
+            // them is sought past, never read (DC12).
+            if at != Some(*from) {
+                reader.seek_to(*from).map_err(damaged)?;
+            }
+            let mut range = vec![0_u8; usize::try_from(to - from).unwrap_or(usize::MAX)];
+            let mut filled = 0;
+            while filled < range.len() {
+                let n = reader.read_chunk(&mut range[filled..]).map_err(damaged)?;
+                if n == 0 {
+                    return Err(ObjectError::Damaged);
+                }
+                filled += n;
+            }
+            out.push(range);
+            at = Some(*to);
+        }
+        Ok(out)
+    }
+
     /// The one-buffer cap in force (OB3).
     pub fn one_buffer_max(&self) -> u64 {
         self.one_buffer_max.load(Ordering::Relaxed)

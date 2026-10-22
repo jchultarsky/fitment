@@ -8,8 +8,8 @@
 
 use rusqlite::{Connection, OptionalExtension as _, Row, Transaction, TransactionBehavior, params};
 
-use super::jobs::{AssemblyRows, SocketRows};
-use super::{Db, DbError};
+use super::jobs::{AssemblyRows, NewRevision, SocketRows};
+use super::{Db, DbError, StoreError};
 
 /// A `fitment.parts` row of an assembly (RA3).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -342,8 +342,8 @@ pub(super) fn revise(
         return Ok(Revised::Retry);
     }
     // Review S3 of PR 5, defence in depth: no revision of an assembly the
-    // owner no longer holds.
-    if live_assembly(tx, rows.owner, rows.assembly_sha256)?.is_none() {
+    // owner no longer holds, unless the server never read it (RA10).
+    if rows.needs_assembly && live_assembly(tx, rows.owner, rows.assembly_sha256)?.is_none() {
         return Ok(Revised::Gone);
     }
     let Some(made) = &rows.revision else {
@@ -369,7 +369,22 @@ pub(super) fn revise(
         )?;
         tx.last_insert_rowid()
     };
-    let n = next_n(tx, rows.owner, rows.line_id)?;
+    let n = insert_revision(tx, row, rows.owner, rows.line_id, made, Some(job), now_ms)?;
+    Ok(Revised::Made(format!("/v1/sockets/{}@r{n}", rows.line_id)))
+}
+
+/// RA5, OB5: inserts `made` as the next revision of the owner's id on the
+/// line row `line`, naming `job` if a job made it (JS13); its number.
+fn insert_revision(
+    tx: &Transaction<'_>,
+    line: i64,
+    owner: i64,
+    line_id: &str,
+    made: &NewRevision<'_>,
+    job: Option<i64>,
+    now_ms: i64,
+) -> rusqlite::Result<i64> {
+    let n = next_n(tx, owner, line_id)?;
     let clamp = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
     let verified = i64::from(made.verified);
     tx.execute(
@@ -378,9 +393,9 @@ pub(super) fn revise(
             unreviewed, carried, stale, job, created_ms)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
-            row,
-            rows.owner,
-            rows.line_id,
+            line,
+            owner,
+            line_id,
             n,
             made.how,
             verified,
@@ -396,7 +411,20 @@ pub(super) fn revise(
             now_ms
         ],
     )?;
-    Ok(Revised::Made(format!("/v1/sockets/{}@r{n}", rows.line_id)))
+    Ok(n)
+}
+
+/// How a review's revision ended (RA7, OB5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reviewed {
+    /// The revision made: its number.
+    Made(i64),
+    /// The line's current revision is no longer the one reviewed: `409
+    /// revision_not_current`, nothing written; the current revision's
+    /// number, which the answer names (RA7).
+    NotCurrent(i64),
+    /// The owner holds no live line of that id.
+    Gone,
 }
 
 impl Db {
@@ -592,6 +620,60 @@ impl Db {
                 .query_map(params![owner, id, after, limit], revision_row)?
                 .collect()
         })
+    }
+
+    /// OB5, RA7: a review's revision of the owner's live line `id`, in one
+    /// `BEGIN IMMEDIATE`, only over `base`, the revision reviewed, while it
+    /// is still current; its document's object put in place by `place`
+    /// and its row inserted first.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Place`] for the document's files, else SQLite's;
+    /// nothing is committed.
+    #[allow(clippy::too_many_arguments)] // one transaction's inputs
+    pub fn review_revision(
+        &self,
+        owner: i64,
+        id: &str,
+        base: i64,
+        made: &NewRevision<'_>,
+        place: &mut dyn FnMut() -> std::io::Result<()>,
+        bytes: u64,
+        now_ms: i64,
+    ) -> Result<Reviewed, StoreError> {
+        let mut conn = self.writer();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let found: Option<LineRow> = tx
+            .query_row(
+                &format!(
+                    "SELECT {LINE} FROM socket_line WHERE owner = ?1 AND id = ?2 AND deleted_ms IS NULL"
+                ),
+                params![owner, id],
+                |r| line_row(&tx, r),
+            )
+            .optional()?;
+        let Some(line) = found else {
+            return Ok(Reviewed::Gone);
+        };
+        if line.current.as_ref().map(|c| c.key) != Some(base) {
+            return Ok(Reviewed::NotCurrent(
+                line.current.as_ref().map_or(0, |c| c.n),
+            ));
+        }
+        place().map_err(StoreError::Place)?;
+        tx.execute(
+            "INSERT INTO object (sha256, bytes, added_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT (sha256) DO NOTHING",
+            params![
+                made.document_sha256,
+                i64::try_from(bytes).unwrap_or(i64::MAX),
+                now_ms
+            ],
+        )?;
+        let n = insert_revision(&tx, line.key, owner, id, made, None, now_ms)?;
+        tx.commit()?;
+        Ok(Reviewed::Made(n))
     }
 
     /// RA6: the owner's live line `id` becomes a tombstone, its highest

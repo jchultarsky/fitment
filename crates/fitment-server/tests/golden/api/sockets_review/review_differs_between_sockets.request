@@ -1,0 +1,5 @@
+POST /v1/sockets/sk_27de35c9446dbfcdf440@r1/review
+authorization: Bearer <ada's reader token>
+content-type: application/json
+
+{"decisions": [{"requirement": "shaft:shaft-729", "status": "removed", "note": "a press fit"}]}

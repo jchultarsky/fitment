@@ -39,12 +39,44 @@ pub(crate) struct Submission {
     pub kind: Kind,
     pub request: String,
     pub request_sha256: String,
-    /// Every object it names (OB4): `(sha256, bytes)`.
-    pub inputs: Vec<(String, u64)>,
+    /// Every object it names (OB4), with its length and its answer if gone.
+    pub inputs: Vec<Input>,
     /// JB9's fingerprint of the request as sent.
     pub fingerprint: String,
     /// The socket revisions it cites (OB4's `job_cites`): a `carry_from`.
     pub cites: Vec<i64>,
+}
+
+/// An object a submission names (OB4): its SHA-256, its length, and the
+/// answer its request gave had the object not been the caller's, given
+/// instead when it is gone by the time the job is inserted (the sweep ran
+/// while the request waited, say, for a parse slot), so that window is
+/// the request's own `404`, never a foreign key's `500`.
+#[derive(Debug, Clone)]
+pub(crate) struct Input {
+    pub sha256: String,
+    pub bytes: u64,
+    pub gone: fn() -> ApiError,
+}
+
+impl Input {
+    /// An upload's (UP3): `404 upload_not_found` if gone.
+    pub(crate) fn upload(sha256: String, bytes: u64) -> Self {
+        Self {
+            sha256,
+            bytes,
+            gone: super::upload_not_found,
+        }
+    }
+
+    /// An object named another way, `gone` its answer if gone.
+    pub(crate) fn named(sha256: String, bytes: u64, gone: fn() -> ApiError) -> Self {
+        Self {
+            sha256,
+            bytes,
+            gone,
+        }
+    }
 }
 
 /// HX5: a job's id; anything else names nothing (`404`).
@@ -202,22 +234,16 @@ fn full(full: Full, lane: &'static str) -> ApiError {
     }
 }
 
-/// The submission's checks that need `server.db` (UP4, JB9) and its
-/// insert (JS11). Returns the job and whether it is new.
-async fn insert(
-    shared: &Arc<Shared>,
-    caller: &Principal,
-    key: Option<String>,
-    request_id: String,
-    submission: Submission,
-) -> Result<(JobRow, bool), ApiError> {
-    if let Some(key) = &key {
-        if let Some(found) = existing(shared, caller.user.key, key, &submission.fingerprint).await?
-        {
-            return Ok((found, false));
-        }
-    }
-    let (checking, owner) = (Arc::clone(shared), caller.user.key);
+/// UP4: `507 quota_exceeded` when the owner's stored bytes, as
+/// `charged_bytes` counts them (uploads, retained jobs' inputs and
+/// documents, socket revisions' documents), are at their quota; checked
+/// before a job is inserted and before a review makes a revision.
+///
+/// # Errors
+///
+/// `quota_exceeded`, or `server.db`'s.
+pub(crate) async fn under_quota(shared: &Arc<Shared>, owner: i64) -> Result<(), ApiError> {
+    let checking = Arc::clone(shared);
     let quota = shared.config.limits.user_quota_gib.saturating_mul(1 << 30);
     let charged = blocking(move || {
         let now = checking.ids.now_ms();
@@ -234,6 +260,26 @@ async fn insert(
         )
         .with("limit", "user_quota_gib"));
     }
+    Ok(())
+}
+
+/// The submission's checks that need `server.db` (UP4, JB9) and its
+/// insert (JS11). Returns the job and whether it is new.
+async fn insert(
+    shared: &Arc<Shared>,
+    caller: &Principal,
+    key: Option<String>,
+    request_id: String,
+    submission: Submission,
+) -> Result<(JobRow, bool), ApiError> {
+    if let Some(key) = &key {
+        if let Some(found) = existing(shared, caller.user.key, key, &submission.fingerprint).await?
+        {
+            return Ok((found, false));
+        }
+    }
+    let owner = caller.user.key;
+    under_quota(shared, owner).await?;
     let lane = submission.kind.lane();
     let reservation = shared
         .jobs
@@ -273,8 +319,9 @@ async fn commit(
     reservation: jobs::Reservation,
 ) -> Result<(JobRow, bool), ApiError> {
     let writing = Arc::clone(shared);
-    let inputs: Vec<String> = submission.inputs.iter().map(|(s, _)| s.clone()).collect();
-    let largest = submission.inputs.iter().map(|(_, b)| *b).max().unwrap_or(0);
+    let inputs: Vec<String> = submission.inputs.iter().map(|i| i.sha256.clone()).collect();
+    let gone: Vec<fn() -> ApiError> = submission.inputs.iter().map(|i| i.gone).collect();
+    let largest = submission.inputs.iter().map(|i| i.bytes).max().unwrap_or(0);
     let submitted = blocking(move || {
         let new = NewJob {
             id: &id,
@@ -302,6 +349,14 @@ async fn commit(
         }
         Submitted::Existing(row) => Ok((row, false)),
         Submitted::KeyReused => Err(key_reused()),
+        // Resolved at the request, gone by the insert: the request's own
+        // answer (review of M6 PR 6).
+        Submitted::InputGone(n) => Err(gone.get(n).map_or_else(ApiError::internal, |f| f())),
+        Submitted::CiteGone => Err(ApiError::new(
+            ErrorCode::NotFound,
+            "no socket of that id is yours",
+        )
+        .with("resource", "socket")),
     }
 }
 
@@ -577,6 +632,12 @@ pub(super) async fn document(
         .and_then(|name| SocketRef::parse(name).ok())
         .filter(|_| matches!(row.kind, Kind::SocketExtract | Kind::SocketImport));
     let digest = match named {
+        // DC4: a match's own digest, from its run's facts.
+        None if row.kind == Kind::Match => row
+            .run
+            .as_deref()
+            .and_then(|r| serde_json::from_str::<crate::runs::RunFacts>(r).ok())
+            .map(|f| f.digest),
         Some(reference) => {
             let (reading, owner) = (Arc::clone(&shared), row.owner);
             blocking(move || {

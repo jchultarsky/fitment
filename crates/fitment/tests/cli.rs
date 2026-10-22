@@ -485,3 +485,36 @@ fn an_older_document_s_decisions_carry_over() {
     .stderr(contains("not a fitment.socket document"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// VD9, JB2 (review of M6 PR 6, a CLI change): a socket document whose
+/// bytes are not UTF-8 is no socket document: `fitment match` and
+/// `fitment review` refuse it, exit 3, as the API refuses it
+/// (`socket_unreadable`); a file that cannot be read at all is still
+/// exit 1.
+#[test]
+fn a_socket_file_not_utf8_is_refused() {
+    let dir = scratch("not-utf8");
+    let socket = dir.join("S.json");
+    std::fs::write(&socket, b"\xff\xfe not a document").unwrap();
+    let part = unit_part("p01_through.stp");
+    fitment()
+        .arg("match")
+        .arg(&socket)
+        .arg(&part)
+        .assert()
+        .code(3)
+        .stdout("")
+        .stderr(contains("refused: not a socket document"));
+    fitment()
+        .args(["review", "--keep", "bore:hole-1"])
+        .arg(&socket)
+        .assert()
+        .code(3)
+        .stderr(contains("refused: not a socket document"));
+    fitment()
+        .arg("match")
+        .arg(dir.join("missing.json"))
+        .arg(&part)
+        .assert()
+        .code(1);
+}

@@ -55,6 +55,8 @@ pub(crate) fn execute(shared: &Shared, row: &JobRow, control: &Control) -> Resul
         Kind::Features => features(shared, row, control),
         Kind::AssemblyRead => assembly(shared, row, control),
         Kind::SocketExtract => return super::socket::extract(shared, row, control),
+        Kind::SocketImport => return super::socket::import(shared, row, control),
+        Kind::Match => return super::matches::run(shared, row, control),
         _ => {
             let ending = internal(row.kind, "this build runs no job of this kind");
             end(shared, row, control, &ending, None, &Rows::None)
@@ -91,6 +93,15 @@ pub(crate) fn conclude(
             );
         }
     })
+}
+
+/// A phase's progress (JB8): counts only, never a verdict (M6-51).
+pub(crate) fn progress(phase: &'static str, done: u64, total: u64) -> Progress {
+    Progress {
+        phase,
+        done,
+        total: Some(total),
+    }
 }
 
 /// A reading's progress (JB8): counts only.
@@ -209,6 +220,13 @@ pub(crate) fn exit_of(status: Status, refusals: &[fitment_core::Refusal]) -> u8 
     }
 }
 
+/// JB10: the CLI's line per refusal of the document, as notes.
+pub(crate) fn refusal_notes(refusals: &[fitment_core::Refusal]) -> Option<String> {
+    let mut notes = super::notes::Notes::default();
+    notes.refusals(refusals);
+    notes.to_json()
+}
+
 /// The end of a job whose document is the CLI's answer with `exit`
 /// (JB3): `succeeded`, `refused` or `failed`, the document kept in each.
 /// A refusal is stated by the document itself (ER4); a fitment bug is
@@ -233,17 +251,14 @@ pub(crate) fn answered(
         )
     });
     End {
-        state,
         exit: Some(exit),
-        outcome: None,
         error,
-        release_key: false,
         document: Some((
             staged.sha256.clone(),
             staged.bytes,
             kind.document_format().to_owned(),
         )),
-        result: None,
+        ..End::bare(state)
     }
 }
 
@@ -257,6 +272,26 @@ pub(crate) fn end(
     control: &Control,
     ending: &End,
     staged: Option<Synced>,
+    rows: &Rows<'_>,
+) -> Result<Finished, DbError> {
+    end_staged(
+        shared,
+        row,
+        control,
+        ending,
+        staged.into_iter().collect(),
+        rows,
+    )
+}
+
+/// As [`end`], with every object `staged` put in place by the finishing
+/// transaction: a match's document and its candidates index (DC12).
+pub(crate) fn end_staged(
+    shared: &Shared,
+    row: &JobRow,
+    control: &Control,
+    ending: &End,
+    staged: Vec<Synced>,
     rows: &Rows<'_>,
 ) -> Result<Finished, DbError> {
     let now = shared.ids.now_ms();
@@ -302,16 +337,16 @@ fn finish(
     shared: &Shared,
     row: &JobRow,
     ending: &End,
-    staged: Option<Synced>,
+    staged: Vec<Synced>,
     rows: &Rows<'_>,
 ) -> Result<Finished, DbError> {
     hook(shared, "job.committing");
     let placed = Cell::new(false);
     let mut place = || {
-        if let Some(synced) = &staged {
+        for synced in &staged {
             shared.objects.place(synced)?;
-            placed.set(true);
         }
+        placed.set(!staged.is_empty());
         Ok(())
     };
     let stopped = documents::stopped(row.kind);
@@ -328,8 +363,10 @@ fn finish(
     );
     match finished {
         Ok(finished) => {
-            if let (Some(synced), true) = (staged, placed.get()) {
-                synced.kept();
+            if placed.get() {
+                for synced in staged {
+                    synced.kept();
+                }
             }
             hook(shared, "job.committed");
             Ok(finished)
@@ -378,10 +415,9 @@ fn features(shared: &Shared, row: &JobRow, control: &Control) -> Result<Finished
         hook(shared, "job.ran");
         let exit = exit_of(document.status(), document.refusals());
         let staged = stage(shared, row.kind, &document.to_json())?;
-        Ok((
-            answered(row.kind, exit, &staged, document.refusals()),
-            staged,
-        ))
+        let mut ending = answered(row.kind, exit, &staged, document.refusals());
+        ending.notes = refusal_notes(document.refusals());
+        Ok((ending, staged))
     };
     match work() {
         Ok((ending, staged)) => {
@@ -410,6 +446,7 @@ fn assembly(shared: &Shared, row: &JobRow, control: &Control) -> Result<Finished
         let root = document.root().and_then(|r| serde_json::to_string(r).ok());
         let staged = stage(shared, row.kind, &document.to_json())?;
         let mut ending = answered(row.kind, exit, &staged, document.refusals());
+        ending.notes = refusal_notes(document.refusals());
         if exit != 1 {
             ending.result = Some(format!("/v1/assemblies/{}", job.upload));
         }

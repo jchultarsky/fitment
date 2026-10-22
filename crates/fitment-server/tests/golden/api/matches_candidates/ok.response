@@ -1,0 +1,408 @@
+200
+cache-control: no-store
+content-type: application/json
+fitment-format: fitment.page/1
+repr-digest: sha-256=:Wk+1a4orGMK+V8J32KSmQtxhEyTdt1l1Lucgr3/leCE=:
+x-request-id: r_0000000000000000000000000a
+
+{
+  "format": "fitment.page",
+  "format_version": 1,
+  "kind": "match_candidate",
+  "items": [
+    {
+      "index": 0,
+      "entry": {
+      "labels": [
+        "m_block02.stp"
+      ],
+      "source": {
+        "bytes": 10419,
+        "header": {
+          "implementation_level": "2;1",
+          "originating_system": "Open CASCADE 7.9",
+          "preprocessor_version": "Open CASCADE STEP processor 7.9",
+          "schema": "ap214",
+          "schema_identifiers": [
+            "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+          ]
+        },
+        "kind": "file",
+        "sha256": "1f021de7913c486df1f45d44bc6306c39f1b7374d9eccb818e27fbc6990db4ea"
+      },
+      "product": {
+        "instance": 7,
+        "id": "m_block02",
+        "name": "m_block02"
+      },
+      "status": "accepted",
+      "refusals": [],
+      "read": {
+        "complete": true,
+        "extractor_version": 6,
+        "max_uncertainty_mm": 1e-7,
+        "max_vertex_offset_mm": 4.4408920985e-15
+      },
+      "verdict": "interface_match",
+      "fit": {
+        "status": "not_checked",
+        "reason": "no fit verifier in this build"
+      },
+      "flags": [
+        "material_not_compared",
+        "requirements_unreviewed"
+      ],
+      "warnings": [],
+      "properties": {
+        "material": {
+          "reason": "no property fitment maps in either file",
+          "status": "not_compared"
+        }
+      },
+      "reasons": [],
+      "sockets": [
+        {
+          "socket": "socket-1",
+          "stage": "verification",
+          "verdict": "interface_match",
+          "fit": {
+            "status": "not_checked",
+            "reason": "no fit verifier in this build"
+          },
+          "placement": {
+            "rotation": [
+              [
+                6.123233995736766e-17,
+                1.0,
+                0.0
+              ],
+              [
+                -1.0,
+                6.123233995736766e-17,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              49.99999999999999,
+              100.0,
+              -25.0
+            ],
+            "seeded_by": {
+              "one_axis": {
+                "axis": [
+                  "bore:hole-427",
+                  "hole-187"
+                ]
+              }
+            },
+            "tried": 8,
+            "exhausted": false,
+            "chosen": "first_passing",
+            "u_mm": 1e-6,
+            "epsilon_mm": 0.009999000000000001
+          },
+          "missing": [],
+          "failed": 0,
+          "checks": [
+            {
+              "requirement": "seat:plane-387",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "plane-147",
+              "measures": [
+                {
+                  "quantity": "plane_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "plane_offset_mm",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "covers",
+                  "at": {
+                    "contact_face": 387
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            },
+            {
+              "requirement": "grip:plane-387+plane-477",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "plane-147+plane-237",
+              "measures": [
+                {
+                  "quantity": "grip_length_mm",
+                  "at": {},
+                  "found": 8.5,
+                  "nominal": 8.5,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 8.490001,
+                  "max": 8.509999,
+                  "margin": 0.009999000000000535,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            },
+            {
+              "requirement": "bore:hole-427",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "hole-187",
+              "measures": [
+                {
+                  "quantity": "axis_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "axis_offset_mm",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.5
+                    ]
+                  },
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.5
+                    ]
+                  },
+                  "found": 15.0,
+                  "nominal": 8.5,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 8.490001,
+                  "max": null,
+                  "margin": 6.5099990000000005,
+                  "passed": true
+                },
+                {
+                  "quantity": "clear_margin_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.5
+                    ]
+                  },
+                  "found": 0.2999999999999998,
+                  "nominal": null,
+                  "band": "tau_guard",
+                  "band_mm": 0.010001,
+                  "min": 0.010001,
+                  "max": null,
+                  "margin": 0.28999899999999984,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      8.5
+                    ]
+                  },
+                  "found": 6.6,
+                  "nominal": 6.6,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 6.609998999999999,
+                  "margin": 0.009998999999999647,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      8.5,
+                      14.51
+                    ]
+                  },
+                  "found": 0.0,
+                  "nominal": 8.5,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 8.509999,
+                  "margin": 8.509999,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      8.5,
+                      14.51
+                    ]
+                  },
+                  "found": 15.0,
+                  "nominal": 14.51,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 14.500001,
+                  "max": null,
+                  "margin": 0.49999900000000075,
+                  "passed": true
+                },
+                {
+                  "quantity": "clear_margin_mm",
+                  "at": {
+                    "span_mm": [
+                      8.5,
+                      14.51
+                    ]
+                  },
+                  "found": 0.5,
+                  "nominal": null,
+                  "band": "tau_guard",
+                  "band_mm": 0.010001,
+                  "min": 0.010001,
+                  "max": null,
+                  "margin": 0.489999,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      8.5,
+                      14.51
+                    ]
+                  },
+                  "found": 11.0,
+                  "nominal": 11.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 11.009999,
+                  "margin": 0.009999000000000535,
+                  "passed": true
+                },
+                {
+                  "quantity": "open_start",
+                  "at": {
+                    "end": "start"
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            },
+            {
+              "requirement": "seat:plane-477",
+              "review": "unreviewed",
+              "result": "passed",
+              "feature": "plane-237",
+              "measures": [
+                {
+                  "quantity": "plane_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "plane_offset_mm",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 8.5,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "covers",
+                  "at": {
+                    "contact_face": 477
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": []
+            }
+          ],
+          "not_checked": []
+        }
+      ]
+    }
+    }
+  ],
+  "next": "/v1/matches/j_00000000000000000000000009/candidates?offset=1&limit=1",
+  "generation": null,
+  "digest": "sha256:ddd2fb8e113ad14f8008ac73298fd9c3c7babe5a0adf1ce0783d94a518a3d09c",
+  "view": true,
+  "complete": true,
+  "exit_code": 4
+}

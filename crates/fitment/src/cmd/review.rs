@@ -47,12 +47,9 @@ enum Format {
 
 pub fn run(args: &Args) -> ExitCode {
     let path = printable(&args.file.display().to_string());
-    let text = match std::fs::read_to_string(&args.file) {
+    let text = match super::socket_text(&args.file, &path) {
         Ok(text) => text,
-        Err(error) => {
-            note(&format!("error: cannot read {path}: {error}"));
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
     let mut document = match SocketDocument::from_json(&text) {
         Ok(document) => document,

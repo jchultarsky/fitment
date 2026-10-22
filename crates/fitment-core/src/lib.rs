@@ -36,11 +36,11 @@ mod tolerance;
 mod verdict;
 
 pub use assembly::{
-    AssemblyNote, AssemblyNoteCode, AssemblyRead, BadHex, Candidate, ComponentRead,
-    ComponentSummary, DefinitionKind, GateResult, ListedDefinition, Listing, MAX_OCCURRENCES,
-    MatchedBy, Occurrence, OccurrencePath, PARTS_FORMAT, PARTS_FORMAT_VERSION, PartEntry,
-    PartOccurrence, PartsDocument, PartsFormatError, PathForm, SelectError, Selection, Source,
-    UsageRef, read_assembly,
+    AssemblyComponents, AssemblyNote, AssemblyNoteCode, AssemblyRead, BadHex, Candidate,
+    ComponentError, ComponentRead, ComponentSummary, DefinitionKind, GateResult, ListedDefinition,
+    Listing, MAX_OCCURRENCES, MatchedBy, Occurrence, OccurrencePath, PARTS_FORMAT,
+    PARTS_FORMAT_VERSION, PartEntry, PartOccurrence, PartsDocument, PartsFormatError, PathForm,
+    SelectError, SelectedComponent, Selection, Source, UsageRef, read_assembly,
 };
 pub use features::{
     Axis, Bottom, Cone, Countersink, Cylinder, CylinderClass, DefinitionRef, End, Extent,
@@ -63,10 +63,10 @@ pub use matching::{
     IndexSource, IndexTokens, Kept, MATCH_FORMAT, MATCH_FORMAT_VERSION, MATCH_RULES_VERSION,
     MAX_ANCHOR_PAIRS, MAX_COVERAGE_STEPS, MAX_PLACEMENTS, MAX_SHORTLIST_CHECKS, MatchDocument,
     MatchOptions, MatchPolicy, Matcher, Measure, MeasureValue, Missing, MissingElement, NotChecked,
-    NotCurrent, Outcome, PairToken, PartSignature, Placement, Placements, Posting, Quantity,
-    ReadFacts, SIGNATURE_VERSION, Seed, ShortlistIndex, SigCone, SigPlane, SigStack, SocketRefused,
-    SocketResult, SocketSignature, SocketView, Stage, Summary, Unread, Warning, WarningCode,
-    Window, align, level_one, match_candidates, shortlist, verify,
+    NotCurrent, OriginalCheck, Outcome, PairToken, PartSignature, Placement, Placements, Posting,
+    Quantity, ReadFacts, SIGNATURE_VERSION, Seed, ShortlistIndex, SigCone, SigPlane, SigStack,
+    SocketRefused, SocketResult, SocketSignature, SocketView, Stage, Summary, Unread, Warning,
+    WarningCode, Window, align, level_one, match_candidates, shortlist, verify,
 };
 pub use properties::{
     Field, MAX_STATED, MAX_STATED_BYTES, Mapped, Meaning, NOT_MAPPED, PROPERTIES_VERSION,

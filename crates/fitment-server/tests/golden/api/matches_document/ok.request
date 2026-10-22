@@ -1,0 +1,3 @@
+GET /v1/matches/j_00000000000000000000000009/document
+authorization: Bearer <ada's reader token>
+

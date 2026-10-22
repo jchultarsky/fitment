@@ -1,0 +1,5 @@
+POST /v1/sockets/sk_4c08cde1bddb3df26f3b/review
+authorization: Bearer <ada's reader token>
+content-type: application/json
+
+{"decisions": [{"requirement": "bore:hole-427", "status": "kept"}]}

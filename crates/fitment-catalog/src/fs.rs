@@ -67,6 +67,32 @@ pub trait FsRead: Send {
     ///
     /// The file system's.
     fn rewind(&mut self) -> io::Result<()>;
+
+    /// Goes to byte `at` of the file, on the same open file, so a reader
+    /// of a range (a match's candidate page, DC12) reads none of what lies
+    /// before it. This default goes back to the start and reads the bytes
+    /// up to `at`, dropping them; a file system that can seek does.
+    ///
+    /// # Errors
+    ///
+    /// The file system's; `UnexpectedEof` when the file ends before `at`.
+    fn seek_to(&mut self, at: u64) -> io::Result<()> {
+        self.rewind()?;
+        let mut buf = vec![0_u8; 64 * 1024];
+        let mut left = at;
+        while left > 0 {
+            let room = usize::try_from(left).unwrap_or(usize::MAX).min(buf.len());
+            let n = self.read_chunk(&mut buf[..room])?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "the file ends before the place sought",
+                ));
+            }
+            left -= u64::try_from(n).unwrap_or(left);
+        }
+        Ok(())
+    }
 }
 
 /// Every file operation the catalog makes.
@@ -276,6 +302,18 @@ impl FsRead for StdRead {
         self.left = self.cap;
         Ok(())
     }
+
+    fn seek_to(&mut self, at: u64) -> io::Result<()> {
+        if at > self.cap {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the place sought is past the file's cap",
+            ));
+        }
+        io::Seek::seek(&mut self.file, io::SeekFrom::Start(at))?;
+        self.left = self.cap - at;
+        Ok(())
+    }
 }
 
 impl Fs for StdFs {
@@ -434,6 +472,8 @@ mod support {
         ReadChunk(PathBuf, usize),
         /// A stream's `rewind`.
         Rewind(PathBuf),
+        /// A stream's `seek_to`, with the place sought.
+        Seek(PathBuf, u64),
         /// `remove_dir`.
         RemoveDir(PathBuf),
     }
@@ -560,6 +600,12 @@ mod support {
             let call = Call::Rewind(self.path.clone());
             let file = &mut self.file;
             self.inner.run(&call, || file.rewind())
+        }
+
+        fn seek_to(&mut self, at: u64) -> io::Result<()> {
+            let call = Call::Seek(self.path.clone(), at);
+            let file = &mut self.file;
+            self.inner.run(&call, || file.seek_to(at))
         }
     }
 

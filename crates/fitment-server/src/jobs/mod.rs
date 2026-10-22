@@ -14,7 +14,9 @@
 
 pub mod documents;
 pub(crate) mod events;
+pub(crate) mod matches;
 pub mod model;
+pub(crate) mod notes;
 pub mod request;
 pub(crate) mod run;
 mod scheduler;
@@ -113,7 +115,13 @@ pub struct Jobs {
     ended: Notify,
     retention_ms: i64,
     deadline_extract_ms: AtomicU64,
+    deadline_match_ms: AtomicU64,
     heartbeat_ms: AtomicU64,
+    /// JS1: a match's permits, `jobs.match_threads`.
+    match_threads: u32,
+    /// DC12, VT46: the match documents whose structure was scanned, once
+    /// each when stored, never for a page.
+    pub(crate) indexed: AtomicU64,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -153,7 +161,10 @@ impl Jobs {
             deadline_extract_ms: AtomicU64::new(
                 jobs.deadline_extract_minutes.saturating_mul(60_000),
             ),
+            deadline_match_ms: AtomicU64::new(jobs.deadline_match_minutes.saturating_mul(60_000)),
             heartbeat_ms: AtomicU64::new(15_000),
+            match_threads: jobs.match_threads.max(1),
+            indexed: AtomicU64::new(0),
         }
     }
 
@@ -168,14 +179,20 @@ impl Jobs {
             Kind::Features | Kind::AssemblyRead | Kind::SocketExtract | Kind::SocketImport => Some(
                 Duration::from_millis(self.deadline_extract_ms.load(Ordering::SeqCst).max(1)),
             ),
+            Kind::Match => Some(Duration::from_millis(
+                self.deadline_match_ms.load(Ordering::SeqCst).max(1),
+            )),
             _ => None,
         }
     }
 
-    /// OP11: the extraction kinds' deadline, shortened for a test (JB7).
+    /// OP11: the pure kinds' deadlines, the extractions' and the
+    /// matches', shortened for a test (JB7).
     #[cfg(feature = "test-support")]
     pub fn set_deadline(&self, deadline: Duration) {
         self.deadline_extract_ms
+            .store(millis(deadline), Ordering::SeqCst);
+        self.deadline_match_ms
             .store(millis(deadline), Ordering::SeqCst);
     }
 
@@ -201,8 +218,10 @@ impl Jobs {
     /// input's bytes: [`ESTIMATE_PER_BYTE`] times the file, in MiB; one
     /// above the budget waits for the whole of it and runs alone.
     pub(crate) fn entry(&self, row: &JobRow, input_bytes: u64) -> Entry {
+        let window = self.window(row);
         let estimate = input_bytes
             .saturating_mul(ESTIMATE_PER_BYTE)
+            .saturating_mul(u64::from(window))
             .div_ceil(MIB)
             .max(1);
         Entry {
@@ -210,11 +229,28 @@ impl Jobs {
             id: row.id.clone(),
             owner: row.owner,
             kind: row.kind,
-            cpu: 1,
+            cpu: window,
             memory_mib: u32::try_from(estimate)
                 .unwrap_or(u32::MAX)
                 .min(self.memory_total),
         }
+    }
+
+    /// JS1, JS2, JS7: a job's CPU permits, which a file match uses as its
+    /// window: `jobs.match_threads` for a match, but no more than its
+    /// candidates or the budget, and 1 for one candidate; 1 for any other
+    /// kind. Its memory estimate counts each file of the window (JS3).
+    pub(crate) fn window(&self, row: &JobRow) -> u32 {
+        if row.kind != Kind::Match {
+            return 1;
+        }
+        let candidates = serde_json::from_str::<request::MatchJob>(&row.request)
+            .map_or(1, |job| job.candidates());
+        let candidates = u32::try_from(candidates).unwrap_or(u32::MAX);
+        self.match_threads
+            .min(self.cpu_total)
+            .min(candidates)
+            .max(1)
     }
 
     /// JS5: reserves room in `lane` for one of `owner`'s jobs.
@@ -368,6 +404,12 @@ impl Jobs {
     /// The memory MiB free, of how many (JS3, OP6).
     pub fn memory_free(&self) -> (usize, u32) {
         (self.memory.available_permits(), self.memory_total)
+    }
+
+    /// OP11, VT46: how many match documents were scanned for their index.
+    #[cfg(feature = "test-support")]
+    pub fn documents_indexed(&self) -> u64 {
+        self.indexed.load(Ordering::SeqCst)
     }
 
     /// OP11: the live-event channels open, for the tests' leak checks.
@@ -745,6 +787,8 @@ mod tests {
             pinned: false,
             expires_ms: None,
             last_seq: 1,
+            index_sha256: None,
+            run: None,
         };
         assert_eq!(jobs.entry(&row(1), 0).memory_mib, 1);
         assert_eq!(jobs.entry(&row(1), 40_000).memory_mib, 1);
@@ -756,5 +800,80 @@ mod tests {
         );
         assert_eq!(jobs.entry(&row(1), MIB).cpu, 1);
         assert_eq!(jobs.memory_free(), (64, 64));
+    }
+
+    /// JS1, JS2, JS7: a match's window is its CPU permits: `match_threads`,
+    /// no more than its candidates or the budget, 1 for one candidate; its
+    /// memory estimate counts each file of the window.
+    #[test]
+    fn a_matchs_window_is_its_permits() {
+        let mut config = Config::default();
+        config.jobs.cpu = 8;
+        config.jobs.match_threads = 4;
+        let jobs = Jobs::new(&config);
+        let file = serde_json::json!({ "upload": "sha256:a", "label": "a" });
+        let row = |n: usize| {
+            let request = serde_json::json!({
+                "socket": "sk_x@r1", "socket_document": "sha256:b",
+                "files": vec![file.clone(); n], "components": [],
+                "policy": { "tolerance_mm": 0.01, "tolerance_deg": 0.01, "clearance": "strict" },
+                "options": { "require_fit": false, "require_reviewed": false, "require_reviewed_by": null },
+                "original": null });
+            crate::state::JobRow {
+                kind: Kind::Match,
+                request: request.to_string(),
+                ..sample_row()
+            }
+        };
+        assert_eq!(jobs.window(&row(1)), 1, "one candidate, one permit");
+        assert_eq!(jobs.window(&row(3)), 3);
+        assert_eq!(jobs.window(&row(40)), 4, "match_threads");
+        assert_eq!(jobs.entry(&row(40), 2 * MIB).cpu, 4);
+        assert_eq!(
+            jobs.entry(&row(40), 2 * MIB).memory_mib,
+            168,
+            "4 files of 21 times 2 MiB"
+        );
+        config.jobs.cpu = 2;
+        assert_eq!(Jobs::new(&config).window(&row(40)), 2, "the budget");
+        let features = crate::state::JobRow {
+            kind: Kind::Features,
+            ..sample_row()
+        };
+        assert_eq!(jobs.window(&features), 1);
+    }
+
+    fn sample_row() -> crate::state::JobRow {
+        crate::state::JobRow {
+            key: 1,
+            id: "j_1".into(),
+            owner: 1,
+            owner_id: "u_1".into(),
+            kind: Kind::Features,
+            state: State::Queued,
+            request: "{}".into(),
+            request_sha256: String::new(),
+            attempt: 1,
+            request_id: String::new(),
+            created_ms: 0,
+            started_ms: None,
+            finished_ms: None,
+            deadline_ms: None,
+            cancel_requested: false,
+            exit: None,
+            outcome: None,
+            error_code: None,
+            error_details: None,
+            result_sha256: None,
+            result_bytes: None,
+            result_format: None,
+            result: None,
+            notes: "[]".into(),
+            pinned: false,
+            expires_ms: None,
+            last_seq: 1,
+            index_sha256: None,
+            run: None,
+        }
     }
 }

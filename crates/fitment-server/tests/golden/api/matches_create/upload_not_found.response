@@ -1,0 +1,21 @@
+404
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:yQOCJJMU62s0/Fm1IGbMzS9+mxf2rrHY03mxWLqjEq4=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/upload_not_found",
+  "title": "The upload is not held",
+  "status": 404,
+  "detail": "no upload of these bytes is yours: upload them (PUT /v1/uploads/sha256:HEX)",
+  "code": "upload_not_found",
+  "class": "usage",
+  "exit_code": 1,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000008"
+}

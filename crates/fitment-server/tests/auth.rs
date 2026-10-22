@@ -83,6 +83,12 @@ struct Owned {
     job: String,
     /// A queued job, seeded: the cancel's target.
     queued: String,
+    /// The line's current revision, `sk_…@rN`: a review's target.
+    revision: String,
+    /// An upload of the line's document: an import's.
+    document: String,
+    /// A finished match over the user's upload (PR 6's routes).
+    matched: String,
 }
 
 /// Registers the two assemblies and extracts the line as `token`'s user.
@@ -119,12 +125,34 @@ async fn own(server: &TestServer, token: &str, user: i64) -> Owned {
         .unwrap()
         .to_owned();
     let _ = user;
+    let revision = href.trim_start_matches("/v1/sockets/").to_owned();
+    let document = server.send(Call::get(href).bearer(token)).await.body;
+    let reply = server
+        .send(support::put_upload(&document).bearer(token))
+        .await;
+    assert!(reply.status.is_success());
+    let candidate = support::candidate("m_block02.stp");
+    let reply = server
+        .send(support::put_upload(&candidate).bearer(token))
+        .await;
+    assert!(reply.status.is_success());
+    let body = json!({ "socket": revision, "candidates": { "files": [
+        { "upload": format!("sha256:{}", fitment_core::sha256_hex(&candidate)), "label": "m_block02.stp" }
+    ] } });
+    let matched = server
+        .send(support::waiting("/v1/matches", &body).bearer(token))
+        .await
+        .json();
+    assert_eq!(matched["state"], "succeeded", "{matched}");
     Owned {
         assembly: shas[0].clone(),
         spare: shas[1].clone(),
         line,
         job: job["id"].as_str().unwrap().to_owned(),
         queued: String::new(),
+        revision,
+        document: fitment_core::sha256_hex(&document),
+        matched: matched["id"].as_str().unwrap().to_owned(),
     }
 }
 
@@ -159,7 +187,10 @@ async fn seed_owned(world: &mut World) {
 
 /// True for an operation whose target is a PR 5 resource.
 fn needs_owned(op: &str) -> bool {
-    op.starts_with("assemblies_") || op.starts_with("sockets_") || op.starts_with("jobs_")
+    op.starts_with("assemblies_")
+        || op.starts_with("sockets_")
+        || op.starts_with("jobs_")
+        || op.starts_with("matches_")
 }
 
 fn world(passwords: bool) -> World {
@@ -320,11 +351,19 @@ fn owned_request(op: &Operation, world: &World, who: Who, owner: bool) -> Call {
                     }
                 ),
             )
-            .replace("{socket}", &o.line)
+            .replace(
+                "{socket}",
+                if op.id == "sockets_review" {
+                    &o.revision
+                } else {
+                    &o.line
+                },
+            )
             .replace(
                 "{id}",
                 match op.id {
                     "jobs_cancel" => &o.queued,
+                    id if id.starts_with("matches_") => &o.matched,
                     _ => &o.job,
                 },
             )
@@ -348,7 +387,30 @@ fn owned_request(op: &Operation, world: &World, who: Who, owner: bool) -> Call {
                 &json!({ "assembly": format!("sha256:{}", o.assembly), "part": "BLOCK" }),
             )
         }
-        "assemblies_list" | "sockets_list" | "jobs_list" => Call::get(op.path),
+        "sockets_import" => {
+            let o = mine.expect("seeded");
+            Call::json(
+                Method::POST,
+                op.path,
+                &json!({ "upload": format!("sha256:{}", o.document) }),
+            )
+        }
+        "sockets_review" => Call::json(
+            Method::POST,
+            &path(mine.expect("seeded")),
+            &json!({ "decisions": [{ "requirement": "bore:hole-427", "status": "kept" }] }),
+        ),
+        "matches_create" => {
+            let o = mine.expect("seeded");
+            Call::json(
+                Method::POST,
+                op.path,
+                &json!({ "socket": o.revision, "candidates": { "files": [
+                    { "upload": format!("sha256:{upload}"), "label": "matrix.stp" }
+                ] } }),
+            )
+        }
+        "assemblies_list" | "sockets_list" | "jobs_list" | "matches_list" => Call::get(op.path),
         "jobs_pin" => Call::json(
             Method::POST,
             &path(mine.expect("seeded")),

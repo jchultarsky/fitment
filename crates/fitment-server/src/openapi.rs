@@ -32,7 +32,10 @@ use crate::info::{INFO_FORMAT, INFO_FORMAT_VERSION, Info, api_version};
 use crate::jobs::documents::{
     EVENT_FORMAT, EventDocument, FORMAT_VERSION as JOB_FORMAT_VERSION, JOB_FORMAT, JobDocument,
 };
-use crate::jobs::request::{AssemblyRequest, FeaturesRequest, PinRequest, SocketRequest};
+use crate::jobs::request::{
+    AssemblyRequest, FeaturesRequest, ImportRequest, MatchRequest, PinRequest, ReviewRequest,
+    SocketRequest,
+};
 use crate::uploads::{UPLOAD_FORMAT, UPLOAD_FORMAT_VERSION, UPLOAD_TYPES, UploadDocument};
 
 /// The base of every schema's `$id`: `<base><format>/<version>`.
@@ -189,6 +192,14 @@ pub fn schemas() -> Map<String, Value> {
         ASSEMBLY_FORMAT,
         schema_of::<AssemblyDocument>(ASSEMBLY_FORMAT, ASSEMBLY_FORMAT_VERSION, false),
     );
+    add(
+        crate::runs::RUN_FORMAT,
+        schema_of::<crate::runs::RunDocument>(
+            crate::runs::RUN_FORMAT,
+            crate::runs::RUN_FORMAT_VERSION,
+            false,
+        ),
+    );
     schemas
 }
 
@@ -258,6 +269,24 @@ pub fn request_schemas() -> Map<String, Value> {
         "PinRequest",
         generator().into_root_schema_for::<PinRequest>().to_value(),
     );
+    add(
+        "ImportRequest",
+        generator()
+            .into_root_schema_for::<ImportRequest>()
+            .to_value(),
+    );
+    add(
+        "ReviewRequest",
+        generator()
+            .into_root_schema_for::<ReviewRequest>()
+            .to_value(),
+    );
+    add(
+        "MatchRequest",
+        generator()
+            .into_root_schema_for::<MatchRequest>()
+            .to_value(),
+    );
     schemas
 }
 
@@ -274,6 +303,8 @@ fn parameter(op: &str, name: &str) -> Value {
         "state" => "only jobs in this state (JB3)",
         "wait" => "seconds to wait for the job to end, at most limits.wait_max_seconds (JB11)",
         "assembly" => "only the lines of this assembly, sha256:HEX",
+        "socket" => "only the runs of this socket line, sk_…, or of one revision, sk_…@rN",
+        "offset" => "the index of the first candidate of the page, in the document's order (DC12)",
         _ => "",
     };
     json!({ "name": name, "in": "query", "required": false, "description": description,

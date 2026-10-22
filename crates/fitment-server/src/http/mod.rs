@@ -262,6 +262,42 @@ pub(crate) async fn blocking<T: Send + 'static>(
     }
 }
 
+/// OB3, DC12: a read of stored bytes (a document read whole or hashed
+/// before it streams, a candidate page) on the blocking pool behind one of
+/// `limits.read_concurrency` slots, owned by the read and moved into it,
+/// so a request dropped mid-read frees its slot only when the read ends.
+/// The wait for one is the parse slots' (half the handler's time); past
+/// it, `503 request_timeout` with `details.limit = "read_concurrency"`.
+/// Hook point (OP11): `stored.read`, inside the slot.
+///
+/// # Errors
+///
+/// `request_timeout`, or `work`'s.
+pub(crate) async fn stored<T: Send + 'static>(
+    shared: &Arc<Shared>,
+    work: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    let slots = Arc::clone(&shared.read_slots);
+    let slot = tokio::time::timeout(crate::gate::slot_wait(shared), slots.acquire_owned())
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                ErrorCode::RequestTimeout,
+                "the server is busy reading stored bytes: try again later",
+            )
+            .with("limit", "read_concurrency")
+        })?
+        .map_err(|_| ApiError::internal())?;
+    let hooked = Arc::clone(shared);
+    blocking(move || {
+        crate::jobs::run::hook(&hooked, "stored.read");
+        let result = work();
+        drop(slot);
+        result
+    })
+    .await
+}
+
 /// `500 io_error` for a `server.db` failure, logged, never sent (ER3).
 pub(crate) fn db_error(error: &crate::state::DbError) -> ApiError {
     tracing::error!(error = %error, "server.db failed");

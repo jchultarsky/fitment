@@ -72,3 +72,27 @@ async fn planted_leaks_in_the_log_are_found() {
         .expect("the line is logged");
     assert_eq!(scan::logs(line), Vec::<String>::new());
 }
+
+/// XH11's controls: the harness's checks on every response find a planted
+/// `fitment.match` the checker refuses and a planted `fitment.socket` that
+/// does not read back, so no test can forget them.
+#[tokio::test]
+async fn planted_documents_failing_their_checks_are_found() {
+    let server = TestServer::fresh();
+    let hooks = &server.server().seams().hooks;
+    let planted = [
+        r#"{"format": "fitment.match", "format_version": 1, "candidates": [{"verdict": "match"}]}"#,
+        r#"{"format": "fitment.socket", "format_version": 1}"#,
+    ];
+    for body in planted {
+        hooks.set("info", Action::Plant(body.to_owned()));
+        let mut reply = server.send_unchecked(Call::get("/v1/info")).await;
+        // As a document route would send it.
+        reply
+            .headers
+            .insert("content-type", support::value("application/json"));
+        let problems = scan::response(&reply, &server.dirs.roots());
+        assert!(!problems.is_empty(), "{body}: not caught");
+    }
+    hooks.clear("info");
+}

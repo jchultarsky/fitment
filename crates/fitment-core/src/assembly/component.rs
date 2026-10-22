@@ -1,0 +1,197 @@
+//! One component of an assembly, read and chosen as the socket extractor
+//! chooses its target (`docs/research/m6-api.md`, CO5): a caller names a
+//! leaf as `--part` and `--occurrence` name one, or a socket document names
+//! its own target, and gets the leaf's part in its own frame with the
+//! assembly's SHA-256 and the definition's `#id`, or why it cannot be read.
+//! The server judges a component through this alone, so it never selects
+//! or reads a part itself (SN1). An assembly is read once however many
+//! components are chosen from it ([`AssemblyComponents`]).
+
+use super::{AssemblyRead, ComponentRead, SelectError, read_assembly};
+use crate::features::Part;
+use crate::gate::Refusal;
+use crate::matching::CandidateSource;
+use crate::sha256::sha256_hex;
+use crate::socket::SocketDocument;
+
+/// An assembly read once, its SHA-256 beside it: every component a caller
+/// names in it is chosen from this one reading (CO5), so a thousand
+/// components of one assembly cost one read, not a thousand. The SHA-256
+/// is the bytes' own, so a component chosen from it names the file it
+/// came from.
+#[derive(Debug, Clone, PartialEq)]
+// The fields are private; the methods below read them.
+#[allow(clippy::exhaustive_structs)]
+pub struct AssemblyComponents {
+    assembly_sha256: String,
+    read: AssemblyRead,
+}
+
+impl AssemblyComponents {
+    /// `step` read as an assembly, its SHA-256 taken. Bytes in, values
+    /// out; the bytes are not kept.
+    pub fn read(step: &[u8]) -> Self {
+        Self {
+            assembly_sha256: sha256_hex(step),
+            read: read_assembly(step),
+        }
+    }
+
+    /// The assembly's SHA-256, hex.
+    pub fn sha256(&self) -> &str {
+        &self.assembly_sha256
+    }
+
+    /// The reading itself.
+    pub fn assembly(&self) -> &AssemblyRead {
+        &self.read
+    }
+}
+
+/// A leaf of an assembly, read as a part (CF1, CO5). The name
+/// `ComponentRead` is the listing's own reading of each definition. Its
+/// fields are private: one is made only by choosing it from an assembly's
+/// bytes, so its SHA-256, definition and part always agree, which
+/// `Matcher::judge_component` relies on.
+#[derive(Debug, Clone, PartialEq)]
+// The fields are private; the methods below read them.
+#[allow(clippy::exhaustive_structs)]
+pub struct SelectedComponent {
+    assembly_sha256: String,
+    definition: u64,
+    part: Box<Part>,
+}
+
+/// Why no component could be read.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ComponentError {
+    /// The selection names no part: a usage error, since the file was
+    /// read (T6).
+    #[error(transparent)]
+    Select(#[from] SelectError),
+    /// The assembly gate refuses the assembly, or the definition is no
+    /// canonical part: its refusals, sorted. Nothing is judged from a
+    /// partial reading.
+    #[error("the component cannot be read: {} refusals", .0.len())]
+    Refused(Vec<Refusal>),
+    /// No definition of the assembly is the one asked for: a socket's
+    /// target whose bytes are another file's, or a document that names
+    /// none.
+    #[error("the assembly holds no such definition")]
+    NotFound,
+}
+
+impl SelectedComponent {
+    /// The component `part` and `occurrence` name in `step`, chosen by the
+    /// code `SocketDocument::extract` chooses its target with (section 5),
+    /// the assembly gate's refusals kept. Bytes in, values out: one
+    /// [`AssemblyComponents::read`], then [`select`](Self::select).
+    ///
+    /// # Errors
+    ///
+    /// A [`ComponentError`]: the selection's, or the gate's refusals.
+    pub fn read(
+        step: &[u8],
+        part: Option<&str>,
+        occurrence: Option<&str>,
+    ) -> Result<Self, ComponentError> {
+        Self::select(&AssemblyComponents::read(step), part, occurrence)
+    }
+
+    /// The component `part` and `occurrence` name in an assembly already
+    /// read, as [`read`](Self::read) chooses it.
+    ///
+    /// # Errors
+    ///
+    /// A [`ComponentError`]: the selection's, or the gate's refusals.
+    pub fn select(
+        assembly: &AssemblyComponents,
+        part: Option<&str>,
+        occurrence: Option<&str>,
+    ) -> Result<Self, ComponentError> {
+        let read = &assembly.read;
+        let Some(listing) = read.listing() else {
+            return Err(ComponentError::Refused(read.refusals().to_vec()));
+        };
+        let selection = listing.select(part, occurrence)?;
+        if !read.gate_refusals().is_empty() {
+            return Err(ComponentError::Refused(read.gate_refusals().to_vec()));
+        }
+        let listed = listing
+            .definitions()
+            .get(selection.definition)
+            .ok_or(ComponentError::NotFound)?;
+        Self::of(assembly, listed.definition.instance, listed.read.as_ref())
+    }
+
+    /// The target `document` was extracted from, read from `step`, its
+    /// source (VD15's original): the definition the document names.
+    ///
+    /// # Errors
+    ///
+    /// [`ComponentError::NotFound`] when `step` is not the document's
+    /// source or the document names no target; the gate's refusals.
+    pub fn target(step: &[u8], document: &SocketDocument) -> Result<Self, ComponentError> {
+        let instance = document
+            .extracted()
+            .map(|e| e.target.definition.instance)
+            .ok_or(ComponentError::NotFound)?;
+        if sha256_hex(step) != document.source().sha256 {
+            return Err(ComponentError::NotFound);
+        }
+        let assembly = AssemblyComponents::read(step);
+        let read = &assembly.read;
+        let Some(listing) = read.listing() else {
+            return Err(ComponentError::Refused(read.refusals().to_vec()));
+        };
+        if !read.gate_refusals().is_empty() {
+            return Err(ComponentError::Refused(read.gate_refusals().to_vec()));
+        }
+        let listed = listing
+            .definitions()
+            .iter()
+            .find(|d| d.definition.instance == instance)
+            .ok_or(ComponentError::NotFound)?;
+        Self::of(&assembly, instance, listed.read.as_ref())
+    }
+
+    fn of(
+        assembly: &AssemblyComponents,
+        definition: u64,
+        read: Option<&ComponentRead>,
+    ) -> Result<Self, ComponentError> {
+        match read {
+            Some(ComponentRead::Accepted(part)) => Ok(Self {
+                assembly_sha256: assembly.assembly_sha256.clone(),
+                definition,
+                part: part.clone(),
+            }),
+            Some(ComponentRead::Refused(refusals)) => {
+                Err(ComponentError::Refused(refusals.clone()))
+            }
+            None => Err(ComponentError::NotFound),
+        }
+    }
+
+    /// The assembly's SHA-256, hex.
+    pub fn assembly_sha256(&self) -> &str {
+        &self.assembly_sha256
+    }
+
+    /// The definition's `#id`.
+    pub fn definition(&self) -> u64 {
+        self.definition
+    }
+
+    /// The part, in its own frame.
+    pub fn part(&self) -> &Part {
+        &self.part
+    }
+
+    /// Where it comes from (MF6's `source`): the assembly and the
+    /// definition.
+    pub fn source(&self) -> CandidateSource {
+        CandidateSource::component(self.assembly_sha256.clone(), self.definition)
+    }
+}

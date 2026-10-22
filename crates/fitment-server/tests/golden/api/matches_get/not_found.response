@@ -1,0 +1,21 @@
+404
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:N8//HLXgORCf7gVsAtyGZNufALc4qKgaanKhfMBPru4=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/not_found",
+  "title": "Nothing is here",
+  "status": 404,
+  "detail": "no match of that id is yours to see",
+  "code": "not_found",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

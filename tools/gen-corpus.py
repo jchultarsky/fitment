@@ -1321,7 +1321,8 @@ M6_PR5 = {
     "JB5": [f"{S_FAULT}::a_cancel_stops_a_job_where_it_may_stop", f"{S_HOST}::a_job_past_its_deadline_fails_with_no_document"],
     "JB6": [f"{S_FAULT}::a_start_settles_what_the_last_process_left",
             f"{S_FAULT}::an_abort_at_every_hook_point_leaves_each_job_ending_once",
-            f"{S_FAULT}::a_graceful_stop_queues_a_running_job_again"],
+            f"{S_FAULT}::a_graceful_stop_queues_a_running_job_again",
+            f"{S_FAULT}::a_job_killed_on_both_attempts_is_interrupted"],
     "JB7": [f"{S_HOST}::a_job_past_its_deadline_fails_with_no_document"],
     "JB8": [f"{S_API}::events_replay_then_follow_without_loss", f"{S_JOBS}/documents.rs::event_lines_are_one_compact_object",
             f"{S_JOBS}/events.rs::a_lagging_reader_is_told_and_goes_on"],
@@ -1391,6 +1392,86 @@ for rule, tests in M6_PR5.items():
     assert RULES[rule] == {"deferred": "M6 PR 5"}, rule
     RULES[rule] = {"tests": tests}
 assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 5"}], "a PR 5 rule is still deferred"
+# PR 6 builds review, import and matching through the API and the exit's file half (section 12, item 6): core's
+# run helpers, merged components and judge_component (CO2, CO3, CO5); ownership complete (AU8); socket documents
+# read as fitment match reads them (UP6) and the gate again at dispatch (JB2); notes (JB10); a file match's window
+# (JS7); parity, the policy, fitment.run and the candidates view (DC3, DC7, DC10, DC12); kept results, reviews by
+# revision, names, frozen inputs and verified imports (RA6 to RA10); soundness through the API (SN1 to SN9, SN11);
+# the exit's file half (XH1 to XH7, XH9 to XH11). HX8's parse slots and CU3's match half are built here too and
+# stay deferred with the halves PR 7 builds; XH12 is checked for matches and completes with PR 7's kinds.
+S_EXIT, S_LEAK6 = f"{SERVER}/tests/exit.rs", f"{SERVER}/tests/leaks.rs"
+CORE_CANDS = "crates/fitment-core/tests/candidates.rs"
+M6_PR6 = {
+    "CO2": [f"{M6_MATCHING}::exit_codes_are_the_clis", f"{S_PAR}::matches_are_the_clis",
+            f"{S_PAR}::originals_are_the_clis"],
+    "CO3": [f"{CORE_CANDS}::a_component_named_twice_is_one_entry", f"{S_PAR}::component_matches_are_the_librarys"],
+    "CO5": [f"{CORE_CANDS}::judge_component_is_judge_part_on_the_read_component",
+            f"{M6_MATCHING}::exit_codes_are_the_clis", f"{S_API}::a_component_of_a_refused_assembly_is_refused",
+            f"{S_API}::an_unreadable_original_is_run_incomplete", f"{S_PAR}::component_matches_are_the_librarys"],
+    "AU8": [f"{S_ISO}::a_non_owner_meets_404_everywhere",
+            f"{S_ISO}::an_admin_reads_another_users_work_and_names_none_of_it",
+            f"{S_ISO}::an_admin_reads_another_users_uploads_on_reads_only",
+            f"{S_AUTH}::every_operation_answers_each_principal_as_its_role_says",
+            f"{S_AUTH}::owners_and_admins_reach_other_users_tokens_as_au8_says"],
+    "UP6": [f"{S_HOST}::a_socket_document_past_its_cap_is_refused", f"{S_HOST}::socket_documents_parse_four_at_a_time",
+            f"{S_PAR}::an_uploaded_socket_is_read_as_the_cli_reads_it",
+            f"{S_EXIT}::the_socket_gate_refuses_through_the_api", f"{S_API}::imports_are_verified_or_marked"],
+    "JB2": [f"{S_PAR}::the_gate_is_checked_again_at_dispatch", f"{S_PAR}::matches_are_the_clis",
+            f"{S_PAR}::an_uploaded_socket_is_read_as_the_cli_reads_it",
+            f"{S_EXIT}::the_socket_gate_refuses_through_the_api", f"{S_API}::a_match_judges_the_revision_it_was_given"],
+    "JB10": [f"{S_PAR}::matches_are_the_clis", f"{S_PAR}::originals_are_the_clis", f"{S_PAR}::sockets_are_the_clis",
+             f"{S_PAR}::features_are_the_clis", f"{S_PAR}::parts_are_the_clis",
+             f"{S_PAR}::an_older_socket_carries_as_the_cli_carries_it"],
+    "JS7": [f"{S_JOBS}/mod.rs::a_matchs_window_is_its_permits", f"{S_FAULT}::a_cancelled_match_leaves_nothing",
+            f"{S_HOST}::a_match_past_its_deadline_fails_with_no_document", f"{S_EXIT}::the_exit_is_the_same_twice"],
+    "DC3": [f"{S_PAR}::matches_are_the_clis", f"{S_PAR}::component_matches_are_the_librarys",
+            f"{S_PAR}::reviews_are_the_clis", f"{S_EXIT}::the_corpus_passes_through_the_api"],
+    "DC7": [f"{S_PAR}::matches_are_the_clis", f"{S_EXIT}::the_corpus_passes_through_the_api",
+            f"{SERVER}/src/matching.rs::the_policy_is_the_clis"],
+    "DC10": [f"{S_API}::a_run_is_recorded_beside_its_document", f"{S_API}::an_unreadable_original_is_run_incomplete",
+             f"{S_FAULT}::no_job_that_did_not_succeed_states_a_verdict", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "DC12": [f"{S_API}::candidate_pages_are_the_documents_bytes", f"{SERVER}/src/runs.rs::the_index_slices_the_candidates",
+             f"{SERVER}/src/runs.rs::a_page_wraps_the_bytes", f"{S_FAULT}::no_job_that_did_not_succeed_states_a_verdict"],
+    "RA6": [f"{S_API}::a_cited_revision_outlives_its_line", f"{S_API}::a_retained_match_runs_again_on_its_own_bytes",
+            f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "RA7": [f"{S_API}::reviews_race_and_name_their_revision", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "RA8": [f"{S_HOST}::match_names_and_candidates_past_their_bounds_are_refused",
+            f"{S_API}::reviews_race_and_name_their_revision", f"{S_JOBS}/request.rs::names_follow_ra8"],
+    "RA9": [f"{S_API}::a_match_judges_the_revision_it_was_given", f"{S_API}::a_retained_match_runs_again_on_its_own_bytes"],
+    "RA10": [f"{S_API}::imports_are_verified_or_marked", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "SN1": [f"{S_PAR}::matches_are_the_clis", f"{S_PAR}::component_matches_are_the_librarys",
+            f"{S_LAY}::only_catalog_rs_names_the_catalog_crate", f"{S_EXIT}::the_corpus_passes_through_the_api"],
+    "SN2": [f"{S_PAR}::no_field_overrides_a_refusal", f"{S_PAR}::an_uploaded_socket_is_read_as_the_cli_reads_it"],
+    "SN3": [f"{S_API}::the_floor_tightens_and_is_recorded", f"{S_PAR}::the_gate_is_checked_again_at_dispatch",
+            f"{S_API}::a_stale_socket_is_refused_for_matching_and_review", f"{S_API}::imports_are_verified_or_marked"],
+    "SN4": [f"{S_FAULT}::no_job_that_did_not_succeed_states_a_verdict", f"{S_API}::a_run_is_recorded_beside_its_document"],
+    "SN5": [f"{S_API}::candidate_pages_are_the_documents_bytes", f"{S_PAR}::matches_are_the_clis"],
+    "SN6": [f"{S_API}::a_retained_match_runs_again_on_its_own_bytes", f"{S_API}::a_cited_revision_outlives_its_line",
+            f"{S_PAR}::an_uploaded_socket_is_read_as_the_cli_reads_it"],
+    "SN7": [f"{S_FAULT}::a_cancelled_match_leaves_nothing", f"{S_FAULT}::a_match_that_panics_fails_and_the_server_goes_on",
+            f"{S_HOST}::a_match_past_its_deadline_fails_with_no_document",
+            f"{S_FAULT}::no_job_that_did_not_succeed_states_a_verdict"],
+    "SN8": [f"{S_API}::a_run_is_recorded_beside_its_document", f"{S_PAR}::matches_are_the_clis"],
+    "SN9": [f"{S_PAR}::originals_are_the_clis", f"{S_API}::an_unreadable_original_is_run_incomplete",
+            f"{S_EXIT}::every_original_through_the_api", f"{S_GOLD}::the_apis_documents_are_their_goldens"],
+    "SN11": [f"{S_API}::the_fit_verifier_alone_makes_a_match", f"{S_LAY}::the_fit_verifier_is_held_send_and_sync"],
+    "XH1": [f"{S_EXIT}::the_corpus_passes_through_the_api", f"{S_EXIT}::the_socket_gate_refuses_through_the_api",
+            f"{S_EXIT}::review_waives_only_what_it_removes_through_the_api", f"{S_EXIT}::every_original_through_the_api"],
+    "XH2": [f"{S_EXIT}::the_corpus_passes_through_the_api"],
+    "XH3": [f"{S_EXIT}::the_corpus_passes_through_the_api"],
+    "XH4": [f"{S_EXIT}::the_corpus_passes_through_the_api", f"{S_PAR}::matches_are_the_clis"],
+    "XH5": [f"{S_EXIT}::the_corpus_passes_through_the_api"],
+    "XH6": [f"{S_EXIT}::the_corpus_passes_through_the_api"],
+    "XH7": [f"{S_EXIT}::the_corpus_passes_through_the_api", f"{S_PAR}::matches_are_the_clis",
+            f"{S_API}::the_fit_verifier_alone_makes_a_match"],
+    "XH9": [f"{S_EXIT}::the_exit_is_the_same_twice"],
+    "XH10": [f"{S_EXIT}::the_corpus_passes_through_the_api", f"{M6_SCORER}::a_required_corpus_must_be_there"],
+    "XH11": [f"{S_LEAK6}::planted_documents_failing_their_checks_are_found", f"{S_EXIT}::the_corpus_passes_through_the_api"],
+}
+for rule, tests in M6_PR6.items():
+    assert RULES[rule] == {"deferred": "M6 PR 6"}, rule
+    RULES[rule] = {"tests": tests}
+assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 6"}], "a PR 6 rule is still deferred"
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],

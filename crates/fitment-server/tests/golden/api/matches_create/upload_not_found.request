@@ -1,0 +1,8 @@
+POST /v1/matches
+authorization: Bearer <ada's reader token>
+content-type: application/json
+prefer: wait=30
+
+{"socket": "sk_4c08cde1bddb3df26f3b@r1", "candidates": {"files": [
+    {"upload": "sha256:1f021de7913c486df1f45d44bc6306c39f1b7374d9eccb818e27fbc6990db4ea", "label": "m_block02.stp"},
+    {"upload": "sha256:4f68da82466fb9b036f4773f9aeefa44a8abef375f45abf155b47f22f56ba6be", "label": "m_block02_cb_deep.stp"}]}}

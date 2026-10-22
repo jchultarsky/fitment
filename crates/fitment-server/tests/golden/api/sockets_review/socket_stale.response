@@ -1,0 +1,26 @@
+422
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:+j0vWYVWKxvz9XkUHbsryyZl+mTMQK6Ae+ZREnxIbvY=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/socket_stale",
+  "title": "The socket was read by older rules",
+  "status": 422,
+  "detail": "the socket was extracted with extractor 6 and socket rules 7; this build is 6 and 8: extract it again (POST /v1/sockets), which carries its decisions over",
+  "code": "socket_stale",
+  "class": "refused",
+  "exit_code": 3,
+  "retryable": false,
+  "details": {
+    "build_extractor_version": 6,
+    "build_socket_rules_version": 8,
+    "extractor_version": 6,
+    "socket_rules_version": 7
+  },
+  "request_id": "r_00000000000000000000000008"
+}

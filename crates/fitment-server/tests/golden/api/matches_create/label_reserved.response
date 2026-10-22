@@ -1,0 +1,21 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:4+fIDsgprsKUuCu6W7apvCAs+fiJQDCllr3wt5m288E=:
+x-request-id: r_00000000000000000000000008
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/label_reserved",
+  "title": "A label uses a reserved prefix",
+  "status": 400,
+  "detail": "a label starting catalog: names a catalog entry's revision",
+  "code": "label_reserved",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000008"
+}

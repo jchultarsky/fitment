@@ -52,6 +52,20 @@ pub enum Outcome {
     Reject,
 }
 
+impl Outcome {
+    /// VD14 (`docs/research/m6-api.md`, CO2): the exit code of a run that
+    /// ends with this outcome and no fitment bug: 0 for a `Match`, 4 for an
+    /// `InterfaceMatch`, 5 when every candidate is rejected. The CLI and
+    /// the server both take it from here (JB4).
+    pub fn exit_code(self) -> u8 {
+        match self {
+            Self::Match => 0,
+            Self::InterfaceMatch => 4,
+            Self::Reject => 5,
+        }
+    }
+}
+
 /// One run's result, ready to write.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -171,13 +185,18 @@ fn digest_of(document: &Document) -> String {
     format!("sha256:{}", crate::sha256_hex(value.to_string().as_bytes()))
 }
 
-/// Candidates of one SHA-256 merged, labels in order of appearance; then
-/// MF5's order: verdict, stage reached, failed checks, SHA-256.
+/// Candidates of one identity merged, labels in order of appearance: files
+/// by SHA-256 (MF3), components by their assembly's SHA-256 and their
+/// definition (`docs/research/m6-api.md`, CO3); then MF5's order: verdict,
+/// stage reached, failed checks, identity.
 fn merged(results: Vec<(CandidateResult, Vec<String>)>) -> Vec<(CandidateResult, Vec<String>)> {
     let mut out: Vec<(CandidateResult, Vec<String>)> = Vec::new();
     for (result, labels) in results {
-        let key = sha(&result);
-        match out.iter_mut().find(|(r, _)| key.is_some() && sha(r) == key) {
+        let key = merge_key(&result);
+        match out
+            .iter_mut()
+            .find(|(r, _)| key.is_some() && merge_key(r) == key)
+        {
             Some((_, seen)) => seen.extend(labels),
             None => out.push((result, labels)),
         }
@@ -186,9 +205,15 @@ fn merged(results: Vec<(CandidateResult, Vec<String>)>) -> Vec<(CandidateResult,
     out
 }
 
-fn sha(result: &CandidateResult) -> Option<String> {
+/// What two entries of one candidate share: a file's SHA-256, or a
+/// component's assembly and definition; a given part has none.
+fn merge_key(result: &CandidateResult) -> Option<String> {
     match &result.source {
-        super::CandidateSource::File(source) => Some(source.sha256.clone()),
+        super::CandidateSource::File(source) => Some(format!("file {}", source.sha256)),
+        super::CandidateSource::Component {
+            assembly_sha256,
+            definition,
+        } => Some(format!("component {assembly_sha256}#{definition}")),
         _ => None,
     }
 }

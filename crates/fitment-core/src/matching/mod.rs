@@ -28,7 +28,7 @@ pub use evidence::{
 pub use index::{Blocked, IndexSource, IndexTokens, PairToken, Posting, ShortlistIndex, level_one};
 pub use matcher::{
     Admitted, CandidateFlag, CandidateResult, CandidateSource, Chosen, Matcher, NotChecked,
-    NotCurrent, ReadFacts, SocketRefused, SocketResult, Stage,
+    NotCurrent, OriginalCheck, ReadFacts, SocketRefused, SocketResult, Stage,
 };
 pub use policy::{Clearance, Grip, MatchOptions, MatchPolicy};
 pub use shortlist::{Kept, Missing, MissingElement, shortlist};

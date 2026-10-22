@@ -13,10 +13,10 @@ use super::index::{Blocked, IndexSource, level_one};
 use super::shortlist::{Kept, Missing, shortlist};
 use super::verify::{Budget, check};
 use super::{CandidateView, MatchOptions, MatchPolicy, SocketSignature, SocketView};
-use crate::assembly::Source;
+use crate::assembly::{SelectedComponent, Source};
 use crate::features::{FeaturesDocument, Part, ProductRef, Status};
 use crate::fit::{FitRequest, FitStatus, FitVerifier, INTERFACE_REJECTED};
-use crate::gate::Refusal;
+use crate::gate::{Refusal, RefusalCode};
 use crate::geom::Rigid;
 use crate::socket::{Flag, Requirement, Requires, ReviewStatus, SocketDocument};
 use crate::verdict::{Check, RejectReason, RequirementId, Verdict, VerdictKind, combine, decide};
@@ -280,6 +280,97 @@ impl CandidateResult {
     pub fn stage(&self) -> Option<Stage> {
         self.sockets.iter().map(|s| s.stage).min()
     }
+
+    /// SL1 broken (M4-17): a socket the shortlist dropped whose every
+    /// check verification ran passes. Alignment and verification run
+    /// anyway, for the evidence, so the drop is a fitment bug.
+    pub fn shortlist_unsound(&self) -> bool {
+        self.sockets
+            .iter()
+            .any(|s| s.stage == Stage::Shortlist && s.checks.iter().all(|(_, c)| c.passed()))
+    }
+
+    /// M4-17, VD14 (`docs/research/m6-api.md`, CO2): this result is a
+    /// fitment bug, and the run exits 1: an internal refusal, or a pass
+    /// after a shortlist drop ([`Self::shortlist_unsound`]). The CLI and
+    /// the server both ask this, so their exit codes agree (JB4).
+    pub fn is_fitment_bug(&self) -> bool {
+        self.refusals
+            .iter()
+            .any(|r| r.code == RefusalCode::Internal)
+            || self.shortlist_unsound()
+    }
+
+    /// VD15 (CO2): the original's result read as its self-check: where it
+    /// fails beyond VD5 and VD6, if it does, and before that, where AL11's
+    /// bounds excuse its socket.
+    pub fn original_check(&self) -> OriginalCheck {
+        let mut exhausted = Vec::new();
+        for socket in &self.sockets {
+            let mut excused = false;
+            for (id, check) in &socket.checks {
+                if check.passed() {
+                    continue;
+                }
+                let codes: Vec<FailureCode> =
+                    check.evidence().failures().iter().map(|f| f.code).collect();
+                let at = format!("{}/{}", socket.socket, id.as_str());
+                let within = |allowed: &dyn Fn(&FailureCode) -> bool| {
+                    !codes.is_empty() && codes.iter().all(allowed)
+                };
+                if within(&|c| {
+                    matches!(
+                        c,
+                        FailureCode::AlignmentExhausted | FailureCode::CoverageExhausted
+                    )
+                }) {
+                    // AL11's bounds are no bug: the run names them (VR21).
+                    exhausted.push(at);
+                    excused = true;
+                } else if !within(&|c| {
+                    matches!(
+                        c,
+                        FailureCode::Unverifiable | FailureCode::FloorAboveTolerance
+                    )
+                }) {
+                    // A failure with no code is not one VD5 or VD6 explains.
+                    return OriginalCheck {
+                        exhausted,
+                        fails_at: Some(at),
+                    };
+                }
+            }
+            if socket.stage == Stage::Shortlist && !excused {
+                return OriginalCheck {
+                    exhausted,
+                    fails_at: Some(format!("{} (the shortlist dropped it)", socket.socket)),
+                };
+            }
+        }
+        OriginalCheck {
+            exhausted,
+            fails_at: None,
+        }
+    }
+
+    /// VD15 (CO2): the original fails its own socket beyond what VD5 and
+    /// VD6 explain, a fitment bug: the run exits 1, its evidence kept.
+    pub fn original_fails(&self) -> bool {
+        self.original_check().fails_at.is_some()
+    }
+}
+
+/// What VD15's self-check of the original found (CO2), in the order the
+/// CLI notes it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct OriginalCheck {
+    /// Each `socket/requirement` AL11's bounds stopped, which excuses its
+    /// socket: not checked, and no bug.
+    pub exhausted: Vec<String>,
+    /// Where it fails beyond VD5 and VD6: `socket/requirement`, or a
+    /// socket the shortlist dropped; `None` when it does not.
+    pub fails_at: Option<String>,
 }
 
 /// What a socket's judgment found, before its verdict.
@@ -544,6 +635,44 @@ impl<'a> Matcher<'a> {
     /// says where it came from.
     pub fn judge_part(&self, part: &Part, source: CandidateSource) -> CandidateResult {
         self.judge(part, source, None)
+    }
+
+    /// CO5 (`docs/research/m6-api.md`): a component of an assembly, read
+    /// and chosen by core ([`SelectedComponent::read`]), judged as
+    /// [`Matcher::judge_part`] judges its part. A `source` that is not
+    /// [`CandidateSource::Component`] of that same assembly and definition
+    /// is an internal refusal, a fitment bug (M4-17): a caller never names
+    /// a component as another.
+    pub fn judge_component(
+        &self,
+        component: &SelectedComponent,
+        source: CandidateSource,
+    ) -> CandidateResult {
+        let theirs = matches!(
+            &source,
+            CandidateSource::Component { assembly_sha256, definition }
+                if assembly_sha256 == component.assembly_sha256()
+                    && *definition == component.definition()
+        );
+        if theirs {
+            return self.judge(component.part(), source, None);
+        }
+        let refusals = vec![Refusal::new(
+            RefusalCode::Internal,
+            Some(component.definition()),
+            "a component was named as another candidate than itself",
+        )];
+        CandidateResult {
+            source,
+            product: component.part().definition.product.clone(),
+            status: Status::Refused,
+            verdict: Verdict::refused(refusals.iter().map(|r| r.code).collect()),
+            refusals,
+            read: None,
+            flags: self.review_flags(vec![CandidateFlag::MaterialNotCompared]),
+            warnings: Vec::new(),
+            sockets: Vec::new(),
+        }
     }
 
     fn judge(&self, part: &Part, source: CandidateSource, step: Option<&[u8]>) -> CandidateResult {
@@ -927,5 +1056,157 @@ impl<'a> Matcher<'a> {
                 (id, c)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check(codes: &[FailureCode]) -> Check {
+        let failures = codes
+            .iter()
+            .map(|code| Failure::new(*code, At::default(), "planted"))
+            .collect();
+        Check::of(Evidence::new(Vec::new(), Vec::new(), failures))
+    }
+
+    fn socket(name: &str, stage: Stage, checks: Vec<(&str, Check)>) -> SocketResult {
+        SocketResult {
+            socket: name.to_owned(),
+            stage,
+            verdict: Verdict::refused(Vec::new()),
+            placement: None,
+            chosen: Chosen::None,
+            u_mm: 0.0,
+            epsilon_mm: 0.0,
+            missing: Vec::new(),
+            checks: checks
+                .into_iter()
+                .map(|(id, c)| (RequirementId::new(id), c))
+                .collect(),
+            not_checked: Vec::new(),
+            placements: (0, false),
+        }
+    }
+
+    fn result(sockets: Vec<SocketResult>) -> CandidateResult {
+        CandidateResult {
+            source: CandidateSource::component("ab".repeat(32), 7),
+            product: None,
+            status: Status::Accepted,
+            refusals: Vec::new(),
+            read: None,
+            verdict: Verdict::refused(Vec::new()),
+            flags: Vec::new(),
+            warnings: Vec::new(),
+            sockets,
+        }
+    }
+
+    /// VD15 (CO2): a constructed original failing a requirement beyond VD5
+    /// and VD6 fails there; one VD5 or VD6 explains does not; a failure
+    /// with no code, or a socket the shortlist dropped, does.
+    #[test]
+    fn a_failing_original_names_where_it_fails() {
+        let v = Stage::Verification;
+        let fails = result(vec![socket(
+            "s1",
+            v,
+            vec![
+                ("bore:a", check(&[])),
+                ("bore:b", check(&[FailureCode::Unverifiable])),
+                (
+                    "bore:c",
+                    check(&[FailureCode::DiameterMin, FailureCode::Unverifiable]),
+                ),
+            ],
+        )]);
+        assert_eq!(
+            fails.original_check(),
+            OriginalCheck {
+                exhausted: Vec::new(),
+                fails_at: Some("s1/bore:c".into()),
+            }
+        );
+        assert!(fails.original_fails());
+        let explained = result(vec![socket(
+            "s1",
+            v,
+            vec![
+                ("bore:a", check(&[FailureCode::FloorAboveTolerance])),
+                ("bore:b", check(&[FailureCode::Unverifiable])),
+            ],
+        )]);
+        assert_eq!(explained.original_check(), OriginalCheck::default());
+        assert!(!explained.original_fails());
+        let uncoded = Check::Failed(Evidence::new(Vec::new(), Vec::new(), Vec::new()));
+        let bare = result(vec![socket("s1", v, vec![("seat:a", uncoded)])]);
+        assert_eq!(bare.original_check().fails_at.as_deref(), Some("s1/seat:a"));
+        let dropped = result(vec![socket(
+            "s2",
+            Stage::Shortlist,
+            vec![("bore:a", check(&[]))],
+        )]);
+        assert_eq!(
+            dropped.original_check().fails_at.as_deref(),
+            Some("s2 (the shortlist dropped it)")
+        );
+    }
+
+    /// VD15, AL11 (CO2): a constructed original whose search a bound
+    /// exhausted is not checked there and excuses its socket, a drop
+    /// included; a later socket's failure is still found, after the
+    /// exhausted ones in the order the CLI notes them.
+    #[test]
+    fn an_exhausted_original_is_excused_where_it_is_exhausted() {
+        let exhausted = result(vec![
+            socket(
+                "s1",
+                Stage::Shortlist,
+                vec![("bore:a", check(&[FailureCode::AlignmentExhausted]))],
+            ),
+            socket(
+                "s2",
+                Stage::Verification,
+                vec![(
+                    "bore:b",
+                    check(&[
+                        FailureCode::CoverageExhausted,
+                        FailureCode::AlignmentExhausted,
+                    ]),
+                )],
+            ),
+        ]);
+        assert_eq!(
+            exhausted.original_check(),
+            OriginalCheck {
+                exhausted: vec!["s1/bore:a".into(), "s2/bore:b".into()],
+                fails_at: None,
+            }
+        );
+        assert!(!exhausted.original_fails());
+        let then_fails = result(vec![
+            socket(
+                "s1",
+                Stage::Verification,
+                vec![("bore:a", check(&[FailureCode::AlignmentExhausted]))],
+            ),
+            socket(
+                "s2",
+                Stage::Verification,
+                vec![(
+                    "bore:b",
+                    check(&[FailureCode::AlignmentExhausted, FailureCode::AxisOffset]),
+                )],
+            ),
+        ]);
+        assert_eq!(
+            then_fails.original_check(),
+            OriginalCheck {
+                exhausted: vec!["s1/bore:a".into()],
+                fails_at: Some("s2/bore:b".into()),
+            }
+        );
     }
 }

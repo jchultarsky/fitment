@@ -132,3 +132,164 @@ fn every_committed_candidate_meets_its_construction() {
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
+
+/// The committed assemblies' targets, as the socket goldens name them.
+const TARGETS: [(&str, &str); 3] = [
+    ("s01_bolted", "BRACKET"),
+    ("s02_cbore", "BLOCK"),
+    ("s03_dowels", "PLATE"),
+];
+
+/// VT50, CO5 (`docs/research/m6-api.md`): a component read and chosen by
+/// core and judged by `judge_component` is `judge_part` on the part the
+/// listing reads for that selection, under both policies; a `source`
+/// naming another definition, or a file, is an internal refusal (a
+/// fitment bug); a selection that names nothing is the selection's error;
+/// the target a socket names reads as the component its part names.
+/// Core's tests read no files, so the corpus's component cases run in
+/// `crates/fitment/tests/matching.rs`.
+#[test]
+fn judge_component_is_judge_part_on_the_read_component() {
+    for (case, part) in TARGETS {
+        let bytes = assembly(case);
+        let document = SocketDocument::extract(bytes, Some(part), None).unwrap();
+        let component = fitment_core::SelectedComponent::read(bytes, Some(part), None).unwrap();
+        let target = fitment_core::SelectedComponent::target(bytes, &document).unwrap();
+        assert_eq!(component, target, "{case}");
+        let read = fitment_core::read_assembly(bytes);
+        let listing = read.listing().unwrap();
+        let selection = listing.select(Some(part), None).unwrap();
+        let listed = &listing.definitions()[selection.definition];
+        let Some(fitment_core::ComponentRead::Accepted(by_listing)) = &listed.read else {
+            panic!("{case}: the target is not read");
+        };
+        assert_eq!(component.definition(), listed.definition.instance);
+        for (name, policy) in policies() {
+            let matcher = Matcher::new(
+                &document,
+                policy,
+                MatchOptions::default(),
+                &fitment_core::NoFitVerifier,
+            )
+            .unwrap();
+            let judged = matcher.judge_component(&component, component.source());
+            let source = fitment_core::CandidateSource::component(
+                fitment_core::sha256_hex(bytes),
+                listed.definition.instance,
+            );
+            assert_eq!(
+                judged,
+                matcher.judge_part(by_listing, source),
+                "{case} {name}"
+            );
+            let other = fitment_core::CandidateSource::component(
+                component.assembly_sha256().to_owned(),
+                component.definition() + 1,
+            );
+            for wrong in [other, fitment_core::CandidateSource::Given] {
+                let refused = matcher.judge_component(&component, wrong);
+                assert_eq!(refused.status, fitment_core::Status::Refused, "{case}");
+                assert!(refused.is_fitment_bug(), "{case}: an internal refusal");
+            }
+        }
+    }
+    let bytes = assembly("s01_bolted");
+    assert!(matches!(
+        fitment_core::SelectedComponent::read(bytes, Some("NOPE"), None),
+        Err(fitment_core::ComponentError::Select(
+            fitment_core::SelectError::PartNotFound { .. }
+        ))
+    ));
+    let other = SocketDocument::extract(assembly("s02_cbore"), Some("BLOCK"), None).unwrap();
+    assert_eq!(
+        fitment_core::SelectedComponent::target(bytes, &other),
+        Err(fitment_core::ComponentError::NotFound),
+        "another file's socket names no target of this one"
+    );
+}
+
+/// VT37, CO3: a component named twice is one entry with both labels, in
+/// order of appearance, and the document is the same bytes whatever order
+/// the two come in but for that order of labels; its digest the same
+/// either way, and the same as one naming it once (MF7).
+#[test]
+fn a_component_named_twice_is_one_entry() {
+    let bytes = assembly("s01_bolted");
+    let document = SocketDocument::extract(bytes, Some("BRACKET"), None).unwrap();
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &fitment_core::NoFitVerifier,
+    )
+    .unwrap();
+    let component = fitment_core::SelectedComponent::read(bytes, Some("BRACKET"), None).unwrap();
+    let file = CANDIDATES[2].1;
+    let judged = matcher.judge_component(&component, component.source());
+    let run = |labels: [&str; 2]| {
+        let results = vec![
+            (judged.clone(), vec![labels[0].to_owned()]),
+            (matcher.judge_step(file), vec!["m_bracket.stp".to_owned()]),
+            (judged.clone(), vec![labels[1].to_owned()]),
+        ];
+        fitment_core::MatchDocument::new(&matcher, results)
+    };
+    let (ab, ba) = (run(["label-a", "label-b"]), run(["label-b", "label-a"]));
+    let doc: Value = serde_json::from_str(&ab.to_json()).unwrap();
+    let entries = doc["candidates"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "one entry per candidate");
+    assert_eq!(doc["summary"]["candidates"], 2);
+    let labels: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e["source"]["kind"] == "component")
+        .map(|e| &e["labels"])
+        .collect();
+    assert_eq!(labels, [&serde_json::json!(["label-a", "label-b"])]);
+    assert_eq!(ab.digest(), ba.digest());
+    let swapped = ba
+        .to_json()
+        .replace("label-b", "label-t")
+        .replace("label-a", "label-b")
+        .replace("label-t", "label-a");
+    assert_eq!(
+        ab.to_json(),
+        swapped,
+        "the same bytes but for the labels' order"
+    );
+    let once = fitment_core::MatchDocument::new(
+        &matcher,
+        vec![
+            (judged.clone(), vec!["label-a".to_owned()]),
+            (matcher.judge_step(file), vec!["m_bracket.stp".to_owned()]),
+        ],
+    );
+    assert_eq!(once.digest(), ab.digest());
+}
+
+/// CO5 (review of M6 PR 6): components chosen from one reading of an
+/// assembly are the components `read` chooses from its bytes, each
+/// naming the bytes' SHA-256; a selection's error and a refused
+/// assembly's are `read`'s too.
+#[test]
+fn components_chosen_from_one_reading_are_reads() {
+    let bytes = assembly("s01_bolted");
+    let once = fitment_core::AssemblyComponents::read(bytes);
+    assert_eq!(once.sha256(), fitment_core::sha256_hex(bytes));
+    for (part, occurrence) in [
+        (Some("BRACKET"), None),
+        (None, Some("#1")),
+        (Some("NO SUCH PART"), None),
+    ] {
+        let chosen = fitment_core::SelectedComponent::select(&once, part, occurrence);
+        let read = fitment_core::SelectedComponent::read(bytes, part, occurrence);
+        assert_eq!(chosen, read, "{part:?} {occurrence:?}");
+        if let Ok(component) = chosen {
+            assert_eq!(component.assembly_sha256(), once.sha256());
+        }
+    }
+    let refused = fitment_core::AssemblyComponents::read(b"no STEP file");
+    assert_eq!(
+        fitment_core::SelectedComponent::select(&refused, Some("BRACKET"), None),
+        fitment_core::SelectedComponent::read(b"no STEP file", Some("BRACKET"), None)
+    );
+}

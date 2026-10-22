@@ -30,7 +30,9 @@ fn file_in(dirs: &Dirs, name: &str, bytes: &[u8]) -> std::path::PathBuf {
     dir
 }
 
-/// Compares a finished job and its document with the CLI's run.
+/// Compares a finished job and its document with the CLI's run, and its
+/// notes with the CLI's stderr (JB10) unless the CLI listed a selection
+/// error's candidates there, which the job's error details hold.
 async fn same(
     server: &TestServer,
     what: &str,
@@ -40,6 +42,15 @@ async fn same(
 ) {
     let (code, stdout, stderr) = cli;
     let code = code.unwrap_or(-1);
+    let names: Vec<&str> = what.split_whitespace().take(1).collect();
+    let notes = !stderr.is_empty() || job["notes"].as_array().is_some_and(Vec::is_empty);
+    if code != 2 && notes && cli_notes(&stderr, &names) != api_notes(job) {
+        failures.push(format!(
+            "{what}: the notes {:?}, the CLI's stderr {:?}",
+            api_notes(job),
+            cli_notes(&stderr, &names)
+        ));
+    }
     if job["state"] != state_of(code) || job["exit_code"] != json!(code) {
         failures.push(format!(
             "{what}: the job {} exit {}, the CLI exit {code} ({stderr})",
@@ -224,8 +235,8 @@ async fn sockets_are_the_clis() {
 /// the CLI reviewed is the CLI's re-extraction onto that file, byte for
 /// byte; extracting again carries from the line's current revision and is
 /// `unchanged`; `carry: false` starts from the unreviewed document; a
-/// document of another file is `refused`, exit 2, `carry_from_foreign`, as
-/// the CLI refuses that OUT.
+/// document of another file is `422 carry_from_foreign` (exit 2), read at
+/// the request (HX8), as the CLI refuses that OUT.
 #[tokio::test]
 async fn carrying_is_the_clis() {
     let server = TestServer::fresh();
@@ -271,12 +282,13 @@ async fn carrying_is_the_clis() {
     let foreign = server.upload(&other).await;
     let body = json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK",
                        "carry_from": { "upload": format!("sha256:{foreign}") } });
-    let job = server.send(waiting("/v1/sockets", &body)).await.json();
+    // HX8 (PR 6): read at the request, before any job; the CLI's exit 2.
+    let reply = server.send(waiting("/v1/sockets", &body)).await;
     assert_eq!(
-        (job["state"].as_str(), job["exit_code"].as_u64()),
-        (Some("refused"), Some(2))
+        (reply.status.as_u16(), reply.code()),
+        (422, "carry_from_foreign".to_owned())
     );
-    assert_eq!(job["error"]["code"], "carry_from_foreign");
+    assert_eq!(reply.json()["exit_code"], 2);
 }
 
 /// MF11, review S12 of PR 5: a `carry_from` of the same file that names
@@ -406,4 +418,655 @@ async fn every_corpus_source_is_the_clis_through_jobs() {
     );
     assert!(files.len() >= 200 && sockets.len() >= 33);
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// JB10: the CLI's stderr lines as the job's notes state them: without
+/// `fitment: `, the names it ran on (`names`) and `warning: `, and with
+/// the CLI's hints replaced by the endpoints that do the same.
+fn cli_notes(stderr: &str, names: &[&str]) -> Vec<String> {
+    stderr
+        .lines()
+        .map(|line| {
+            let mut line = line.strip_prefix("fitment: ").unwrap_or(line).to_owned();
+            if let Some(name) = names.iter().find(|n| line.starts_with(&format!("{n}: "))) {
+                line = line[name.len() + 2..].to_owned();
+            }
+            let line = line.strip_prefix("warning: ").unwrap_or(&line).to_owned();
+            line.replace(
+                "(`fitment review --remove ID --note …`)",
+                "(POST /v1/sockets/{socket}/review)",
+            )
+            .replace("--require-fit:", "require_fit:")
+        })
+        .collect()
+}
+
+/// The messages of a job's notes, but the API's own (RA10's).
+fn api_notes(job: &Value) -> Vec<String> {
+    job["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["code"] != "unverified_socket")
+        .map(|n| n["message"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// The API's `policy` and `options` for the CLI's flags (DC7), and the
+/// flags' name for a failure.
+fn variants() -> Vec<(&'static str, Value, Vec<&'static str>)> {
+    vec![
+        ("default", json!({}), vec![]),
+        (
+            "functional",
+            json!({"policy": {"clearance": "functional"}}),
+            vec!["--clearance", "functional"],
+        ),
+        (
+            "strict",
+            json!({"policy": {"clearance": "strict"}}),
+            vec!["--clearance", "strict"],
+        ),
+        (
+            "0.05 mm",
+            json!({"policy": {"tolerance_mm": 0.05}}),
+            vec!["--tolerance-mm", "0.05"],
+        ),
+        (
+            "0.5 deg",
+            json!({"policy": {"tolerance_deg": 0.5}}),
+            vec!["--tolerance-deg", "0.5"],
+        ),
+        (
+            "require fit",
+            json!({"options": {"require_fit": true}}),
+            vec!["--require-fit"],
+        ),
+    ]
+}
+
+/// VT7's `match` row (DC1, DC3, DC7, JB4, JB10, XH7): `fitment match S
+/// FILE… --format json` with each of the CLI's policy and option flags, and
+/// the job `match` over the same uploads with the same labels and the
+/// request's fields for those flags: the document byte for byte, the
+/// state and exit code the CLI's exit code maps to, and the notes the
+/// CLI's stderr lines; `--require-reviewed` on an unreviewed socket is
+/// exit 3 with nothing printed, and `422 socket_unreviewed` before any job
+/// (JB2). On the committed candidates and assemblies, every OS.
+#[tokio::test]
+async fn matches_are_the_clis() {
+    let server = TestServer::fresh();
+    let dir = support::candidates_dir();
+    let mut failures = Vec::new();
+    let mut runs = 0;
+    for ((case, part), files) in support::candidates_by_socket() {
+        let socket = server.socket_of(&case, &part).await;
+        let doc = server.get(&format!("/v1/sockets/{socket}")).await.body;
+        let scratch = server.dirs.root.join("cli");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let socket_file = scratch.join(format!("{case}--{part}.json"));
+        std::fs::write(&socket_file, &doc).unwrap();
+        let socket_arg = socket_file.display().to_string();
+        let mut uploads = Vec::new();
+        for file in &files {
+            let sha = server.upload(&support::candidate(file)).await;
+            uploads.push(json!({"upload": format!("sha256:{sha}"), "label": file}));
+        }
+        let mut names: Vec<&str> = files.iter().map(String::as_str).collect();
+        names.push(&socket_arg);
+        for (what, extra, flags) in variants() {
+            let mut body = json!({"socket": socket, "candidates": {"files": uploads}});
+            for (key, value) in extra.as_object().unwrap() {
+                body[key] = value.clone();
+            }
+            let job = server.run_match(&body).await;
+            let mut args = vec!["match", socket_arg.as_str()];
+            args.extend(files.iter().map(String::as_str));
+            args.extend(["--format", "json"]);
+            args.extend(flags.iter().copied());
+            let run = cli(&dir, &args);
+            let what = format!("{case} {part} {what}");
+            let notes = (cli_notes(&run.2, &names), api_notes(&job));
+            if notes.0 != notes.1 {
+                failures.push(format!(
+                    "{what}: the notes {:?}, the CLI's {:?}",
+                    notes.1, notes.0
+                ));
+            }
+            let run = (run.0, run.1, String::new());
+            same(&server, &what, &job, run, &mut failures).await;
+            runs += 1;
+        }
+        let body = json!({"socket": socket, "candidates": {"files": uploads},
+                          "options": {"require_reviewed": true}});
+        let reply = server.send(waiting("/v1/matches", &body)).await;
+        assert_eq!(
+            (reply.status.as_u16(), reply.code()),
+            (422, "socket_unreviewed".to_owned())
+        );
+        let mut args = vec!["match", socket_arg.as_str()];
+        args.extend(files.iter().map(String::as_str));
+        args.extend(["--format", "json", "--require-reviewed"]);
+        let (code, stdout, _) = cli(&dir, &args);
+        assert_eq!((code, stdout.is_empty()), (Some(3), true), "{case} {part}");
+    }
+    assert!(runs >= 24, "{runs} runs");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The committed sockets the CLI's goldens name: (case, part).
+fn golden_targets() -> Vec<(String, String)> {
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment/tests/golden/socket");
+    let mut targets: Vec<(String, String)> = std::fs::read_dir(&golden)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter_map(|n| {
+            let (case, part) = n.strip_suffix(".json")?.split_once("--")?;
+            Some((case.to_owned(), part.to_owned()))
+        })
+        .collect();
+    targets.sort();
+    targets
+}
+
+/// VT7's `review` row (OB5, RA5, DC1): `fitment review FILE --keep A
+/// --socket S`, `--remove B --note T --socket S` and `--unreview A
+/// --socket S`, one run per decision, and one review of the three in that
+/// order, all or none: the same bytes, the new revision's; a decision
+/// naming no requirement is the CLI's exit 2 and `422
+/// review_unknown_requirement` with `exit_code` 2, nothing written.
+#[tokio::test]
+async fn reviews_are_the_clis() {
+    let server = TestServer::fresh();
+    let mut failures = Vec::new();
+    let mut reviewed = 0;
+    for (case, part) in golden_targets() {
+        let socket = server.socket_of(&case, &part).await;
+        let document = server.get(&format!("/v1/sockets/{socket}")).await.body;
+        let doc: Value = serde_json::from_slice(&document).unwrap();
+        let Some(first) = doc["extracted"]["sockets"][0].as_object() else {
+            continue;
+        };
+        let id = first["id"].as_str().unwrap();
+        let requirements: Vec<&str> = first["requirements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        if requirements.len() < 2 {
+            continue;
+        }
+        let (a, b) = (requirements[0], requirements[1]);
+        let dir = file_in(&server.dirs, "S.json", &document);
+        for args in [
+            vec!["--keep", a, "--socket", id],
+            vec!["--remove", b, "--note", "checked by hand", "--socket", id],
+            vec!["--unreview", a, "--socket", id],
+        ] {
+            let mut all = vec!["review", "S.json"];
+            all.extend(args);
+            assert_eq!(cli(&dir, &all).0, Some(0), "{case} {part}");
+        }
+        let expected = std::fs::read(dir.join("S.json")).unwrap();
+        let body = json!({ "decisions": [
+            { "requirement": a, "socket": id, "status": "kept" },
+            { "requirement": b, "socket": id, "status": "removed", "note": "checked by hand" },
+            { "requirement": a, "socket": id, "status": "unreviewed" } ] });
+        let reply = server
+            .send(support::Call::json(
+                axum::http::Method::POST,
+                &format!("/v1/sockets/{socket}/review"),
+                &body,
+            ))
+            .await;
+        assert_eq!(reply.status, 201, "{case} {part}");
+        if let Some(diff) =
+            fitment_corpus::parity::bytes(&format!("{case} {part}"), &expected, &reply.body)
+        {
+            failures.push(diff);
+        }
+        let current = reply
+            .header("location")
+            .unwrap()
+            .trim_start_matches("/v1/sockets/")
+            .to_owned();
+        let unknown = json!({ "decisions": [{ "requirement": "bore:nowhere", "status": "kept" }] });
+        let refused = server
+            .send(support::Call::json(
+                axum::http::Method::POST,
+                &format!("/v1/sockets/{current}/review"),
+                &unknown,
+            ))
+            .await;
+        assert_eq!(refused.code(), "review_unknown_requirement");
+        assert_eq!(refused.json()["exit_code"], 2);
+        let (code, _, _) = cli(&dir, &["review", "S.json", "--keep", "bore:nowhere"]);
+        assert_eq!(code, Some(2));
+        assert_eq!(
+            std::fs::read(dir.join("S.json")).unwrap(),
+            expected,
+            "nothing written"
+        );
+        reviewed += 1;
+    }
+    assert!(reviewed >= 5, "{reviewed} sockets reviewed");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// DC3, CO3, CO5, M6-5: component candidates have no CLI: the reference
+/// is the library's `MatchDocument` of `judge_component` with the labels
+/// the API used, byte for byte: each committed target as a component of
+/// its own assembly, another part of it, one named twice (one entry, both
+/// labels: CO3) and one by its occurrence, under the default label
+/// `component:<sha256, first 12>/#<n>` where none is given.
+#[tokio::test]
+async fn component_matches_are_the_librarys() {
+    use fitment_core::{
+        MatchDocument, MatchOptions, MatchPolicy, Matcher, NoFitVerifier, SelectedComponent,
+    };
+    let server = TestServer::fresh();
+    let mut failures = Vec::new();
+    for ((case, part), _) in support::candidates_by_socket() {
+        let socket = server.socket_of(&case, &part).await;
+        let text =
+            String::from_utf8(server.get(&format!("/v1/sockets/{socket}")).await.body).unwrap();
+        let document = fitment_core::SocketDocument::from_json(&text).unwrap();
+        let bytes = support::assembly(&format!("{case}.stp"));
+        let sha = fitment_core::sha256_hex(&bytes);
+        let occurrence = document.extracted().unwrap().occurrences[0]
+            .path
+            .iter()
+            .map(|n| format!("#{n}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        let asked = [
+            (Some(part.as_str()), None, Some("mine")),
+            (Some(part.as_str()), None, Some("again")),
+            (None, Some(occurrence.as_str()), None),
+        ];
+        let components: Vec<Value> = asked
+            .iter()
+            .map(|(p, o, l)| json!({ "assembly": format!("sha256:{sha}"), "part": p, "occurrence": o, "label": l }))
+            .collect();
+        let job = server
+            .run_match(&json!({ "socket": socket, "candidates": { "components": components } }))
+            .await;
+        let matcher = Matcher::new(
+            &document,
+            MatchPolicy::default(),
+            MatchOptions::default(),
+            &NoFitVerifier,
+        )
+        .unwrap();
+        let results = asked
+            .iter()
+            .map(|(p, o, l)| {
+                let component = SelectedComponent::read(&bytes, *p, *o).unwrap();
+                let label = l.map_or_else(
+                    || format!("component:{}/#{}", &sha[..12], component.definition()),
+                    str::to_owned,
+                );
+                (
+                    matcher.judge_component(&component, component.source()),
+                    vec![label],
+                )
+            })
+            .collect();
+        let expected = MatchDocument::new(&matcher, results).to_json();
+        let doc: Value = serde_json::from_str(&expected).unwrap();
+        assert_eq!(
+            doc["summary"]["candidates"], 1,
+            "one component, one entry (CO3)"
+        );
+        let got = server.document(&job).await.body;
+        if let Some(diff) =
+            fitment_corpus::parity::bytes(&format!("{case} {part}"), expected.as_bytes(), &got)
+        {
+            failures.push(diff);
+        }
+        let exit = fitment_corpus::parity::exit_code(
+            "succeeded",
+            Some(fitment_corpus::parity::outcome_of(&doc)),
+        );
+        assert_eq!(
+            job["exit_code"].as_i64(),
+            exit.map(i64::from),
+            "{case} {part}: JB4"
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// VT7's `--original` row (VD15, SN9): `fitment match S FILE… --original
+/// ASM --format json` and a match with `original: true` over the same
+/// uploads: the same bytes, state, exit code and notes.
+#[tokio::test]
+async fn originals_are_the_clis() {
+    let server = TestServer::fresh();
+    let dir = support::candidates_dir();
+    let mut failures = Vec::new();
+    for ((case, part), files) in support::candidates_by_socket() {
+        let socket = server.socket_of(&case, &part).await;
+        let doc = server.get(&format!("/v1/sockets/{socket}")).await.body;
+        let scratch = server.dirs.root.join("original");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let socket_file = scratch.join("S.json");
+        std::fs::write(&socket_file, &doc).unwrap();
+        let assembly_file = scratch.join(format!("{case}.stp"));
+        std::fs::write(&assembly_file, support::assembly(&format!("{case}.stp"))).unwrap();
+        let mut uploads = Vec::new();
+        for file in &files {
+            let sha = server.upload(&support::candidate(file)).await;
+            uploads.push(json!({"upload": format!("sha256:{sha}"), "label": file}));
+        }
+        let job = server
+            .run_match(
+                &json!({"socket": socket, "candidates": {"files": uploads}, "original": true}),
+            )
+            .await;
+        let (socket_arg, original_arg) = (
+            socket_file.display().to_string(),
+            assembly_file.display().to_string(),
+        );
+        let mut args = vec!["match", socket_arg.as_str()];
+        args.extend(files.iter().map(String::as_str));
+        args.extend(["--original", original_arg.as_str(), "--format", "json"]);
+        let run = cli(&dir, &args);
+        let mut names: Vec<&str> = files.iter().map(String::as_str).collect();
+        names.extend([socket_arg.as_str(), original_arg.as_str(), "original"]);
+        let notes = (cli_notes(&run.2, &names), api_notes(&job));
+        if notes.0 != notes.1 {
+            failures.push(format!(
+                "{case} {part}: the notes {:?}, the CLI's {:?}",
+                notes.1, notes.0
+            ));
+        }
+        let run = (run.0, run.1, String::new());
+        same(
+            &server,
+            &format!("{case} {part} original"),
+            &job,
+            run,
+            &mut failures,
+        )
+        .await;
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// VT7's MF11 row: `fitment socket FILE --part P -o OUT` onto an OUT of
+/// older socket rules the CLI reviewed, and an extraction whose
+/// `carry_from` is that file uploaded, read leniently: the same bytes,
+/// the decisions carried, and the same carry line in the notes.
+#[tokio::test]
+async fn an_older_socket_carries_as_the_cli_carries_it() {
+    let server = TestServer::fresh();
+    let name = "s02_cbore.stp";
+    let bytes = support::assembly(name);
+    let dir = file_in(&server.dirs, name, &bytes);
+    assert_eq!(
+        cli(&dir, &["socket", name, "--part", "BLOCK", "-o", "OUT.json"]).0,
+        Some(0)
+    );
+    let review = cli(&dir, &["review", "OUT.json", "--keep", "bore:hole-427"]);
+    assert_eq!(review.0, Some(0), "{}", review.2);
+    let mut older: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("OUT.json")).unwrap()).unwrap();
+    older["socket_rules_version"] = json!(fitment_core::SOCKET_RULES_VERSION - 1);
+    let mut stated = older.clone();
+    for key in ["digest", "review", "stale_reviews"] {
+        stated.as_object_mut().unwrap().remove(key);
+    }
+    older["digest"] = json!(format!(
+        "sha256:{}",
+        fitment_core::sha256_hex(stated.to_string().as_bytes())
+    ));
+    let older = serde_json::to_vec_pretty(&older).unwrap();
+    std::fs::write(dir.join("OUT.json"), &older).unwrap();
+    let run = cli(&dir, &["socket", name, "--part", "BLOCK", "-o", "OUT.json"]);
+    assert_eq!(run.0, Some(0), "{}", run.2);
+    let carried = std::fs::read(dir.join("OUT.json")).unwrap();
+    server.register(&bytes, name).await;
+    let upload = server.upload(&older).await;
+    let sha = fitment_core::sha256_hex(&bytes);
+    let body = json!({ "assembly": format!("sha256:{sha}"), "part": "BLOCK",
+                       "carry_from": { "upload": format!("sha256:{upload}") } });
+    let job = server.send(waiting("/v1/sockets", &body)).await.json();
+    assert_eq!(job["state"], "succeeded", "{job}");
+    let document = server.document(&job).await.body;
+    assert!(fitment_corpus::parity::bytes("carried", &carried, &document).is_none());
+    assert_eq!(cli_notes(&run.2, &[name, "OUT.json"]), api_notes(&job));
+    assert_eq!(job["notes"][0]["code"], "carried_over");
+}
+
+/// JB2: the gate again at dispatch: a match queued, then the build's
+/// socket rules raised (as a restart into an upgraded build does) ends
+/// `refused`, exit 3, `socket_stale`, before any candidate is read (its
+/// one candidate's stored bytes are damaged, which a read would fail on);
+/// one queued on an unreviewed socket before a restart that sets the
+/// `require_reviewed` floor ends `refused`, `socket_unreviewed`. Neither
+/// states a verdict.
+#[tokio::test]
+async fn the_gate_is_checked_again_at_dispatch() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s02_cbore", "BLOCK").await;
+    let candidate = support::candidate("m_block02.stp");
+    let sha = server.upload(&candidate).await;
+    let body = json!({ "socket": socket, "candidates": { "files": [
+        { "upload": format!("sha256:{sha}"), "label": "m_block02.stp" } ] } });
+    server.server().hold_jobs();
+    let queued = server
+        .send(support::Call::json(
+            axum::http::Method::POST,
+            "/v1/matches",
+            &body,
+        ))
+        .await
+        .json();
+    let path = server
+        .dirs
+        .state
+        .join(format!("objects/sha256/{}/{sha}", &sha[..2]));
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&path, perms.clone()).unwrap();
+    std::fs::write(&path, b"damaged").unwrap();
+    server.server().set_rules_shift(1);
+    server.server().resume_jobs();
+    let id = queued["id"].as_str().unwrap();
+    let job = server
+        .finished_job(id, std::time::Duration::from_secs(60))
+        .await;
+    assert_eq!(
+        (
+            job["state"].as_str(),
+            job["exit_code"].as_u64(),
+            job["error"]["code"].as_str()
+        ),
+        (Some("refused"), Some(3), Some("socket_stale")),
+        "{job}"
+    );
+    assert!(job["document"].is_null() && job["outcome"].is_null());
+    std::fs::write(&path, &candidate).unwrap();
+    server.server().set_rules_shift(0);
+    server.server().hold_jobs();
+    let queued = server
+        .send(support::Call::json(
+            axum::http::Method::POST,
+            "/v1/matches",
+            &body,
+        ))
+        .await
+        .json();
+    let mut config = server.dirs.config();
+    config.matching.require_reviewed_floor = true;
+    let server = server.restart(config);
+    let id = queued["id"].as_str().unwrap();
+    let job = server
+        .finished_job(id, std::time::Duration::from_secs(60))
+        .await;
+    assert_eq!(
+        (
+            job["state"].as_str(),
+            job["exit_code"].as_u64(),
+            job["error"]["code"].as_str()
+        ),
+        (Some("refused"), Some(3), Some("socket_unreviewed")),
+        "{job}"
+    );
+    assert!(job["outcome"].is_null());
+}
+
+/// `file` with a second `socket_rules_version` of `rules` as its last key.
+fn duplicated(file: &[u8], rules: u32) -> Vec<u8> {
+    let text = std::str::from_utf8(file).unwrap().trim_end();
+    let body = text.strip_suffix('}').unwrap().trim_end();
+    format!("{body},\n  \"socket_rules_version\": {rules}\n}}\n").into_bytes()
+}
+
+/// UP6, JB2, VD9: an uploaded socket document is read as `fitment match`
+/// reads a socket file: stale, its digest broken, refused, not JSON, not
+/// UTF-8, an array, a duplicated version key, and unreviewed under
+/// `require_reviewed`, each refused before any job with the CLI's exit
+/// code 3 (nothing on its stdout), stale on both sides or on neither; the
+/// file itself, uploaded, gives the CLI's document.
+#[tokio::test]
+async fn an_uploaded_socket_is_read_as_the_cli_reads_it() {
+    let server = TestServer::fresh();
+    let file = support::cli_golden("socket", "s01_bolted--BRACKET.json");
+    let candidate = support::candidate("m_bracket.stp");
+    let candidate_sha = server.upload(&candidate).await;
+    let edited = |edit: &dyn Fn(&mut Value)| {
+        let mut doc: Value = serde_json::from_slice(&file).unwrap();
+        edit(&mut doc);
+        serde_json::to_vec_pretty(&doc).unwrap()
+    };
+    let refused = fitment_core::SocketDocument::extract(b"no STEP file", Some("X"), None)
+        .unwrap()
+        .to_json();
+    let cases: Vec<(&str, Vec<u8>, bool, &str)> = vec![
+        (
+            "stale",
+            edited(&|d| d["socket_rules_version"] = json!(fitment_core::SOCKET_RULES_VERSION - 1)),
+            false,
+            "socket_stale",
+        ),
+        (
+            "digest",
+            edited(&|d| d["extracted"]["sockets"][0]["requirements"][0]["floor_mm"] = json!(0.5)),
+            false,
+            "socket_unreadable",
+        ),
+        ("refused", refused.into_bytes(), false, "socket_refused"),
+        (
+            "not utf-8",
+            b"\xff\xfe not a document".to_vec(),
+            false,
+            "socket_unreadable",
+        ),
+        (
+            "not json",
+            b"{ this is not JSON".to_vec(),
+            false,
+            "socket_unreadable",
+        ),
+        ("unreviewed", file.clone(), true, "socket_unreviewed"),
+        // CO2: the versions read by one core helper on both sides: an
+        // array states none, and of a duplicated key the last counts.
+        ("an array", b"[6, 6]".to_vec(), false, "socket_unreadable"),
+        (
+            "a duplicated key",
+            duplicated(&file, fitment_core::SOCKET_RULES_VERSION - 1),
+            false,
+            "socket_stale",
+        ),
+        (
+            "a duplicated key, current last",
+            duplicated(&file, fitment_core::SOCKET_RULES_VERSION),
+            false,
+            "socket_unreadable",
+        ),
+        // SN6: a report is never input: a match document is no socket.
+        (
+            "a match document",
+            support::cli_golden("match", "s01_bolted--BRACKET.json"),
+            false,
+            "socket_unreadable",
+        ),
+    ];
+    let dir = file_in(&server.dirs, "m_bracket.stp", &candidate);
+    for (what, bytes, reviewed, code) in cases {
+        let sha = server.upload(&bytes).await;
+        let body = json!({ "socket": { "upload": format!("sha256:{sha}") },
+                           "options": { "require_reviewed": reviewed },
+                           "candidates": { "files": [
+                               { "upload": format!("sha256:{candidate_sha}"), "label": "m_bracket.stp" } ] } });
+        let reply = server.send(waiting("/v1/matches", &body)).await;
+        assert_eq!(
+            (reply.status.as_u16(), reply.code().as_str()),
+            (422, code),
+            "{what}"
+        );
+        assert_eq!(reply.json()["exit_code"], 3, "{what}");
+        std::fs::write(dir.join("S.json"), &bytes).unwrap();
+        let mut args = vec!["match", "S.json", "m_bracket.stp", "--format", "json"];
+        if reviewed {
+            args.push("--require-reviewed");
+        }
+        let (exit, stdout, stderr) = cli(&dir, &args);
+        // Bytes that are not UTF-8 are no socket document to either (exit
+        // 3); the CLI names staleness exactly where the API does.
+        assert_eq!((exit, stdout.is_empty()), (Some(3), true), "{what}");
+        assert_eq!(
+            stderr.contains("extract it again"),
+            code == "socket_stale",
+            "{what}: {stderr}"
+        );
+    }
+    let sha = server.upload(&file).await;
+    let body = json!({ "socket": { "upload": format!("sha256:{sha}") },
+                       "candidates": { "files": [
+                           { "upload": format!("sha256:{candidate_sha}"), "label": "m_bracket.stp" } ] } });
+    let job = server.run_match(&body).await;
+    std::fs::write(dir.join("S.json"), &file).unwrap();
+    let run = cli(
+        &dir,
+        &["match", "S.json", "m_bracket.stp", "--format", "json"],
+    );
+    let mut failures = Vec::new();
+    let run = (run.0, run.1, String::new());
+    same(&server, "uploaded socket", &job, run, &mut failures).await;
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// SN2: no request field overrides a refusal: `force`, `skip_stale` or
+/// `audit` anywhere is `400 bad_request` (VN6's unknown fields), as the
+/// CLI has no such flag; a stale socket stays refused whatever else the
+/// request says.
+#[tokio::test]
+async fn no_field_overrides_a_refusal() {
+    let server = TestServer::fresh();
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let sha = server.upload(&support::candidate("m_bracket.stp")).await;
+    let files = json!([{ "upload": format!("sha256:{sha}"), "label": "m_bracket.stp" }]);
+    for body in [
+        json!({ "socket": socket, "candidates": { "files": files }, "force": true }),
+        json!({ "socket": socket, "candidates": { "files": files }, "options": { "skip_stale": true } }),
+        json!({ "socket": socket, "candidates": { "files": files }, "policy": { "audit": true } }),
+        json!({ "socket": socket, "candidates": { "files": files, "force": true } }),
+    ] {
+        let reply = server.send(waiting("/v1/matches", &body)).await;
+        assert_eq!(
+            (reply.status.as_u16(), reply.code()),
+            (400, "bad_request".to_owned()),
+            "{body}"
+        );
+    }
+    server.server().set_rules_shift(1);
+    let body = json!({ "socket": socket, "candidates": { "files": files },
+                       "options": { "require_reviewed": false, "require_fit": false } });
+    let reply = server.send(waiting("/v1/matches", &body)).await;
+    assert_eq!(reply.code(), "socket_stale");
 }

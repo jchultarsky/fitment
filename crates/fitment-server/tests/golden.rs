@@ -50,8 +50,10 @@ const HEADERS: [&str; 14] = [
     "content-location",
 ];
 
-/// What a scenario does to a fresh server before its request.
+/// What a scenario does to a fresh server before its request; PR 6's
+/// from `Reviewed` on.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 enum Setup {
     None,
     /// The catalog's marker removed: `catalog_unavailable`.
@@ -113,6 +115,32 @@ enum Setup {
     JobPanic,
     /// As `Queued`, one stream a user at most, and one open.
     Streaming,
+    /// As `Extracted`, and `@r1` reviewed: `@r2` is current.
+    Reviewed,
+    /// `ada` registered `s03_dowels.stp` and extracted `DOWEL`, whose
+    /// sockets hold one shaft each that differs between them.
+    Dowels,
+    /// As `Extracted`, and a refused socket document seeded as `@r2`.
+    RefusedRevision,
+    /// As `Extracted`, the build's socket rules raised by one (VT32).
+    Shifted,
+    /// `ada` holds an upload of the CLI's `s02_cbore--BLOCK.json` and not
+    /// its assembly.
+    Document,
+    /// `ada` holds an upload of that document, its socket rules one older.
+    StaleDocument,
+    /// `ada` holds an upload of that document, a value edited.
+    BrokenDocument,
+    /// `ada` holds an upload of a refused socket document.
+    RefusedDocument,
+    /// As `Registered`, and `ada` holds an upload of the CLI's
+    /// `s01_bolted--BRACKET.json`.
+    Foreign,
+    /// As `Extracted`, and `ada` holds uploads of `m_block02.stp` and
+    /// `m_block02_cb_deep.stp`.
+    Candidates,
+    /// As `Candidates`, and a match over both finished.
+    Matched,
 }
 
 /// The bytes of the upload goldens; their SHA-256s are in the paths.
@@ -193,13 +221,18 @@ const SAME_STEP: &[(&str, &str)] = &[(
 const SAME_JOB: &[(&str, &str)] = &[("if-none-match", "W/\"j4.succeeded\"")];
 const TEXT: &[(&str, &str)] = &[("content-type", "text/plain")];
 
+/// The candidates of the match scenarios, by their SHA-256s.
+const MATCH_BODY: &[u8] = br#"{"socket": "sk_4c08cde1bddb3df26f3b@r1", "candidates": {"files": [
+    {"upload": "sha256:1f021de7913c486df1f45d44bc6306c39f1b7374d9eccb818e27fbc6990db4ea", "label": "m_block02.stp"},
+    {"upload": "sha256:4f68da82466fb9b036f4773f9aeefa44a8abef375f45abf155b47f22f56ba6be", "label": "m_block02_cb_deep.stp"}]}}"#;
+
 use Principal as P;
 use Setup as S;
 
 /// Every scenario: at least one per operation of `OPERATIONS` (XH14), and
 /// one per error code a request can reach in this build.
 #[rustfmt::skip]
-const SCENARIOS: [Scenario; 100] = [
+const SCENARIOS: [Scenario; 126] = [
     scenario("health", "ok", S::None, P::None, Method::GET, "/v1/health", &[], b""),
     scenario("ready", "ok", S::None, P::None, Method::GET, "/v1/ready", &[], b""),
     scenario("ready", "catalog_unavailable", S::NoCatalog, P::None, Method::GET, "/v1/ready", &[], b""),
@@ -374,6 +407,71 @@ const SCENARIOS: [Scenario; 100] = [
         "/v1/jobs/{job}", &[], b""),
     scenario("jobs_delete", "job_not_finished", S::Queued, P::Admin, Method::DELETE,
         "/v1/jobs/{job}", &[], b""),
+    scenario("sockets_create", "carry_from_foreign", S::Foreign, P::Reader, Method::POST, "/v1/sockets", WAIT,
+        br#"{"assembly": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a", "part": "BLOCK",
+             "carry_from": {"upload": "sha256:fb29f29e08eebf6e6da8e3b9beddcdd94d9fbd82879c7f6b5b3ddb0871d75872"}}"#),
+    scenario("sockets_review", "created", S::Extracted, P::Reader, Method::POST,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b@r1/review", JSON,
+        br#"{"decisions": [{"requirement": "bore:hole-427", "status": "kept"}]}"#),
+    scenario("sockets_review", "revision_required", S::Extracted, P::Reader, Method::POST,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b/review", JSON,
+        br#"{"decisions": [{"requirement": "bore:hole-427", "status": "kept"}]}"#),
+    scenario("sockets_review", "revision_not_current", S::Reviewed, P::Reader, Method::POST,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b@r1/review", JSON,
+        br#"{"decisions": [{"requirement": "bore:hole-427", "status": "unreviewed"}]}"#),
+    scenario("sockets_review", "review_unknown_requirement", S::Extracted, P::Reader, Method::POST,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b@r1/review", JSON,
+        br#"{"decisions": [{"requirement": "bore:hole-1", "status": "kept"}]}"#),
+    scenario("sockets_review", "review_unknown_socket", S::Extracted, P::Reader, Method::POST,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b@r1/review", JSON,
+        br#"{"decisions": [{"requirement": "bore:hole-427", "socket": "socket-9", "status": "kept"}]}"#),
+    scenario("sockets_review", "review_note_required", S::Extracted, P::Reader, Method::POST,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b@r1/review", JSON,
+        br#"{"decisions": [{"requirement": "bore:hole-427", "status": "removed"}]}"#),
+    scenario("sockets_review", "review_note_too_long", S::Extracted, P::Reader, Method::POST,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b@r1/review", JSON,
+        br#"{"decisions": [{"requirement": "bore:hole-427", "status": "removed", "note": "{long}"}]}"#),
+    scenario("sockets_review", "review_differs_between_sockets", S::Dowels, P::Reader, Method::POST,
+        "/v1/sockets/sk_27de35c9446dbfcdf440@r1/review", JSON,
+        br#"{"decisions": [{"requirement": "shaft:shaft-729", "status": "removed", "note": "a press fit"}]}"#),
+    scenario("sockets_review", "review_refused_document", S::RefusedRevision, P::Reader, Method::POST,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b@r2/review", JSON,
+        br#"{"decisions": [{"requirement": "bore:hole-427", "status": "kept"}]}"#),
+    scenario("sockets_review", "socket_stale", S::Shifted, P::Reader, Method::POST,
+        "/v1/sockets/sk_4c08cde1bddb3df26f3b@r1/review", JSON,
+        br#"{"decisions": [{"requirement": "bore:hole-427", "status": "kept"}]}"#),
+    scenario("sockets_import", "succeeded", S::Document, P::Reader, Method::POST, "/v1/sockets/import", WAIT,
+        br#"{"upload": "sha256:3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d"}"#),
+    scenario("sockets_import", "socket_stale", S::StaleDocument, P::Reader, Method::POST, "/v1/sockets/import",
+        WAIT, br#"{"upload": "sha256:{seeded}"}"#),
+    scenario("sockets_import", "socket_unreadable", S::BrokenDocument, P::Reader, Method::POST,
+        "/v1/sockets/import", WAIT, br#"{"upload": "sha256:{seeded}"}"#),
+    scenario("sockets_import", "socket_refused", S::RefusedDocument, P::Reader, Method::POST,
+        "/v1/sockets/import", WAIT, br#"{"upload": "sha256:{seeded}"}"#),
+    scenario("matches_create", "succeeded", S::Candidates, P::Reader, Method::POST, "/v1/matches", WAIT,
+        MATCH_BODY),
+    scenario("matches_create", "socket_unreviewed", S::Candidates, P::Reader, Method::POST, "/v1/matches", WAIT,
+        br#"{"socket": "sk_4c08cde1bddb3df26f3b", "options": {"require_reviewed": true}, "candidates": {"files": [
+            {"upload": "sha256:1f021de7913c486df1f45d44bc6306c39f1b7374d9eccb818e27fbc6990db4ea", "label": "m_block02.stp"}]}}"#),
+    scenario("matches_create", "label_reserved", S::Candidates, P::Reader, Method::POST, "/v1/matches", WAIT,
+        br#"{"socket": "sk_4c08cde1bddb3df26f3b@r1", "candidates": {"files": [
+            {"upload": "sha256:1f021de7913c486df1f45d44bc6306c39f1b7374d9eccb818e27fbc6990db4ea", "label": "catalog:BLOCK@r1"}]}}"#),
+    scenario("matches_create", "no_candidates", S::Extracted, P::Reader, Method::POST, "/v1/matches", WAIT,
+        br#"{"socket": "sk_4c08cde1bddb3df26f3b@r1", "candidates": {"files": []}}"#),
+    scenario("matches_create", "upload_not_found", S::Extracted, P::Reader, Method::POST, "/v1/matches", WAIT,
+        MATCH_BODY),
+    scenario("matches_create", "original_not_stored", S::Document, P::Reader, Method::POST, "/v1/matches", WAIT,
+        br#"{"socket": {"upload": "sha256:3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d"},
+             "candidates": {"files": [{"upload": "sha256:3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d",
+                                       "label": "the socket file.stp"}]}, "original": true}"#),
+    scenario("matches_list", "ok", S::Matched, P::Reader, Method::GET, "/v1/matches", &[], b""),
+    scenario("matches_get", "ok", S::Matched, P::Reader, Method::GET, "/v1/matches/{job}", &[], b""),
+    scenario("matches_get", "not_found", S::None, P::Reader, Method::GET,
+        "/v1/matches/j_7zzzzzzzzzzzzzzzzzzzzzzzzz", &[], b""),
+    scenario("matches_document", "ok", S::Matched, P::Reader, Method::GET, "/v1/matches/{job}/document",
+        &[], b""),
+    scenario("matches_candidates", "ok", S::Matched, P::Reader, Method::GET,
+        "/v1/matches/{job}/candidates?limit=1", &[], b""),
 ];
 
 /// The codes whose routes come in a later PR of section 12, with that PR:
@@ -382,31 +480,15 @@ const SCENARIOS: [Scenario; 100] = [
 /// fault no golden stages without the seams of PR 7 (a busy holder, a
 /// damaged row). Section 7.12's job-only codes (HTTP "—")
 /// are not listed: no request answers one; the job goldens show them.
-const PENDING: [(&str, u32); 27] = [
+const PENDING: [(&str, u32); 11] = [
     ("not_an_id", 7),
-    ("label_reserved", 6),
-    ("no_candidates", 6),
-    ("options_conflict", 6),
+    ("options_conflict", 7),
     ("entry_not_found", 7),
     ("reference_ambiguous", 7),
-    ("revision_not_current", 6),
     ("entry_deleted", 7),
-    ("original_not_stored", 6),
     ("bytes_not_kept", 7),
     ("derived_rows_gone", 7),
     ("precondition_failed", 7),
-    ("carry_from_foreign", 6),
-    ("revision_required", 6),
-    ("review_unknown_requirement", 6),
-    ("review_unknown_socket", 6),
-    ("review_differs_between_sockets", 6),
-    ("review_note_required", 6),
-    ("review_note_too_long", 6),
-    ("review_refused_document", 6),
-    ("socket_unreadable", 6),
-    ("socket_refused", 6),
-    ("socket_stale", 6),
-    ("socket_unreviewed", 6),
     ("entry_stale", 7),
     ("catalog_busy", 7),
     ("catalog_damaged", 7),
@@ -414,7 +496,7 @@ const PENDING: [(&str, u32); 27] = [
 
 /// The PR this tree builds (section 12): a pending code waits for a later
 /// one, at most the exit.
-const PR_NOW: u32 = 5;
+const PR_NOW: u32 = 6;
 
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/api")
@@ -465,8 +547,9 @@ fn seed(
     })
 }
 
-/// Runs `scenario` on a fresh in-process server.
-async fn run(scenario: &Scenario) -> (Reply, String) {
+/// Runs `scenario` on a fresh in-process server: its reply, and the path
+/// and body sent, the setup's names filled in.
+async fn run(scenario: &Scenario) -> (Reply, String, Vec<u8>) {
     let dirs = Dirs::new();
     let mut config = dirs.config();
     match scenario.setup {
@@ -525,7 +608,8 @@ async fn run(scenario: &Scenario) -> (Reply, String) {
             support::seed_job_input(&server, ada.key, &sha256, "match", "queued");
         }
     }
-    let (job, _kept) = jobs_setup(&server, scenario.setup, token.as_deref()).await;
+    let (mut job, _kept) = jobs_setup(&server, scenario.setup, token.as_deref()).await;
+    let seeded = match_setup(&server, scenario.setup, token.as_deref(), &mut job).await;
     if scenario.setup == S::LoginOnce {
         let login = br#"{"username": "ada", "password": "correct horse battery staple"}"#;
         let first = Call::new(Method::POST, "/v1/auth/login")
@@ -535,8 +619,12 @@ async fn run(scenario: &Scenario) -> (Reply, String) {
         assert_eq!(server.send(first).await.status, 201);
     }
     let path = scenario.path.replace("{job}", &job);
+    let body = String::from_utf8_lossy(scenario.body)
+        .replace("{seeded}", &seeded)
+        .replace("{long}", &"a long note ".repeat(200))
+        .into_bytes();
     let mut call = Call::new(scenario.method.clone(), &path)
-        .body(scenario.body)
+        .body(&body)
         .anonymous();
     for (name, value) in scenario.headers {
         call = call.header(name, value);
@@ -544,7 +632,136 @@ async fn run(scenario: &Scenario) -> (Reply, String) {
     if let Some(token) = token {
         call = call.bearer(&token);
     }
-    (server.send(call).await, path)
+    (server.send(call).await, path, body)
+}
+
+/// The CLI's socket golden of `name`, edited by `edit`, as pretty JSON.
+fn edited_socket(name: &str, edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(&support::cli_golden("socket", name)).unwrap();
+    edit(&mut doc);
+    (serde_json::to_string_pretty(&doc).unwrap() + "\n").into_bytes()
+}
+
+/// The socket file a setup's upload holds: the CLI's golden, edited, or a
+/// refused socket document.
+fn socket_file(setup: Setup) -> Vec<u8> {
+    match setup {
+        S::StaleDocument => edited_socket("s02_cbore--BLOCK.json", |doc| {
+            doc["socket_rules_version"] = (fitment_core::SOCKET_RULES_VERSION - 1).into();
+        }),
+        S::BrokenDocument => edited_socket("s02_cbore--BLOCK.json", |doc| {
+            doc["extracted"]["sockets"][0]["requirements"][0]["floor_mm"] = 0.5.into();
+        }),
+        S::RefusedDocument => {
+            fitment_core::SocketDocument::extract(b"no STEP file", Some("X"), None)
+                .unwrap()
+                .to_json()
+                .into_bytes()
+        }
+        S::Foreign => support::cli_golden("socket", "s01_bolted--BRACKET.json"),
+        _ => support::cli_golden("socket", "s02_cbore--BLOCK.json"),
+    }
+}
+
+/// PR 6's setups, as `ada`: the socket documents, reviews and matches the
+/// scenarios name; a seeded upload's SHA-256 for `{seeded}`, and `job` set
+/// to the match a `{job}` names.
+async fn match_setup(
+    server: &TestServer,
+    setup: Setup,
+    token: Option<&str>,
+    job: &mut String,
+) -> String {
+    use S::{
+        BrokenDocument, Candidates, Document, Dowels, Foreign, Matched, RefusedDocument,
+        RefusedRevision, Reviewed, Shifted, StaleDocument,
+    };
+    if (setup as u8) < (Reviewed as u8) {
+        return String::new();
+    }
+    let seams = server.server().seams();
+    let ada_token = match seams.db.user_by_fold("ada").unwrap() {
+        Some(_) => token.unwrap().to_owned(),
+        None => seed(server.server(), "ada", Role::Reader, Some(ADA), true).unwrap(),
+    };
+    let ada = seams.db.user_by_fold("ada").unwrap().unwrap();
+    let as_ada = |call: Call| call.bearer(&ada_token);
+    let seed_bytes = |bytes: &[u8]| support::seed_upload(server.server(), ada.key, bytes);
+    match setup {
+        Reviewed | RefusedRevision | Shifted | Candidates | Matched => {
+            assembly_setup(server, S::Extracted, &ada_token, ada.key).await;
+        }
+        Foreign => assembly_setup(server, S::Registered, &ada_token, ada.key).await,
+        _ => {}
+    }
+    match setup {
+        Reviewed => {
+            let body = br#"{"decisions": [{"requirement": "bore:hole-427", "status": "kept"}]}"#;
+            let call = Call::new(
+                Method::POST,
+                "/v1/sockets/sk_4c08cde1bddb3df26f3b@r1/review",
+            )
+            .header("content-type", "application/json")
+            .body(body);
+            assert_eq!(server.send(as_ada(call)).await.status, 201);
+            String::new()
+        }
+        Dowels => {
+            let bytes = support::assembly("s03_dowels.stp");
+            let sha = seed_bytes(&bytes);
+            for (path, body) in [
+                (
+                    "/v1/assemblies",
+                    serde_json::json!({ "upload": format!("sha256:{sha}") }),
+                ),
+                (
+                    "/v1/sockets",
+                    serde_json::json!({ "assembly": format!("sha256:{sha}"), "part": "DOWEL" }),
+                ),
+            ] {
+                let reply = server.send(as_ada(support::waiting(path, &body))).await;
+                assert_eq!(reply.json()["state"], "succeeded");
+            }
+            String::new()
+        }
+        RefusedRevision => {
+            let sha = seed_bytes(&socket_file(RefusedDocument));
+            let db = rusqlite::Connection::open(server.dirs.state.join("server.db")).unwrap();
+            db.execute(
+                "INSERT INTO socket_revision (line, owner, line_id, n, how, verified, parent,
+                    document_sha256, document_digest, extractor_version, socket_rules_version,
+                    unreviewed, carried, stale, job, created_ms)
+                 SELECT line, owner, line_id, 2, 'extract', 1, key, ?1, '', extractor_version,
+                    socket_rules_version, 0, 0, 0, NULL, created_ms FROM socket_revision WHERE n = 1",
+                [sha],
+            )
+            .unwrap();
+            String::new()
+        }
+        Shifted => {
+            server.server().set_rules_shift(1);
+            String::new()
+        }
+        Document | StaleDocument | BrokenDocument | RefusedDocument | Foreign => {
+            seed_bytes(&socket_file(setup))
+        }
+        Candidates | Matched => {
+            for name in ["m_block02.stp", "m_block02_cb_deep.stp"] {
+                seed_bytes(&support::candidate(name));
+            }
+            if setup == Matched {
+                let call = Call::new(Method::POST, "/v1/matches")
+                    .header("content-type", "application/json")
+                    .header("prefer", "wait=30")
+                    .body(MATCH_BODY);
+                let reply = server.send(as_ada(call)).await;
+                reply.json()["id"].as_str().unwrap().clone_into(job);
+            }
+            String::new()
+        }
+        _ => String::new(),
+    }
 }
 
 /// The bytes of the unit part the job scenarios read.
@@ -675,7 +892,7 @@ async fn jobs_setup(
     (job, kept)
 }
 
-fn render_request(scenario: &Scenario, path: &str) -> String {
+fn render_request(scenario: &Scenario, path: &str, body: &[u8]) -> String {
     let mut text = format!("{} {}\n", scenario.method, path);
     match scenario.principal {
         P::Admin => text.push_str("authorization: Bearer <root's admin token>\n"),
@@ -686,7 +903,7 @@ fn render_request(scenario: &Scenario, path: &str) -> String {
         let _ = writeln!(text, "{name}: {value}");
     }
     text.push('\n');
-    text.push_str(&String::from_utf8_lossy(scenario.body));
+    text.push_str(&String::from_utf8_lossy(body));
     text
 }
 
@@ -797,18 +1014,36 @@ async fn the_apis_documents_are_their_goldens() {
     let mut produced = BTreeSet::new();
     let mut operations = BTreeSet::new();
     for scenario in &SCENARIOS {
-        let (reply, path) = run(scenario).await;
+        let (reply, path, body) = run(scenario).await;
         // A HEAD's answer has no body: its code is not read from it.
         if reply.header("content-type") == Some("application/problem+json")
             && scenario.method != Method::HEAD
         {
             produced.insert(reply.code());
+            // Review of M6 PR 6: every answer's code is one its operation
+            // declares, so the OpenAPI document lists what is answered. A
+            // path no operation routes, or a method its operation does not
+            // take, is answered by the router (ER4), not the operation.
+            let op = fitment_server::http::operations::OPERATIONS
+                .iter()
+                .find(|op| op.id == scenario.operation);
+            let routed = op.filter(|op| op.method == scenario.method.as_str());
+            let declared =
+                routed.is_none_or(|op| op.codes.iter().any(|c| c.name() == reply.code()));
+            if !declared {
+                failures.push(format!(
+                    "{}/{}: answers {}, which the operation does not declare",
+                    scenario.operation,
+                    scenario.name,
+                    reply.code()
+                ));
+            }
         }
         operations.insert(scenario.operation);
         let base = golden_dir().join(scenario.operation).join(scenario.name);
         compare(
             &base.with_extension("request"),
-            &render_request(scenario, &path),
+            &render_request(scenario, &path, &body),
             &mut failures,
         );
         compare(
@@ -862,7 +1097,7 @@ async fn writes_the_api_outputs() {
         .join("../..")
         .join(out);
     for scenario in &SCENARIOS {
-        let (reply, _) = run(scenario).await;
+        let (reply, ..) = run(scenario).await;
         let path = out
             .join(scenario.operation)
             .join(format!("{}.response", scenario.name));

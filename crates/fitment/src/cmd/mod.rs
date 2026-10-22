@@ -20,6 +20,22 @@ pub mod text;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
+/// A socket document's text (VD9): a file that cannot be read is exit 1;
+/// bytes that are not UTF-8 are not a socket document, refused, exit 3, as
+/// the server refuses them (`socket_unreadable`, JB2).
+pub(crate) fn socket_text(path: &Path, shown: &str) -> Result<String, std::process::ExitCode> {
+    let bytes = std::fs::read(path).map_err(|error| {
+        text::note(&format!("error: cannot read {shown}: {error}"));
+        std::process::ExitCode::FAILURE
+    })?;
+    String::from_utf8(bytes).map_err(|_| {
+        text::note(&format!(
+            "fitment: {shown}: refused: not a socket document: its bytes are not UTF-8"
+        ));
+        std::process::ExitCode::from(crate::exit::REFUSED)
+    })
+}
+
 /// Writes `bytes` to a temporary file beside `path`, synced, then renames
 /// it over `path` and syncs the directory, so a crash leaves the old file
 /// or the new one, never an empty one (M5's CL7). The temporary file is

@@ -1,0 +1,8 @@
+POST /v1/matches
+authorization: Bearer <ada's reader token>
+content-type: application/json
+prefer: wait=30
+
+{"socket": {"upload": "sha256:3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d"},
+             "candidates": {"files": [{"upload": "sha256:3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d",
+                                       "label": "the socket file.stp"}]}, "original": true}

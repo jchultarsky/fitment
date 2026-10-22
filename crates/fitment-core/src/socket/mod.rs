@@ -369,6 +369,28 @@ impl SocketDocument {
         }
     }
 
+    /// MF11's versions as a socket gate reads them before any strict read
+    /// (VD9, JB2): the top-level `extractor_version` and
+    /// `socket_rules_version` of a JSON object, the last of a duplicated
+    /// key counting, each one a `u32` or absent. `None` unless the text is
+    /// a JSON object stating both, so anything else is left to
+    /// [`Self::from_json`]. `fitment match` and the server both ask this, so
+    /// a document is stale to both or to neither.
+    pub fn stated_versions(text: &str) -> Option<(u32, u32)> {
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        let object = value.as_object()?;
+        let version = |key: &str| {
+            object
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+        };
+        Some((
+            version("extractor_version")?,
+            version("socket_rules_version")?,
+        ))
+    }
+
     /// The requirements of `socket` that review has not removed: what M4
     /// checks (section 11). None for a socket the document does not hold.
     pub fn active<'d>(&'d self, socket: &'d str) -> impl Iterator<Item = &'d Requirement> + 'd {
@@ -1341,6 +1363,36 @@ mod tests {
     use super::*;
 
     const S01: &[u8] = include_bytes!("../../tests/assemblies/s01_bolted.stp");
+
+    /// MF11's versions, read as the CLI always read them (review of M6 PR
+    /// 6): an object only, the last of a duplicated key counting, a value
+    /// that is no `u32` absent.
+    #[test]
+    fn stated_versions_are_an_objects_last_u32s() {
+        let read = SocketDocument::stated_versions;
+        assert_eq!(
+            read(r#"{"extractor_version": 6, "socket_rules_version": 7}"#),
+            Some((6, 7))
+        );
+        assert_eq!(read("[6, 6]"), None, "an array states no versions");
+        assert_eq!(
+            read(
+                r#"{"extractor_version": 6, "socket_rules_version": 7, "socket_rules_version": 5}"#
+            ),
+            Some((6, 5)),
+            "the last of a duplicated key counts"
+        );
+        for absent in [
+            r#"{"extractor_version": 6}"#,
+            r#"{"extractor_version": 6, "socket_rules_version": 4294967296}"#,
+            r#"{"extractor_version": -1, "socket_rules_version": 7}"#,
+            r#"{"extractor_version": 6.5, "socket_rules_version": 7}"#,
+            r#"{"extractor_version": "6", "socket_rules_version": 7}"#,
+            "{ not JSON",
+        ] {
+            assert_eq!(read(absent), None, "{absent}");
+        }
+    }
 
     /// s01's BRACKET socket edited by `edit` and given the digest of what
     /// it now states, as anyone can: true if `from_json` refuses it as

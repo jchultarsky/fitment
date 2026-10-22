@@ -1,0 +1,23 @@
+422
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:qDvfdFpajQx/LXmyHvPCtRL6CDjhsqIlTE1KB+m7JGo=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/socket_unreadable",
+  "title": "The socket document cannot be read",
+  "status": 422,
+  "detail": "the socket document cannot be read: see details.reason",
+  "code": "socket_unreadable",
+  "class": "refused",
+  "exit_code": 3,
+  "retryable": false,
+  "details": {
+    "reason": "digest"
+  },
+  "request_id": "r_00000000000000000000000004"
+}

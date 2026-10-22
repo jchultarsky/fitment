@@ -119,6 +119,41 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  server-corpus:
+    name: the corpus through the API
+    # VT1, VT3 (docs/research/m6-api.md, XH1 to XH11, M6-36): the exit's
+    # file half through the built server, a child over loopback, in
+    # release; the API's report must equal the library's, byte for byte.
+    needs: corpus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: corpus
+          path: corpus/out
+      - uses: actions/download-artifact@v8
+        with:
+          name: corpus-report
+          path: library-report
+      - run: cargo build --release -p fitment -p fitment-server --locked
+      - run: cargo test --release -p fitment-server --test exit --locked
+        env:
+          FITMENT_REQUIRE_CORPUS: "1"
+      # VT22: the hostile parts as uploaded candidates, the CLI's bytes.
+      - run: cargo test --release -p fitment-server --test hostile --locked hostile_parts_through_the_api_are_the_clis
+        env:
+          FITMENT_REQUIRE_CORPUS: "1"
+      - run: diff library-report/report.json target/fitment-corpus/api-report.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: api-report
+          path: target/fitment-corpus/api-report.json
+          retention-days: 7
+          if-no-files-found: error
+
   unit-set:
     name: unit set matches the generator
     # Its own job, so that a difference shows here without holding back

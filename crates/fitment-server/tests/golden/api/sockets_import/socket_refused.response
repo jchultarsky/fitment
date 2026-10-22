@@ -1,0 +1,29 @@
+422
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:8FM9ntzQjpuTbcqAUUAHUaWkINALC84lt9BOCWwRZns=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/socket_refused",
+  "title": "The socket document is refused",
+  "status": 422,
+  "detail": "the socket document holds no socket: see details.refusals",
+  "code": "socket_refused",
+  "class": "refused",
+  "exit_code": 3,
+  "retryable": false,
+  "details": {
+    "refusals": [
+      {
+        "code": "unparseable",
+        "instance": null,
+        "message": "the file is not ISO 10303-21: syntax error at line 1, column 1: expected ISO-10303-21, found 'no'"
+      }
+    ]
+  },
+  "request_id": "r_00000000000000000000000004"
+}

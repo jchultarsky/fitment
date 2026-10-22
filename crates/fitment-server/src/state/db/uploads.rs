@@ -267,6 +267,27 @@ impl Db {
         self.read(|conn| nameable(conn, owner, sha256, now_ms))
     }
 
+    /// M6-64, OB4: the length of the object `sha256` when it is an input
+    /// of one of `owner`'s retained match records, which holds it so the
+    /// run can be submitted again on its own bytes; `None` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// SQLite's.
+    pub fn match_input(&self, owner: i64, sha256: &str) -> Result<Option<u64>, DbError> {
+        self.read(|conn| {
+            conn.query_row(
+                "SELECT o.bytes FROM object o WHERE o.sha256 = ?2 AND EXISTS (
+                   SELECT 1 FROM job_input i JOIN job j ON j.key = i.job
+                    WHERE j.owner = ?1 AND i.sha256 = o.sha256 AND j.kind = 'match')",
+                params![owner, sha256],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|n| n.map(|n| u64::try_from(n).unwrap_or(0)))
+        })
+    }
+
     /// A page of `owner`'s live uploads by SHA-256 (VN3): at most `limit`,
     /// after `after` (empty for the first page).
     ///
@@ -302,7 +323,9 @@ impl Db {
 
     /// UP4: what `owner`'s holdings at `now_ms` count against their quota,
     /// each object once and charged as [`charge`] says: their unexpired
-    /// uploads, and the inputs and documents of their retained jobs (OB4).
+    /// uploads, the inputs and documents of their retained jobs (OB4), and
+    /// the document of every socket revision they hold (RA5), which is
+    /// kept as long as its row.
     ///
     /// # Errors
     ///
@@ -317,7 +340,8 @@ impl Db {
                    UNION SELECT result_sha256 FROM job WHERE owner = ?1
                          AND result_sha256 IS NOT NULL
                    UNION SELECT index_sha256 FROM job WHERE owner = ?1
-                         AND index_sha256 IS NOT NULL)",
+                         AND index_sha256 IS NOT NULL
+                   UNION SELECT document_sha256 FROM socket_revision WHERE owner = ?1)",
                 params![
                     owner,
                     now_ms,
