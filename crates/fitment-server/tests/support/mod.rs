@@ -76,7 +76,14 @@ impl Dirs {
             listen: Some("127.0.0.1:0".into()),
             ..Flags::default()
         };
-        Config::from_sources(&flags, &std::collections::BTreeMap::new()).unwrap()
+        let mut config = Config::from_sources(&flags, &std::collections::BTreeMap::new()).unwrap();
+        // JS2's budget fixed, not the machine's parallelism: on CI's 4-vCPU
+        // runners a paused match of `match_threads` (4) held every permit,
+        // and a test's next job waited for ever. Every test now sees the
+        // same permits on every machine; a test that needs others sets its
+        // own.
+        config.jobs.cpu = 8;
+        config
     }
 
     /// The paths XH13's scan refuses in a response.
@@ -597,6 +604,11 @@ impl Process {
             if name.starts_with("FITMENT_SERVER_") {
                 command.env_remove(name);
             }
+        }
+        // The same fixed budget as `Dirs::config` (JS2), whatever the
+        // machine, unless the test's file sets its own.
+        if !config_toml.contains("cpu") {
+            command.env("FITMENT_SERVER__JOBS__CPU", "8");
         }
         let mut child = command.spawn().expect("spawn fitment-server");
         let stdin = child.stdin.take();
