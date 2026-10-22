@@ -170,3 +170,46 @@ pub(crate) fn span_floor(requirement: &Requirement, from: f64, to: f64) -> f64 {
         .reduce(f64::max)
         .unwrap_or(requirement.floor_mm)
 }
+
+/// What one active requirement's check says at a placement
+/// (`docs/research/m7-fit.md`, FC4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Passing {
+    /// It passes.
+    Passes,
+    /// It fails, for a reason of its own.
+    Fails,
+    /// It fails only at the coverage bound (AL11): it could not be judged
+    /// either way.
+    Bounded,
+}
+
+/// FC4: each active requirement of `view`, in order, checked with the
+/// candidate at `at` as [`Matcher::verify_at`] checks them, under one
+/// fresh bound, and no fit verifier asked.
+pub(crate) fn passing(
+    view: &SocketView<'_>,
+    cand: &CandidateView<'_>,
+    at: &Placement,
+    policy: &MatchPolicy,
+) -> Vec<Passing> {
+    let mut budget = verify::Budget::new();
+    view.active()
+        .iter()
+        .map(|requirement| {
+            let check = verify::check(view, requirement, cand, at, policy, &mut budget);
+            let failures = check.evidence().failures();
+            if check.passed() {
+                Passing::Passes
+            } else if !failures.is_empty()
+                && failures
+                    .iter()
+                    .all(|f| f.code == FailureCode::CoverageExhausted)
+            {
+                Passing::Bounded
+            } else {
+                Passing::Fails
+            }
+        })
+        .collect()
+}

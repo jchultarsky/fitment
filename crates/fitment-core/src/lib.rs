@@ -25,7 +25,7 @@
 
 mod assembly;
 mod features;
-mod fit;
+pub mod fit;
 mod gate;
 mod geom;
 mod matching;

@@ -1690,6 +1690,72 @@ for rule, tests in {
 }.items():
     RULES[rule]["tests"] = RULES[rule]["tests"] + tests
 
+# M7's rules (docs/research/m7-fit.md, FK8), each deferred to the PR of its section 11 that builds it until then;
+# the coverage test allows M7's deferrals until M7 closes (PR 6). Every prefix is numbered from 1 without gaps. A
+# rule of M7_FIT_CAN_END (FV2 to FV6, FT4 to FT10, FB3, FB6, FZ7, FZ9, FY4) waits for PR 4, whose cases end a fit by
+# each, even where PR 1a built its branch; one of M7_PROCESS waits for PR 2a or 2b, whose fitment-fit tests show it.
+M7_COUNTS = {"FT": 12, "FZ": 9, "FB": 6, "FV": 9, "FH": 6, "FL": 6, "FY": 7, "FC": 8, "FM": 7, "FG": 6, "FU": 6,
+             "FX": 9, "FK": 8, "FO": 3}
+M7_PR = {"FT": "4", "FZ": "4", "FB": "4", "FV": "4", "FH": "2a", "FL": "2a", "FY": "2a", "FC": "1b", "FM": "1b",
+         "FG": "2a", "FU": "3", "FX": "5a", "FK": "4", "FO": "4"}
+M7_OTHER_PR = {"FT1": "6", "FT2": "1b", "FT11": "1b", "FT12": "1b", "FB2": "2b", "FB4": "2b", "FB5": "2b",
+               "FV8": "2a", "FH6": "2b", "FY1": "2b", "FY3": "2b", "FY6": "5a", "FY7": "2b", "FC6": "3", "FC8": "2a",
+               "FM6": "3", "FG2": "2b", "FG3": "3", "FG4": "5a", "FG5": "5b", "FG6": "6", "FX8": "5b"}
+for prefix, count in M7_COUNTS.items():
+    for n in range(1, count + 1):
+        rule = f"{prefix}{n}"
+        RULES[rule] = {"deferred": f"M7 PR {M7_OTHER_PR.get(rule, M7_PR[prefix])}"}
+# PR 1a builds fitment_core::fit, pure (section 11, item 1a): the scene fitment reads from the socket's assembly (FB1),
+# the zones and their closed forms (FZ1 to FZ6, FZ8; FZ7's and FZ9's checks wait for PR 4's cases), each pair's own
+# tolerances and the check set (FT3; FT7 is M7_FIT_CAN_END's), the status from measures (FV1, FV7, FV9; FV2 to FV6
+# wait for PR 4, FV8 for PR 2a), the placement's freedom (FC4) and the module itself (FC3). VT53 is decide's unit tests,
+# VT54 the zones' (fitment-core's committed assemblies, and the corpus's s05 and s18), VT62 and VT76 the freedom's.
+FIT_SRC, FIT_CORE, FIT_CLI = "crates/fitment-core/src/fit", "crates/fitment-core/tests", "crates/fitment/tests"
+FIT_DECIDE = f"{FIT_SRC}/decide/tests.rs"
+M7_PR1A = {
+    "FT3": [f"{FIT_DECIDE}::the_bracket_s_plan_pairs_its_seated_neighbours",
+            f"{FIT_DECIDE}::a_copy_s_interference_counts_for_both_sockets",
+            f"{FIT_SRC}/plan.rs::reach_is_the_pairs_enlargement"],
+    "FZ1": [f"{FIT_CORE}/zones.rs::a_removed_requirement_keeps_its_zones",
+            f"{FIT_CORE}/zones.rs::the_bracket_sits_in_the_plate_s_and_the_heads_slabs"],
+    "FZ2": [f"{FIT_CORE}/zones.rs::the_bracket_sits_in_the_plate_s_and_the_heads_slabs",
+            f"{FIT_CORE}/zones.rs::the_counterbored_block_and_its_screw",
+            f"{FIT_SRC}/zones.rs::a_slab_has_its_faces_moments", f"{FIT_SRC}/zones.rs::an_arc_adds_its_segment"],
+    "FZ3": [f"{FIT_CORE}/zones.rs::the_bolt_s_thread_is_an_annulus_in_its_nut",
+            f"{FIT_CORE}/zones.rs::the_nut_holds_the_bolt_over_its_height",
+            f"{FIT_CORE}/zones.rs::the_plate_s_dowel_holes_by_their_fits",
+            f"{FIT_SRC}/zones.rs::an_annulus_is_its_ring"],
+    "FZ4": [f"{FIT_CLI}/zones.rs::the_countersink_s_shell_is_the_cone_s",
+            f"{FIT_SRC}/zones.rs::a_shell_is_its_revolved_strip"],
+    "FZ5": [f"{FIT_CLI}/zones.rs::each_washer_zones_its_copy_by_the_other_s_face"],
+    "FZ6": [f"{FIT_CORE}/zones.rs::a_slab_at_the_pair_s_depth",
+            f"{FIT_DECIDE}::no_tolerance_above_the_uncertainty_is_uncertain"],
+    "FZ8": [f"{FIT_SRC}/zones.rs::only_tight_spans_are_zoned",
+            f"{FIT_CORE}/zones.rs::the_plate_s_dowel_holes_by_their_fits",
+            f"{FIT_CORE}/zones.rs::the_counterbored_block_and_its_screw"],
+    "FB1": [f"{FIT_SRC}/scene.rs::every_leaf_is_a_body_with_its_faces_and_floors",
+            f"{FIT_SRC}/scene.rs::another_assembly_is_not_the_source",
+            f"{FIT_SRC}/scene.rs::a_definition_used_twice_is_two_bodies"],
+    "FV1": [f"{FIT_DECIDE}::clean_measures_verify", f"{FIT_DECIDE}::a_failing_control_withholds_verified_only"],
+    "FV7": [f"{FIT_DECIDE}::clean_measures_verify", f"{FIT_DECIDE}::a_copy_s_interference_counts_for_both_sockets",
+            f"{FIT_DECIDE}::a_residual_is_clear_below_resolution_or_an_interference"],
+    "FV9": [f"{FIT_DECIDE}::the_reasons_are_a_closed_list", f"{FIT_DECIDE}::process_failures_are_never_verified"],
+    "FC3": [f"{FIT_SRC}/scene.rs::landmarks_are_the_largest_planes_then_cylinders",
+            f"{FIT_SRC}/zones.rs::a_face_without_a_closed_form_is_unbuilt",
+            f"{FIT_SRC}/plan.rs::a_pairs_values_straddle_the_tolerance",
+            f"{FIT_DECIDE}::measures_out_of_range_break_the_protocol",
+            f"{FIT_SRC}/freedom.rs::only_axisymmetric_turns_are_excused"],
+    "FC4": [f"{FIT_CORE}/freedom.rs::placements_fixed_by_their_features_are_unique",
+            f"{FIT_CORE}/freedom.rs::round_parts_are_free_to_turn_and_excused",
+            f"{FIT_CORE}/freedom.rs::freedom_is_the_placement_s_own",
+            f"{FIT_CLI}/freedom.rs::originals_are_unique_free_or_excused_as_their_shapes_say",
+            f"{FIT_CLI}/freedom.rs::cone_and_landmark_seeds_are_judged_alike",
+            f"{FIT_CLI}/freedom.rs::the_corpus_s_free_placements_are_section_5_6_s"],
+}
+for rule, tests in M7_PR1A.items():
+    RULES[rule] = {"tests": tests}
+RULES["KH14"]["tests"] = RULES["KH14"]["tests"] + [f"{M6_COVER}::m7_deferrals_and_lists_hold"]
+
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with

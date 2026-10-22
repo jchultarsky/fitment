@@ -1,6 +1,127 @@
-//! The result of checking a candidate's body against its neighbors (D1).
+//! The result of checking a candidate's body against its neighbors (D1),
+//! and the pure half of the fit verifier (`docs/research/m7-fit.md`, FC3):
+//! the scene fitment reads from the assembly ([`FitScene`], FB1), the
+//! zones a socket declares ([`zones`], FZ1 to FZ9), each pair's own
+//! tolerances and the pairs within the kernel's reach ([`plan`], FT3, FT7,
+//! FT8), the status from a kernel's measures ([`decide`], FV1 to FV9), and
+//! a placement's free motions ([`freedom`], FC4). Nothing here reads a
+//! file or runs a process: the kernel's numbers come in as [`FitMeasures`],
+//! and only [`decide`] turns them into a [`FitStatus`].
+
+mod decide;
+mod freedom;
+mod measures;
+mod plan;
+mod scene;
+mod zones;
 
 use serde::Serialize;
+
+pub use decide::{Finding, FindingAt, FitCode, FitOutcome, PairInterference, decide};
+pub use freedom::{FREE_SLIDE_MM, FREE_TURN_DEG, FreeMotion, Freedom, MotionKind, freedom};
+pub use measures::{
+    BodyMeasure, CheckMeasures, FitBox, FitFailure, FitMeasures, LandmarkMeasure, PairMeasure,
+    PlaceMeasures, PlacementMeasure, ReachClaim, SceneMeasures, SolidMeasure, ZoneMeasure,
+};
+pub use plan::{
+    FitCandidate, FitPlan, Pair, PairState, PairValues, PairZone, Placed, PlanInput, plan,
+};
+pub use scene::{
+    FitScene, FitSceneError, Landmark, LandmarkValue, SceneBody, UnreadLeaf, landmarks,
+};
+pub use zones::{Built, Unbuilt, Zone, ZoneKind, ZoneShape, zones};
+
+/// The version of the fit's own rules (FH6, FC8): it rises with any change
+/// that could change a fit's status or evidence, such as a zone, a depth,
+/// a threshold, a reason or a pair chosen.
+pub const FIT_RULES_VERSION: u32 = 1;
+
+/// The least residual volume that is an interference, in mm³ (FV3): a
+/// residual under it, and above 0, is `below_resolution`.
+pub const FIT_VOLUME_MM3: f64 = 1e-6;
+
+/// What no fit checks (FT12), in the order every fit's evidence lists it.
+pub const SCOPE_NOT_CHECKED: [&str; 8] = [
+    "motion",
+    "tolerance_stack_up",
+    "assembly_order",
+    "tool_access",
+    "unmodelled_items",
+    "threads",
+    "new_fasteners",
+    "alternative_placements",
+];
+
+/// The verifier a fit is decided for (FC1): the kernel and its exact
+/// version, as a [`FitStatus::Verified`] names them. [`decide`] builds a
+/// `verified` only with the identity its plan was made with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FitIdentity {
+    /// The geometry kernel, such as `open_cascade`.
+    pub kernel: String,
+    /// Its exact version, such as `8.0.1`.
+    pub version: String,
+}
+
+impl FitIdentity {
+    /// The identity of `kernel` at `version`.
+    pub fn new(kernel: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            kernel: kernel.into(),
+            version: version.into(),
+        }
+    }
+}
+
+/// The candidate's body, as a fit request names it (FC1, FB4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FitBody<'a> {
+    /// A file candidate: the bytes M2's gate accepted, and their SHA-256
+    /// (64 lower-case hex digits), which the helper's own hash must equal.
+    #[non_exhaustive]
+    Step {
+        /// The file's bytes.
+        bytes: &'a [u8],
+        /// Their SHA-256.
+        sha256: String,
+    },
+    /// A component of an assembly: the assembly's SHA-256, the
+    /// occurrence's path and the faces' `#id`s of its solid (FC5).
+    #[non_exhaustive]
+    Component {
+        /// The assembly's SHA-256.
+        assembly_sha256: String,
+        /// The occurrence, by usage `#id`s.
+        occurrence: Vec<u64>,
+        /// Its solid's faces' `#id`s, sorted.
+        faces: Vec<u64>,
+    },
+}
+
+impl<'a> FitBody<'a> {
+    /// A file candidate's body: `bytes` and their SHA-256.
+    pub fn step(bytes: &'a [u8]) -> Self {
+        Self::Step {
+            bytes,
+            sha256: crate::sha256::sha256_hex(bytes),
+        }
+    }
+
+    /// A component's body.
+    pub fn component(
+        assembly_sha256: impl Into<String>,
+        occurrence: Vec<u64>,
+        faces: Vec<u64>,
+    ) -> Self {
+        Self::Component {
+            assembly_sha256: assembly_sha256.into(),
+            occurrence,
+            faces,
+        }
+    }
+}
 
 /// The reason given when no fit verifier is configured.
 pub const NO_FIT_VERIFIER: &str = "no fit verifier in this build";
