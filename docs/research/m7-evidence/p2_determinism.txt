@@ -1,4 +1,11 @@
-P2 run twice on corpus/out (same machine, same helper pin), timings stripped:
-  strip() { sed -E "s/[0-9]+\.[0-9]+ s//g; s/kernel calls.*//" "$1"; }; diff <(strip p2_fit.txt) <(strip run2.txt)
-result: the only difference is the shell's time line; every status, pair count and volume (printed with repr, all digits) is identical.
-P1 section 4: one Common's volume 20 times, serial and parallel, bit for bit: 1 distinct value each (see p1_kernel.txt).
+P2 (as revised after the reviews: per-pair epsilon, SetNonDestructive, conservation checks), run three ways on
+corpus/out on one machine, every status, pair count and volume compared (volumes printed with repr, all
+digits; timings stripped):
+
+1. once, over the manifest's order (p2_fit.txt);
+2. once more in one process with the manifest's cases reversed (P2_REVERSE=1): identical;
+3. each of the 31 interface-passing match cases in a fresh process of its own (`p2_fit.py ... cases ID`):
+   identical to (1).
+
+P1 section 4: one Common's volume 20 times, serial and parallel, bit for bit: 1 distinct value each.
+The first P2 run (before the reviews) was also run twice in one order: identical.

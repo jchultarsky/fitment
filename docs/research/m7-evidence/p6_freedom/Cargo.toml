@@ -1,0 +1,14 @@
+[package]
+name = "p6-freedom"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# P6 (docs/research/m7-fit.md, FT10): which DOF a placement leaves free, by perturbing it and
+# re-checking the interface with fitment-core's own verify_at, and whether the candidate is
+# axisymmetric about a free turn's axis. Its own workspace, as m5-evidence/A/exp is.
+[dependencies]
+fitment-core = { path = "../../../../crates/fitment-core" }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[workspace]

@@ -1,0 +1,41 @@
+m_base02 (fits) socket-1: seed one_axis, at A InterfaceMatch; unique
+m_bearing04 (fits) socket-1: seed one_axis, at A InterfaceMatch; free turn, axisymmetric: kept [turn about axis 0 (axisymmetric), turn about axis 1 (axisymmetric), turn about normal 0 (axisymmetric)]
+m_block02 (fits) socket-1: seed one_axis, at A InterfaceMatch; unique
+m_bolt (fits) socket-1: seed one_axis, at A InterfaceMatch; unique
+m_bolt_longer (fits) socket-1: seed one_axis, at A InterfaceMatch; unique
+m_bracket (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_bracket_centre_none (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_bracket_inside_tol (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_bracket_larger (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_bracket_lug (collides) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_bracket_pcurves (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_bracket_side_hole (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_bracket_split (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_bracket_tilt_inch (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_cover19 (fits) socket-1: seed one_axis, at A InterfaceMatch; unique
+m_cover19_long (collides) socket-1: seed one_axis, at A InterfaceMatch; unique
+m_housing (fits) socket-1: seed one_axis, at A InterfaceMatch; unique
+m_housing04 (fits) socket-1: seed one_axis, at A InterfaceMatch; placement_not_unique [turn about axis 0, turn about normal 0]
+m_mirror15 (fits) socket-1: seed one_axis, at A InterfaceMatch; unique
+m_nut (fits) socket-1: seed one_axis, at A InterfaceMatch; unique
+m_nut_bridge (collides) socket-1: seed one_axis, at A InterfaceMatch; unique
+m_plate01 (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_plate03 (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_plate16 (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_plate18 (fits) socket-1: seed one_axis, at A InterfaceMatch; unique
+m_s07b_bracket (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_s07b_bracket (fits) socket-2: seed axis_pair, at A InterfaceMatch; unique
+m_s21_block (fits) socket-1: seed one_axis, at A InterfaceMatch; placement_not_unique [turn about axis 0]
+m_s59_block (fits) socket-1: seed axis_pair, at A InterfaceMatch; unique
+m_screw02 (fits) socket-1: seed one_axis, at A InterfaceMatch; free turn, axisymmetric: kept [turn about axis 0 (axisymmetric), turn about normal 0 (axisymmetric)]
+m_tube50 (fits) socket-1: seed one_axis, at A InterfaceMatch; free turn, axisymmetric: kept [turn about axis 0 (axisymmetric), turn about axis 1 (axisymmetric), turn about normal 0 (axisymmetric)]
+m_washer05 (fits) socket-1: seed one_axis, at A InterfaceMatch; free turn, axisymmetric: kept [turn about axis 0 (axisymmetric), turn about axis 1 (axisymmetric), turn about normal 0 (axisymmetric), turn about normal 1 (axisymmetric)]
+m_washer05 (fits) socket-2: seed one_axis, at A InterfaceMatch; free turn, axisymmetric: kept [turn about axis 0 (axisymmetric), turn about axis 1 (axisymmetric), turn about normal 0 (axisymmetric), turn about normal 1 (axisymmetric)]
+== tally
+  15 axis_pair: unique
+   3 candidates (collides): fit asked
+  26 candidates (fits): fit asked
+   2 candidates (fits): placement_not_unique
+   5 one_axis: free turn, axisymmetric: kept
+   2 one_axis: placement_not_unique
+  11 one_axis: unique

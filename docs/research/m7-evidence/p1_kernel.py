@@ -60,6 +60,7 @@ def common(a, b, parallel=False):
     op.AddTool(b)
     op.SetOperation(BOPAlgo_COMMON)
     op.SetRunParallel(parallel)
+    op.SetNonDestructive(True)  # as the helper does (the reviews): arguments never modified
     op.Perform()
     return op
 

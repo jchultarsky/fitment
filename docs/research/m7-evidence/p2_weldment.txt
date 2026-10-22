@@ -1,0 +1,7 @@
+The weldment's two overlapping originals, by the prototype as first committed (f5dde0b's p2_fit.py, zones at
+delta = 0.01 mm, no per-pair uncertainty), with each residual's box [xmin, ymin, zmin, xmax, ymax, zmax] in mm:
+interferes    nist-edm/weldment_asm_solid BEARING_208 (interface: reject): 72 pairs, max tolerance 0.00053, largest residual 3.58; [([25793], 'LINKAGE_ARM_SHORT_46', 3.57650509068237, 4.461796897919735, [140.349, -12.307, -46.038, 164.962, 12.306, -45.997])]
+interferes    nist-edm/weldment_asm_solid LINKAGE_ARM_SHORT_46 (interface: reject): 26 pairs, max tolerance 1e-07, largest residual 3.55; [([32748], 'BEARING_208', 3.5549902703509204, 4.461796897919736, [140.349, -12.307, -46.028, 164.962, 12.306, -45.987])]
+The residual is a disc about 24.6 mm across and 0.041 mm thick: a bearing face 0.041 mm into the arm,
+inside the 0.058 mm the file states as its uncertainty. As revised (C1) both controls are
+uncertainty_above_tolerance (p2_fixtures.txt); the overlap is labelled unexplained (FK4).

@@ -17,15 +17,24 @@ information: M7 asks no fit there, FT11)
 at the placements fitment's document states, at every occurrence of
 every socket (FT2, FT3). Each check, per occurrence k and body B of the
 check set (every leaf but the selected occurrences, and the candidate's
-other placed copies):
+other placed copies), with its own u_pair (the largest stated uncertainty of the
+two, at least 1e-6 mm) and eps = t - u_pair (FT7, as the reviews set it):
 
+  - eps <= 0: not_verified, uncertainty_above_tolerance;
   - interference: Common(C_k, B) less the zones the socket declares for
-    (k, B) at depth delta must have no volume (FT4);
-  - proximity: B less the zones at depth 2 delta must stay farther than
-    delta from C_k (FT5);
+    (k, B) at depth eps; 1e-6 mm3 or more is an interference, less a
+    below_resolution (FT4, FV3);
+  - proximity: B less the zones at depth eps + t + u_pair must stay farther
+    than t + u_pair from C_k (FT5);
+  - conservation: each cut's kept volume plus the volume inside the zones is
+    the whole, to 1e-9 relative (FY4);
 
-zones being each seat contact's neighbour face swept delta either side of
-its plane, and each interference or line-to-line span's annulus, and each conical seat's shell (FZ2 to FZ4); the original binds by product and transform here, where the design binds by faces (FB2).
+zones being each seat contact's neighbour face swept either side of its
+plane, each interference, line-to-line or unread-occupant span's annulus,
+and each conical seat's shell (FZ2 to FZ4). Booleans run non-destructive
+(FH4). This prototype binds bodies by product and transform, where the
+design binds by faces (FB2), and does not apply FT10's placement rule (P6
+measures it). P2_REVERSE=1 runs the cases in reverse order.
 Prints one line per case and a tally; timings per check. Reuses
 tools/verify-occt.py's readers (XCAF leaves, faces bound to #ids).
 """
@@ -33,6 +42,7 @@ tools/verify-occt.py's readers (XCAF leaves, faces bound to #ids).
 import importlib.util
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -43,7 +53,7 @@ spec = importlib.util.spec_from_file_location("oracle", ROOT / "tools" / "verify
 oracle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(oracle)
 
-from OCP.BOPAlgo import BOPAlgo_BOP, BOPAlgo_COMMON, BOPAlgo_CUT  # noqa: E402
+from OCP.BOPAlgo import BOPAlgo_BOP, BOPAlgo_COMMON, BOPAlgo_CUT, BOPAlgo_FUSE  # noqa: E402
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon  # noqa: E402
 from OCP.BRepCheck import BRepCheck_Analyzer  # noqa: E402
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape  # noqa: E402
@@ -52,7 +62,9 @@ from OCP.ShapeAnalysis import ShapeAnalysis_ShapeTolerance  # noqa: E402
 from OCP.TopAbs import TopAbs_FACE, TopAbs_SHAPE  # noqa: E402
 from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Vec  # noqa: E402
 
-DELTA = 0.01  # mm: the default policy's linear tolerance (D9)
+T = 0.01  # mm: the default policy's linear tolerance t (D9)
+GUARD = 1e-6  # mm: GUARD_MM, the least uncertainty a pair is given (FT7)
+CONSERVATION = 1e-9  # relative: vol(R) + vol(V within the zones) = vol(V) (FY4)
 STATS = {"common": 0, "distance": 0, "cut": 0, "seconds": {"common": 0.0, "distance": 0.0, "cut": 0.0}}
 
 
@@ -68,6 +80,7 @@ def bop(a, tools, operation):
     op.SetOperation(operation)
     op.SetRunParallel(False)
     op.SetFuzzyValue(0.0)
+    op.SetNonDestructive(True)  # the arguments are never modified, so a reused scene stays as read
     op.Perform()
     if op.HasErrors() or op.HasWarnings():
         from OCP.Message import Message_Gravity
@@ -100,6 +113,22 @@ def common(a, b):
 
 def cut(a, tools):
     return timed("cut", bop, a, tools, BOPAlgo_CUT) if tools else a
+
+
+def union(shapes):
+    if len(shapes) == 1:
+        return shapes[0]
+    return timed("cut", bop, shapes[0], shapes[1:], BOPAlgo_FUSE)
+
+
+def conserved(whole, kept, zones):
+    """The relative error of vol(kept) + vol(whole within the union of zones) = vol(whole); 0 without
+    zones. More than CONSERVATION is a disagreement (FY4)."""
+    if not zones:
+        return 0.0
+    w = oracle.volume_of(whole)
+    inside = oracle.volume_of(common(whole, union(zones)))
+    return abs(oracle.volume_of(kept) + inside - w) / max(w, 1.0)
 
 
 def distance(a, b):
@@ -189,6 +218,14 @@ class Scene:
             k = ks[0]
             self.occurrences[tuple(o["path"])] = (rows, k, o["socket"])
         self.selected = {k for _, k, _ in self.occurrences.values()}
+        unc = lambda o: max(o.get("part_uncertainty_mm") or 0.0, o.get("placement_uncertainty_mm") or 0.0)  # noqa: E731
+        self.u_occ = {tuple(o["path"]): unc(o) for o in socket["extracted"]["occurrences"]}
+        stated = [unc(o) for o in socket["extracted"]["occurrences"] + socket["extracted"]["neighbours"]]
+        # A leaf no requirement cites is not listed in the socket: the largest stated uncertainty bounds it
+        # here; the design reads every leaf's own (FB1).
+        self.u_default = max(stated, default=0.0)
+        self.u_leaf = {}
+        self._zones = {}
         self.neighbours = {}
         for n in socket["extracted"]["neighbours"]:
             rows = oracle.placement_rows(n["transform"])
@@ -197,6 +234,7 @@ class Scene:
             ks = [i for i in ks if leaves[i][0] in (name, "SOLID")] or ks
             if len(ks) == 1:
                 self.neighbours[tuple(n["path"])] = ks[0]
+                self.u_leaf[ks[0]] = unc(n)
         self._faces = {}
 
     def face(self, leaf, face_id):
@@ -214,7 +252,13 @@ class Scene:
         return ("leaf", self.neighbours.get(path))
 
     def zones(self, path, depth):
-        """FZ1: {key: [zone solids]} declared for the occurrence `path`."""
+        """FZ1: {key: [zone solids]} declared for the occurrence `path`, cached per depth."""
+        key = (tuple(path), round(depth, 12))
+        if key not in self._zones:
+            self._zones[key] = self._zones_at(path, depth)
+        return self._zones[key]
+
+    def _zones_at(self, path, depth):
         rows, _, socket_id = self.occurrences[tuple(path)]
         sock = next(s for s in self.socket["extracted"]["sockets"] if s["id"] == socket_id)
         removed = {(r["socket"], r["requirement"]) for r in self.socket.get("review", []) if r["status"] == "removed"}
@@ -263,48 +307,82 @@ class Scene:
         return out
 
 
-def check_occurrence(scene, path, placed, copies, record):
+def check_occurrence(scene, path, placed, copies, record, u_body_of):
     """FT4 and FT5 for the placed body at `path` against every leaf but the selected ones and every other
-    copy. Returns (interferences, proximities)."""
-    zones_d, zones_2d = scene.zones(path, DELTA), scene.zones(path, 2 * DELTA)
+    copy, each pair with its own epsilon (C1): eps = t - u_pair; interference zones at eps; the proximity
+    threshold t + u_pair, its zones at eps + t + u_pair. Returns (interferences, proximities, problems)."""
     bodies = [(("leaf", i), shape) for i, (_, _, shape) in enumerate(scene.leaves) if i not in scene.selected]
     bodies += [(("copy", p), c) for p, c in copies.items() if p != tuple(path)]
-    interferes, near = [], []
+    interferes, near, problems = [], [], []
     for key, body in bodies:
-        if oracle.apart(placed, body, 2 * DELTA):
+        u_pair = max(GUARD, u_body_of(("self", tuple(path))), u_body_of(key))
+        eps, threshold = T - u_pair, T + u_pair
+        if oracle.apart(placed, body, eps + 2 * threshold):
             continue
         record["pairs"] += 1
         record["max_tolerance"] = max(record["max_tolerance"], max_tolerance(body))
+        record["u_pairs"].append(u_pair)
+        name = scene.leaves[key[1]][0] if key[0] == "leaf" else f"copy {list(key[1])}"
+        if eps <= 0:
+            problems.append(("uncertainty_above_tolerance", name, u_pair))
+            continue
+        zones_e = scene.zones(path, eps).get(key, [])
         shared = common(placed, body)
         v = oracle.volume_of(shared)
-        residual = oracle.volume_of(cut(shared, zones_d.get(key, []))) if v > 0 else 0.0
+        residual = 0.0
+        if v > 0:
+            kept = cut(shared, zones_e)
+            residual = oracle.volume_of(kept)
+            err = conserved(shared, kept, zones_e)
+            if err > CONSERVATION:
+                problems.append(("conservation", name, err))
         record["residuals"].append(residual)
-        name = scene.leaves[key[1]][0] if key[0] == "leaf" else f"copy {list(key[1])}"
-        if residual > 0:
+        if residual >= 1e-6:
             interferes.append((name, residual, v))
             continue
-        if distance(placed, body) <= DELTA:
-            gap = distance(placed, cut(body, zones_2d.get(key, [])))
-            if gap <= DELTA:
+        if residual > 0:
+            problems.append(("below_resolution", name, residual))
+            continue
+        if distance(placed, body) <= threshold:
+            zones_p = scene.zones(path, eps + threshold).get(key, [])
+            trimmed = cut(body, zones_p)
+            err = conserved(body, trimmed, zones_p)
+            if err > CONSERVATION:
+                problems.append(("conservation", name, err))
+            gap = distance(placed, trimmed)
+            if gap <= threshold:
                 near.append((name, gap))
-    return interferes, near
+    return interferes, near, problems
 
 
-def check(scene, solids_by_path, record):
-    """The whole fit at every occurrence: (status, details)."""
+def check(scene, solids_by_path, record, u_self):
+    """The whole fit at every occurrence: (status, details). u_self is the placed body's own stated
+    uncertainty (the candidate's, or the original's for the control)."""
+    record.setdefault("u_pairs", [])
+
+    def u_body_of(key):
+        if key[0] == "self":
+            return max(u_self, scene.u_occ.get(key[1], 0.0))
+        if key[0] == "copy":
+            return max(u_self, scene.u_occ.get(key[1], 0.0))
+        return scene.u_leaf.get(key[1], scene.u_default)
+
     for s in solids_by_path.values():
         if not BRepCheck_Analyzer(s).IsValid():
             return "not_verified", "a body is not valid (BRepCheck)"
         record["max_tolerance"] = max(record["max_tolerance"], max_tolerance(s))
-    if record["max_tolerance"] > DELTA / 10:
-        return "not_verified", f"a shape tolerance of {record['max_tolerance']:.3g} mm exceeds delta/10"
-    found_i, found_n = [], []
+    if record["max_tolerance"] > T / 10:
+        return "not_verified", f"a shape tolerance of {record['max_tolerance']:.3g} mm exceeds t/10"
+    found_i, found_n, found_p = [], [], []
     for path, placed in solids_by_path.items():
-        i, n = check_occurrence(scene, path, placed, solids_by_path, record)
+        i, n, q = check_occurrence(scene, path, placed, solids_by_path, record, u_body_of)
         found_i += [(list(path),) + x for x in i]
         found_n += [(list(path),) + x for x in n]
+        found_p += [(list(path),) + x for x in q]
     if found_i:
         return "interferes", found_i
+    if found_p:
+        return "not_verified", found_p
     if found_n:
         return "not_verified", ["undeclared proximity"] + found_n
     return "verified", None
@@ -329,6 +407,9 @@ def main():
     scratch.mkdir(parents=True, exist_ok=True)
     oracle.quiet()
     manifest = json.loads((directory / "manifest.json").read_text())
+    if os.environ.get("P2_REVERSE"):
+        # The same cases in the opposite order, in one process: the bytes must not change (FL1).
+        manifest["cases"].reverse()
     if which == "fixtures":
         manifest.setdefault("cases", [])
     scenes, tally = {}, {}
@@ -356,11 +437,11 @@ def main():
             interface = json.loads(out)["original"]["verdict"]
         except (ValueError, KeyError, TypeError):
             interface = "?"
-        record = {"pairs": 0, "max_tolerance": 0.0, "residuals": [], "interface": interface}
+        record = {"pairs": 0, "max_tolerance": 0.0, "residuals": [], "u_pairs": [], "interface": interface}
         originals = {p: scene.leaves[k][2] for p, (_, k, _) in scene.occurrences.items()}
         t0 = time.perf_counter()
         try:
-            status, details = check(scene, originals, record)
+            status, details = check(scene, originals, record, 0.0)
         except Unverified as exc:
             status, details = "not_verified", str(exc)
         return (status, details), time.perf_counter() - t0, record
@@ -419,10 +500,10 @@ def main():
             candidate = oracle.one_solid(directory / case["candidate"]["file"])
             placed = {p: oracle.moved(candidate, oracle.compose(rows, placements[s]))
                       for p, (rows, _, s) in scene.occurrences.items()}
-            record = {"pairs": 0, "max_tolerance": 0.0, "residuals": []}
+            record = {"pairs": 0, "max_tolerance": 0.0, "residuals": [], "u_pairs": []}
             t0 = time.perf_counter()
             try:
-                status, details = check(scene, placed, record)
+                status, details = check(scene, placed, record, entry["read"]["max_uncertainty_mm"] or 0.0)
             except Unverified as exc:
                 status, details = "not_verified", str(exc)
             dt = time.perf_counter() - t0

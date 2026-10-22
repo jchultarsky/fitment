@@ -44,20 +44,19 @@ cylinder face 0: thickened by 0.01: done=True volume=189.75429067192593 (area x 
 cylinder face 1: thickened by 0.01: done=True volume=0.0 (area x 0.01 = 0.282743)
 cylinder face 2: thickened by 0.01: done=True volume=0.0 (area x 0.01 = 0.282743)
 == 6. ../../../corpus/out/m_bracket_lug.stp: its solid offset outward by 0.01 mm
-18 faces, join GeomAbs_JoinType.GeomAbs_Arc: done=True in 0.006 s valid=True volume 31283.1 -> 31392.8
-18 faces, join GeomAbs_JoinType.GeomAbs_Intersection: done=True in 0.004 s valid=True volume 31283.1 -> 31393.8
+18 faces, join GeomAbs_JoinType.GeomAbs_Arc: done=True in 0.005 s valid=True volume 31283.1 -> 31392.8
+18 faces, join GeomAbs_JoinType.GeomAbs_Intersection: done=True in 0.003 s valid=True volume 31283.1 -> 31393.8
 distance to its copy 100 mm away: 87 in 0.006 s
 == 4. determinism: one Common, 20 times, serial and parallel; volumes as float.hex
 parallel=False: 1 distinct default volume(s) ['0x1.d784da4b3c3f8p+14']; 1 distinct Eps volume(s) ['0x1.d784da4b3c32bp+14']
 parallel=True: 1 distinct default volume(s) ['0x1.d784da4b3c3f8p+14']; 1 distinct Eps volume(s) ['0x1.d784da4b3c32bp+14']
 == 6. ../../../corpus/out/m_bracket.stp: its solid offset outward by 0.01 mm
 11 faces, join GeomAbs_JoinType.GeomAbs_Arc: done=True in 0.002 s valid=True volume 30503.1 -> 30608.8
-11 faces, join GeomAbs_JoinType.GeomAbs_Intersection: done=True in 0.003 s valid=True volume 30503.1 -> 30608.9
-distance to its copy 100 mm away: 92 in 0.058 s
+11 faces, join GeomAbs_JoinType.GeomAbs_Intersection: done=True in 0.002 s valid=True volume 30503.1 -> 30608.9
+distance to its copy 100 mm away: 92 in 0.056 s
 == 4. determinism: one Common, 20 times, serial and parallel; volumes as float.hex
 parallel=False: 1 distinct default volume(s) ['0x1.cc5b0a4b3c3fap+14']; 1 distinct Eps volume(s) ['0x1.cc5b0a4b3c3eap+14']
 parallel=True: 1 distinct default volume(s) ['0x1.cc5b0a4b3c3fap+14']; 1 distinct Eps volume(s) ['0x1.cc5b0a4b3c3eap+14']
-uv run --script p1_kernel.py ../../../corpus/out/m_bracket_lug.stp   2.24s user 0.22s system 135% cpu 1.818 total
 == bound methods (OCP 8.0.1.1)
 BRepAlgoAPI_Common: Arguments, Build, Check, CheckInverted, DSFiller, FuzzyValue, Generated, Glue, HasDeleted, HasGenerated, HasHistory, HasModified, History, IsDeleted, IsDone, Modified, NonDestructive, Operation, RunParallel, SectionEdges, SetArguments, SetCheckInverted, SetFuzzyValue, SetGlue, SetNonDestructive, SetOperation, SetRunParallel, SetToFillHistory, SetTools, SetUseOBB, Shape, Shape1, Shape2, SimplifyResult, Tools
 BOPAlgo_BOP: AddArgument, AddError, AddTool, AddWarning, Allocator, Arguments, BuildBOP, CheckInverted, Clear, ClearWarnings, Context, DumpErrors, DumpWarnings, FuzzyValue, Generated, GetParallelMode_s, GetReport, Glue, HasDeleted, HasError, HasErrors, HasGenerated, HasHistory, HasModified, HasWarning, HasWarnings, History, Images, IsDeleted, Modified, NonDestructive, Operation, Origins, PDS, PPaveFiller, Perform, PerformWithFiller, RunParallel, SetArguments, SetCheckInverted, SetFuzzyValue, SetGlue, SetNonDestructive, SetOperation, SetParallelMode_s, SetRunParallel, SetToFillHistory, SetTools, SetUseOBB, Shape, ShapesSD, Tools, UseOBB
