@@ -1,0 +1,12 @@
+python + import of OCP.BRepAlgoAPI, warm: 0.33 s
+s01_bolted.stp (56247 bytes): {"exit": 0, "wall_s": 0.345, "import_s": 0.276, "read_s": 0.011, "read_status": 1, "transferred": true, "solids": 10, "peak_rss_mib": 246.1}
+as1-ac-214.stp (83424 bytes): {"exit": 0, "wall_s": 0.343, "import_s": 0.272, "read_s": 0.014, "read_status": 1, "transferred": true, "solids": 18, "peak_rss_mib": 247.2}
+nist_ftc_09_asme1_ap242-e1.stp (6109836 bytes): {"exit": 0, "wall_s": 0.441, "import_s": 0.272, "read_s": 0.106, "read_status": 1, "transferred": true, "solids": 1, "peak_rss_mib": 314.5}
+hostile truncated_half (28123 bytes): {"exit": 0, "wall_s": 0.332, "stdout_tail": "\u001b[0m", "kernel_lines_on_stdout": 2}
+hostile random_bytes (200000 bytes): {"exit": 0, "wall_s": 0.334, "stdout_tail": "\u001b[0m", "kernel_lines_on_stdout": 2}
+hostile dangling_reference (56247 bytes): {"exit": 0, "wall_s": 0.336, "import_s": 0.272, "read_s": 0.008, "read_status": 1, "transferred": true, "solids": 10, "peak_rss_mib": 246.4}
+hostile self_reference (271 bytes): {"exit": 0, "wall_s": 0.331, "import_s": 0.273, "read_s": 0.001, "read_status": 1, "transferred": false, "solids": 0, "peak_rss_mib": 240.6}
+hostile huge_list (6000238 bytes): {"exit": 0, "wall_s": 0.408, "import_s": 0.274, "read_s": 0.074, "read_status": 1, "transferred": false, "solids": 0, "peak_rss_mib": 339.8}
+hostile many_entities_400k (17778002 bytes): {"exit": 0, "wall_s": 0.623, "import_s": 0.279, "read_s": 0.272, "read_status": 1, "transferred": false, "solids": 0, "peak_rss_mib": 478.0}
+hostile nan_coordinates (56282 bytes): {"exit": 0, "wall_s": 0.336, "import_s": 0.272, "read_s": 0.008, "read_status": 1, "transferred": true, "solids": 10, "peak_rss_mib": 246.2}
+uv run --script p3_process.py driver ../../../corpus/out/s01_bolted.stp    3.95s user 0.29s system 98% cpu 4.289 total

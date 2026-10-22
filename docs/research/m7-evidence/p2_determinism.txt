@@ -1,0 +1,4 @@
+P2 run twice on corpus/out (same machine, same helper pin), timings stripped:
+  strip() { sed -E "s/[0-9]+\.[0-9]+ s//g; s/kernel calls.*//" "$1"; }; diff <(strip p2_fit.txt) <(strip run2.txt)
+result: the only difference is the shell's time line; every status, pair count and volume (printed with repr, all digits) is identical.
+P1 section 4: one Common's volume 20 times, serial and parallel, bit for bit: 1 distinct value each (see p1_kernel.txt).
