@@ -564,6 +564,49 @@ impl<'a> Matcher<'a> {
         self.fitting.as_ref().and_then(fitting::Fitting::control)
     }
 
+    /// FU2: why no fit can be measured with this matcher's verifier, if
+    /// none can: it names no kernel, holds no assembly, or its assembly's
+    /// scene cannot be read for the socket (FB1). A run refuses before any
+    /// candidate then; `None` with no verifier that has an identity.
+    pub fn fit_unavailable(&self) -> Option<&str> {
+        self.fitting
+            .as_ref()
+            .and_then(fitting::Fitting::unavailable)
+    }
+
+    /// M7-49: this matcher with a cap of `max_fits` on the candidates whose
+    /// interface passes at every socket: past it, no fit is asked, and
+    /// [`Matcher::over_max_fits`] says the run is to be refused,
+    /// `too_large`. The count is the interface's, so it never depends on
+    /// the order candidates are judged in. Nothing changes with no verifier
+    /// that has an identity.
+    #[must_use]
+    pub fn with_max_fits(mut self, max_fits: Option<u64>) -> Self {
+        if let Some(fitting) = self.fitting.as_mut() {
+            fitting.set_max_fits(max_fits);
+        }
+        self
+    }
+
+    /// M7-49: the cap on fits, as `fitment.match` v2 states it (FM2).
+    pub fn max_fits(&self) -> Option<u64> {
+        self.fitting.as_ref().and_then(fitting::Fitting::max_fits)
+    }
+
+    /// M7-49: how many candidates judged so far passed their interface at
+    /// every socket, with a verifier that has an identity (the original
+    /// judged by [`Matcher::judge_original`] is not counted).
+    pub fn interface_passes(&self) -> u64 {
+        self.fitting.as_ref().map_or(0, fitting::Fitting::passes)
+    }
+
+    /// M7-49: more candidates passed their interface than the cap allows:
+    /// the run is refused, `too_large`, and its document never written.
+    pub fn over_max_fits(&self) -> bool {
+        self.max_fits()
+            .is_some_and(|cap| self.interface_passes() > cap)
+    }
+
     /// FV8: the run that judged `results` with this matcher depends on the
     /// machine, so it never claims to be complete: a run of the control
     /// was incomplete, or a result's fit was ([`CandidateResult::fit_incomplete`]).
@@ -636,8 +679,12 @@ impl<'a> Matcher<'a> {
     pub fn judge_step(&self, step: &[u8]) -> CandidateResult {
         let read = FeaturesDocument::read(step);
         let source = Source::of(step, read.header().cloned());
+        let body = fitting::Body::Step {
+            bytes: step,
+            sha256: source.sha256.clone(),
+        };
         // This build just read it, so it is current.
-        self.judge_read(&read, source, Some(step))
+        self.judge_read(&read, source, &body)
     }
 
     /// CF1 for a stored document: an accepted one judged as
@@ -661,28 +708,50 @@ impl<'a> Matcher<'a> {
                 extractor_version: document.extractor_version(),
             });
         }
-        Ok(self.judge_read(document, source, None))
+        Ok(self.judge_read(document, source, &fitting::Body::None))
     }
 
-    /// The one path both share, for a current document: the fit request
-    /// gets `step` where there is one (a file's bytes), so a file run keeps
-    /// its fit check.
+    /// FC6: [`Matcher::judge_document`] for a stored document whose file
+    /// `fetch` returns: called only when the fit is asked (every socket's
+    /// interface passed, every placement unique, and a verifier with an
+    /// identity), its bytes checked against `source`'s SHA-256 before the
+    /// verifier sees them. A fetch that fails, or bytes of another
+    /// SHA-256, make the fit `not_verified`, `stored_bytes_unreadable`, and
+    /// the run incomplete ([`Matcher::fit_incomplete`]). With no verifier
+    /// that has an identity, `fetch` is never called (CT6).
+    ///
+    /// # Errors
+    ///
+    /// [`NotCurrent`], as [`Matcher::judge_document`].
+    pub fn judge_document_with_fetch(
+        &self,
+        document: &FeaturesDocument,
+        source: Source,
+        fetch: crate::fit::Fetch<'_>,
+    ) -> Result<CandidateResult, NotCurrent> {
+        if !document.is_current() {
+            return Err(NotCurrent {
+                extractor_version: document.extractor_version(),
+            });
+        }
+        let body = fitting::Body::Stored {
+            sha256: source.sha256.clone(),
+            fetch,
+        };
+        Ok(self.judge_read(document, source, &body))
+    }
+
+    /// The one path they share, for a current document: the fit request
+    /// gets `body`, a file's bytes, a store's on demand, or none.
     fn judge_read(
         &self,
         document: &FeaturesDocument,
         source: Source,
-        step: Option<&[u8]>,
+        body: &fitting::Body<'_>,
     ) -> CandidateResult {
-        let body = match step {
-            Some(bytes) => fitting::Body::Step {
-                bytes,
-                sha256: source.sha256.clone(),
-            },
-            None => fitting::Body::None,
-        };
         let source = CandidateSource::File(source);
         match document.part() {
-            Some(part) => self.judge(part, source, &body),
+            Some(part) => self.judge(part, source, (body, fitting::Counted::Yes)),
             None => CandidateResult {
                 source,
                 product: None,
@@ -701,7 +770,7 @@ impl<'a> Matcher<'a> {
     /// One candidate part, read once (CF1), against every socket; `source`
     /// says where it came from.
     pub fn judge_part(&self, part: &Part, source: CandidateSource) -> CandidateResult {
-        self.judge(part, source, &fitting::Body::None)
+        self.judge(part, source, (&fitting::Body::None, fitting::Counted::Yes))
     }
 
     /// CO5 (`docs/research/m6-api.md`): a component of an assembly, read
@@ -715,6 +784,44 @@ impl<'a> Matcher<'a> {
         component: &SelectedComponent,
         source: CandidateSource,
     ) -> CandidateResult {
+        self.component(component, source, None, fitting::Counted::Yes)
+    }
+
+    /// [`Matcher::judge_component`] for a component of another assembly
+    /// than the socket's, whose bytes are `assembly`: its fit's helper
+    /// loads them as a second scene and finds the component there by its
+    /// faces (FB5). Bytes that are not the component's assembly are an
+    /// internal refusal, a fitment bug.
+    pub fn judge_component_in(
+        &self,
+        component: &SelectedComponent,
+        source: CandidateSource,
+        assembly: &[u8],
+    ) -> CandidateResult {
+        if crate::sha256::sha256_hex(assembly) != component.assembly_sha256() {
+            return self.misnamed(component, source);
+        }
+        self.component(component, source, Some(assembly), fitting::Counted::Yes)
+    }
+
+    /// VD15: the original, the target read from the socket's own assembly,
+    /// judged as [`Matcher::judge_component`] judges a component. It is no
+    /// candidate: it never counts against the cap on fits (M7-49).
+    pub fn judge_original(
+        &self,
+        component: &SelectedComponent,
+        source: CandidateSource,
+    ) -> CandidateResult {
+        self.component(component, source, None, fitting::Counted::No)
+    }
+
+    fn component(
+        &self,
+        component: &SelectedComponent,
+        source: CandidateSource,
+        assembly: Option<&[u8]>,
+        counted: fitting::Counted,
+    ) -> CandidateResult {
         let theirs = matches!(
             &source,
             CandidateSource::Component { assembly_sha256, definition }
@@ -725,9 +832,15 @@ impl<'a> Matcher<'a> {
             return self.judge(
                 component.part(),
                 source,
-                &fitting::Body::Component(component),
+                (&fitting::Body::Component(component, assembly), counted),
             );
         }
+        self.misnamed(component, source)
+    }
+
+    /// M4-17: a component named as another candidate than itself, an
+    /// internal refusal.
+    fn misnamed(&self, component: &SelectedComponent, source: CandidateSource) -> CandidateResult {
         let refusals = vec![Refusal::new(
             RefusalCode::Internal,
             Some(component.definition()),
@@ -751,7 +864,7 @@ impl<'a> Matcher<'a> {
         &self,
         part: &Part,
         source: CandidateSource,
-        body: &fitting::Body<'_>,
+        body: (&fitting::Body<'_>, fitting::Counted),
     ) -> CandidateResult {
         let view = CandidateView::of(part);
         let mut sockets: Vec<SocketResult> = self

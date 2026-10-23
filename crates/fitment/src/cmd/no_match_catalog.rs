@@ -12,6 +12,7 @@ pub(super) struct Candidates {
     pub results: Vec<(CandidateResult, Vec<String>)>,
     pub searched: String,
     pub failed: bool,
+    pub fit_reads: Option<usize>,
 }
 
 pub(super) fn candidates(

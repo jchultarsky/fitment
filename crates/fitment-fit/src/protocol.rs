@@ -467,6 +467,32 @@ pub(crate) fn self_test(nonce: String, stress: Option<Stress>) -> Result<Request
     )
 }
 
+/// FB5: the `scene` request of a component's own assembly when it is not
+/// the socket's: its bytes, naming no body, which the helper holds as its
+/// second scene and finds the component in by its faces. Its digest names
+/// the assembly; core plans nothing from its reply.
+pub(crate) fn component_scene(nonce: String, assembly: &[u8]) -> Result<Request, EncodeError> {
+    let sha256 = sha256_hex(assembly);
+    let body = SceneRequest {
+        scene: &sha256,
+        bodies: Vec::new(),
+    };
+    request(
+        Op::Scene,
+        nonce,
+        Some(component_scene_digest(&sha256)),
+        body,
+        &[assembly],
+        Expect::Scene(Vec::new()),
+    )
+}
+
+/// FB5: the digest a component scene's request carries, for its
+/// assembly's SHA-256.
+pub(crate) fn component_scene_digest(sha256: &str) -> String {
+    format!("component-scene-{sha256}")
+}
+
 /// VT71, for the tests: a `scene` request for `assembly` that names no
 /// body, claiming its SHA-256 is `sha256`.
 #[cfg(feature = "test-support")]

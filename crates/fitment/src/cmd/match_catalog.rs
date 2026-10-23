@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use fitment_catalog::{Catalog, Error, NotRun, Options, Reference, Selection};
+use fitment_catalog::{Catalog, Error, NoObserver, NotRun, Options, Reference, Selection};
 use fitment_core::{Blocked, CandidateResult, Matcher};
 
 use super::text::{note, printable};
@@ -17,6 +17,8 @@ pub(super) struct Candidates {
     pub searched: String,
     /// True if a stored row was damaged (exit 1).
     pub failed: bool,
+    /// With a fit verifier, how many stored files its fits read (FU6).
+    pub fit_reads: Option<usize>,
 }
 
 /// CL2's code for an error opening the catalog.
@@ -64,11 +66,18 @@ pub(super) fn candidates(
         Selection::Named(references)
     };
     let mut catalog = Catalog::open(dir, Options::default()).map_err(|e| fail(&e))?;
+    // FC6: with a fit verifier, a passing candidate's file is read through
+    // this handle, hash-checked, when its fit is asked.
+    let blobs = matcher.fit_identity().map(|_| catalog.fit_blobs());
     let run = {
         let snapshot = catalog.snapshot().map_err(|e| fail(&e))?;
-        snapshot
-            .match_catalog(matcher, &selection, jobs)
-            .map_err(|e| fail(&e))?
+        match &blobs {
+            Some(blobs) => {
+                snapshot.match_catalog_fitted(matcher, &selection, jobs, &NoObserver, blobs)
+            }
+            None => snapshot.match_catalog(matcher, &selection, jobs),
+        }
+        .map_err(|e| fail(&e))?
     };
     // CC3: the snapshot is over; the WAL may be folded back.
     catalog.checkpoint();
@@ -121,6 +130,7 @@ pub(super) fn candidates(
         results: run.results,
         searched,
         failed,
+        fit_reads: blobs.as_ref().map(fitment_catalog::FitBlobs::reads),
     })
 }
 

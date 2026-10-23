@@ -381,6 +381,7 @@ dependencies = [
  "fitment-catalog",
  "fitment-core",
  "fitment-corpus",
+ "fitment-fit",
  "predicates",
  "serde",
  "serde_json",

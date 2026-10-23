@@ -23,7 +23,7 @@ use std::time::Duration;
 use fitment_core::sha256_hex;
 use serde_json::{Value, json};
 
-use super::{Death, FAKE_PYTHON, FAKE_SCRIPT, FLOOD_COUNT, Scenario};
+use super::{Death, FAKE_PYTHON, FAKE_SCRIPT, FAKE_SITE_FILE, FLOOD_COUNT, Scenario};
 use crate::frame::{self, Caps, Frame, FrameError, MAGIC};
 use crate::{BINDING, FIT_PROTOCOL, KERNEL_NAME, LOCK};
 
@@ -66,6 +66,13 @@ impl Fake {
         }
         let script = PathBuf::from(script);
         let text = fs::read_to_string(&script).map_err(|e| e.to_string())?;
+        // An embedded script (`Fake::install_embedded`): the fake's own
+        // script is in its site directory.
+        let text = if text.starts_with(FAKE_SCRIPT) {
+            text
+        } else {
+            fs::read_to_string(PathBuf::from(site).join(FAKE_SITE_FILE)).unwrap_or_default()
+        };
         if !text.starts_with(FAKE_SCRIPT) {
             return Err("not a fake script".to_owned());
         }
@@ -339,8 +346,10 @@ impl Fake {
     }
 
     fn at_check(&self, body: &mut Value) {
-        if self.scenario == Scenario::CrashAtCheck {
-            die(Death::Segv);
+        match self.scenario {
+            Scenario::CrashAtCheck => die(Death::Segv),
+            Scenario::HangAtCheck => linger(),
+            _ => {}
         }
         let Some(pairs) = body["pairs"].as_array_mut() else {
             return;

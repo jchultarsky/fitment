@@ -5,6 +5,8 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fs::{Content, Fs, FsRead};
 use crate::hex::Sha256Hex;
@@ -250,5 +252,70 @@ impl FsRead for Checked {
         self.hasher = fitment_core::Sha256::new();
         self.seen = 0;
         Ok(())
+    }
+}
+
+/// FC6 (`docs/research/m7-fit.md`), QR13: the one way a catalog match
+/// reaches a blob. A read-only handle, made from the catalog before its
+/// snapshot ([`crate::Catalog::fit_blobs`]) and handed to
+/// [`crate::Snapshot::match_catalog_fitted`], which reads through it only
+/// the file of a candidate whose fit is asked: every socket's interface
+/// passed, its placement unique, a verifier with an identity. Each read is
+/// ST11's: the whole file, returned only if it hashes to its name. The
+/// snapshot itself still holds no way to a blob (QR11).
+pub struct FitBlobs {
+    layout: crate::layout::Layout,
+    fs: Arc<dyn Fs>,
+    reads: AtomicUsize,
+}
+
+impl std::fmt::Debug for FitBlobs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FitBlobs")
+            .field("root", &self.layout.root())
+            .field("reads", &self.reads())
+            .finish_non_exhaustive()
+    }
+}
+
+impl FitBlobs {
+    pub(crate) fn new(layout: Layout, fs: Arc<dyn Fs>) -> Self {
+        Self {
+            layout,
+            fs,
+            reads: AtomicUsize::new(0),
+        }
+    }
+
+    /// ST11: the bytes stored under `sha256`, read once and returned only
+    /// if they hash to it; each call counted, whatever it finds.
+    ///
+    /// # Errors
+    ///
+    /// [`BadBlob`]: missing, damaged (a name that is no SHA-256 too) or
+    /// unreadable.
+    pub fn read(&self, sha256: &str) -> Result<Vec<u8>, BadBlob> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        let Ok(sha256) = Sha256Hex::parse(sha256) else {
+            return Err(BadBlob::Damaged);
+        };
+        Blobs {
+            layout: &self.layout,
+            fs: self.fs.as_ref(),
+        }
+        .read(&sha256)
+    }
+
+    /// How many blobs it was asked to read (FU6).
+    pub fn reads(&self) -> usize {
+        self.reads.load(Ordering::Relaxed)
+    }
+}
+
+impl BadBlob {
+    /// What a fit's evidence says of it: a fixed sentence, an I/O error by
+    /// its kind alone, never a path.
+    pub fn sentence(&self) -> String {
+        self.kind_text()
     }
 }

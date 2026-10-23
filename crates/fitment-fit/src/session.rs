@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use fitment_core::fit::{FitFailure, FitMeasures, SceneMeasures};
+use fitment_core::fit::{FitBody, FitFailure, FitMeasures, SceneMeasures};
 use fitment_core::{FitIdentity, FitRequest, FitVerifier, SocketDocument, sha256_hex};
 
 use crate::dir::{FitDir, HelperFiles, Manifest, PrepareError, SCRIPT};
@@ -342,6 +342,9 @@ impl From<ProtocolError> for Failed {
 struct Live {
     process: Process,
     scene: Option<(String, SceneMeasures)>,
+    /// FB5: the SHA-256 of the component scene it holds beside the
+    /// socket's, if any.
+    other: Option<String>,
     checks: u32,
     handshake: Handshake,
 }
@@ -471,6 +474,7 @@ impl OcctHelper {
             Ok(handshake) => Ok(Live {
                 process,
                 scene: None,
+                other: None,
                 checks: 0,
                 handshake,
             }),
@@ -956,9 +960,33 @@ impl<'h> OcctSession<'h> {
         Ok(measures)
     }
 
+    /// FB5: the scene of a component's own assembly, when the request's
+    /// body is a component of another assembly than the socket's, loaded
+    /// in `live` beside the socket's if it is not already. The helper
+    /// holds two scenes, the socket's first; a third replaces the other.
+    fn other_scene(&self, live: &mut Live, request: &FitRequest<'_>) -> Result<(), Failed> {
+        let FitBody::Component {
+            assembly: Some(bytes),
+            assembly_sha256,
+            ..
+        } = request.body()
+        else {
+            return Ok(());
+        };
+        if live.other.as_deref() == Some(assembly_sha256.as_str()) {
+            return Ok(());
+        }
+        let wait = Wait::new(self.helper.options.setup_timeout, self.cancel);
+        let sent = protocol::component_scene(self.helper.nonces.next(), bytes)?;
+        round(&mut live.process, sent, &wait, protocol::scene_measures)?;
+        live.other = Some(assembly_sha256.clone());
+        Ok(())
+    }
+
     /// One candidate's `place` and `check` on `live`, under one deadline.
     fn serve(&self, live: &mut Live, request: &FitRequest<'_>) -> Result<FitMeasures, Failed> {
         let scene = self.scene(live, request)?;
+        self.other_scene(live, request)?;
         #[cfg(feature = "test-support")]
         // The review of PR 2a (P1): a panic while a helper is taken.
         assert!(

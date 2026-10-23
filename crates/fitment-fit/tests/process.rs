@@ -11,7 +11,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use common::{S01, code, fast, judge, root, s01, short, verified};
+use common::{BRACKET, S01, code, fast, judge, root, s01, short, verified};
 use fitment_core::fit::{FitCode, FitFailure};
 use fitment_core::{MatchOptions, MatchPolicy, Matcher, VerdictKind};
 use fitment_fit::testing::{Fake, Replaying, Scenario};
@@ -29,6 +29,7 @@ fn main() {
         the_server_s_helpers_have_a_process_group_of_their_own,
         a_helper_unavailable_mid_session_leaves_the_run_incomplete,
         a_server_s_helper_is_killed_with_its_group,
+        a_component_of_another_assembly_is_found_in_its_second_scene,
     ];
 }
 
@@ -328,4 +329,66 @@ fn a_server_s_helper_is_killed_with_its_group() {
             "the launcher's child outlived its group's kill"
         );
     }
+}
+
+/// FB5: a component of another assembly than the socket's (s01 under
+/// another header: other bytes, the same bracket) is judged with that
+/// assembly's bytes, which the session loads once in its helper as a
+/// second scene beside the socket's; the helper finds the component there
+/// by its faces, and the bracket matches. A file candidate in between
+/// keeps both scenes: the component's is not sent again.
+fn a_component_of_another_assembly_is_found_in_its_second_scene() {
+    let root = root("second-scene");
+    let fake = Fake::install(&root, Scenario::Replay);
+    let helper = fake.helper(fast());
+    let document = s01();
+    let session = OcctSession::open(&helper, S01.to_vec(), &document).unwrap();
+    let replaying = Replaying::new(&session, &fake);
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &replaying,
+    )
+    .unwrap();
+    let text = String::from_utf8(S01.to_vec()).unwrap();
+    let other = text
+        .replacen("FILE_NAME('", "FILE_NAME('other", 1)
+        .into_bytes();
+    assert_ne!(other, S01);
+    let component = fitment_core::SelectedComponent::read(&other, Some("BRACKET"), None).unwrap();
+    let payload = || {
+        let tmp = fake.dir.join(fitment_fit::TMP);
+        let dir = std::fs::read_dir(&tmp)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        std::fs::read(dir.join("payload-0.bin")).unwrap()
+    };
+    let first = matcher.judge_component_in(&component, component.source(), &other);
+    assert_eq!(
+        first.verdict.kind(),
+        VerdictKind::Match,
+        "{:?}",
+        code(&first)
+    );
+    assert_eq!(payload(), other, "the second scene was sent");
+    assert_eq!(
+        matcher.judge_step(BRACKET).verdict.kind(),
+        VerdictKind::Match
+    );
+    assert_eq!(payload(), BRACKET);
+    let again = matcher.judge_component_in(&component, component.source(), &other);
+    assert_eq!(again.verdict.kind(), VerdictKind::Match);
+    assert_eq!(payload(), BRACKET, "the second scene is still held");
+    for p in replaying.passed() {
+        assert_eq!(p.exact, p.got);
+    }
+    assert_eq!(session.spawned(), 1);
+    assert_eq!(session.take_reports(), []);
+    // Bytes that are not the component's assembly: a fitment bug.
+    let misnamed = matcher.judge_component_in(&component, component.source(), S01);
+    assert!(misnamed.is_fitment_bug());
 }

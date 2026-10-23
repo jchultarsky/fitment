@@ -18,7 +18,10 @@
 //! run the same with every stored file moved away. Outside the crate a
 //! stored file is read only through [`Catalog::read_blob`], which checks
 //! its hash (ST11), and never while a snapshot, and so a match, is open:
-//! the snapshot borrows the catalog.
+//! the snapshot borrows the catalog. The one exception is a match with a
+//! fit verifier (`docs/research/m7-fit.md`, FC6): it reads, through the
+//! [`FitBlobs`] handed to it, only the file of a candidate whose fit is
+//! asked, each hash-checked.
 //!
 //! ```compile_fail,E0502
 //! # fn run(catalog: &mut fitment_catalog::Catalog, sha: &fitment_catalog::Sha256Hex)
@@ -54,7 +57,7 @@ use std::sync::Arc;
 
 use rusqlite::{Connection, OpenFlags};
 
-pub use blobs::{BadBlob, Placed};
+pub use blobs::{BadBlob, FitBlobs, Placed};
 pub use change::{Deleted, Deletion, NotReplaced, Pruned, Released, Replaced, Unnamed};
 pub use fs::{Content, Fs, FsRead, FsWrite, Point, StdFs};
 pub use gc::Collected;
@@ -655,6 +658,15 @@ impl Catalog {
     #[cfg(feature = "test-support")]
     pub fn blob_path(&self, sha256: &Sha256Hex) -> PathBuf {
         self.layout.blob(sha256)
+    }
+
+    /// FC6 (`docs/research/m7-fit.md`): the read-only handle a catalog
+    /// match with a fit verifier reads its candidates' files through, past
+    /// their interface only ([`Snapshot::match_catalog_fitted`]). Made
+    /// before the snapshot, which borrows the catalog, and owning what it
+    /// reads with.
+    pub fn fit_blobs(&self) -> FitBlobs {
+        FitBlobs::new(self.layout.clone(), Arc::clone(&self.fs))
     }
 
     fn blobs(&self) -> blobs::Blobs<'_> {

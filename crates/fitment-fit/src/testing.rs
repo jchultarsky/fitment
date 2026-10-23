@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use fitment_core::fit::{FitFailure, FitMeasures};
+use fitment_core::fit::{FitBody, FitFailure, FitMeasures};
 use fitment_core::{FitIdentity, FitRequest, FitVerifier};
 
 pub use fake::fake_main;
@@ -182,6 +182,9 @@ pub enum Scenario {
     StaleReply,
     /// Crashes at `check` (T1).
     CrashAtCheck,
+    /// Answers `scene` and `place`, then never answers `check`: a check
+    /// past its deadline (`--fit-timeout`).
+    HangAtCheck,
     /// Its second helper crashes at its first `place`, once (T1).
     CrashSecondHelperOnce,
     /// After its second `check` reply, sends 64 frames of 1 MiB nobody
@@ -279,7 +282,7 @@ fn all() -> Vec<Scenario> {
 }
 
 /// Every scenario but the deaths and the envelope's breaks.
-const ALL: [Scenario; 43] = [
+const ALL: [Scenario; 44] = [
     Scenario::Replay,
     Scenario::NoiseOnStderr,
     Scenario::CrashOnce,
@@ -321,9 +324,14 @@ const ALL: [Scenario; 43] = [
     Scenario::HostileErrorFrame,
     Scenario::StaleReply,
     Scenario::CrashAtCheck,
+    Scenario::HangAtCheck,
     Scenario::CrashSecondHelperOnce,
     Scenario::Floods,
 ];
+
+/// The file of a fake's site directory that names its scenario and state
+/// when its script is the embedded one ([`Fake::install_embedded`]).
+pub const FAKE_SITE_FILE: &str = "fitment-fake.txt";
 
 /// The marker a fake script starts with.
 const FAKE_SCRIPT: &str = "# fitment fake helper (VT78): read by the test binary, not Python";
@@ -351,8 +359,26 @@ impl Fake {
     /// # Panics
     ///
     /// If any of it cannot be written.
-    #[allow(clippy::expect_used)] // test support: a setup failure fails the test
     pub fn install(root: &Path, scenario: Scenario) -> Self {
+        Self::installed(root, scenario, false)
+    }
+
+    /// [`Fake::install`] with the script and lock this build embeds, so
+    /// that a release binary's own checks (`HelperFiles::embedded`) take
+    /// it, as `fitment match --fit` makes them: the scenario and the state
+    /// directory are in a file of the site directory instead
+    /// ([`FAKE_SITE_FILE`]), where the fake looks when its script is not a
+    /// fake's.
+    ///
+    /// # Panics
+    ///
+    /// If any of it cannot be written.
+    pub fn install_embedded(root: &Path, scenario: Scenario) -> Self {
+        Self::installed(root, scenario, true)
+    }
+
+    #[allow(clippy::expect_used)] // test support: a setup failure fails the test
+    fn installed(root: &Path, scenario: Scenario, embedded: bool) -> Self {
         let dir = root.join("fit");
         let state = root.join("state");
         let site = root.join("site-packages");
@@ -363,7 +389,12 @@ impl Fake {
             scenario.name(),
             state.display()
         );
-        let files = HelperFiles::new(script, format!("# the lock of {}\n", scenario.name()));
+        let files = if embedded {
+            fs::write(site.join(FAKE_SITE_FILE), &script).expect("the fake's site file");
+            HelperFiles::embedded()
+        } else {
+            HelperFiles::new(script, format!("# the lock of {}\n", scenario.name()))
+        };
         let fit = FitDir::create(&dir).expect("the fit directory");
         fit.install(&files).expect("the helper's files");
         let interpreter = std::env::current_exe().expect("the test binary");
@@ -407,7 +438,11 @@ pub struct Replaying<'a, 'h> {
     session: &'a OcctSession<'h>,
     state: PathBuf,
     passed: Mutex<Vec<Passed>>,
+    answer: Answer,
 }
+
+/// The kernel's measures a [`Replaying`] leaves for a request.
+type Answer = Box<dyn Fn(&FitRequest<'_>) -> FitMeasures + Send + Sync>;
 
 impl std::fmt::Debug for Replaying<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -420,10 +455,22 @@ impl std::fmt::Debug for Replaying<'_, '_> {
 impl<'a, 'h> Replaying<'a, 'h> {
     /// Replies for `fake`'s helper in `session`.
     pub fn new(session: &'a OcctSession<'h>, fake: &Fake) -> Self {
+        Self::answering(session, fake, fitment_core::fit::testing::exact)
+    }
+
+    /// Replies for `fake`'s helper in `session`, of the measures `answer`
+    /// gives each request, such as the exact kernel's with one pair made
+    /// an interference.
+    pub fn answering(
+        session: &'a OcctSession<'h>,
+        fake: &Fake,
+        answer: impl Fn(&FitRequest<'_>) -> FitMeasures + Send + Sync + 'static,
+    ) -> Self {
         Self {
             session,
             state: fake.state.clone(),
             passed: Mutex::new(Vec::new()),
+            answer: Box::new(answer),
         }
     }
 
@@ -457,12 +504,25 @@ impl FitVerifier for Replaying<'_, '_> {
     }
 
     fn measure(&self, request: &FitRequest<'_>) -> Result<FitMeasures, FitFailure> {
-        let exact = fitment_core::fit::testing::exact(request);
+        let exact = (self.answer)(request);
         let plan = request.plan(&exact.scene, &exact.place);
         self.leave(
             &request.scene().request_digest(),
             &protocol::scene_reply(&exact.scene),
         );
+        // FB5: a component of another assembly is found in that
+        // assembly's own scene, which names no body.
+        if let FitBody::Component {
+            assembly: Some(_),
+            assembly_sha256,
+            ..
+        } = request.body()
+        {
+            self.leave(
+                &protocol::component_scene_digest(assembly_sha256),
+                &serde_json::json!({ "bodies": [], "solids": [] }),
+            );
+        }
         self.leave(
             &request.place_digest(),
             &protocol::place_reply(&exact.place),

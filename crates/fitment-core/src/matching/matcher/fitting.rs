@@ -8,15 +8,16 @@
 //! each socket's fit (FV7).
 
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use super::{Matcher, Ready, SocketResult};
 use crate::assembly::SelectedComponent;
 use crate::features::Part;
 use crate::fit::{
-    self, FitBody, FitCandidate, FitEvidence, FitFailure, FitIdentity, FitOutcome, FitRequest,
-    FitScene, FitStatus, MotionKind, OCCURRENCE_UNPLACED, OCCURRENCE_UNPLACED_ELSEWHERE, Placed,
-    PlanInput, Zones,
+    self, Fetch, FitBody, FitCandidate, FitEvidence, FitFailure, FitIdentity, FitOutcome,
+    FitRequest, FitScene, FitStatus, MotionKind, OCCURRENCE_UNPLACED,
+    OCCURRENCE_UNPLACED_ELSEWHERE, Placed, PlanInput, Zones,
 };
 use crate::geom::Rigid;
 use crate::matching::CandidateView;
@@ -28,14 +29,27 @@ use crate::verdict::{RequirementId, VerdictKind, decide};
 pub(super) const ALONE: &str = "a socket judged alone gets no fit";
 
 /// How the candidate's body reaches the fit (FB4): a file's bytes, a
-/// component of an assembly, or nothing the helper could read.
+/// stored file's bytes on demand, a component of an assembly, or nothing
+/// the helper could read.
 pub(super) enum Body<'b> {
     /// The bytes M2's gate accepted, and their SHA-256.
     Step { bytes: &'b [u8], sha256: String },
-    /// A component, read and chosen by core.
-    Component(&'b SelectedComponent),
-    /// A stored document or a given part: no bytes.
+    /// A stored document's file, fetched only when its fit is asked
+    /// (FC6), and its row's SHA-256, which the bytes must hash to.
+    Stored { sha256: String, fetch: Fetch<'b> },
+    /// A component, read and chosen by core; with its assembly's bytes
+    /// when that is not the socket's (FB5).
+    Component(&'b SelectedComponent, Option<&'b [u8]>),
+    /// A given part: no bytes.
     None,
+}
+
+/// Whether a judgment counts against the cap on fits (M7-49): a
+/// candidate's does; the original's (VD15) is no candidate's.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Counted {
+    Yes,
+    No,
 }
 
 /// What a matcher with a verifier that has an identity holds for the fit:
@@ -51,6 +65,11 @@ pub(super) struct Fitting {
     /// Held while the control runs, so it runs once at a time; the last
     /// incomplete run.
     incomplete: Mutex<Option<FitEvidence>>,
+    /// M7-49: the most candidates whose interface passes that a run asks
+    /// fits for; `None` for no cap.
+    max_fits: Option<u64>,
+    /// The candidates whose every socket's interface passed so far.
+    passes: AtomicU64,
 }
 
 impl Fitting {
@@ -78,11 +97,48 @@ impl Fitting {
             read,
             control: OnceLock::new(),
             incomplete: Mutex::new(None),
+            max_fits: None,
+            passes: AtomicU64::new(0),
         }
     }
 
     pub(super) fn identity(&self) -> &FitIdentity {
         &self.identity
+    }
+
+    /// Why no fit can be measured, if none can: the scene of the
+    /// verifier's assembly could not be read (FU2).
+    pub(super) fn unavailable(&self) -> Option<&str> {
+        self.read.as_ref().err().map(String::as_str)
+    }
+
+    /// M7-49: the cap on fits.
+    pub(super) fn set_max_fits(&mut self, max_fits: Option<u64>) {
+        self.max_fits = max_fits;
+    }
+
+    pub(super) fn max_fits(&self) -> Option<u64> {
+        self.max_fits
+    }
+
+    /// The candidates whose every socket's interface passed so far.
+    pub(super) fn passes(&self) -> u64 {
+        self.passes.load(Ordering::Relaxed)
+    }
+
+    /// M7-49: one more candidate passed its interface; false once the
+    /// passes exceed the cap, when no fit is asked for it. The count is
+    /// the interface's, so whether a run exceeds the cap never depends on
+    /// the order candidates are judged in.
+    fn within_max_fits(&self, counted: Counted) -> bool {
+        if counted == Counted::No {
+            return true;
+        }
+        let passes = self
+            .passes
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        self.max_fits.is_none_or(|cap| passes <= cap)
     }
 
     /// The control: its complete run, else its last incomplete one.
@@ -139,7 +195,7 @@ impl Matcher<'_> {
         fitting: &Fitting,
         part: &Part,
         cand: &CandidateView<'_>,
-        body: &Body<'_>,
+        (body, counted): (&Body<'_>, Counted),
         sockets: &mut [SocketResult],
     ) -> Option<FitEvidence> {
         if sockets.is_empty()
@@ -147,6 +203,11 @@ impl Matcher<'_> {
                 .iter()
                 .any(|s| s.verdict.kind() == VerdictKind::Reject)
         {
+            return None;
+        }
+        // M7-49: past the cap the run is refused, its document unwritten;
+        // the candidate's sockets keep the fit they were judged with.
+        if !fitting.within_max_fits(counted) {
             return None;
         }
         if sockets.iter().any(unplaced) {
@@ -285,7 +346,26 @@ impl Matcher<'_> {
                 );
             }
         };
-        let Some(body) = fit_body(body, scene) else {
+        // FC6: a stored file's bytes, read now that its fit is asked, and
+        // only if they hash to its row.
+        let fetched = match body {
+            Body::Stored { sha256, fetch } => match fetch() {
+                Ok(bytes) if crate::sha256::sha256_hex(&bytes) == *sha256 => Some(bytes),
+                _ => {
+                    let outcome = FitOutcome::failed(ids, &FitFailure::StoredBytesUnreadable);
+                    return FitEvidence::unmeasured(outcome, placements);
+                }
+            },
+            _ => None,
+        };
+        let body = match (body, &fetched) {
+            (Body::Stored { sha256, .. }, Some(bytes)) => Some(FitBody::Step {
+                bytes,
+                sha256: sha256.clone(),
+            }),
+            _ => fit_body(body, scene),
+        };
+        let Some(body) = body else {
             return fail(
                 placements,
                 "the candidate's bytes are not available to the fit",
@@ -343,14 +423,25 @@ fn placed(document: &SocketDocument, sockets: &[SocketResult]) -> Option<Vec<Pla
 
 /// FB4: the body the helper reads: a file's bytes and their SHA-256, or a
 /// component named by its assembly, its occurrence (the scene's first of
-/// its definition, when the assembly is the socket's) and its faces' `#id`s.
+/// its definition, when the assembly is the socket's) and its faces'
+/// `#id`s; a component of another assembly with that assembly's bytes,
+/// its second scene (FB5). A stored file's bytes are fetched by
+/// [`Matcher::measured`].
 fn fit_body<'b>(body: &Body<'b>, scene: &FitScene) -> Option<FitBody<'b>> {
     match body {
         Body::Step { bytes, sha256 } => Some(FitBody::Step {
             bytes,
             sha256: sha256.clone(),
         }),
-        Body::Component(component) => {
+        Body::Component(component, Some(assembly))
+            if component.assembly_sha256() != scene.sha256() =>
+        {
+            Some(FitBody::component_of(
+                assembly,
+                fit::faces_of(component.part()),
+            ))
+        }
+        Body::Component(component, _) => {
             let sha256 = component.assembly_sha256();
             let own = (sha256 == scene.sha256())
                 .then(|| {
@@ -365,6 +456,6 @@ fn fit_body<'b>(body: &Body<'b>, scene: &FitScene) -> Option<FitBody<'b>> {
                 None => FitBody::component(sha256, Vec::new(), fit::faces_of(component.part())),
             })
         }
-        Body::None => None,
+        Body::Stored { .. } | Body::None => None,
     }
 }

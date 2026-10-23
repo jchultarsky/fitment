@@ -27,12 +27,18 @@ path = "src/main.rs"
 [features]
 # The catalog (M5) and its SQLite; without it, `fitment catalog` exits 2
 # (docs/research/m5-catalog.md, CL8).
-default = ["catalog"]
+default = ["catalog", "fit"]
 catalog = ["dep:fitment-catalog"]
+# The fit verifier (M7): `fitment match --fit ASSEMBLY` and `fitment fit
+# setup`, through fitment-fit's helper process; without it, both exit 2
+# (docs/research/m7-fit.md, FG3). No Open CASCADE is in any crate: uv
+# fetches it at `fitment fit setup` (FG5).
+fit = ["dep:fitment-fit"]
 
 [dependencies]
 fitment-core = { workspace = true }
 fitment-catalog = { workspace = true, optional = true }
+fitment-fit = { workspace = true, optional = true }
 clap = { workspace = true }
 # The table view names values as the document does; both already build for
 # fitment-core.
@@ -43,12 +49,21 @@ serde_json = { workspace = true }
 # Raw edits of a catalog, in the CLI tests.
 fitment-catalog = { workspace = true, features = ["test-support"] }
 # The test-only fit verifier (docs/research/m7-fit.md, FC1), for v2's
-# golden until the CLI has a verifier of its own (PR 3).
+# golden and the catalog's fit tests.
 fitment-core = { workspace = true, features = ["test-support"] }
+# VT78's fake helper, which the CLI's fit tests run `fitment match --fit`
+# against on every OS, with no Python (fit_cli.rs, harness = false).
+fitment-fit = { workspace = true, features = ["test-support"] }
 # The corpus's scorer (SC1), unpublished and stripped when packaging (SC3).
 fitment-corpus = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+
+# The CLI's fit tests: the test binary is re-executed as the fake helper,
+# so it is its own harness (fitment_fit::harness!).
+[[test]]
+name = "fit_cli"
+harness = false
 
 [lints]
 workspace = true
