@@ -1,0 +1,198 @@
+name: Image
+
+# OP8, M6-43 (docs/research/m6-api.md): fitment-server's image, pushed to
+# ghcr.io/<owner>/fitment-server:<version> from a release's tag. Only the
+# user runs it, by hand, from the tag itself and naming it:
+#
+#   gh workflow run image.yml --ref v0.3.0 -f tag=v0.3.0
+#
+# `check` refuses any other ref: a branch, a commit, a tag that is not
+# v<the workspace's version> at its commit, or a tag whose commit is not
+# on main. `build` builds each architecture on a native runner (linux/amd64
+# and linux/arm64) from deploy/Containerfile, as CI's `container` job
+# builds it, and smoke-tests it with deploy/smoke.sh (VT29). It holds no
+# permission to write anything, and hands the tested image on as an
+# artifact. `push` needs both legs to have passed and checks out nothing.
+# It alone may write packages. It refuses a tag that already exists, so a
+# re-run never moves one, then pushes exactly the images that were tested
+# as <version>-amd64 and <version>-arm64, and <version> names both.
+# Nothing runs on a push, a pull request or a schedule, and
+# tools/check-core.sh holds the triggers and every job's grants to this.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release's tag, v<workspace version>; run the workflow from that same tag"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: the ref is the release's tag, on main
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image: ${{ steps.version.outputs.image }}
+    steps:
+      - name: Refuse any ref but the tag named
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ github.ref }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::the tag must be v<major>.<minor>.<patch>, not '$TAG'"
+            exit 1
+          fi
+          if [ "$REF" != "refs/tags/$TAG" ]; then
+            echo "::error::run this workflow from the tag $TAG (--ref $TAG), not from $REF"
+            exit 1
+          fi
+      # Whole history, so the tag's commit can be found on main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refuse a tag that is not the workspace's version
+        id: version
+        env:
+          TAG: ${{ inputs.tag }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::the tag $TAG does not name the workspace's version, $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # GHCR's names are lower case.
+          owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/$owner/fitment-server" >> "$GITHUB_OUTPUT"
+      - name: Refuse a tag whose commit is not on main
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::the tag $TAG names $GITHUB_SHA, which is not on main"
+            exit 1
+          fi
+
+  build:
+    name: build and smoke-test (${{ matrix.arch }})
+    needs: check
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      # One architecture failing stops the other: nothing is pushed.
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Without attestations, each architecture's tag is a plain image
+      # manifest, and the version's tag an index of the two.
+      - name: Build the image as CI's container job does
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          docker build -f deploy/Containerfile -t "fitment-server:$ARCH" \
+            --provenance=false --sbom=false \
+            --label "org.opencontainers.image.source=$SOURCE" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            .
+      # VT29: the image as shipped, before it leaves this job.
+      - name: Smoke-test the image
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: deploy/smoke.sh "fitment-server:$ARCH"
+      - name: Save the tested image
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: docker save "fitment-server:$ARCH" -o "$RUNNER_TEMP/fitment-server-$ARCH.tar"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/fitment-server-${{ matrix.arch }}.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  push:
+    name: push the tested images
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/images
+      - name: Log in to GHCR
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      # A tag already pushed is never moved: a re-run, or another run of
+      # the same version, stops here. Only an answer that the tag is not
+      # there lets the run go on; any other failure stops it too. (Before
+      # the first push the package does not exist, and GHCR may answer
+      # `denied` rather than `not found`; a token that cannot read a
+      # package cannot write it either.)
+      - name: Refuse a tag that already exists
+        env:
+          IMAGE: ${{ needs.check.outputs.image }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          for tag in "$VERSION" "$VERSION-amd64" "$VERSION-arm64"; do
+            if out=$(docker buildx imagetools inspect "$IMAGE:$tag" 2>&1); then
+              echo "::error::$IMAGE:$tag already exists; a release's image is never pushed twice"
+              exit 1
+            fi
+            if ! grep -qiE 'not found|manifest unknown|name unknown|denied' <<<"$out"; then
+              echo "::error::cannot tell whether $IMAGE:$tag exists: $out"
+              exit 1
+            fi
+          done
+      - name: Push both architectures, then the version's index
+        env:
+          IMAGE: ${{ needs.check.outputs.image }}
+          VERSION: ${{ needs.check.outputs.version }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          for arch in amd64 arm64; do
+            docker load -i "$RUNNER_TEMP/images/fitment-server-$arch.tar"
+            docker tag "fitment-server:$arch" "$IMAGE:$VERSION-$arch"
+            docker push "$IMAGE:$VERSION-$arch"
+          done
+          docker buildx imagetools create -t "$IMAGE:$VERSION" \
+            --annotation "index:org.opencontainers.image.source=$SOURCE" \
+            --annotation "index:org.opencontainers.image.version=$VERSION" \
+            --annotation "index:org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index:org.opencontainers.image.licenses=MIT" \
+            "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+      - if: always()
+        run: docker logout ghcr.io

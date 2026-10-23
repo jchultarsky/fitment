@@ -2,7 +2,8 @@
 //! passed through fitment-core's gate, stored by content, and indexed for
 //! level 1, in one directory holding a SQLite database and a blob store.
 //!
-//! Internal to fitment and unstable: the CLI is its one user.
+//! Internal to fitment and unstable: the CLI and `fitment-server` (M6)
+//! are its users, and its API may change in any release.
 //!
 //! ```text
 //! <DIR>/FITMENT-CATALOG        the marker, written last by init

@@ -108,20 +108,29 @@ toward `fitment-core`, and only `fitment-core` reads STEP (through stepq).
 ```
 crates/
   fitment-core/   lib: the matcher and every shared type (verdicts, fit
-                  status, tolerances; later features, sockets, evidence)
+                  status, tolerances, features, sockets, evidence)
     clippy.toml   source-level bans for this crate only, tests included
   fitment-catalog/ lib: the catalog (M5): a SQLite database and a store of
-                  files by content; internal, the CLI its one user
+                  files by content; internal, the CLI and the server its
+                  users
     clippy.toml   source-level bans for this crate, as the core's
   fitment/        bin `fitment`: arguments, files, output, exit codes
+  fitment-server/ lib and bin: the REST API (M6), the only async crate;
+                  never published, shipped as a container image
+  fitment-corpus/ lib: the corpus's one scorer (M6), a dev-dependency
+                  only, never published
+deploy/           the server's Containerfile, its configuration, smoke test
 deny.toml         workspace policy: licences, sources, D1 crate bans
 deny/core.toml    the exact crates fitment-core may depend on
-tools/            check-core.sh and core-deps.py: fitment-core's checks
+deny/sync.toml    no async runtime in fitment or fitment-catalog
+fuzz/             the API's fuzz targets, a workspace of its own
+tools/            check-core.sh and core-deps.py (the crates' checks), the
+                  corpus generator, the Open CASCADE oracle, the fixtures'
+                  fetch and the output and comparison scripts
 docs/             PLAN.md, the Vectera audit, decision research, the spike
 ```
 
-Coming later: `fitment-server` (M6, the only crate with an async runtime), `fitment-corpus` (M6, test-only,
-never published) and `fitment-fit` (M7, drives the Open CASCADE helper).
+Coming later: `fitment-fit` (M7, drives the Open CASCADE helper).
 The full design is in
 [docs/research/workspace-layout.md](docs/research/workspace-layout.md).
 
@@ -144,8 +153,10 @@ How `fitment-core`'s rules are enforced, each by CI on its own:
 4. **Source checks.** `tools/check-core.sh` fails on any use of the `fs`,
    `net`, `env`, `process`, `thread` or `os` modules, on async code and on
    `static` items, which clippy cannot ban as a whole. It also fails if a
-   file other than `gate.rs` and `features/step.rs` names stepq, so stepq
-   stays a private dependency, and if the package would ship a STEP file.
+   file other than those under `gate/`, `features/step.rs`,
+   `assembly/step.rs` and `properties/step.rs` names stepq, so stepq stays
+   a private dependency, and if a published package (`fitment-core`,
+   `fitment-catalog`, `fitment`) would ship a STEP file or no LICENSE.
 5. **D1.** `deny.toml` bans Open CASCADE and C++ bridge crates everywhere.
 
 An `#[allow]` for one of these needs a comment saying why, and will be
@@ -156,7 +167,8 @@ questioned in review.
 `fitment-core`'s tests take their inputs only from `include_bytes!` or
 `include_str!`, because its bans apply to its tests too. Any test that
 reads or writes files at run time (fixtures, the corpus, golden files)
-lives in `crates/fitment/tests`.
+lives in `crates/fitment/tests`, `crates/fitment-catalog/tests` or
+`crates/fitment-server/tests`.
 
 The small unit parts in `crates/fitment-core/tests/data` are the only
 committed STEP files; the package's `include` list keeps them out of

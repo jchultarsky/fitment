@@ -1,7 +1,7 @@
 # fitment
 
 [![CI](https://github.com/jchultarsky/fitment/actions/workflows/ci.yml/badge.svg)](https://github.com/jchultarsky/fitment/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/jchultarsky/fitment/blob/main/LICENSE)
 
 Find catalog parts that can replace a part in a STEP assembly.
 
@@ -18,8 +18,8 @@ written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 > corpus's 125 gated match cases (its 129 less the socket gate's 4, which
 > run apart and pass) passes through the API, under both policies, with no
 > false positive and the library's report to the byte. It ships as a
-> container image and is not published as a crate. M6 is to be released as
-> 0.3.0, after 0.2.0 (M5, the catalog) and 0.1.0 (M4).
+> container image and is not published as a crate. Version 0.3.0 (M6)
+> follows 0.2.0 (M5, the catalog) and 0.1.0 (M4).
 >
 > `fitment features` reads one part from a
 > STEP file, refusing a file that is not a canonical part, with reasons.
@@ -34,8 +34,8 @@ written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 > functional clearance), each by a rule it states. An independent Open
 > CASCADE oracle checks the truths it can judge physically, and every
 > pass and failure fitment reports. The design is in
-> [docs/PLAN.md](docs/PLAN.md), and the code is mapped in
-> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+> [docs/PLAN.md](https://github.com/jchultarsky/fitment/blob/main/docs/PLAN.md), and the code is mapped in
+> [docs/ARCHITECTURE.md](https://github.com/jchultarsky/fitment/blob/main/docs/ARCHITECTURE.md).
 
 ## How it works
 
@@ -71,7 +71,7 @@ False positives are the failure fitment is built to avoid. A candidate
 passes only when every requirement is positively verified; anything the
 code does not recognize is a rejection; a value at the edge of the
 tolerance rejects; and every verdict states what was and was not checked.
-The full rules are in [docs/PLAN.md](docs/PLAN.md#soundness-rules).
+The full rules are in [docs/PLAN.md](https://github.com/jchultarsky/fitment/blob/main/docs/PLAN.md#soundness-rules).
 
 ## Reading a part
 
@@ -236,9 +236,11 @@ catalog` and `fitment match --catalog` exit 2 and say so.
 
 `fitment-server` is the REST API over one catalog and the matcher. It is
 not published as a crate: build it from this repository (`cargo build
---release -p fitment-server`), or build the container image, which holds
+--release -p fitment-server`), or use the container image, which holds
 the server and the `fitment` CLI of the same version and no Python, uv or
-Open CASCADE:
+Open CASCADE. Each release's image, from 0.3.0, is
+`ghcr.io/jchultarsky/fitment-server:VERSION` for linux/amd64 and
+linux/arm64, built from the release's tag; to build it yourself:
 
 ```console
 $ docker build -f deploy/Containerfile -t fitment-server .
@@ -346,21 +348,21 @@ that did not succeed has no verdict, anywhere.
 | M3 | Socket extraction |
 | M4 | Matching, evidence, and the known-answer corpus (done, 0.1.0) |
 | M5 | Catalog (done, 0.2.0) |
-| M6 | REST API (done; 0.3.0 to come) |
+| M6 | REST API (done, 0.3.0) |
 | M7 | Optional body-fit verifier |
 | M8 | Viewer |
 
-Details and exit criteria are in [docs/PLAN.md](docs/PLAN.md#milestones).
+Details and exit criteria are in [docs/PLAN.md](https://github.com/jchultarsky/fitment/blob/main/docs/PLAN.md#milestones).
 
 ## Contributing
 
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md)
-and the [Code of Conduct](CODE_OF_CONDUCT.md). Security issues go through
-[SECURITY.md](SECURITY.md), not public issues.
+Contributions are welcome. Please read [CONTRIBUTING.md](https://github.com/jchultarsky/fitment/blob/main/CONTRIBUTING.md)
+and the [Code of Conduct](https://github.com/jchultarsky/fitment/blob/main/CODE_OF_CONDUCT.md). Security issues go through
+[SECURITY.md](https://github.com/jchultarsky/fitment/blob/main/SECURITY.md), not public issues.
 
 New to STEP? [*Inside the STEP File*](https://jchultarsky.github.io/step-book/)
 explains the entity model fitment and stepq rely on.
 
 ## License
 
-[MIT](LICENSE) © 2026 Julian Chultarsky
+[MIT](https://github.com/jchultarsky/fitment/blob/main/LICENSE) © 2026 Julian Chultarsky

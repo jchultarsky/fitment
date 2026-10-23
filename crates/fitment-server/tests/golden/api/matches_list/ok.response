@@ -2,7 +2,7 @@
 cache-control: no-store
 content-type: application/json
 fitment-format: fitment.page/1
-repr-digest: sha-256=:E7v4qijQGjdZwlTDiw5RDLwS1UtweUyrT6SeIE/AG4M=:
+repr-digest: sha-256=:wzcqpdG9LJAW5sVMJXdV4unitEWif+y4JYiKV5ZJH0E=:
 x-request-id: r_0000000000000000000000000a
 
 {
@@ -48,7 +48,7 @@ x-request-id: r_0000000000000000000000000a
         "socket_rules_version": 7,
         "signature_version": 2,
         "match_rules_version": 1,
-        "server": "0.2.0"
+        "server": "0.3.0"
       },
       "fit_verifier": null,
       "summary": {
