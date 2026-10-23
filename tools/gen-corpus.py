@@ -1934,6 +1934,63 @@ for rule, tests in {
 }.items():
     RULES[rule]["tests"] = RULES[rule]["tests"] + tests
 assert not [r for r, e in RULES.items() if e.get("deferred") == "M7 PR 2b"], "an M7 rule still waits for PR 2b"
+# PR 3 builds the CLI and the catalog (section 11, item 3): the `fit` feature on by default, and without it `--fit` and
+# `fitment fit` exit 2 (FG3); `match --fit ASSEMBLY`, its assembly the socket's own (FU1), the manifest and a helper
+# checked before any candidate (FU2), `--fit-jobs`, `--fit-timeout` and `--max-fits` (FU3, M7-49), `fitment fit setup`
+# (FU4), the exit codes (FU5), a catalog run reading each passing candidate's file through `FitBlobs` (FU6, FC6), the
+# table and stderr naming the fit (FM6), and the session's second scene for a component of another assembly (FB5). The
+# CLI tests run the binary against VT78's fake helper on every OS (fit_cli.rs); fit_kernel.rs runs it with the real
+# helper in CI's fit-kernel job (VT74's CLI half, s01, VT64, FB5).
+FIT_CLI_FAKE, FIT_CLI_KERN = f"{FIT_CLI}/fit_cli.rs", f"{FIT_CLI}/fit_kernel.rs"
+M7_PR3 = {
+    "FU1": [f"{FIT_CLI_FAKE}::a_fit_run_writes_the_library_s_document",
+            f"{FIT_CLI_FAKE}::another_assembly_is_a_usage_error",
+            f"{FIT_CLI_KERN}::the_lug_interferes_and_the_bracket_matches_through_the_cli"],
+    "FU2": [f"{FIT_CLI_FAKE}::no_manifest_names_fitment_fit_setup",
+            f"{FIT_CLI_FAKE}::a_helper_s_failure_writes_the_document_and_exits_1"],
+    "FU3": [f"{FIT_CLI_FAKE}::more_interface_passes_than_max_fits_are_refused",
+            f"{FIT_CLI_FAKE}::a_check_past_fit_timeout_exits_1",
+            f"{FIT_CLI_FAKE}::a_fit_run_writes_the_library_s_document"],
+    "FU4": [f"{FIT_CLI_FAKE}::setup_without_uv_exits_1_naming_it",
+            f"{FIT_CLI_KERN}::the_lug_interferes_and_the_bracket_matches_through_the_cli"],
+    "FU5": [f"{FIT_CLI_FAKE}::a_helper_s_failure_writes_the_document_and_exits_1",
+            f"{FIT_CLI_FAKE}::more_interface_passes_than_max_fits_are_refused",
+            f"{FIT_CLI_FAKE}::another_assembly_is_a_usage_error",
+            f"{FIT_CLI_FAKE}::a_catalog_run_reads_each_passing_file_through_the_store"],
+    "FU6": [f"{FIT_CLI_FAKE}::a_catalog_run_reads_each_passing_file_through_the_store"],
+    "FB5": [f"{FIT_PROC}::a_component_of_another_assembly_is_found_in_its_second_scene",
+            f"{FIT_CLI_KERN}::a_component_of_another_assembly_matches_through_the_real_helper"],
+    "FC6": [f"{FIT_CLI}/catalog_fit.rs::a_fit_reads_exactly_the_passing_candidates_files",
+            f"{FIT_CLI}/catalog_fit.rs::a_damaged_file_is_stored_bytes_unreadable_and_incomplete",
+            f"{FIT_CLI_FAKE}::a_catalog_run_reads_each_passing_file_through_the_store",
+            f"{FIT_CLI_KERN}::a_catalog_run_with_the_fit_is_the_file_run_restricted"],
+    "FM6": [f"{FIT_CLI_FAKE}::a_fit_run_writes_the_library_s_document",
+            f"{FIT_CLI_FAKE}::a_helper_s_failure_writes_the_document_and_exits_1"],
+    "FG3": [f"{FIT_CLI}/no_fit.rs::a_build_without_the_fit_verifier_says_so",
+            f"{FIT_CLI_FAKE}::a_fit_run_writes_the_library_s_document"],
+}
+for rule, tests in M7_PR3.items():
+    assert RULES[rule] == {"deferred": "M7 PR 3"}, rule
+    RULES[rule] = {"tests": tests}
+assert not [r for r, e in RULES.items() if e.get("deferred") == "M7 PR 3"], "an M7 rule still waits for PR 3"
+# The two reviews of PR 3: `-o` never overwrites the `--fit` assembly, a helper that cannot start after the CLI's check
+# leaves the run incomplete, the first error never depends on `--fit`, every handshake failure exits 1 with nothing
+# written, a failing control that is complete exits by its verdicts, the cap never depends on the jobs, a catalog run
+# with a failing helper exits 1 with its document, core re-checks a stored file's SHA-256, no fit is verified past the
+# cap, and a fitting matcher without the catalog's files is refused.
+for rule, tests in {
+    "FU1": [f"{FIT_CLI_FAKE}::output_onto_the_fit_assembly_is_refused",
+            f"{FIT_CLI_FAKE}::the_first_error_does_not_depend_on_fit"],
+    "FU2": [f"{FIT_CLI_FAKE}::every_handshake_failure_exits_1_with_nothing_written",
+            f"{FIT_CLI_FAKE}::a_control_that_fails_completely_exits_by_its_verdicts"],
+    "FU3": [f"{FIT_CLI_FAKE}::max_fits_does_not_depend_on_jobs",
+            f"{FIT_CORE}/stored.rs::past_the_cap_no_fit_is_asked_and_none_is_verified"],
+    "FU5": [f"{FIT_CLI_FAKE}::a_helper_that_cannot_start_after_the_check_leaves_the_run_incomplete",
+            f"{FIT_CLI_FAKE}::a_catalog_run_with_a_failing_helper_exits_1_with_its_document"],
+    "FC6": [f"{FIT_CORE}/stored.rs::a_stored_file_is_fetched_when_its_fit_is_asked_and_checked_by_core",
+            f"{FIT_CLI}/catalog_fit.rs::a_fit_without_the_files_is_refused"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
 
 
 

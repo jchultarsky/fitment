@@ -372,6 +372,10 @@ impl FitDir {
     ///
     /// [`PrepareError`].
     pub fn open(path: &Path) -> Result<Self, PrepareError> {
+        // A relative path is made absolute here: the helper is spawned in
+        // its own directory under `tmp/`, where a relative script path would
+        // name nothing (the CLI's `--fit-dir fit`, PR 3).
+        let path = &std::path::absolute(path).map_err(|e| PrepareError::io(path, &e))?;
         let meta = fs::symlink_metadata(path).map_err(|e| PrepareError::io(path, &e))?;
         if meta.file_type().is_symlink() {
             return Err(PrepareError::SymbolicLink {

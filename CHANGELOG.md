@@ -10,6 +10,55 @@ Until 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- **M7, PR 3 (the CLI and the catalog):** the `fitment` CLI gains the fit
+  verifier, behind a new `fit` cargo feature on by default
+  (`docs/research/m7-fit.md`, section 4.11). `fitment fit setup
+  [--fit-dir DIR] [--uv PATH]` writes the helper's script and lock to the
+  fit directory, has uv make its locked environment (the only download),
+  writes the manifest, then starts a helper from it and runs its self-test,
+  printing the paths, the identity and the limits this OS took (FU4).
+  `fitment match … --fit ASSEMBLY` checks each candidate whose interface
+  passes for its body's fit among the other solids of the socket's own
+  assembly (another assembly is exit 2), with the manifest and a helper
+  checked before any candidate (exit 1 naming `fitment fit setup` when
+  there is none), and writes `fitment.match` v2; only a verified fit makes
+  a `Match` (exit 0). `--fit-jobs N` (default: `--jobs`, at most 4),
+  `--fit-timeout SECONDS` (120), `--max-fits N` (more interface passes
+  than N: refused `too_large`, exit 3, nothing written) and `--fit-dir DIR`
+  go with it. A fit that times out, runs out of a resource or whose helper
+  fails, the original's control included, makes the run exit 1 after its
+  document is written. The table names the kernel and the helper and each
+  candidate's fit; stderr counts the fits by status and says once when the
+  original fails its own fit check. With `--catalog`, each passing
+  candidate's stored file is read, hash-checked, only when its fit is
+  asked, and stderr counts the files read; a damaged one is
+  `stored_bytes_unreadable` and exit 1. Without the `fit` feature, `--fit`
+  and `fitment fit` exit 2. Without `--fit` nothing changes: every 0.3.0
+  document, table, stderr line and exit code is byte for byte as before
+  (`--help` lists the new flags).
+  `fitment-core` gains `Matcher::judge_document_with_fetch` (a stored
+  candidate's bytes fetched only when its fit is asked, FC6),
+  `judge_component_in` (a component of another assembly, its bytes the
+  helper's second scene, FB5), `judge_original`, `with_max_fits`,
+  `max_fits`, `interface_passes`, `over_max_fits` and `fit_unavailable`;
+  `fit::FetchError`, `fit::Fetch` and `fit::MAX_FITS_REACHED` (each
+  socket's fit past the cap); `FitBody::component_of`, and
+  `FitBody::Component` gains the other assembly's bytes;
+  `FitFailure::StoredBytesUnreadable` carries the store's reason; v2
+  states its `max_fits`. `fitment-catalog` gains `FitBlobs`
+  (`Catalog::fit_blobs`), `Snapshot::match_catalog_fitted` and
+  `Snapshot::refusal` (QR1's refusal without judging), and refuses a
+  match whose verifier has an identity without the files
+  (`NotRun::FitWithoutFiles`). `fitment-fit`'s session sends a
+  component's own assembly as the helper's second scene,
+  `OcctSession::open_checked` opens one after a run's own helper check, a
+  relative fit directory is made absolute, and its test support installs a
+  fake helper under the embedded script (`Fake::install_embedded`),
+  answers with given measures (`Replaying::answering`), hangs at `check`
+  (`Scenario::HangAtCheck`), locks `tmp/` after its handshake
+  (`Scenario::LocksTmp`) and, under `test-support` only, lets a helper past
+  M7-50 on Windows (`HelperOptions::with_unproven_platform`). A build
+  without `fit` hides `--fit` and its flags, and its help is 0.3.0's.
 - **M7, PR 1b (the matcher, the v2 writer and its schema):** a fit
   verifier now returns a kernel's measures, never a status, and the
   matcher decides from them itself (`docs/research/m7-fit.md`, FC1): with a

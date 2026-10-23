@@ -196,7 +196,7 @@ impl FitParameters {
             guard_mm: GUARD_MM,
             volume_resolution_mm3: FIT_VOLUME_MM3,
             tolerance_cap: "t/10",
-            max_fits: None,
+            max_fits: matcher.max_fits(),
             control,
         }
     }

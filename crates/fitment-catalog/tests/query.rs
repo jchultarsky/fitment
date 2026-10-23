@@ -539,6 +539,8 @@ fn a_panicking_judgment_is_a_bug_not_damage() {
         &panics,
     )
     .unwrap();
+    // A matcher with a fit verifier runs with the catalog's files (FC6).
+    let blobs = catalog.fit_blobs();
     let snapshot = catalog.snapshot().unwrap();
     let named = vec![
         fitment_catalog::Reference::parse("m_bracket").unwrap(),
@@ -548,7 +550,13 @@ fn a_panicking_judgment_is_a_bug_not_damage() {
         .into_iter()
         .map(|jobs| {
             let run = snapshot
-                .match_catalog(&matcher, &Selection::Named(named.clone()), jobs)
+                .match_catalog_fitted(
+                    &matcher,
+                    &Selection::Named(named.clone()),
+                    jobs,
+                    &fitment_catalog::NoObserver,
+                    &blobs,
+                )
                 .unwrap()
                 .unwrap();
             (run.bugs, run.corrupt, run.results.len())

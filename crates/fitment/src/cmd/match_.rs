@@ -15,7 +15,7 @@ use fitment_core::{
 use serde_json::Value;
 
 use super::text::{mm, note, printable};
-use super::write_atomically;
+use super::{fit, write_atomically};
 use crate::exit;
 
 #[derive(clap::Args)]
@@ -68,8 +68,15 @@ pub struct Args {
     /// Print every candidate's every check in the table.
     #[arg(long)]
     explain: bool,
-    /// Exit 5 unless some candidate's body fit is verified (no build of
-    /// M4 verifies one).
+    /// Exit 5 unless some candidate's body fit is verified (only --fit
+    /// verifies one).
+    // A build without the fit verifier says what 0.3.0 said.
+    #[cfg_attr(
+        not(feature = "fit"),
+        arg(
+            help = "Exit 5 unless some candidate's body fit is verified (no build of M4 verifies one)"
+        )
+    )]
     #[arg(long)]
     require_fit: bool,
     /// Refuse a socket document with requirements no one reviewed.
@@ -84,6 +91,27 @@ pub struct Args {
     /// D9's angular tolerance, in degrees.
     #[arg(long, value_name = "DEG")]
     tolerance_deg: Option<f64>,
+    /// Check each candidate whose interface passes for its body's fit
+    /// among the other solids of ASSEMBLY, the socket's own assembly, with
+    /// the fit helper `fitment fit setup` prepared: only a verified fit
+    /// makes a match.
+    #[arg(long, hide = cfg!(not(feature = "fit")), value_name = "ASSEMBLY")]
+    fit: Option<PathBuf>,
+    /// Run at most N fit helpers at once (default: --jobs, at most 4).
+    #[arg(long, hide = cfg!(not(feature = "fit")), value_name = "N", requires = "fit")]
+    fit_jobs: Option<std::num::NonZeroUsize>,
+    /// Give each candidate's fit check SECONDS (default: 120); a check
+    /// past it makes the run exit 1, its document written.
+    #[arg(long, hide = cfg!(not(feature = "fit")), value_name = "SECONDS", requires = "fit")]
+    fit_timeout: Option<std::num::NonZeroU64>,
+    /// Refuse the run (exit 3, nothing written) if more than N candidates
+    /// pass their interface: each would cost a fit check.
+    #[arg(long, hide = cfg!(not(feature = "fit")), value_name = "N", requires = "fit")]
+    max_fits: Option<u64>,
+    /// The fit directory `fitment fit setup` prepared (default: its own
+    /// default).
+    #[arg(long, hide = cfg!(not(feature = "fit")), value_name = "DIR", requires = "fit")]
+    fit_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -121,7 +149,7 @@ pub fn run(args: &Args) -> ExitCode {
         Err(code) => return code,
     };
     let options = MatchOptions::new(args.require_fit, args.require_reviewed);
-    let matcher = match Matcher::new(&document, policy, options, &NoFitVerifier) {
+    let unfitted = match Matcher::new(&document, policy.clone(), options, &NoFitVerifier) {
         Ok(matcher) => matcher,
         Err(refused) => {
             refusal(&socket_path, &refused);
@@ -144,32 +172,162 @@ pub fn run(args: &Args) -> ExitCode {
             return ExitCode::from(USAGE);
         }
     }
-    // VD15: judged beside the candidates, never one of them.
-    let mut original = None;
-    if let Some(path) = &args.original {
-        match judge_original(&matcher, path) {
-            Ok(Some((result, bug))) => {
-                failed |= bug;
-                original = Some(result);
-            }
-            Ok(None) => failed = true,
+    // VD15: the original read and checked as a run without --fit reads it.
+    let original = match read_original(&document, args.original.as_deref()) {
+        Ok(original) => original,
+        Err(code) => return code,
+    };
+    // FU1, FU2: with --fit, the catalog is opened and QR1's refusals said,
+    // then the assembly, the manifest and a helper checked, all before any
+    // candidate and after every error a run without --fit gives first.
+    let opened = match fit_catalog(args, &unfitted) {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    let flags = fit::Flags {
+        assembly: args.fit.as_deref(),
+        jobs: args.fit_jobs,
+        timeout: args.fit_timeout,
+        dir: args.fit_dir.as_deref(),
+    };
+    let helper = match fit::helper(&flags, &document, jobs) {
+        Ok(helper) => helper,
+        Err(code) => return code,
+    };
+    let session = match fit::session(helper.as_ref(), &document) {
+        Ok(session) => session,
+        Err(code) => return code,
+    };
+    let matcher = if session.is_some() {
+        drop(unfitted);
+        match fitted(&document, policy, options, fit::verifier(session.as_ref())) {
+            Ok(matcher) => matcher.with_max_fits(args.max_fits),
             Err(code) => return code,
         }
-    }
+    } else {
+        unfitted
+    };
+    let run = Run {
+        socket_path,
+        listed,
+        jobs,
+        failed,
+        rejects,
+        original,
+        opened,
+    };
+    judge_and_write(args, &matcher, run, &|| fit::report(session.as_ref()))
+}
+
+/// VD15's `--original`, read before any candidate.
+enum Original {
+    /// The target, read and chosen by core.
+    Read(SelectedComponent),
+    /// It cannot be read: the run exits 1.
+    Unread,
+}
+
+/// What a run has read before its candidates are judged.
+struct Run {
+    socket_path: String,
+    listed: Vec<(PathBuf, String)>,
+    jobs: usize,
+    failed: bool,
+    rejects: Option<usize>,
+    /// `--original`, when given.
+    original: Option<Original>,
+    /// With `--fit` and `--catalog`, the catalog opened and its refusals
+    /// said already.
+    opened: Option<super::match_catalog::Opened>,
+}
+
+/// FU1: with `--fit`, the catalog opened and QR1's refusals said before
+/// the fit's own checks; without it, as 0.3.0 does, the catalog is opened
+/// when its candidates are judged.
+fn fit_catalog(
+    args: &Args,
+    matcher: &Matcher<'_>,
+) -> Result<Option<super::match_catalog::Opened>, ExitCode> {
+    let (Some(dir), Some(_)) = (&args.catalog, &args.fit) else {
+        return Ok(None);
+    };
+    let mut opened = super::match_catalog::open(dir, &args.ids, args.exhaustive)?;
+    super::match_catalog::refused(&mut opened, matcher)?;
+    Ok(Some(opened))
+}
+
+/// The original and the candidates judged, the run refused past
+/// `--max-fits` (M7-49), its document written and its code; `report`
+/// logs the fit helper's failures (FV9).
+fn judge_and_write(args: &Args, matcher: &Matcher<'_>, run: Run, report: &dyn Fn()) -> ExitCode {
+    let Run {
+        socket_path,
+        listed,
+        jobs,
+        mut failed,
+        rejects,
+        original,
+        opened,
+    } = run;
+    // VD15: judged beside the candidates, never one of them.
+    let original = match original {
+        Some(Original::Read(component)) => {
+            let (result, bug) = judge_original(matcher, &component);
+            failed |= bug;
+            Some(result)
+        }
+        Some(Original::Unread) => {
+            failed = true;
+            None
+        }
+        None => None,
+    };
     // QR1: the catalog's refusals come before any candidate is judged; an
     // M4 usage error of --original, before the catalog is read.
-    let (mut results, searched) = match from_catalog(args, &matcher, jobs, &mut failed) {
+    let (mut results, searched) = match from_catalog(args, matcher, (jobs, opened), &mut failed) {
         Ok(found) => found,
         Err(code) => return code,
     };
     if args.catalog.is_none() {
-        results = judge_all(&matcher, listed, &mut failed, jobs);
+        results = judge_all(matcher, listed, &mut failed, jobs);
     }
-    let document_out = MatchDocument::with_original(&matcher, results, original.as_ref());
+    report();
+    // M7-49: past the cap, refused before the document, nothing written.
+    if matcher.over_max_fits() {
+        note(&format!(
+            "fitment: {socket_path}: refused: too_large: {} candidates pass their interface, more than --max-fits {}: no fit was asked past it",
+            matcher.interface_passes(),
+            matcher.max_fits().unwrap_or_default()
+        ));
+        return ExitCode::from(exit::REFUSED);
+    }
+    // FV8: a fit that depends on the machine, the control's included,
+    // never makes a complete run.
+    let incomplete =
+        matcher.fit_incomplete(results.iter().map(|(r, _)| r).chain(original.as_ref()));
+    let document_out = MatchDocument::with_original(matcher, results, original.as_ref());
     if let Some(searched) = &searched {
         note(&format!("fitment: {socket_path}: {searched}"));
     }
-    summarize(&socket_path, &matcher, &document_out, args.require_fit);
+    summarize(&socket_path, matcher, &document_out, args.require_fit);
+    if incomplete {
+        note(&format!(
+            "fitment: {socket_path}: the fit is incomplete: a check timed out, ran out of a resource, or its helper failed (see each fit's code): exit 1"
+        ));
+        failed = true;
+    }
+    write_out(args, &document_out, searched.as_deref(), rejects, failed)
+}
+
+/// The document written to `-o` and the table or the document on stdout,
+/// and VD14's code: 1 if the run `failed`.
+fn write_out(
+    args: &Args,
+    document_out: &MatchDocument,
+    searched: Option<&str>,
+    rejects: Option<usize>,
+    failed: bool,
+) -> ExitCode {
     let json = document_out.to_json();
     if let Some(output) = &args.output {
         if let Err(error) = write_atomically(output, json.as_bytes()) {
@@ -189,7 +347,7 @@ pub fn run(args: &Args) -> ExitCode {
     let stdout = match (args.format, &args.output) {
         (Format::Json, Some(_)) => return code,
         (Format::Json, None) => json,
-        (Format::Table, _) => table(&json, args.explain, searched.as_deref(), rejects),
+        (Format::Table, _) => table(&json, args.explain, searched, rejects),
     };
     match io::stdout().lock().write_all(stdout.as_bytes()) {
         // A closed stdout ends output quietly and keeps the verdict's code.
@@ -204,6 +362,28 @@ pub fn run(args: &Args) -> ExitCode {
 
 /// No more threads than this, whatever `--jobs` asks (as the catalog's).
 const MAX_JOBS: usize = 256;
+
+/// The matcher with the run's fit verifier; refused as the unfitted one
+/// was not (exit 3), or with no fit possible (FU2, exit 1).
+fn fitted<'a>(
+    document: &'a SocketDocument,
+    policy: MatchPolicy,
+    options: MatchOptions,
+    verifier: &'a dyn fitment_core::FitVerifier,
+) -> Result<Matcher<'a>, ExitCode> {
+    let matcher = Matcher::new(document, policy, options, verifier).map_err(|_| {
+        note("error: the socket document was refused with the fit verifier: this is a fitment bug");
+        ExitCode::from(ERROR)
+    })?;
+    if let Some(why) = matcher.fit_unavailable() {
+        note(&format!(
+            "fitment: --fit: no fit can be checked: {}",
+            printable(why)
+        ));
+        return Err(ExitCode::from(ERROR));
+    }
+    Ok(matcher)
+}
 
 /// One listed file in a window: its read error, or new bytes to judge
 /// with the labels of their duplicates; a duplicate leaves no entry.
@@ -361,6 +541,11 @@ fn rejects(args: &Args) -> Result<Option<usize>, ExitCode> {
         note("error: this build has no catalog (cargo feature `catalog`)");
         return Err(ExitCode::from(USAGE));
     }
+    // FG3: nor a build without the fit verifier a fit to check.
+    if cfg!(not(feature = "fit")) && args.fit.is_some() {
+        note("error: this build has no fit verifier (cargo feature `fit`)");
+        return Err(ExitCode::from(USAGE));
+    }
     // CM1: --id and --exhaustive need --catalog, and exclude each other.
     if args.catalog.is_none() && (!args.ids.is_empty() || args.exhaustive) {
         note("error: --id and --exhaustive name catalog entries: give -C/--catalog DIR");
@@ -388,17 +573,29 @@ fn rejects(args: &Args) -> Result<Option<usize>, ExitCode> {
 fn from_catalog(
     args: &Args,
     matcher: &Matcher<'_>,
-    jobs: usize,
+    (jobs, opened): (usize, Option<super::match_catalog::Opened>),
     failed: &mut bool,
 ) -> Result<(Labelled, Option<String>), ExitCode> {
     let Some(dir) = &args.catalog else {
         return Ok((Vec::new(), None));
     };
-    let found = super::match_catalog::candidates(dir, matcher, &args.ids, args.exhaustive, jobs)?;
+    let opened = match opened {
+        Some(opened) => opened,
+        None => super::match_catalog::open(dir, &args.ids, args.exhaustive)?,
+    };
+    let found = super::match_catalog::candidates(opened, matcher, jobs)?;
     *failed |= found.failed;
+    if let Some(read) = found.fit_reads {
+        // FU6: the fit read each passing candidate's file from the store.
+        note(&format!(
+            "fitment: {}: fit: {read} stored files read",
+            printable(&dir.display().to_string())
+        ));
+    }
     for (result, labels) in &found.results {
         let label = labels.first().map_or("", String::as_str);
         *failed |= reported(&printable(label), result);
+        stored_unreadable(&printable(label), result);
     }
     Ok((found.results, Some(found.searched)))
 }
@@ -513,6 +710,7 @@ fn clobbers(output: &Path, args: &Args, listed: &[(PathBuf, String)]) -> Option<
     if args.candidates.iter().any(|c| same(c))
         || listed.iter().any(|(p, _)| same(p))
         || args.original.as_deref().is_some_and(same)
+        || args.fit.as_deref().is_some_and(same)
     {
         return Some("it is an input");
     }
@@ -594,21 +792,39 @@ fn reported(label: &str, result: &CandidateResult) -> bool {
     result.is_fitment_bug()
 }
 
-/// VD15: the target read from its own assembly, judged as a candidate; it
-/// must fail exactly what no candidate can pass. With true when it fails
-/// more (exit 1, the evidence kept in the document); `Ok(None)` when it
-/// cannot be read (exit 1); `Err` on a usage error (another file than the
-/// socket's).
-fn judge_original(
-    matcher: &Matcher<'_>,
-    path: &Path,
-) -> Result<Option<(CandidateResult, bool)>, ExitCode> {
+/// FC6: a stored file the fit could not read, with the store's reason
+/// (missing, damaged or unreadable); the run exits 1 for it (FV8).
+fn stored_unreadable(label: &str, result: &CandidateResult) {
+    let findings = result
+        .fit
+        .as_deref()
+        .map(|e| e.outcome().findings())
+        .unwrap_or_default();
+    for finding in findings {
+        if finding.code == fitment_core::fit::FitCode::StoredBytesUnreadable {
+            note(&format!(
+                "fitment: {label}: its stored file could not be read for its fit: {}",
+                printable(&finding.detail)
+            ));
+        }
+    }
+}
+
+/// VD15: `--original`, the target read from its own assembly: `None`
+/// without it; `Err` on an error reading the file (exit 1) or a usage
+/// error (another file than the socket's).
+fn read_original(
+    document: &SocketDocument,
+    path: Option<&Path>,
+) -> Result<Option<Original>, ExitCode> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
     let shown = printable(&path.display().to_string());
     let bytes = std::fs::read(path).map_err(|error| {
         note(&format!("error: cannot read {shown}: {error}"));
         ExitCode::from(ERROR)
     })?;
-    let document = matcher.document();
     let sha = sha256_hex(&bytes);
     if sha != document.source().sha256 {
         note(&format!(
@@ -619,11 +835,18 @@ fn judge_original(
     // CO5: the target read and chosen by core, as the server reads it.
     let Ok(original) = SelectedComponent::target(&bytes, document) else {
         note(&format!("fitment: {shown}: the original cannot be read"));
-        return Ok(None);
+        return Ok(Some(Original::Unread));
     };
-    let result = matcher.judge_component(&original, original.source());
+    Ok(Some(Original::Read(original)))
+}
+
+/// VD15: the original judged as a candidate; it must fail exactly what no
+/// candidate can pass. With true when it fails more (exit 1, the evidence
+/// kept in the document).
+fn judge_original(matcher: &Matcher<'_>, original: &SelectedComponent) -> (CandidateResult, bool) {
+    let result = matcher.judge_original(original, original.source());
     let bug = reported("original", &result) || original_bug(&result);
-    Ok(Some((result, bug)))
+    (result, bug)
 }
 
 /// VD15's test of the original's result (CO2): true, with a note, if it
@@ -654,14 +877,20 @@ fn original_bug(result: &CandidateResult) -> bool {
 /// that nothing can pass.
 fn summarize(path: &str, matcher: &Matcher<'_>, document: &MatchDocument, require_fit: bool) {
     let s = document.summary();
+    let parsed = (document.format_version() != fitment_core::MATCH_FORMAT_VERSION)
+        .then(|| serde_json::from_str::<Value>(&document.to_json()).ok())
+        .flatten();
+    let fit = parsed.as_ref().map_or_else(
+        || format!("fit not checked ({})", fitment_core::NO_FIT_VERIFIER),
+        fit_counts,
+    );
     note(&format!(
-        "fitment: {path}: {} candidates: {} match, {} interface match, {} reject; fit not checked ({})",
-        s.candidates,
-        s.matched,
-        s.interface_match,
-        s.reject,
-        fitment_core::NO_FIT_VERIFIER
+        "fitment: {path}: {} candidates: {} match, {} interface match, {} reject; {fit}",
+        s.candidates, s.matched, s.interface_match, s.reject,
     ));
+    if let Some(doc) = &parsed {
+        control_note(doc);
+    }
     let doc = matcher.document();
     for (socket, failing) in matcher.failing_all() {
         if doc.active(socket).next().is_none() {
@@ -683,8 +912,66 @@ fn summarize(path: &str, matcher: &Matcher<'_>, document: &MatchDocument, requir
             "fitment: {unreviewed} requirements are unreviewed"
         ));
     }
-    if require_fit {
+    if require_fit && parsed.is_none() {
         note("fitment: --require-fit: no candidate can pass without a fit verifier in this build");
+    }
+}
+
+/// The kernel as people name it, from a v2 document's `fit_verifier`.
+fn kernel_name(doc: &Value) -> String {
+    let verifier = &doc["fit_verifier"];
+    let kernel = match verifier["kernel"].as_str() {
+        Some("open_cascade") => "Open CASCADE".to_owned(),
+        other => printable(other.unwrap_or("")),
+    };
+    format!(
+        "{kernel} {}",
+        printable(verifier["kernel_version"].as_str().unwrap_or(""))
+    )
+}
+
+/// FU3: the summary's fit, by its kernel and the candidates' counts by
+/// status.
+fn fit_counts(doc: &Value) -> String {
+    let mut counts = [0_usize; 4];
+    for candidate in doc["candidates"].as_array().into_iter().flatten() {
+        let at = match candidate["fit"]["status"].as_str() {
+            Some("verified") => 0,
+            Some("interferes") => 1,
+            Some("not_verified") => 2,
+            _ => 3,
+        };
+        counts[at] += 1;
+    }
+    format!(
+        "fit: {}: {} verified, {} interferes, {} not verified, {} not checked",
+        kernel_name(doc),
+        counts[0],
+        counts[1],
+        counts[2],
+        counts[3]
+    )
+}
+
+/// FU2: once, the original failing its own fit check (FT9): no
+/// candidate's fit is verified then.
+fn control_note(doc: &Value) {
+    let failing = doc["fit"]["control"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["fit"]["status"] != "verified");
+    if let Some(control) = failing {
+        let fit = &control["fit"];
+        let why = fit["code"]
+            .as_str()
+            .or_else(|| fit["status"].as_str())
+            .unwrap_or("");
+        note(&format!(
+            "fitment: the original fails its own fit check at {}: {}: no candidate's fit is verified",
+            printable(control["socket"].as_str().unwrap_or("")),
+            printable(why)
+        ));
     }
 }
 
@@ -699,8 +986,19 @@ fn table(json: &str, explain: bool, searched: Option<&str>, rejects: Option<usiz
     let policy = &doc["policy"];
     let digest = s(&doc["socket"]["digest"]);
     let target = s(&doc["socket"]["target"]["product"]["id"]);
+    let fitted = doc["format_version"] != fitment_core::MATCH_FORMAT_VERSION;
+    let fit = if fitted {
+        let helper = s(&doc["fit_verifier"]["helper_sha256"]);
+        format!(
+            "fit: {} (helper {})",
+            kernel_name(&doc),
+            helper.get(..8).unwrap_or("")
+        )
+    } else {
+        format!("fit: not checked ({})", fitment_core::NO_FIT_VERIFIER)
+    };
     let mut out = format!(
-        "socket {}  target '{}'  {} socket(s)  policy {} mm / {} deg, clearance {}, grip {}{}  fit: not checked ({})\n",
+        "socket {}  target '{}'  {} socket(s)  policy {} mm / {} deg, clearance {}, grip {}{}  {fit}\n",
         digest.get(..19).unwrap_or(&digest),
         printable(&target),
         doc["socket"]["sockets"].as_array().map_or(0, Vec::len),
@@ -713,7 +1011,6 @@ fn table(json: &str, explain: bool, searched: Option<&str>, rejects: Option<usiz
         } else {
             " (not the default)"
         },
-        fitment_core::NO_FIT_VERIFIER
     );
     if let Some(searched) = searched {
         // CM8: what the catalog run searched, and what it did not.
@@ -729,7 +1026,7 @@ fn table(json: &str, explain: bool, searched: Option<&str>, rejects: Option<usiz
             }
             listed_rejects += 1;
         }
-        out.push_str(&candidate_line(candidate, searched.is_some()));
+        out.push_str(&candidate_line(candidate, searched.is_some(), fitted));
         let passing = s(&candidate["verdict"]) != "reject";
         if passing || explain {
             for socket in candidate["sockets"].as_array().into_iter().flatten() {
@@ -743,8 +1040,9 @@ fn table(json: &str, explain: bool, searched: Option<&str>, rejects: Option<usiz
     out
 }
 
-/// A candidate's line; in a catalog run, with its PRODUCT.id (CM10).
-fn candidate_line(candidate: &Value, product: bool) -> String {
+/// A candidate's line; in a catalog run, with its PRODUCT.id (CM10); in a
+/// run with a fit verifier, with its fit's status or code (FM6).
+fn candidate_line(candidate: &Value, product: bool, fitted: bool) -> String {
     let s = |v: &Value| v.as_str().unwrap_or("").to_owned();
     let verdict = match s(&candidate["verdict"]).as_str() {
         "match" => "MATCH    ",
@@ -825,8 +1123,17 @@ fn candidate_line(candidate: &Value, product: bool) -> String {
     } else {
         String::new()
     };
+    let fit = if fitted {
+        let fit = &candidate["fit"];
+        match (s(&fit["status"]).as_str(), fit["code"].as_str()) {
+            ("not_verified", Some(code)) => format!("  fit not_verified: {}", printable(code)),
+            (status, _) => format!("  fit {}", printable(status)),
+        }
+    } else {
+        String::new()
+    };
     format!(
-        "{verdict}  {}  {}{product}  {tail}\n",
+        "{verdict}  {}  {}{product}  {tail}{fit}\n",
         labels.join(", "),
         sha.get(..8).unwrap_or("")
     )

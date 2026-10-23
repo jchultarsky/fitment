@@ -23,7 +23,7 @@ use std::time::Duration;
 use fitment_core::sha256_hex;
 use serde_json::{Value, json};
 
-use super::{Death, FAKE_PYTHON, FAKE_SCRIPT, FLOOD_COUNT, Scenario};
+use super::{Death, FAKE_PYTHON, FAKE_SCRIPT, FAKE_SITE_FILE, FLOOD_COUNT, Scenario};
 use crate::frame::{self, Caps, Frame, FrameError, MAGIC};
 use crate::{BINDING, FIT_PROTOCOL, KERNEL_NAME, LOCK};
 
@@ -66,6 +66,13 @@ impl Fake {
         }
         let script = PathBuf::from(script);
         let text = fs::read_to_string(&script).map_err(|e| e.to_string())?;
+        // An embedded script (`Fake::install_embedded`): the fake's own
+        // script is in its site directory.
+        let text = if text.starts_with(FAKE_SCRIPT) {
+            text
+        } else {
+            fs::read_to_string(PathBuf::from(site).join(FAKE_SITE_FILE)).unwrap_or_default()
+        };
         if !text.starts_with(FAKE_SCRIPT) {
             return Err("not a fake script".to_owned());
         }
@@ -201,6 +208,9 @@ impl Fake {
             }
             if self.write(&mut stdout, &op, &bytes).is_err() {
                 return 4;
+            }
+            if op == "hello" && self.scenario == Scenario::LocksTmp {
+                lock_tmp();
             }
             checks += usize::from(op == "check");
             if self.scenario == Scenario::Floods && checks == 2 {
@@ -350,8 +360,10 @@ impl Fake {
     }
 
     fn at_check(&self, body: &mut Value) {
-        if self.scenario == Scenario::CrashAtCheck {
-            die(Death::Segv);
+        match self.scenario {
+            Scenario::CrashAtCheck => die(Death::Segv),
+            Scenario::HangAtCheck => linger(),
+            _ => {}
         }
         let Some(pairs) = body["pairs"].as_array_mut() else {
             return;
@@ -506,6 +518,21 @@ fn hostile_error_frame(header: &Value) -> Vec<u8> {
 }
 
 /// Waits for fitment to end this process, at most a minute.
+/// `LocksTmp`: the fit directory's `tmp/`, the parent of this helper's
+/// own working directory, made 0500 (Unix only).
+fn lock_tmp() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(tmp) = std::env::current_dir()
+            .ok()
+            .and_then(|d| d.parent().map(std::path::Path::to_path_buf))
+        {
+            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o500));
+        }
+    }
+}
+
 fn linger() -> ! {
     std::thread::sleep(AT_MOST);
     std::process::exit(5);

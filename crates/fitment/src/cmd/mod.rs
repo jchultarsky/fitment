@@ -6,6 +6,11 @@ pub mod catalog;
 #[path = "no_catalog.rs"]
 pub mod catalog;
 pub mod features;
+#[cfg(feature = "fit")]
+pub mod fit;
+#[cfg(not(feature = "fit"))]
+#[path = "no_fit.rs"]
+pub mod fit;
 pub mod match_;
 #[cfg(feature = "catalog")]
 mod match_catalog;

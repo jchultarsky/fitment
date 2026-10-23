@@ -314,8 +314,9 @@ pub enum FitFailure {
     /// No checked helper can run, with why.
     Unavailable(String),
     /// A stored candidate's bytes could not be read or did not hash to
-    /// their row (FC6).
-    StoredBytesUnreadable,
+    /// their row (FC6), with the store's sentence or core's: missing,
+    /// damaged or unreadable, never a path.
+    StoredBytesUnreadable(String),
 }
 
 #[cfg(test)]

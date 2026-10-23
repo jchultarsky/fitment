@@ -41,7 +41,10 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # M5's CT20: the CLI builds without the catalog and its SQLite.
       - run: cargo clippy -p fitment --all-targets --no-default-features --locked -- -D warnings
-      - run: cargo test -p fitment --no-default-features --locked --test no_catalog
+      - run: cargo test -p fitment --no-default-features --locked --test no_catalog --test no_fit
+      # M7's FG3: the CLI with either default feature alone.
+      - run: cargo clippy -p fitment --all-targets --no-default-features --features fit --locked -- -D warnings
+      - run: cargo clippy -p fitment --all-targets --no-default-features --features catalog --locked -- -D warnings
       # M6's server without its features: no schema, no test seams in the
       # library (docs/research/m6-api.md, section 11.2).
       - run: cargo clippy -p fitment-server --all-targets --no-default-features --locked -- -D warnings
@@ -230,7 +233,8 @@ jobs:
     # self-test, the limits each OS takes), VT71 (hostile files handed
     # directly, an exception in one pair, a killed helper leaves no process),
     # VT70 (its own CPU and memory bounds end it) and s01 (the lug
-    # interferes, the bracket verifies). Until the weekly Windows corpus run
+    # interferes, the bracket verifies), and from PR 3 the same through the
+    # CLI with VT64's catalog run. Until the weekly Windows corpus run
     # is green (VT77), Windows' helper is refused (M7-50): there the job
     # checks setup, the handshake and the refusal, not verification.
     runs-on: ${{ matrix.os }}
@@ -257,6 +261,13 @@ jobs:
       # In release: the matcher's interface and freedom take most of a debug
       # build's time per candidate.
       - run: cargo test --release -p fitment-fit --test kernel --locked -- --nocapture
+        env:
+          FITMENT_FIT_KERNEL: "1"
+      # PR 3: the CLI with the real helper: `fitment fit setup` as a user
+      # runs it (VT74's CLI half), s01's lug and bracket through `match
+      # --fit`, a component of another assembly (FB5) and VT64, a catalog
+      # run with the fit equal to the file run over level 1's survivors.
+      - run: cargo test --release -p fitment --test fit_kernel --locked -- --nocapture
         env:
           FITMENT_FIT_KERNEL: "1"
 

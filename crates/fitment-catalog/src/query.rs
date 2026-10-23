@@ -2,7 +2,10 @@
 //! QR13, CM2 to CM7, RX1 to RX3, IX9, IX10): level 1 over the stored
 //! postings, each survivor's stored document checked and judged as its
 //! file would be, in one snapshot. Nothing here reaches a blob (QR11): a
-//! [`Snapshot`] holds no way to.
+//! [`Snapshot`] holds no way to. With a fit verifier, the one way is the
+//! [`FitBlobs`] handed to [`Snapshot::match_catalog_fitted`], read for a
+//! candidate only when its fit is asked (`docs/research/m7-fit.md`, FC6,
+//! QR13).
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,6 +19,7 @@ use fitment_core::{
 use rusqlite::{Connection, OptionalExtension as _, params};
 
 use crate::Error;
+use crate::blobs::FitBlobs;
 use crate::change::{Unnamed, live_entry};
 use crate::hex::Sha256Hex;
 use crate::ids::Reference;
@@ -65,6 +69,12 @@ pub enum NotRun {
     /// Its observer stopped it (CA2, `docs/research/m6-api.md`): no
     /// result, not even a partial one.
     Cancelled,
+    /// A matcher with a fit verifier that has an identity, run without the
+    /// catalog's files (`docs/research/m7-fit.md`, FC6): its fits could
+    /// read no candidate's bytes, so it is refused rather than run with
+    /// every fit unavailable; [`Snapshot::match_catalog_fitted`] takes the
+    /// files (exit 1, a caller's error).
+    FitWithoutFiles,
 }
 
 /// What a catalog run judged.
@@ -256,8 +266,44 @@ impl Snapshot<'_> {
         jobs: usize,
         observer: &dyn Observer,
     ) -> Result<Result<CatalogRun, NotRun>, Error> {
+        self.run(matcher, selection, jobs, observer, None)
+    }
+
+    /// [`Snapshot::match_catalog_observed`] with a fit verifier's reader
+    /// of stored files (FC6): a candidate's file is read through `blobs`,
+    /// hash-checked, only when its fit is asked, and a file that cannot be
+    /// read makes its fit `not_verified`, `stored_bytes_unreadable`, and
+    /// the run incomplete. Dedup shares nothing when the verifier has an
+    /// identity: every member is judged in full with its own file (QR6).
+    ///
+    /// # Errors
+    ///
+    /// As [`Snapshot::match_catalog`].
+    pub fn match_catalog_fitted(
+        &self,
+        matcher: &Matcher<'_>,
+        selection: &Selection,
+        jobs: usize,
+        observer: &dyn Observer,
+        blobs: &FitBlobs,
+    ) -> Result<Result<CatalogRun, NotRun>, Error> {
+        self.run(matcher, selection, jobs, observer, Some(blobs))
+    }
+
+    fn run(
+        &self,
+        matcher: &Matcher<'_>,
+        selection: &Selection,
+        jobs: usize,
+        observer: &dyn Observer,
+        blobs: Option<&FitBlobs>,
+    ) -> Result<Result<CatalogRun, NotRun>, Error> {
         if observer.cancelled() {
             return Ok(Err(NotRun::Cancelled));
+        }
+        // FC6: a fit without the files would be no fit; fail closed.
+        if blobs.is_none() && matcher.fit_identity().is_some() {
+            return Ok(Err(NotRun::FitWithoutFiles));
         }
         let conn: &Connection = self.connection();
         let (entries, indexed, quarantined) = tally(conn)?;
@@ -285,7 +331,7 @@ impl Snapshot<'_> {
                 Err(id) => run.corrupt.push(id),
             }
         }
-        let Some(judged) = judge(matcher, rows, jobs, observer) else {
+        let Some(judged) = judge(matcher, rows, (jobs, blobs), observer) else {
             return Ok(Err(NotRun::Cancelled));
         };
         run.results = judged.results;
@@ -300,6 +346,36 @@ impl Snapshot<'_> {
 }
 
 impl Snapshot<'_> {
+    /// QR1's refusals of `selection` for `matcher`, without judging any
+    /// candidate: what [`Snapshot::match_catalog`] would refuse with, so a
+    /// caller can say it before slower checks of its own (M7's `--fit`,
+    /// FU1). Level 1 runs for a full run.
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    pub fn refusal(
+        &self,
+        matcher: &Matcher<'_>,
+        selection: &Selection,
+    ) -> Result<Option<NotRun>, Error> {
+        let conn: &Connection = self.connection();
+        let (entries, indexed, quarantined) = tally(conn)?;
+        let mut run = CatalogRun {
+            generation: self.generation(),
+            entries,
+            indexed,
+            quarantined,
+            level_one: None,
+            selected: 0,
+            results: Vec::new(),
+            corrupt: Vec::new(),
+            judged: 0,
+            bugs: Vec::new(),
+        };
+        Ok(keys(conn, matcher, selection, &mut run)?.err())
+    }
+
     /// Level 1 over this snapshot's stored index alone, for CT3's
     /// comparison with the in-memory index.
     ///
@@ -581,7 +657,7 @@ struct Judged {
 fn judge(
     matcher: &Matcher<'_>,
     rows: Vec<CheckedRow>,
-    jobs: usize,
+    (jobs, blobs): (usize, Option<&FitBlobs>),
     observer: &dyn Observer,
 ) -> Option<Judged> {
     let share = matcher.fit_kernel().is_none();
@@ -603,7 +679,7 @@ fn judge(
         corrupt: Vec::new(),
         bugs: Vec::new(),
     };
-    let judgments = judge_representatives(matcher, &groups, jobs, observer);
+    let judgments = judge_representatives(matcher, &groups, (jobs, blobs), observer);
     if judgments.iter().any(|j| matches!(j, Judgment::Cancelled)) {
         return None;
     }
@@ -631,6 +707,25 @@ fn judge(
 /// No more threads than this, whatever `jobs` asks.
 const MAX_JOBS: usize = 256;
 
+/// One row judged: with `blobs`, its file fetched through them only if its
+/// fit is asked (FC6); else from its stored document alone (QR11).
+fn judge_row(
+    matcher: &Matcher<'_>,
+    row: &CheckedRow,
+    blobs: Option<&FitBlobs>,
+) -> Result<CandidateResult, fitment_core::NotCurrent> {
+    let Some(blobs) = blobs else {
+        return matcher.judge_document(&row.document, row.source.clone());
+    };
+    let sha256 = row.sha256.as_str();
+    let fetch = || {
+        blobs
+            .read(sha256)
+            .map_err(|e| fitment_core::fit::FetchError::new(e.sentence()))
+    };
+    matcher.judge_document_with_fetch(&row.document, row.source.clone(), &fetch)
+}
+
 /// Each group's representative judged, on up to `jobs` threads, in order.
 /// A judgment's panic is caught per group, the same on one thread or
 /// many, so the result never depends on `jobs` (QR8). Each thread asks
@@ -640,7 +735,7 @@ const MAX_JOBS: usize = 256;
 fn judge_representatives(
     matcher: &Matcher<'_>,
     groups: &[Vec<CheckedRow>],
-    jobs: usize,
+    (jobs, blobs): (usize, Option<&FitBlobs>),
     observer: &dyn Observer,
 ) -> Vec<Judgment> {
     let total = groups.len();
@@ -653,7 +748,7 @@ fn judge_representatives(
             return Judgment::NotCurrent;
         };
         let judged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            matcher.judge_document(&row.document, row.source.clone())
+            judge_row(matcher, row, blobs)
         }));
         let done = done.fetch_add(1, Ordering::Relaxed) + 1;
         observer.progress(Progress::Judged { done, total });

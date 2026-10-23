@@ -138,7 +138,9 @@ pub enum FitBody<'a> {
         sha256: String,
     },
     /// A component of an assembly: the assembly's SHA-256, the
-    /// occurrence's path and the faces' `#id`s of its solid (FC5).
+    /// occurrence's path and the faces' `#id`s of its solid (FC5); and,
+    /// for a component of another assembly than the socket's, that
+    /// assembly's bytes, which the helper loads as its second scene (FB5).
     #[non_exhaustive]
     Component {
         /// The assembly's SHA-256.
@@ -147,6 +149,10 @@ pub enum FitBody<'a> {
         occurrence: Vec<u64>,
         /// Its solid's faces' `#id`s, sorted.
         faces: Vec<u64>,
+        /// The bytes of its assembly when it is not the socket's (FB5);
+        /// `None` for a component of the socket's own assembly, which the
+        /// verifier already holds.
+        assembly: Option<&'a [u8]>,
     },
 }
 
@@ -159,7 +165,7 @@ impl<'a> FitBody<'a> {
         }
     }
 
-    /// A component's body.
+    /// A component's body, of the socket's own assembly.
     pub fn component(
         assembly_sha256: impl Into<String>,
         occurrence: Vec<u64>,
@@ -169,9 +175,46 @@ impl<'a> FitBody<'a> {
             assembly_sha256: assembly_sha256.into(),
             occurrence,
             faces,
+            assembly: None,
+        }
+    }
+
+    /// A component's body in another assembly than the socket's, whose
+    /// bytes are `assembly` (FB5): found by its faces' `#id`s, with no
+    /// occurrence.
+    pub fn component_of(assembly: &'a [u8], faces: Vec<u64>) -> Self {
+        Self::Component {
+            assembly_sha256: crate::sha256::sha256_hex(assembly),
+            occurrence: Vec::new(),
+            faces,
+            assembly: Some(assembly),
         }
     }
 }
+
+/// Why a stored candidate's bytes could not be had for its fit (FC6): the
+/// store's own sentence, such as a blob missing or damaged. The fit is
+/// then `not_verified`, `stored_bytes_unreadable`, and the run incomplete.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{why}")]
+#[non_exhaustive]
+pub struct FetchError {
+    /// Why, in the store's words.
+    pub why: String,
+}
+
+impl FetchError {
+    /// A fetch that failed, and why.
+    pub fn new(why: impl Into<String>) -> Self {
+        Self { why: why.into() }
+    }
+}
+
+/// A stored candidate's bytes, asked for only when its fit is (FC6):
+/// every socket's interface passed, its placement unique and the verifier
+/// one with an identity. It returns the bytes the store checked against
+/// the row's SHA-256 (ST11), which core checks again.
+pub type Fetch<'a> = &'a (dyn Fn() -> Result<Vec<u8>, FetchError> + Sync);
 
 /// The reason given when no fit verifier is configured.
 pub const NO_FIT_VERIFIER: &str = "no fit verifier in this build";
@@ -189,6 +232,11 @@ pub const OCCURRENCE_UNPLACED: &str = "an occurrence of the socket could not be 
 /// one request holds every occurrence of every socket.
 pub const OCCURRENCE_UNPLACED_ELSEWHERE: &str =
     "an occurrence of another socket could not be placed";
+
+/// The reason a candidate whose interface passed past the run's cap on fits
+/// gets none (M7-49): the run is refused, `too_large`, and a caller that
+/// writes its document anyway says so.
+pub const MAX_FITS_REACHED: &str = "the run's cap on fits was reached";
 
 /// The reason a socket whose interface failed gets no fit check
 /// (`docs/research/m4-match.md`, VD4).

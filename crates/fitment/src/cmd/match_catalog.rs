@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use fitment_catalog::{Catalog, Error, NotRun, Options, Reference, Selection};
+use fitment_catalog::{Catalog, Error, NoObserver, NotRun, Options, Reference, Selection};
 use fitment_core::{Blocked, CandidateResult, Matcher};
 
 use super::text::{note, printable};
@@ -17,6 +17,8 @@ pub(super) struct Candidates {
     pub searched: String,
     /// True if a stored row was damaged (exit 1).
     pub failed: bool,
+    /// With a fit verifier, how many stored files its fits read (FU6).
+    pub fit_reads: Option<usize>,
 }
 
 /// CL2's code for an error opening the catalog.
@@ -28,24 +30,17 @@ fn code_of(error: &Error) -> u8 {
     }
 }
 
-/// QR1's refusals, after the socket gate: the catalog, its schema, its
-/// staleness, an empty or blocked full run. `Err` is the exit code, with
+/// A catalog opened for a run, with the run's selection (CM2, CM3).
+pub(super) struct Opened {
+    shown: String,
+    catalog: Catalog,
+    selection: Selection,
+}
+
+/// CM1's selection and the catalog opened; `Err` is the exit code, with
 /// nothing on stdout.
-pub(super) fn candidates(
-    dir: &Path,
-    matcher: &Matcher<'_>,
-    ids: &[String],
-    exhaustive: bool,
-    jobs: usize,
-) -> Result<Candidates, ExitCode> {
+pub(super) fn open(dir: &Path, ids: &[String], exhaustive: bool) -> Result<Opened, ExitCode> {
     let shown = printable(&dir.display().to_string());
-    let fail = |error: &Error| {
-        note(&format!(
-            "fitment: {shown}: {}",
-            printable(&error.to_string())
-        ));
-        ExitCode::from(code_of(error))
-    };
     let selection = if exhaustive {
         Selection::Exhaustive
     } else if ids.is_empty() {
@@ -63,12 +58,65 @@ pub(super) fn candidates(
         }
         Selection::Named(references)
     };
-    let mut catalog = Catalog::open(dir, Options::default()).map_err(|e| fail(&e))?;
-    let run = {
-        let snapshot = catalog.snapshot().map_err(|e| fail(&e))?;
+    let catalog = Catalog::open(dir, Options::default()).map_err(|e| fail(&shown, &e))?;
+    Ok(Opened {
+        shown,
+        catalog,
+        selection,
+    })
+}
+
+/// The catalog's error, on stderr, and its code (CL2).
+fn fail(shown: &str, error: &Error) -> ExitCode {
+    note(&format!(
+        "fitment: {shown}: {}",
+        printable(&error.to_string())
+    ));
+    ExitCode::from(code_of(error))
+}
+
+/// QR1's refusal for `matcher`, said before anything slower (M7's FU1:
+/// before `--fit`'s checks), with nothing judged; `Err` is its code.
+pub(super) fn refused(opened: &mut Opened, matcher: &Matcher<'_>) -> Result<(), ExitCode> {
+    let shown = opened.shown.clone();
+    let refusal = {
+        let snapshot = opened.catalog.snapshot().map_err(|e| fail(&shown, &e))?;
         snapshot
-            .match_catalog(matcher, &selection, jobs)
-            .map_err(|e| fail(&e))?
+            .refusal(matcher, &opened.selection)
+            .map_err(|e| fail(&shown, &e))?
+    };
+    opened.catalog.checkpoint();
+    match refusal {
+        Some(refused) => Err(not_run(&shown, &refused)),
+        None => Ok(()),
+    }
+}
+
+/// QR1's refusals, after the socket gate: the catalog, its schema, its
+/// staleness, an empty or blocked full run. `Err` is the exit code, with
+/// nothing on stdout.
+pub(super) fn candidates(
+    opened: Opened,
+    matcher: &Matcher<'_>,
+    jobs: usize,
+) -> Result<Candidates, ExitCode> {
+    let Opened {
+        shown,
+        mut catalog,
+        selection,
+    } = opened;
+    // FC6: with a fit verifier, a passing candidate's file is read through
+    // this handle, hash-checked, when its fit is asked.
+    let blobs = matcher.fit_identity().map(|_| catalog.fit_blobs());
+    let run = {
+        let snapshot = catalog.snapshot().map_err(|e| fail(&shown, &e))?;
+        match &blobs {
+            Some(blobs) => {
+                snapshot.match_catalog_fitted(matcher, &selection, jobs, &NoObserver, blobs)
+            }
+            None => snapshot.match_catalog(matcher, &selection, jobs),
+        }
+        .map_err(|e| fail(&shown, &e))?
     };
     // CC3: the snapshot is over; the WAL may be folded back.
     catalog.checkpoint();
@@ -121,6 +169,7 @@ pub(super) fn candidates(
         results: run.results,
         searched,
         failed,
+        fit_reads: blobs.as_ref().map(fitment_catalog::FitBlobs::reads),
     })
 }
 

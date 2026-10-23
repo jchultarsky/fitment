@@ -172,7 +172,7 @@ impl FitCode {
             FitFailure::Crashed => Self::KernelCrashed,
             FitFailure::Protocol => Self::HelperProtocol,
             FitFailure::Unavailable(_) => Self::HelperUnavailable,
-            FitFailure::StoredBytesUnreadable => Self::StoredBytesUnreadable,
+            FitFailure::StoredBytesUnreadable(_) => Self::StoredBytesUnreadable,
         }
     }
 
@@ -335,7 +335,7 @@ impl FitOutcome {
     /// FV8: no measures, for `failure`, at every one of `sockets`.
     pub fn failed(sockets: &[&str], failure: &FitFailure) -> Self {
         let detail = match failure {
-            FitFailure::Unavailable(why) => why.clone(),
+            FitFailure::Unavailable(why) | FitFailure::StoredBytesUnreadable(why) => why.clone(),
             _ => String::new(),
         };
         let finding = Finding::new(FitCode::of(failure), FindingAt::Run, detail);
