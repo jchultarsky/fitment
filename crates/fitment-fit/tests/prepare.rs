@@ -281,27 +281,23 @@ fn the_helper_is_spawned_from_the_manifest_with_nothing_inherited() {
     let root = root("spawn");
     let fake = Fake::install(&root, Scenario::Report);
     let helper = fake.helper(fast());
-    // What this process was itself started with: a CI runner can hand its
-    // processes descriptors without close-on-exec (Ubuntu's 142 and 145),
-    // which std passes on and cannot close without `unsafe`; fitment adds
-    // none of its own.
-    let inherited = open_fds();
-    // A file this process holds open is not the helper's. A spare file is
-    // opened first, so the held one never takes descriptor 3, the number
-    // the helper's own listing of /dev/fd takes (the test, run alone).
-    let spare = std::fs::File::open(fake.dir.join(MANIFEST)).unwrap();
-    let held = std::fs::File::open(fake.dir.join(MANIFEST)).unwrap();
-    let held_fd = held_fd(&held);
-    assert!(held_fd != 3 || cfg!(not(unix)), "the held file took 3");
-    let handshake = helper.check().unwrap();
-    drop(held);
-    drop(spare);
-    let report: Value = serde_json::from_str(
-        &fake
-            .read_state(&format!("report-{}.json", handshake.pid))
-            .expect("the helper's report"),
-    )
-    .unwrap();
+    // Up to three spawns: on macOS std marks a new pipe close-on-exec in a
+    // second step, so another thread's spawn at that moment can hand this
+    // helper a stray pipe end, once. A descriptor fitment itself passed on
+    // would be there every time.
+    let mut last = Vec::new();
+    let mut spawned = None;
+    for _ in 0..3 {
+        let (report, python, stray) = spawn_and_report(&fake, &helper);
+        if stray.is_empty() {
+            spawned = Some((report, python));
+            break;
+        }
+        last = stray;
+    }
+    let Some((report, python)) = spawned else {
+        panic!("inherited on every spawn: {last:?}");
+    };
     let script = fake.dir.join(SCRIPT);
     let site = root.join("site-packages");
     assert_eq!(
@@ -335,32 +331,49 @@ fn the_helper_is_spawned_from_the_manifest_with_nothing_inherited() {
         cwd.display()
     );
     assert!(!cwd.exists(), "its directory is removed with it");
+    assert_eq!(python, FAKE_PYTHON);
+}
+
+/// One spawn of `helper`: its report, its Python, and the descriptors it
+/// held beyond its three pipes, the listing's own and what this process
+/// was itself started with (a CI runner can hand its processes some
+/// without close-on-exec, Ubuntu's 142 and 145, which std passes on and
+/// cannot close without `unsafe`), or the file this process holds open.
+fn spawn_and_report(fake: &Fake, helper: &OcctHelper) -> (Value, String, Vec<u32>) {
+    let inherited = open_fds();
+    // A spare file is opened first, so the held one never takes 3, the
+    // number the helper's own listing of /dev/fd takes.
+    let spare = std::fs::File::open(fake.dir.join(MANIFEST)).unwrap();
+    let held = std::fs::File::open(fake.dir.join(MANIFEST)).unwrap();
+    let held_fd = held_fd(&held);
+    assert!(held_fd != 3 || cfg!(not(unix)), "the held file took 3");
+    let handshake = helper.check().unwrap();
+    drop(held);
+    drop(spare);
+    let report: Value = serde_json::from_str(
+        &fake
+            .read_state(&format!("report-{}.json", handshake.pid))
+            .expect("the helper's report"),
+    )
+    .unwrap();
+    let mut stray = Vec::new();
     if cfg!(unix) {
-        // Its three pipes, and the directory listing them.
-        let mut fds: Vec<u32> = report["fds"]
+        let fds: Vec<u32> = report["fds"]
             .as_array()
             .unwrap()
             .iter()
             .map(|v| v.as_str().unwrap().parse().unwrap())
             .collect();
-        fds.sort_unstable();
-        // Its three pipes and the listing's own descriptor, and nothing
-        // else but what this process was started with.
         for fd in [0, 1, 2, 3] {
             assert!(fds.contains(&fd), "{fds:?}");
         }
-        let extra: Vec<u32> = fds
-            .iter()
-            .copied()
-            .filter(|fd| *fd > 3 && !inherited.contains(fd))
+        stray = fds
+            .into_iter()
+            .filter(|fd| *fd > 3 && (!inherited.contains(fd) || *fd == held_fd))
             .collect();
-        assert!(
-            extra.is_empty(),
-            "fitment's own, inherited: {extra:?} of {fds:?}"
-        );
-        assert!(!fds.contains(&held_fd), "the held file: {fds:?}");
+        stray.sort_unstable();
     }
-    assert_eq!(handshake.python, FAKE_PYTHON);
+    (report, handshake.python, stray)
 }
 
 /// The descriptors this process has open (Unix; none elsewhere).
