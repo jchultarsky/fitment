@@ -20,6 +20,7 @@ mod measures;
 mod plan;
 mod scene;
 #[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
 pub mod testing;
 mod zones;
 
@@ -359,7 +360,10 @@ impl<'a> FitRequest<'a> {
 /// A [`FitStatus::Verified`] is built only by [`decide`], from a kernel's
 /// measures and with the verifier's [`FitIdentity`] (FC1, M7-36): no
 /// verifier, fake or real, can hand the matcher one, and no other crate
-/// can make one (VT51):
+/// can construct one (VT51). A caller can still take one `decide` made
+/// and write it into a verdict's public fields; the matcher never reads a
+/// fit back: each candidate's is decided afresh from its verifier's
+/// measures. Constructing one does not compile:
 ///
 /// ```compile_fail,E0639
 /// let forged = fitment_core::FitStatus::Verified {

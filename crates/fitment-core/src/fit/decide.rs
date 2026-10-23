@@ -391,10 +391,13 @@ impl FitOutcome {
 
     /// FV5: this outcome under `control`, the original's own: if the
     /// control is not verified, every fit here that is `verified` becomes
-    /// `not_verified`, `original_fails_fit`, with the control's own code;
-    /// an `interferes` stays, as does anything else.
+    /// `not_verified`, `original_fails_fit`, with the control's own code
+    /// (the finding added only where a fit was withheld); an `interferes`
+    /// stays, as does anything else. A control whose run was incomplete
+    /// (FV8) makes this outcome incomplete too, whatever it withheld.
     #[must_use]
     pub fn controlled_by(mut self, control: &Self) -> Self {
+        self.incomplete |= control.incomplete;
         if matches!(control.candidate, FitStatus::Verified { .. }) {
             return self;
         }
@@ -411,15 +414,20 @@ impl FitOutcome {
         let downgraded = FitStatus::NotVerified {
             reason: finding.sentence(),
         };
+        let mut withheld = false;
         for (_, status) in &mut self.sockets {
             if matches!(status, FitStatus::Verified { .. }) {
                 *status = downgraded.clone();
+                withheld = true;
             }
         }
         if matches!(self.candidate, FitStatus::Verified { .. }) {
             self.candidate = downgraded;
+            withheld = true;
         }
-        self.findings.push(finding);
+        if withheld {
+            self.findings.push(finding);
+        }
         self
     }
 }

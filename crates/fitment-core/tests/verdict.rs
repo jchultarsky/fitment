@@ -395,3 +395,18 @@ fn only_a_verified_fit_makes_a_match_through_the_matcher() {
         }
     }
 }
+
+/// The PR 1b reviews: the test-only verifier is never documented as API:
+/// docs.rs builds the `schema` feature alone, never `test-support`, and
+/// `fit::testing` is hidden besides.
+#[test]
+fn the_test_only_verifier_is_never_documented() {
+    let manifest = include_str!("../Cargo.toml");
+    let docs = manifest.split("[package.metadata.docs.rs]").nth(1).unwrap();
+    assert!(docs.contains("features = [\"schema\"]"), "{docs}");
+    assert!(!docs.contains("all-features"), "{docs}");
+    let fit = include_str!("../src/fit.rs");
+    assert!(fit.contains(
+        "#[cfg(any(test, feature = \"test-support\"))]\n#[doc(hidden)]\npub mod testing;"
+    ));
+}

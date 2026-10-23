@@ -557,11 +557,24 @@ impl<'a> Matcher<'a> {
         self.fitting.as_ref().map(fitting::Fitting::identity)
     }
 
-    /// The original's own fit, the control (FT9): `None` with no verifier
-    /// that has an identity, or before a candidate's interface passed at
-    /// every socket.
-    pub fn fit_control(&self) -> Option<&FitEvidence> {
+    /// The original's own fit, the control (FT9): its complete run, else
+    /// its last incomplete one (FV8); `None` with no verifier that has an
+    /// identity, or before a candidate's interface passed at every socket.
+    pub fn fit_control(&self) -> Option<FitEvidence> {
         self.fitting.as_ref().and_then(fitting::Fitting::control)
+    }
+
+    /// FV8: the run that judged `results` with this matcher depends on the
+    /// machine, so it never claims to be complete: a run of the control
+    /// was incomplete, or a result's fit was ([`CandidateResult::fit_incomplete`]).
+    pub fn fit_incomplete<'r>(
+        &self,
+        results: impl IntoIterator<Item = &'r CandidateResult>,
+    ) -> bool {
+        self.fitting
+            .as_ref()
+            .is_some_and(fitting::Fitting::control_incomplete)
+            || results.into_iter().any(CandidateResult::fit_incomplete)
     }
 
     /// Level 1 for every socket of the document under this matcher's own

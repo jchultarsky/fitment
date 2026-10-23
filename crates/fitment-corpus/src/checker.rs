@@ -182,7 +182,65 @@ fn candidate(doc: &Value, id: &str, c: &Value, out: &mut Vec<String>) {
             array(&c["reasons"]).len()
         ));
     }
+    verified_fit(doc, id, &c["fit"], out);
+    for socket in results {
+        let name = format!("{id} {}", socket["socket"]);
+        verified_fit(doc, &name, &socket["fit"], out);
+        freedom(doc, &name, socket, out);
+    }
     flags(doc, id, c, out);
+}
+
+/// The fit's rules a `verified` must meet (`docs/research/m7-fit.md`,
+/// FT9, FC1, FM1 to FM3, FT12; the review of M7 PR 1b): only in v2, with a
+/// verifier, by its kernel and version, every control verified, with its
+/// pairs and what no fit checks.
+fn verified_fit(doc: &Value, name: &str, fit: &Value, out: &mut Vec<String>) {
+    if fit["status"] != "verified" {
+        return;
+    }
+    let verifier = &doc["fit_verifier"];
+    if doc["format_version"] != 2 || !verifier.is_object() {
+        out.push(format!("{name}: verified with no fit verifier"));
+        return;
+    }
+    if fit["kernel"] != verifier["kernel"] || fit["version"] != verifier["kernel_version"] {
+        out.push(format!(
+            "{name}: verified by {} {}, not the fit verifier's",
+            fit["kernel"], fit["version"]
+        ));
+    }
+    let controls = array(&doc["fit"]["control"]);
+    if controls.is_empty() || controls.iter().any(|c| c["fit"]["status"] != "verified") {
+        out.push(format!("{name}: verified, and the control is not"));
+    }
+    if !fit["pairs"].is_array() || !fit["scope_not_checked"].is_array() {
+        out.push(format!("{name}: verified with no pairs or scope"));
+    }
+}
+
+/// FT10, FV6: in v2, a socket whose placement has a free motion other than
+/// a turn about an axis the candidate is axisymmetric about is
+/// `not_verified`, `placement_not_unique`; a verified socket's freedom
+/// was worked out.
+fn freedom(doc: &Value, name: &str, socket: &Value, out: &mut Vec<String>) {
+    if doc["format_version"] != 2 {
+        return;
+    }
+    let motions = &socket["placement"]["freedom"];
+    let fit = &socket["fit"];
+    if fit["status"] == "verified" && !motions.is_array() {
+        out.push(format!("{name}: verified with no freedom worked out"));
+    }
+    let free = array(motions)
+        .iter()
+        .any(|m| m["kind"] != "turn" || m["axisymmetric"] != true);
+    if free && (fit["status"] != "not_verified" || fit["code"] != "placement_not_unique") {
+        out.push(format!(
+            "{name}: a free placement with a fit {}",
+            fit["status"]
+        ));
+    }
 }
 
 /// One socket's result: its checks against the envelope, `failed`, the

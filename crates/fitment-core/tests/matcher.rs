@@ -492,3 +492,163 @@ fn with_no_verifier_nothing_changes() {
     let doc = MatchDocument::new(&matcher, vec![(result, vec!["m_bracket.stp".to_owned()])]);
     assert_eq!(doc.format_version(), fitment_core::MATCH_FORMAT_VERSION);
 }
+
+/// The PR 1b reviews: a control whose run is incomplete (FV8: a timeout
+/// here) is not kept: each candidate whose interface passes runs it again,
+/// and each, its own fit verified, is withheld (`original_fails_fit`) and
+/// incomplete, as is the run (`Matcher::fit_incomplete`).
+#[test]
+fn an_incomplete_control_is_run_again_and_marks_every_candidate() {
+    let (_, s01, _) = ASSEMBLIES[0];
+    let document = SocketDocument::extract(s01, Some("BRACKET"), None).unwrap();
+    let verifier = MeasuresVerifier::new(
+        FitIdentity::new("open_cascade", "8.0.1"),
+        s01.to_vec(),
+        |request| match request.body() {
+            FitBody::Component { .. } => Err(fitment_core::fit::FitFailure::Timeout),
+            _ => Ok(fitment_core::fit::testing::exact(request)),
+        },
+    );
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier,
+    )
+    .unwrap();
+    let bracket: &[u8] = include_bytes!("candidates/m_bracket.stp");
+    let results: Vec<_> = (0..2).map(|_| matcher.judge_step(bracket)).collect();
+    for result in &results {
+        assert_eq!(result.verdict.kind(), VerdictKind::InterfaceMatch);
+        assert!(result.fit_incomplete(), "withheld by an incomplete control");
+        let outcome = result.fit.as_deref().unwrap().outcome();
+        assert!(outcome.findings().iter().any(|f| f.code == FitCode::OriginalFailsFit
+            && f.detail.contains("helper_timeout")));
+    }
+    let asked = verifier.asked();
+    assert_eq!(asked.len(), 4, "the control, then the candidate, twice");
+    assert!(
+        asked[2].candidate.starts_with("component "),
+        "the control again"
+    );
+    assert!(matcher.fit_incomplete(&[]));
+    assert!(matcher.fit_incomplete(&results));
+    let control = matcher.fit_control().unwrap();
+    assert!(control.outcome().incomplete());
+    let complete = exact(s01);
+    let fine = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &complete,
+    )
+    .unwrap();
+    let result = fine.judge_step(bracket);
+    assert!(!result.fit_incomplete() && !fine.fit_incomplete(&[result]));
+}
+
+/// The PR 1b reviews: a verifier with an identity whose kernel or version
+/// is empty, with no assembly, or with another assembly than the socket's
+/// source asks nothing: every passing candidate's fit is `not_verified`,
+/// `helper_unavailable`, an `InterfaceMatch`.
+#[test]
+fn a_verifier_without_a_name_or_its_assembly_is_unavailable() {
+    struct NoAssembly;
+    impl fitment_core::FitVerifier for NoAssembly {
+        fn identity(&self) -> Option<FitIdentity> {
+            Some(FitIdentity::new("open_cascade", "8.0.1"))
+        }
+        fn measure(
+            &self,
+            _: &fitment_core::FitRequest<'_>,
+        ) -> Result<fitment_core::fit::FitMeasures, fitment_core::fit::FitFailure> {
+            panic!("asked with no scene");
+        }
+    }
+    let (_, s01, _) = ASSEMBLIES[0];
+    let (_, s02, _) = ASSEMBLIES[1];
+    let document = SocketDocument::extract(s01, Some("BRACKET"), None).unwrap();
+    let unnamed = MeasuresVerifier::exact(FitIdentity::new("", "8.0.1"), s01.to_vec());
+    let unversioned = MeasuresVerifier::exact(FitIdentity::new("open_cascade", ""), s01.to_vec());
+    let elsewhere = exact(s02);
+    let verifiers: [(&dyn fitment_core::FitVerifier, &str); 4] = [
+        (&unnamed, "names no kernel or version"),
+        (&unversioned, "names no kernel or version"),
+        (&NoAssembly, "holds no assembly"),
+        (&elsewhere, "not the socket's source"),
+    ];
+    for (verifier, why) in verifiers {
+        let matcher = Matcher::new(
+            &document,
+            MatchPolicy::default(),
+            MatchOptions::default(),
+            verifier,
+        )
+        .unwrap();
+        let result = matcher.judge_step(include_bytes!("candidates/m_bracket.stp"));
+        assert_eq!(result.verdict.kind(), VerdictKind::InterfaceMatch, "{why}");
+        let outcome = result.fit.as_deref().unwrap().outcome();
+        assert_eq!(outcome.code(), Some(FitCode::HelperUnavailable), "{why}");
+        assert!(
+            outcome.findings()[0].detail.contains(why),
+            "{:?}",
+            outcome.findings()
+        );
+    }
+    for verifier in [&unnamed, &unversioned, &elsewhere] {
+        assert_eq!(verifier.asked(), Vec::new());
+    }
+}
+
+/// FV7 through the matcher: on s03's dowels, an alert on the pin's pairs
+/// at socket-1's occurrence (no copy) leaves socket-1 `not_verified`,
+/// `kernel_alert`, the other two sockets `verified`, and the candidate,
+/// worst of its sockets, an `InterfaceMatch`.
+#[test]
+fn an_alert_at_one_socket_leaves_the_others_verified() {
+    let document = dowels();
+    let first = document.extracted().unwrap().sockets[0].occurrences[0].clone();
+    let verifier = MeasuresVerifier::new(
+        FitIdentity::new("open_cascade", "8.0.1"),
+        S03.to_vec(),
+        move |request| {
+            let mut measures = fitment_core::fit::testing::exact(request);
+            if matches!(request.body(), FitBody::Step { .. }) {
+                let plan = request.plan(&measures.scene, &measures.place);
+                for (pair, m) in plan.asked().zip(measures.check.pairs.iter_mut()) {
+                    if pair.occurrence == first && !pair.copy {
+                        m.alerts = vec!["BOPAlgo_AlertFaceBuilderUnusedEdges".to_owned()];
+                    }
+                }
+            }
+            Ok(measures)
+        },
+    );
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier,
+    )
+    .unwrap();
+    let result = matcher.judge_step(PIN.as_bytes());
+    let fits: Vec<(&str, VerdictKind, bool)> = result
+        .sockets
+        .iter()
+        .map(|s| {
+            let decided = matches!(s.verdict.fit(), FitStatus::Verified { .. });
+            (s.socket.as_str(), s.verdict.kind(), decided)
+        })
+        .collect();
+    assert_eq!(
+        fits,
+        [
+            ("socket-1", VerdictKind::InterfaceMatch, false),
+            ("socket-2", VerdictKind::Match, true),
+            ("socket-3", VerdictKind::Match, true),
+        ]
+    );
+    assert_eq!(result.verdict.kind(), VerdictKind::InterfaceMatch);
+    let outcome = result.fit.as_deref().unwrap().outcome();
+    assert_eq!(outcome.code(), Some(FitCode::KernelAlert));
+}

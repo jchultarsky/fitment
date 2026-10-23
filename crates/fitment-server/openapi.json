@@ -7081,9 +7081,11 @@
             ]
           },
           "format": {
+            "const": "fitment.match",
             "type": "string"
           },
           "format_version": {
+            "const": 1,
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
@@ -7296,12 +7298,20 @@
               },
               {
                 "additionalProperties": false,
+                "description": "A pair, with its own tolerances and zones (FT7) when it is one of\nthe plan's, in the digest (FM5); `null` for a body the plan does not\npair (FT8's `untested_body`).",
                 "properties": {
                   "body": {
                     "$ref": "#/$defs/BodyV2"
                   },
                   "code": {
                     "$ref": "#/$defs/FitCode"
+                  },
+                  "epsilon_mm": {
+                    "format": "double",
+                    "type": [
+                      "number",
+                      "null"
+                    ]
                   },
                   "kind": {
                     "const": "pair",
@@ -7314,13 +7324,40 @@
                       "type": "integer"
                     },
                     "type": "array"
+                  },
+                  "threshold_mm": {
+                    "format": "double",
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "u_pair_mm": {
+                    "format": "double",
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "zones": {
+                    "items": {
+                      "$ref": "#/$defs/ZoneV2"
+                    },
+                    "type": [
+                      "array",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "kind",
                   "code",
                   "occurrence",
-                  "body"
+                  "body",
+                  "u_pair_mm",
+                  "epsilon_mm",
+                  "threshold_mm",
+                  "zones"
                 ],
                 "type": "object"
               },
@@ -10049,9 +10086,11 @@
             "$ref": "#/$defs/VerifierV2"
           },
           "format": {
+            "const": "fitment.match",
             "type": "string"
           },
           "format_version": {
+            "const": 2,
             "format": "uint32",
             "minimum": 0,
             "type": "integer"

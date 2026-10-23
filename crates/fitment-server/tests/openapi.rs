@@ -307,7 +307,8 @@ fn an_edited_document_fails_its_schema() {
 
 /// FM7 (docs/research/m7-fit.md): `fitment.match` v2 is its own closed
 /// schema beside v1's: a v2 golden validates against v2's and not v1's, a
-/// v1 golden not against v2's, and a field v2 does not write fails it.
+/// v1 golden not against v2's, and a field v2 does not write fails it;
+/// each pins its format and version by `const`.
 #[test]
 fn v2_is_its_own_closed_schema() {
     let schemas = schemas();
@@ -330,11 +331,22 @@ fn v2_is_its_own_closed_schema() {
         !schema::validate(v2, &plain).is_empty(),
         "v1 passed v2's schema"
     );
-    let mut added = fit;
+    let mut added = fit.clone();
     added["fit"]["unexpected"] = Value::Bool(true);
     assert!(
         !schema::validate(v2, &added).is_empty(),
         "an unknown field passed"
+    );
+    // The review of PR 1b: each pins its format and version by `const`.
+    for (schema, version) in [(v1, 1), (v2, 2)] {
+        assert_eq!(schema["properties"]["format"]["const"], "fitment.match");
+        assert_eq!(schema["properties"]["format_version"]["const"], version);
+    }
+    let mut relabelled = fit;
+    relabelled["format_version"] = 3.into();
+    assert!(
+        !schema::validate(v2, &relabelled).is_empty(),
+        "another version passed"
     );
 }
 

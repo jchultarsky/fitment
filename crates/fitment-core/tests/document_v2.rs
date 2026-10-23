@@ -318,3 +318,35 @@ fn v2_is_v1_with_nothing_removed() {
         .collect();
     assert_eq!(missing, Vec::<&String>::new());
 }
+
+/// The PR 1b reviews (FM3, FM5): a `not_verified` fit's pair (here the
+/// plate's, a proximity, 0.005 mm clear outside its zone) states the
+/// pair's own tolerances and zones in `at`, inside the digest, and no
+/// kernel number there: the gap is only in `measured`.
+#[test]
+fn a_not_verified_pair_states_its_own_values_in_the_digest() {
+    let doc = json(&document(&kernel(0.0, 0.005)));
+    let fit = &entry(&doc, "m_bracket.stp")["fit"];
+    assert_eq!(fit["status"], "not_verified");
+    assert_eq!(fit["code"], "proximity");
+    let at = &fit["at"][0];
+    assert_eq!(at["kind"], "pair");
+    assert_eq!(at["body"]["product"], "PLATE");
+    assert_eq!(at["u_pair_mm"], fitment_core::GUARD_MM);
+    assert_eq!(at["epsilon_mm"], 0.01 - fitment_core::GUARD_MM);
+    assert_eq!(at["threshold_mm"], 0.01 + fitment_core::GUARD_MM);
+    assert_eq!(at["zones"][0]["kind"], "slab");
+    assert!(at.get("measured").is_none());
+    assert!(
+        fit["measured"]["findings"][0]
+            .as_str()
+            .unwrap()
+            .contains("0.005")
+    );
+    let closer = document(&kernel(0.0, 0.004));
+    assert_eq!(
+        closer.digest(),
+        doc["digest"].as_str().unwrap(),
+        "the gap is the kernel's"
+    );
+}

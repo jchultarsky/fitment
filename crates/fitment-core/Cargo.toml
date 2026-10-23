@@ -44,5 +44,6 @@ fitment-core = { path = ".", features = ["test-support"] }
 workspace = true
 
 [package.metadata.docs.rs]
-all-features = true
+# `schema` only: `test-support`'s `fit::testing` is never documented as API.
+features = ["schema"]
 rustdoc-args = ["--cfg", "docsrs"]

@@ -27,7 +27,8 @@ Until 1.0, minor versions may contain breaking changes.
   `measured` objects outside the digest), each placement's freedom and its
   alternatives, and what no fit checks. `SocketResult` gains `freedom` and
   `alternatives`, `CandidateResult` gains `fit` (a `FitEvidence`) and
-  `fit_incomplete`, `Matcher` gains `fit_identity` and `fit_control`,
+  `fit_incomplete`, `Matcher` gains `fit_identity`, `fit_control` and
+  `fit_incomplete`,
   `MatchDocument` gains `format_version`; `FitIdentity` gains the helper's
   binding, Python, protocol and hashes; `MATCH_FORMAT_VERSION_FIT` (2),
   `INTERFACE_REJECTED_ELSEWHERE`, `OCCURRENCE_UNPLACED` and
@@ -36,8 +37,9 @@ Until 1.0, minor versions may contain breaking changes.
   release build enables, adds `fit::testing`: `MeasuresVerifier`, which
   answers with given measures, and an exact kernel's measures.
   `fitment-server`'s OpenAPI document gains `fitment.match.v2`
-  (`https://fitment.dev/schemas/fitment.match/2`) beside v1, closed, and
-  the API's minor is 6. A run without a verifier that has an identity,
+  (`https://fitment.dev/schemas/fitment.match/2`) beside v1, closed, each
+  pinning its `format` and `format_version` by `const`, and the API's minor
+  is 6. fitment-core's docs.rs build documents `schema` alone. A run without a verifier that has an identity,
   which is every run of the CLI and the server in this release, writes
   v1 as 0.3.0 does, byte for byte.
 

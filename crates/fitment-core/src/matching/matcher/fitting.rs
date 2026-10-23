@@ -7,7 +7,8 @@
 //! returns measures; the status is [`fit::decide`]'s (FV1), split into
 //! each socket's fit (FV7).
 
-use std::sync::OnceLock;
+use std::borrow::Cow;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use super::{Matcher, Ready, SocketResult};
 use crate::assembly::SelectedComponent;
@@ -39,11 +40,17 @@ pub(super) enum Body<'b> {
 
 /// What a matcher with a verifier that has an identity holds for the fit:
 /// the identity, the scene and zones core read from the verifier's
-/// assembly (FB1, FZ1), and the control once it has run (FT9).
+/// assembly (FB1, FZ1), and the control once it has run complete (FT9).
+/// A control whose run was incomplete (FV8) is not kept: the next
+/// candidate runs it again; the last such run is, for the document and
+/// for [`Matcher::fit_incomplete`].
 pub(super) struct Fitting {
     identity: FitIdentity,
     read: Result<(FitScene, Zones), String>,
     control: OnceLock<FitEvidence>,
+    /// Held while the control runs, so it runs once at a time; the last
+    /// incomplete run.
+    incomplete: Mutex<Option<FitEvidence>>,
 }
 
 impl Fitting {
@@ -55,7 +62,9 @@ impl Fitting {
         assembly: Option<&[u8]>,
         document: &SocketDocument,
     ) -> Self {
+        let named = !(identity.kernel.is_empty() || identity.version.is_empty());
         let read = match assembly {
+            _ if !named => Err("the fit verifier names no kernel or version".to_owned()),
             None => Err("the fit verifier holds no assembly".to_owned()),
             Some(bytes) => FitScene::of(bytes, document)
                 .map(|scene| {
@@ -68,6 +77,7 @@ impl Fitting {
             identity,
             read,
             control: OnceLock::new(),
+            incomplete: Mutex::new(None),
         }
     }
 
@@ -75,8 +85,24 @@ impl Fitting {
         &self.identity
     }
 
-    pub(super) fn control(&self) -> Option<&FitEvidence> {
-        self.control.get()
+    /// The control: its complete run, else its last incomplete one.
+    pub(super) fn control(&self) -> Option<FitEvidence> {
+        self.control
+            .get()
+            .cloned()
+            .or_else(|| self.last_incomplete())
+    }
+
+    fn last_incomplete(&self) -> Option<FitEvidence> {
+        self.incomplete
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// True if a run of the control was incomplete (FV8).
+    pub(super) fn control_incomplete(&self) -> bool {
+        self.last_incomplete().is_some()
     }
 }
 
@@ -84,14 +110,6 @@ impl Fitting {
 /// not be placed (FT2).
 fn unplaced(result: &SocketResult) -> bool {
     matches!(result.verdict.fit(), FitStatus::NotChecked { reason } if reason == OCCURRENCE_UNPLACED)
-}
-
-/// True if the outcome is `verified` anywhere, the candidate's or a
-/// socket's: only then can the control withhold it (FV5).
-fn verified_somewhere(outcome: &FitOutcome) -> bool {
-    std::iter::once(outcome.candidate())
-        .chain(outcome.sockets().iter().map(|(_, f)| f))
-        .any(|f| matches!(f, FitStatus::Verified { .. }))
 }
 
 /// `ready`'s active requirements, as `decide` takes them.
@@ -169,12 +187,9 @@ impl Matcher<'_> {
             let outcome = FitOutcome::not_unique(&ids, &free);
             FitEvidence::unmeasured(outcome, placements.unwrap_or_default())
         };
-        let evidence = if verified_somewhere(evidence.outcome()) {
-            evidence.controlled_by(control.outcome())
-        } else {
-            evidence
-        };
-        let evidence = evidence.with_free_turns(turns);
+        let evidence = evidence
+            .controlled_by(control.outcome())
+            .with_free_turns(turns);
         for (ready, result) in self.sockets.iter().zip(sockets.iter_mut()) {
             let fit = evidence.outcome().socket(&result.socket).cloned();
             let fit = fit.unwrap_or_else(|| FitStatus::NotVerified {
@@ -186,11 +201,23 @@ impl Matcher<'_> {
     }
 
     /// FT9: the control, run once, at the first candidate whose every
-    /// socket's interface passed.
-    fn control_of<'f>(&self, fitting: &'f Fitting) -> &'f FitEvidence {
-        fitting
-            .control
-            .get_or_init(|| self.control_evidence(fitting))
+    /// socket's interface passed, one run at a time. A run that is
+    /// incomplete (FV8) is not kept, so the next such candidate runs it
+    /// again, as after a panic; it is remembered as the last incomplete one.
+    fn control_of<'f>(&self, fitting: &'f Fitting) -> Cow<'f, FitEvidence> {
+        let mut last = fitting
+            .incomplete
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(kept) = fitting.control.get() {
+            return Cow::Borrowed(kept);
+        }
+        let evidence = self.control_evidence(fitting);
+        if evidence.outcome().incomplete() {
+            *last = Some(evidence.clone());
+            return Cow::Owned(evidence);
+        }
+        Cow::Borrowed(fitting.control.get_or_init(|| evidence))
     }
 
     /// FT9: the original's own solid at each selected occurrence, at the

@@ -187,7 +187,7 @@ impl FitParameters {
                 .iter()
                 .map(|(socket, status)| ControlV2 {
                     socket: socket.clone(),
-                    fit: fit_v2(status, Some(evidence), Some(socket)),
+                    fit: fit_v2(status, Some(&evidence), Some(socket)),
                 })
                 .collect()
         });
@@ -349,10 +349,17 @@ enum AtV2 {
         code: FitCode,
         occurrence: Vec<u64>,
     },
+    /// A pair, with its own tolerances and zones (FT7) when it is one of
+    /// the plan's, in the digest (FM5); `null` for a body the plan does not
+    /// pair (FT8's `untested_body`).
     Pair {
         code: FitCode,
         occurrence: Vec<u64>,
         body: BodyV2,
+        u_pair_mm: Option<f64>,
+        epsilon_mm: Option<f64>,
+        threshold_mm: Option<f64>,
+        zones: Option<Vec<ZoneV2>>,
     },
     Socket {
         code: FitCode,
@@ -710,11 +717,23 @@ fn not_verified(reason: &str, evidence: Option<&FitEvidence>, socket: Option<&st
                     occurrence,
                     body,
                     copy,
-                } => AtV2::Pair {
-                    code,
-                    occurrence: occurrence.clone(),
-                    body: body_v2(*copy, body, (!copy).then(|| product(body)).flatten()),
-                },
+                } => {
+                    let pair = evidence.pairs().iter().find(|p| {
+                        p.pair.occurrence == *occurrence
+                            && p.pair.body == *body
+                            && p.pair.copy == *copy
+                    });
+                    let values = pair.map(pair_v2);
+                    AtV2::Pair {
+                        code,
+                        occurrence: occurrence.clone(),
+                        body: body_v2(*copy, body, (!copy).then(|| product(body)).flatten()),
+                        u_pair_mm: values.as_ref().map(|v| v.u_pair_mm),
+                        epsilon_mm: values.as_ref().map(|v| v.epsilon_mm),
+                        threshold_mm: values.as_ref().map(|v| v.threshold_mm),
+                        zones: values.map(|v| v.zones),
+                    }
+                }
                 FindingAt::Socket { socket } => AtV2::Socket {
                     code,
                     socket: socket.clone(),

@@ -1,7 +1,7 @@
 200
 cache-control: no-store
 content-type: application/json
-repr-digest: sha-256=:5FSIiM0yx0kf3hdC/Fni14HCOj+TcM/Xljz5PA6r9UU=:
+repr-digest: sha-256=:+Ce1pcAx8SbKDqqitHp1L50dQHjBFEyrxQ6CNEAE2iI=:
 x-request-id: r_00000000000000000000000001
 
 <the bytes of crates/fitment-server/openapi.json>
