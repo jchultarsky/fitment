@@ -351,12 +351,13 @@ const CAN_FAIL: [&str; 13] = [
 
 /// The designs whose rules the registry lists: each rule stated in bold
 /// in one of them is in `rule_ids`, and in one of them only.
-const DESIGNS: [&str; 5] = [
+const DESIGNS: [&str; 6] = [
     "docs/research/m2-features.md",
     "docs/research/m3-socket.md",
     "docs/research/m4-match.md",
     "docs/research/m5-catalog.md",
     "docs/research/m6-api.md",
+    "docs/research/m7-fit.md",
 ];
 
 /// M6's design. Its rules waited for the PR of its section 12 that built
@@ -384,6 +385,81 @@ const M6_FAULT: [&str; 16] = [
     "JB5", "JB6", "JS8", "JS11", "JS13", "OB2", "OB4", "OB5", "SD1", "SD2", "SD4", "SD5", "SD6",
     "CX3", "CX4", "CX6",
 ];
+
+/// M7's design, open: its rules may wait for the PR of its section 11
+/// that builds them (`"M7 PR 1b"`, FK8) until PR 6, M7's exit, removes
+/// this allowance.
+const M7: &str = "docs/research/m7-fit.md";
+
+/// M7's PRs in their order (section 11), the exit last: a rule may wait
+/// for one after [`M7_PR_NOW`], and none for PR 7, the release.
+const M7_PRS: [&str; 9] = ["1a", "1b", "2a", "2b", "3", "4", "5a", "5b", "6"];
+
+/// The M7 PR this tree builds: PR 1a, the pure fit module.
+const M7_PR_NOW: &str = "1a";
+
+/// FK8's first list: the rules that can end a fit, each needing a case
+/// that cites it or a fake-helper test in `crates/fitment-fit/tests` that
+/// ends a fit by it.
+const M7_FIT_CAN_END: [&str; 17] = [
+    "FV2", "FV3", "FV4", "FV5", "FV6", "FT4", "FT5", "FT6", "FT7", "FT8", "FT9", "FT10", "FB3",
+    "FB6", "FZ7", "FZ9", "FY4",
+];
+
+/// FK8's second list: the rules of the helper's process, each needing a
+/// test in fitment-fit's adversarial, process, prepare or kernel tests.
+const M7_PROCESS: [&str; 15] = [
+    "FV8", "FL1", "FL2", "FL3", "FL4", "FL5", "FL6", "FH1", "FH2", "FH3", "FH4", "FH5", "FY2",
+    "FY3", "FY4",
+];
+
+/// Where `M7_PROCESS`'s tests live (FK8).
+const M7_PROCESS_FILES: [&str; 4] = [
+    "crates/fitment-fit/tests/adversarial.rs",
+    "crates/fitment-fit/tests/process.rs",
+    "crates/fitment-fit/tests/prepare.rs",
+    "crates/fitment-fit/tests/kernel.rs",
+];
+
+/// True for a deferral M7's open design allows: one of its own rules,
+/// waiting for a later PR that builds it (`M7 PR 1b`, after this one and
+/// at most the exit's).
+fn m7_deferral(id: &str, reason: &str, m7: &[String]) -> bool {
+    let at = |pr: &str| M7_PRS.iter().position(|p| *p == pr);
+    m7.iter().any(|r| r == id)
+        && reason
+            .strip_prefix("M7 PR ")
+            .and_then(at)
+            .zip(at(M7_PR_NOW))
+            .is_some_and(|(pr, now)| pr > now)
+}
+
+/// FK8's lists: a rule of either that does not wait has what its list
+/// asks: a case or a fake-helper test for one that can end a fit, a test
+/// in fitment-fit's process files for one of the helper's process.
+fn m7_list_problems(id: &str, cases: usize, tests: &[&str], deferred: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    if deferred {
+        return out;
+    }
+    let faked = tests
+        .iter()
+        .any(|t| t.starts_with("crates/fitment-fit/tests/"));
+    if M7_FIT_CAN_END.contains(&id) && cases == 0 && !faked {
+        out.push(format!(
+            "{id}: can end a fit, and no case or fake-helper test ends one by it"
+        ));
+    }
+    let processed = tests.iter().any(|t| {
+        M7_PROCESS_FILES
+            .iter()
+            .any(|f| t.starts_with(&format!("{f}::")))
+    });
+    if M7_PROCESS.contains(&id) && !processed {
+        out.push(format!("{id}: no test of it in {M7_PROCESS_FILES:?}"));
+    }
+    out
+}
 
 /// Where the tests of each of M6's lists live (section 9.4).
 const M6_LISTS: [(&[&str], &[&str]); 3] = [
@@ -432,14 +508,22 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
         .map(|c| (c["id"].as_str().unwrap(), c))
         .collect();
     let m6 = design_rules(&fs::read_to_string(root.join(M6)).unwrap());
+    let m7 = design_rules(&fs::read_to_string(root.join(M7)).unwrap());
     let mut failures: Vec<String> = M6_LISTS
         .iter()
         .flat_map(|(list, _)| list.iter())
         .filter(|id| !m6.iter().any(|r| r == *id))
         .map(|id| format!("{id}: in M6's lists, and not stated by {M6}"))
         .collect();
+    failures.extend(
+        M7_FIT_CAN_END
+            .iter()
+            .chain(&M7_PROCESS)
+            .filter(|id| !m7.iter().any(|r| r == *id))
+            .map(|id| format!("{id}: in FK8's lists, and not stated by {M7}")),
+    );
     for (id, entry) in rules {
-        failures.extend(rule_problems(id, entry, &root));
+        failures.extend(rule_problems(id, entry, &root, &m7));
         failures.extend(m6_test_problems(id, entry, &m6));
         failures.extend(case_lists(id, entry, &by_id));
     }
@@ -517,14 +601,22 @@ fn m6_deferrals_and_lists_hold() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for reason in ["M6 PR 9", "M6 PR 10", "M6 PR 1"] {
         let entry = serde_json::json!({ "cases": [], "deferred": reason });
-        assert_eq!(rule_problems("UP2", &entry, &root).len(), 2, "{reason}");
+        assert_eq!(
+            rule_problems("UP2", &entry, &root, &[]).len(),
+            2,
+            "{reason}"
+        );
         let cited =
             serde_json::json!({ "cases": ["m_review_s01_hole_waived"], "deferred": reason });
-        assert_eq!(rule_problems("XH1", &cited, &root).len(), 3, "{reason}");
+        assert_eq!(
+            rule_problems("XH1", &cited, &root, &[]).len(),
+            3,
+            "{reason}"
+        );
     }
     let kept = serde_json::json!({ "cases": [], "deferred": "M6 PR 9" });
     assert_eq!(
-        rule_problems("V1", &kept, &root).len(),
+        rule_problems("V1", &kept, &root, &[]).len(),
         1,
         "an M6 reason for V1"
     );
@@ -553,11 +645,86 @@ fn m6_deferrals_and_lists_hold() {
     );
 }
 
+/// VT73's controls for M7's deferrals and FK8's lists, while M7 is open:
+/// a deferral to this PR, an earlier one, the release or a PR M7 does not
+/// have, or of a rule not M7's, is refused; a rule waiting for a later PR
+/// may be cited by cases that support it, never beside a test; a rule
+/// that can end a fit needs a case or a fake-helper test once it no
+/// longer waits, and one of the helper's process a test in fitment-fit's
+/// process files.
+#[test]
+fn m7_deferrals_and_lists_hold() {
+    let m7 = vec!["FT4".to_owned(), "FL1".to_owned(), "FC3".to_owned()];
+    for reason in ["M7 PR 1b", "M7 PR 2a", "M7 PR 4", "M7 PR 6"] {
+        assert!(m7_deferral("FT4", reason, &m7), "{reason}");
+    }
+    for reason in [
+        "M7 PR 1a", "M7 PR 7", "M7 PR 9", "M7 PR", "M7 PR 2", "M6 PR 4",
+    ] {
+        assert!(!m7_deferral("FT4", reason, &m7), "{reason}");
+    }
+    assert!(!m7_deferral("UP2", "M7 PR 4", &m7), "not M7's");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let waits = serde_json::json!({ "cases": [], "deferred": "M7 PR 4" });
+    assert_eq!(
+        rule_problems("FT4", &waits, &root, &m7),
+        Vec::<String>::new()
+    );
+    let cited = serde_json::json!({ "cases": ["m_bracket_lug"], "deferred": "M7 PR 4" });
+    assert_eq!(
+        rule_problems("FT4", &cited, &root, &m7),
+        Vec::<String>::new()
+    );
+    let built = serde_json::json!({
+        "cases": [], "deferred": "M7 PR 4",
+        "tests": ["crates/fitment/tests/corpus.rs::m7_deferrals_and_lists_hold"]
+    });
+    assert_eq!(
+        rule_problems("FT4", &built, &root, &m7).len(),
+        1,
+        "a reason beside a test"
+    );
+    let now = serde_json::json!({ "cases": [], "deferred": "M7 PR 1a" });
+    assert_eq!(
+        rule_problems("FC3", &now, &root, &m7).len(),
+        1,
+        "a deferral to this PR"
+    );
+    let core_only = ["crates/fitment-core/src/fit/decide/tests.rs::clean_measures_verify"];
+    let faked = ["crates/fitment-fit/tests/adversarial.rs::a_crash"];
+    assert_eq!(m7_list_problems("FT4", 0, &core_only, false).len(), 1);
+    assert_eq!(
+        m7_list_problems("FT4", 1, &core_only, false),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        m7_list_problems("FT4", 0, &faked, false),
+        Vec::<String>::new()
+    );
+    assert_eq!(m7_list_problems("FT4", 0, &[], true), Vec::<String>::new());
+    let elsewhere = ["crates/fitment-fit/tests/frames.rs::a_short_frame"];
+    assert_eq!(m7_list_problems("FL1", 3, &elsewhere, false).len(), 1);
+    let process = ["crates/fitment-fit/tests/process.rs::a_hung_helper_is_killed"];
+    assert_eq!(
+        m7_list_problems("FL1", 0, &process, false),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        m7_list_problems("FY4", 0, &core_only, false).len(),
+        2,
+        "both lists"
+    );
+    assert_eq!(
+        m7_list_problems("FC3", 0, &core_only, false),
+        Vec::<String>::new()
+    );
+}
+
 /// One rule's entry: a case, a test that exists, an oracle check or a
 /// reason, and never a reason beside a case or test; a deferral only for
-/// a reason the closed milestones left; and each test where M6's lists
-/// want it.
-fn rule_problems(id: &str, entry: &Value, root: &Path) -> Vec<String> {
+/// a reason the closed milestones left or M7's open one allows; and each
+/// test where M6's and M7's lists want it.
+fn rule_problems(id: &str, entry: &Value, root: &Path, m7: &[String]) -> Vec<String> {
     let mut failures = Vec::new();
     let cases = entry["cases"].as_array().map_or(0, Vec::len);
     let strings = |key: &str| -> Vec<&str> {
@@ -576,7 +743,10 @@ fn rule_problems(id: &str, entry: &Value, root: &Path) -> Vec<String> {
             "{id}: no case, no test, no oracle check and no reason"
         ));
     }
-    if deferred && (cases > 0 || !tests.is_empty() || !oracle.is_empty()) {
+    // While M7 is open, a rule waiting for its PR may be cited by cases
+    // that support it; a test still ends its wait.
+    let supporting = cases > 0 && m7_deferral(id, reason, m7);
+    if deferred && ((cases > 0 && !supporting) || !tests.is_empty() || !oracle.is_empty()) {
         failures.push(format!("{id}: deferred, yet a case or test covers it"));
     }
     failures.extend(oracle_problems(id, &oracle, root));
@@ -584,10 +754,11 @@ fn rule_problems(id: &str, entry: &Value, root: &Path) -> Vec<String> {
     // them (a bug's code, a withdrawn rule, a property of the construction,
     // a later milestone). M5's exit removed the allowance its rules had to
     // wait for the PR that built them (CT19), and M6's exit M6's (section
-    // 11.1): M6 closed with no deferral of its own.
-    if deferred && !DEFERRED.contains(&id) {
+    // 11.1): M6 closed with no deferral of its own. M7's rules have it
+    // while M7 is open (FK8).
+    if deferred && !DEFERRED.contains(&id) && !m7_deferral(id, reason, m7) {
         failures.push(format!(
-            "{id}: deferred, and not among the deferrals M4 and M5 closed with"
+            "{id}: deferred, and not among the deferrals M4 and M5 closed with, nor M7's to its PR"
         ));
     }
     if reason.starts_with("M6 PR") {
@@ -603,6 +774,7 @@ fn rule_problems(id: &str, entry: &Value, root: &Path) -> Vec<String> {
         }
     }
     failures.extend(m6_list_problems(id, &tests, deferred));
+    failures.extend(m7_list_problems(id, cases, &tests, deferred));
     failures
 }
 
