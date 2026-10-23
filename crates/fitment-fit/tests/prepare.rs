@@ -281,8 +281,14 @@ fn the_helper_is_spawned_from_the_manifest_with_nothing_inherited() {
     let root = root("spawn");
     let fake = Fake::install(&root, Scenario::Report);
     let helper = fake.helper(fast());
+    // What this process was itself started with: a CI runner can hand its
+    // processes descriptors without close-on-exec (Ubuntu's 142 and 145),
+    // which std passes on and cannot close without `unsafe`; fitment adds
+    // none of its own.
+    let inherited = open_fds();
     // A file this process holds open is not the helper's.
     let held = std::fs::File::open(fake.dir.join(MANIFEST)).unwrap();
+    let held_fd = held_fd(&held);
     let handshake = helper.check().unwrap();
     drop(held);
     let report: Value = serde_json::from_str(
@@ -333,9 +339,48 @@ fn the_helper_is_spawned_from_the_manifest_with_nothing_inherited() {
             .map(|v| v.as_str().unwrap().parse().unwrap())
             .collect();
         fds.sort_unstable();
-        assert_eq!(fds, [0, 1, 2, 3], "{fds:?}");
+        // Its three pipes and the listing's own descriptor, and nothing
+        // else but what this process was started with.
+        for fd in [0, 1, 2, 3] {
+            assert!(fds.contains(&fd), "{fds:?}");
+        }
+        let extra: Vec<u32> = fds
+            .iter()
+            .copied()
+            .filter(|fd| *fd > 3 && !inherited.contains(fd))
+            .collect();
+        assert!(
+            extra.is_empty(),
+            "fitment's own, inherited: {extra:?} of {fds:?}"
+        );
+        assert!(!fds.contains(&held_fd), "the held file: {fds:?}");
     }
     assert_eq!(handshake.python, FAKE_PYTHON);
+}
+
+/// The descriptors this process has open (Unix; none elsewhere).
+fn open_fds() -> Vec<u32> {
+    std::fs::read_dir("/dev/fd")
+        .map(|d| {
+            d.filter_map(Result::ok)
+                .filter_map(|e| e.file_name().to_str()?.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The descriptor `file` holds (Unix; 0 elsewhere).
+fn held_fd(file: &std::fs::File) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        u32::try_from(file.as_raw_fd()).unwrap_or(0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        0
+    }
 }
 
 /// FG1: fitment-fit depends on fitment-core, serde, `serde_json` and
