@@ -53,6 +53,16 @@ enum Command {
     /// used, or a fit timed out or ran out of a resource), 2 usage, 3 the
     /// socket document refused (also: more interface passes than
     /// --max-fits).
+    // A build without the fit verifier says what 0.3.0 said.
+    #[cfg_attr(
+        not(feature = "fit"),
+        command(
+            long_about = "Judge each candidate part against a socket document: match, \
+            interface match or reject, with the evidence.\n\nExit codes: 0 some candidate \
+            matches, 4 some passes the interface (its body fit not checked), 5 every candidate \
+            rejected, 1 error, 2 usage, 3 the socket document refused."
+        )
+    )]
     Match(cmd::match_::Args),
     /// Store STEP parts by content, indexed for matching: init, ingest,
     /// list, get, replace, delete, prune, gc and verify, in the catalog
@@ -66,6 +76,7 @@ enum Command {
     ///
     /// Exit codes: 0 ready, 1 error, 2 usage (and a build without the
     /// fit verifier).
+    #[command(hide = cfg!(not(feature = "fit")))]
     Fit(cmd::fit::Args),
 }
 

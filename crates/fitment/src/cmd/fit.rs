@@ -224,7 +224,9 @@ pub(super) fn session<'h>(
     let Some(helper) = helper else {
         return Ok(None);
     };
-    OcctSession::open(&helper.helper, helper.assembly.clone(), document)
+    // FV8: the run checked a helper already (FU2), so one that cannot
+    // start later is the machine's, and the run incomplete.
+    OcctSession::open_checked(&helper.helper, helper.assembly.clone(), document)
         .map(Some)
         .map_err(|error| {
             note(&format!("error: --fit: {}", printable(&error.to_string())));

@@ -185,6 +185,10 @@ pub enum Scenario {
     /// Answers `scene` and `place`, then never answers `check`: a check
     /// past its deadline (`--fit-timeout`).
     HangAtCheck,
+    /// Answers `hello`, then makes its fit directory's `tmp/` unwritable
+    /// (0500, Unix only), as a user might between a run's check of a
+    /// helper and its first fit; then serves.
+    LocksTmp,
     /// Its second helper crashes at its first `place`, once (T1).
     CrashSecondHelperOnce,
     /// After its second `check` reply, sends 64 frames of 1 MiB nobody
@@ -282,7 +286,7 @@ fn all() -> Vec<Scenario> {
 }
 
 /// Every scenario but the deaths and the envelope's breaks.
-const ALL: [Scenario; 44] = [
+const ALL: [Scenario; 45] = [
     Scenario::Replay,
     Scenario::NoiseOnStderr,
     Scenario::CrashOnce,
@@ -325,6 +329,7 @@ const ALL: [Scenario; 44] = [
     Scenario::StaleReply,
     Scenario::CrashAtCheck,
     Scenario::HangAtCheck,
+    Scenario::LocksTmp,
     Scenario::CrashSecondHelperOnce,
     Scenario::Floods,
 ];

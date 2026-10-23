@@ -575,11 +575,15 @@ impl<'a> Matcher<'a> {
     }
 
     /// M7-49: this matcher with a cap of `max_fits` on the candidates whose
-    /// interface passes at every socket: past it, no fit is asked, and
+    /// interface passes at every socket: past it, no fit is asked (each
+    /// socket's fit `not_checked`, [`crate::fit::MAX_FITS_REACHED`]), and
     /// [`Matcher::over_max_fits`] says the run is to be refused,
-    /// `too_large`. The count is the interface's, so it never depends on
-    /// the order candidates are judged in. Nothing changes with no verifier
-    /// that has an identity.
+    /// `too_large`. The count is the interface's, so whether a run exceeds
+    /// the cap never depends on the order candidates are judged in. It
+    /// counts over the matcher's whole life, every judgment but
+    /// [`Matcher::judge_original`]'s: a caller that judges several runs with
+    /// one matcher (the server's jobs, PR 5a) builds one per run. Nothing
+    /// changes with no verifier that has an identity.
     #[must_use]
     pub fn with_max_fits(mut self, max_fits: Option<u64>) -> Self {
         if let Some(fitting) = self.fitting.as_mut() {
@@ -593,15 +597,18 @@ impl<'a> Matcher<'a> {
         self.fitting.as_ref().and_then(fitting::Fitting::max_fits)
     }
 
-    /// M7-49: how many candidates judged so far passed their interface at
-    /// every socket, with a verifier that has an identity (the original
-    /// judged by [`Matcher::judge_original`] is not counted).
+    /// M7-49: how many candidates this matcher has judged, over its whole
+    /// life, passed their interface at every socket, with a verifier that
+    /// has an identity (the original judged by [`Matcher::judge_original`]
+    /// is not counted).
     pub fn interface_passes(&self) -> u64 {
         self.fitting.as_ref().map_or(0, fitting::Fitting::passes)
     }
 
-    /// M7-49: more candidates passed their interface than the cap allows:
-    /// the run is refused, `too_large`, and its document never written.
+    /// M7-49: more candidates passed their interface, over this matcher's
+    /// life, than the cap allows: the run must be refused, `too_large`, its
+    /// document never written. A caller that ignores it gets candidates
+    /// past the cap with no fit (`not_checked`), never a verified one.
     pub fn over_max_fits(&self) -> bool {
         self.max_fits()
             .is_some_and(|cap| self.interface_passes() > cap)

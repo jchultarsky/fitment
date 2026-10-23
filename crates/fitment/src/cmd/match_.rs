@@ -70,6 +70,13 @@ pub struct Args {
     explain: bool,
     /// Exit 5 unless some candidate's body fit is verified (only --fit
     /// verifies one).
+    // A build without the fit verifier says what 0.3.0 said.
+    #[cfg_attr(
+        not(feature = "fit"),
+        arg(
+            help = "Exit 5 unless some candidate's body fit is verified (no build of M4 verifies one)"
+        )
+    )]
     #[arg(long)]
     require_fit: bool,
     /// Refuse a socket document with requirements no one reviewed.
@@ -88,22 +95,22 @@ pub struct Args {
     /// among the other solids of ASSEMBLY, the socket's own assembly, with
     /// the fit helper `fitment fit setup` prepared: only a verified fit
     /// makes a match.
-    #[arg(long, value_name = "ASSEMBLY")]
+    #[arg(long, hide = cfg!(not(feature = "fit")), value_name = "ASSEMBLY")]
     fit: Option<PathBuf>,
     /// Run at most N fit helpers at once (default: --jobs, at most 4).
-    #[arg(long, value_name = "N", requires = "fit")]
+    #[arg(long, hide = cfg!(not(feature = "fit")), value_name = "N", requires = "fit")]
     fit_jobs: Option<std::num::NonZeroUsize>,
     /// Give each candidate's fit check SECONDS (default: 120); a check
     /// past it makes the run exit 1, its document written.
-    #[arg(long, value_name = "SECONDS", requires = "fit")]
+    #[arg(long, hide = cfg!(not(feature = "fit")), value_name = "SECONDS", requires = "fit")]
     fit_timeout: Option<std::num::NonZeroU64>,
     /// Refuse the run (exit 3, nothing written) if more than N candidates
     /// pass their interface: each would cost a fit check.
-    #[arg(long, value_name = "N", requires = "fit")]
+    #[arg(long, hide = cfg!(not(feature = "fit")), value_name = "N", requires = "fit")]
     max_fits: Option<u64>,
     /// The fit directory `fitment fit setup` prepared (default: its own
     /// default).
-    #[arg(long, value_name = "DIR", requires = "fit")]
+    #[arg(long, hide = cfg!(not(feature = "fit")), value_name = "DIR", requires = "fit")]
     fit_dir: Option<PathBuf>,
 }
 
@@ -165,9 +172,18 @@ pub fn run(args: &Args) -> ExitCode {
             return ExitCode::from(USAGE);
         }
     }
-    // FU1, FU2: with --fit, the assembly, the manifest and a helper are
-    // checked before any candidate, after every refusal and usage error a
-    // run without it gives.
+    // VD15: the original read and checked as a run without --fit reads it.
+    let original = match read_original(&document, args.original.as_deref()) {
+        Ok(original) => original,
+        Err(code) => return code,
+    };
+    // FU1, FU2: with --fit, the catalog is opened and QR1's refusals said,
+    // then the assembly, the manifest and a helper checked, all before any
+    // candidate and after every error a run without --fit gives first.
+    let opened = match fit_catalog(args, &unfitted) {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
     let flags = fit::Flags {
         assembly: args.fit.as_deref(),
         jobs: args.fit_jobs,
@@ -197,8 +213,18 @@ pub fn run(args: &Args) -> ExitCode {
         jobs,
         failed,
         rejects,
+        original,
+        opened,
     };
     judge_and_write(args, &matcher, run, &|| fit::report(session.as_ref()))
+}
+
+/// VD15's `--original`, read before any candidate.
+enum Original {
+    /// The target, read and chosen by core.
+    Read(SelectedComponent),
+    /// It cannot be read: the run exits 1.
+    Unread,
 }
 
 /// What a run has read before its candidates are judged.
@@ -208,6 +234,26 @@ struct Run {
     jobs: usize,
     failed: bool,
     rejects: Option<usize>,
+    /// `--original`, when given.
+    original: Option<Original>,
+    /// With `--fit` and `--catalog`, the catalog opened and its refusals
+    /// said already.
+    opened: Option<super::match_catalog::Opened>,
+}
+
+/// FU1: with `--fit`, the catalog opened and QR1's refusals said before
+/// the fit's own checks; without it, as 0.3.0 does, the catalog is opened
+/// when its candidates are judged.
+fn fit_catalog(
+    args: &Args,
+    matcher: &Matcher<'_>,
+) -> Result<Option<super::match_catalog::Opened>, ExitCode> {
+    let (Some(dir), Some(_)) = (&args.catalog, &args.fit) else {
+        return Ok(None);
+    };
+    let mut opened = super::match_catalog::open(dir, &args.ids, args.exhaustive)?;
+    super::match_catalog::refused(&mut opened, matcher)?;
+    Ok(Some(opened))
 }
 
 /// The original and the candidates judged, the run refused past
@@ -220,22 +266,25 @@ fn judge_and_write(args: &Args, matcher: &Matcher<'_>, run: Run, report: &dyn Fn
         jobs,
         mut failed,
         rejects,
+        original,
+        opened,
     } = run;
     // VD15: judged beside the candidates, never one of them.
-    let mut original = None;
-    if let Some(path) = &args.original {
-        match judge_original(matcher, path) {
-            Ok(Some((result, bug))) => {
-                failed |= bug;
-                original = Some(result);
-            }
-            Ok(None) => failed = true,
-            Err(code) => return code,
+    let original = match original {
+        Some(Original::Read(component)) => {
+            let (result, bug) = judge_original(matcher, &component);
+            failed |= bug;
+            Some(result)
         }
-    }
+        Some(Original::Unread) => {
+            failed = true;
+            None
+        }
+        None => None,
+    };
     // QR1: the catalog's refusals come before any candidate is judged; an
     // M4 usage error of --original, before the catalog is read.
-    let (mut results, searched) = match from_catalog(args, matcher, jobs, &mut failed) {
+    let (mut results, searched) = match from_catalog(args, matcher, (jobs, opened), &mut failed) {
         Ok(found) => found,
         Err(code) => return code,
     };
@@ -524,13 +573,17 @@ fn rejects(args: &Args) -> Result<Option<usize>, ExitCode> {
 fn from_catalog(
     args: &Args,
     matcher: &Matcher<'_>,
-    jobs: usize,
+    (jobs, opened): (usize, Option<super::match_catalog::Opened>),
     failed: &mut bool,
 ) -> Result<(Labelled, Option<String>), ExitCode> {
     let Some(dir) = &args.catalog else {
         return Ok((Vec::new(), None));
     };
-    let found = super::match_catalog::candidates(dir, matcher, &args.ids, args.exhaustive, jobs)?;
+    let opened = match opened {
+        Some(opened) => opened,
+        None => super::match_catalog::open(dir, &args.ids, args.exhaustive)?,
+    };
+    let found = super::match_catalog::candidates(opened, matcher, jobs)?;
     *failed |= found.failed;
     if let Some(read) = found.fit_reads {
         // FU6: the fit read each passing candidate's file from the store.
@@ -542,6 +595,7 @@ fn from_catalog(
     for (result, labels) in &found.results {
         let label = labels.first().map_or("", String::as_str);
         *failed |= reported(&printable(label), result);
+        stored_unreadable(&printable(label), result);
     }
     Ok((found.results, Some(found.searched)))
 }
@@ -656,6 +710,7 @@ fn clobbers(output: &Path, args: &Args, listed: &[(PathBuf, String)]) -> Option<
     if args.candidates.iter().any(|c| same(c))
         || listed.iter().any(|(p, _)| same(p))
         || args.original.as_deref().is_some_and(same)
+        || args.fit.as_deref().is_some_and(same)
     {
         return Some("it is an input");
     }
@@ -737,21 +792,39 @@ fn reported(label: &str, result: &CandidateResult) -> bool {
     result.is_fitment_bug()
 }
 
-/// VD15: the target read from its own assembly, judged as a candidate; it
-/// must fail exactly what no candidate can pass. With true when it fails
-/// more (exit 1, the evidence kept in the document); `Ok(None)` when it
-/// cannot be read (exit 1); `Err` on a usage error (another file than the
-/// socket's).
-fn judge_original(
-    matcher: &Matcher<'_>,
-    path: &Path,
-) -> Result<Option<(CandidateResult, bool)>, ExitCode> {
+/// FC6: a stored file the fit could not read, with the store's reason
+/// (missing, damaged or unreadable); the run exits 1 for it (FV8).
+fn stored_unreadable(label: &str, result: &CandidateResult) {
+    let findings = result
+        .fit
+        .as_deref()
+        .map(|e| e.outcome().findings())
+        .unwrap_or_default();
+    for finding in findings {
+        if finding.code == fitment_core::fit::FitCode::StoredBytesUnreadable {
+            note(&format!(
+                "fitment: {label}: its stored file could not be read for its fit: {}",
+                printable(&finding.detail)
+            ));
+        }
+    }
+}
+
+/// VD15: `--original`, the target read from its own assembly: `None`
+/// without it; `Err` on an error reading the file (exit 1) or a usage
+/// error (another file than the socket's).
+fn read_original(
+    document: &SocketDocument,
+    path: Option<&Path>,
+) -> Result<Option<Original>, ExitCode> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
     let shown = printable(&path.display().to_string());
     let bytes = std::fs::read(path).map_err(|error| {
         note(&format!("error: cannot read {shown}: {error}"));
         ExitCode::from(ERROR)
     })?;
-    let document = matcher.document();
     let sha = sha256_hex(&bytes);
     if sha != document.source().sha256 {
         note(&format!(
@@ -762,11 +835,18 @@ fn judge_original(
     // CO5: the target read and chosen by core, as the server reads it.
     let Ok(original) = SelectedComponent::target(&bytes, document) else {
         note(&format!("fitment: {shown}: the original cannot be read"));
-        return Ok(None);
+        return Ok(Some(Original::Unread));
     };
-    let result = matcher.judge_original(&original, original.source());
+    Ok(Some(Original::Read(original)))
+}
+
+/// VD15: the original judged as a candidate; it must fail exactly what no
+/// candidate can pass. With true when it fails more (exit 1, the evidence
+/// kept in the document).
+fn judge_original(matcher: &Matcher<'_>, original: &SelectedComponent) -> (CandidateResult, bool) {
+    let result = matcher.judge_original(original, original.source());
     let bug = reported("original", &result) || original_bug(&result);
-    Ok(Some((result, bug)))
+    (result, bug)
 }
 
 /// VD15's test of the original's result (CO2): true, with a note, if it

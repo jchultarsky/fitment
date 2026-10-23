@@ -1973,6 +1973,24 @@ for rule, tests in M7_PR3.items():
     assert RULES[rule] == {"deferred": "M7 PR 3"}, rule
     RULES[rule] = {"tests": tests}
 assert not [r for r, e in RULES.items() if e.get("deferred") == "M7 PR 3"], "an M7 rule still waits for PR 3"
+# The two reviews of PR 3: `-o` never overwrites the `--fit` assembly, a helper that cannot start after the CLI's check
+# leaves the run incomplete, the first error never depends on `--fit`, every handshake failure exits 1 with nothing
+# written, a failing control that is complete exits by its verdicts, the cap never depends on the jobs, a catalog run
+# with a failing helper exits 1 with its document, core re-checks a stored file's SHA-256, no fit is verified past the
+# cap, and a fitting matcher without the catalog's files is refused.
+for rule, tests in {
+    "FU1": [f"{FIT_CLI_FAKE}::output_onto_the_fit_assembly_is_refused",
+            f"{FIT_CLI_FAKE}::the_first_error_does_not_depend_on_fit"],
+    "FU2": [f"{FIT_CLI_FAKE}::every_handshake_failure_exits_1_with_nothing_written",
+            f"{FIT_CLI_FAKE}::a_control_that_fails_completely_exits_by_its_verdicts"],
+    "FU3": [f"{FIT_CLI_FAKE}::max_fits_does_not_depend_on_jobs",
+            f"{FIT_CORE}/stored.rs::past_the_cap_no_fit_is_asked_and_none_is_verified"],
+    "FU5": [f"{FIT_CLI_FAKE}::a_helper_that_cannot_start_after_the_check_leaves_the_run_incomplete",
+            f"{FIT_CLI_FAKE}::a_catalog_run_with_a_failing_helper_exits_1_with_its_document"],
+    "FC6": [f"{FIT_CORE}/stored.rs::a_stored_file_is_fetched_when_its_fit_is_asked_and_checked_by_core",
+            f"{FIT_CLI}/catalog_fit.rs::a_fit_without_the_files_is_refused"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
 
 
 

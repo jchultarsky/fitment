@@ -220,3 +220,29 @@ fn a_damaged_file_is_stored_bytes_unreadable_and_incomplete() {
         "its twin's own file reads"
     );
 }
+
+/// FC6, failing closed: a matcher with a fit verifier run without the
+/// catalog's files is refused (`FitWithoutFiles`) rather than run with
+/// every fit unavailable and the run complete.
+#[test]
+fn a_fit_without_the_files_is_refused() {
+    let (mut catalog, _, _) = counted("without-files");
+    let (document, assembly) = socket("s01_bolted", "BRACKET");
+    let verifier = MeasuresVerifier::exact(identity(), assembly);
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier as &dyn FitVerifier,
+    )
+    .unwrap();
+    let snapshot = catalog.snapshot().unwrap();
+    let run = snapshot
+        .match_catalog(&matcher, &Selection::Full, 2)
+        .unwrap();
+    assert!(
+        matches!(run, Err(fitment_catalog::NotRun::FitWithoutFiles)),
+        "{run:?}"
+    );
+    assert_eq!(verifier.asked().len(), 0);
+}

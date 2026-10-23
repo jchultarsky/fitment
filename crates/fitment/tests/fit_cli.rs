@@ -93,11 +93,27 @@ mod fit {
         measures
     }
 
-    /// Deadlines a test's helper meets on a loaded runner.
+    /// Deadlines a test's helper meets on a loaded runner; on Windows the
+    /// library's own runs are let past M7-50 (test-support's override), as
+    /// the fake is no kernel. The binary never is: there, `--fit` exits 1.
     fn fast() -> HelperOptions {
         HelperOptions::default()
             .with_timeout(Duration::from_secs(20))
             .with_setup_timeout(Duration::from_secs(20))
+            .with_unproven_platform()
+    }
+
+    /// M7-50 on Windows: the binary refuses its helper before any
+    /// candidate, exit 1, nothing on stdout; true there, when a test that
+    /// expects a fit stops.
+    fn refused_on_windows(code: i32, stdout: &str, stderr: &str) -> bool {
+        if !cfg!(windows) {
+            return false;
+        }
+        assert_eq!(code, 1, "{stderr}");
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("Windows"), "{stderr}");
+        true
     }
 
     /// The document of the bracket and the lug (and the original, when
@@ -157,6 +173,13 @@ mod fit {
             more_interface_passes_than_max_fits_are_refused,
             a_catalog_run_reads_each_passing_file_through_the_store,
             setup_without_uv_exits_1_naming_it,
+            output_onto_the_fit_assembly_is_refused,
+            a_helper_that_cannot_start_after_the_check_leaves_the_run_incomplete,
+            the_first_error_does_not_depend_on_fit,
+            every_handshake_failure_exits_1_with_nothing_written,
+            a_control_that_fails_completely_exits_by_its_verdicts,
+            max_fits_does_not_depend_on_jobs,
+            a_catalog_run_with_a_failing_helper_exits_1_with_its_document,
         ];
     }
 
@@ -193,6 +216,9 @@ mod fit {
             args.extend(jobs);
             args.extend(["--format", "json"]);
             let (code, stdout, stderr) = run(&dir, &args);
+            if refused_on_windows(code, &stdout, &stderr) {
+                return;
+            }
             assert_eq!(code, 0, "{stderr}");
             assert_eq!(stdout, expected, "{jobs:?}: {stderr}");
         }
@@ -247,6 +273,9 @@ mod fit {
                 "out.json",
             ],
         );
+        if refused_on_windows(code, &stdout, &stderr) {
+            return;
+        }
         assert_eq!(code, 1, "{stderr}");
         assert!(!stdout.is_empty(), "the table is printed");
         assert_eq!(
@@ -293,6 +322,9 @@ mod fit {
                 "json",
             ],
         );
+        if refused_on_windows(code, &stdout, &stderr) {
+            return;
+        }
         assert_eq!(code, 1, "{stderr}");
         let doc = json(&stdout);
         assert_eq!(doc["candidates"][0]["fit"]["code"], "helper_timeout");
@@ -308,7 +340,7 @@ mod fit {
     fn no_manifest_names_fitment_fit_setup() {
         let dir = root("no-manifest");
         inputs(&dir);
-        std::fs::create_dir_all(dir.join("empty")).unwrap();
+        fitment_fit::FitDir::create(&dir.join("empty")).unwrap();
         let (code, stdout, stderr) = run(
             &dir,
             &[
@@ -323,7 +355,10 @@ mod fit {
         );
         assert_eq!(code, 1, "{stderr}");
         assert!(stdout.is_empty(), "{stdout}");
-        assert!(stderr.contains("fitment fit setup"), "{stderr}");
+        assert!(
+            stderr.contains("the fit directory holds no helper manifest: run `fitment fit setup`"),
+            "{stderr}"
+        );
     }
 
     /// FU1, FF20: `--fit` naming another assembly than the socket's source
@@ -396,6 +431,9 @@ mod fit {
         let mut refused = args("0");
         refused.extend(["--fit-dir", &fit]);
         let (code, stdout, stderr) = run(&dir, &refused);
+        if refused_on_windows(code, &stdout, &stderr) {
+            return;
+        }
         assert_eq!(code, 3, "{stderr}");
         assert!(stdout.is_empty() && !dir.join("out.json").exists());
         assert!(
@@ -466,6 +504,9 @@ mod fit {
             "json",
         ];
         let (code, stdout, stderr) = run(&dir, &args);
+        if refused_on_windows(code, &stdout, &stderr) {
+            return;
+        }
         assert_eq!(code, 0, "{stderr}");
         assert_eq!(stdout, expected);
         assert!(
@@ -498,6 +539,11 @@ mod fit {
             "{bracket}"
         );
         assert_ne!(bracket["verdict"], "match");
+        // The store's reason reaches stderr.
+        assert!(
+            stderr.contains("its stored file could not be read for its fit: damaged"),
+            "{stderr}"
+        );
     }
 
     /// FU4, FF1, VT74's CLI half: `fitment fit setup` with no uv to run exits
@@ -518,5 +564,346 @@ mod fit {
         assert_eq!(code, 1, "{stderr}");
         assert!(stdout.is_empty(), "{stdout}");
         assert!(stderr.contains("uv cannot be run"), "{stderr}");
+    }
+
+    /// The reviews of PR 3: `-o` naming the `--fit` assembly is a usage
+    /// error, exit 2, the assembly unchanged.
+    fn output_onto_the_fit_assembly_is_refused() {
+        let dir = root("clobber");
+        inputs(&dir);
+        let before = fs::read(dir.join("s01_bolted.stp")).unwrap();
+        let (code, stdout, stderr) = run(
+            &dir,
+            &[
+                "match",
+                "bracket.json",
+                "m_bracket.stp",
+                "--fit",
+                "s01_bolted.stp",
+                "-o",
+                "s01_bolted.stp",
+            ],
+        );
+        assert_eq!(code, 2, "{stderr}");
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("it is an input"), "{stderr}");
+        assert_eq!(fs::read(dir.join("s01_bolted.stp")).unwrap(), before);
+    }
+
+    /// FV8 (the reviews of PR 3): the binary checks a helper before any
+    /// candidate, so a helper that cannot start after it (here `tmp/` made
+    /// 0500 by the checked helper itself) is the machine's: the fits are
+    /// `helper_protocol` and the run exits 1, its document written. Unix
+    /// only: Windows has no such mode.
+    fn a_helper_that_cannot_start_after_the_check_leaves_the_run_incomplete() {
+        if !cfg!(unix) {
+            return;
+        }
+        let dir = root("locked-tmp");
+        inputs(&dir);
+        let fake = Fake::install_embedded(&dir, fitment_fit::testing::Scenario::LocksTmp);
+        let fit = fit_dir(&fake);
+        let (code, _, stderr) = run(
+            &dir,
+            &[
+                "match",
+                "bracket.json",
+                "m_bracket.stp",
+                "--fit",
+                "s01_bolted.stp",
+                "--fit-dir",
+                &fit,
+                "-o",
+                "out.json",
+            ],
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = fake.dir.join(fitment_fit::TMP);
+            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert_eq!(code, 1, "{stderr}");
+        let doc = json(&fs::read_to_string(dir.join("out.json")).unwrap());
+        assert_eq!(doc["candidates"][0]["fit"]["code"], "helper_protocol");
+        assert!(stderr.contains("the fit is incomplete"), "{stderr}");
+    }
+
+    /// FU1 (the reviews of PR 3): a run's first error does not depend on
+    /// `--fit`: an `--original` that is not the socket's assembly, and a
+    /// `--catalog` that is no catalog, are each exit 2, before a fit
+    /// directory that is broken is looked at, as without `--fit`.
+    fn the_first_error_does_not_depend_on_fit() {
+        let dir = root("first-error");
+        inputs(&dir);
+        fs::copy(core("assemblies/s02_cbore.stp"), dir.join("s02_cbore.stp")).unwrap();
+        fs::create_dir_all(dir.join("nocat")).unwrap();
+        let fit = ["--fit", "s01_bolted.stp", "--fit-dir", "broken"];
+        for (args, said) in [
+            (
+                &[
+                    "match",
+                    "bracket.json",
+                    "m_bracket.stp",
+                    "--original",
+                    "s02_cbore.stp",
+                ][..],
+                "is not the assembly the socket was read from",
+            ),
+            (&["match", "bracket.json", "-C", "nocat"][..], "nocat"),
+        ] {
+            let (plain, _, plain_err) = run(&dir, args);
+            let mut with_fit = args.to_vec();
+            with_fit.extend(fit);
+            let (code, stdout, stderr) = run(&dir, &with_fit);
+            assert_eq!((plain, code), (2, 2), "{plain_err} / {stderr}");
+            assert_eq!(stdout, "");
+            assert!(stderr.contains(said), "{stderr}");
+            assert_eq!(stderr, plain_err, "the same first error");
+        }
+    }
+
+    /// FH3, M7-50 through the binary (the reviews of PR 3): a helper that
+    /// fails its handshake, by its platform (Windows), its protocol, pid,
+    /// script, lock, binding, kernel, site or Python, a missing library or
+    /// a crash before `hello`, is exit 1 before any candidate, nothing on
+    /// stdout and no `-o` written.
+    fn every_handshake_failure_exits_1_with_nothing_written() {
+        use fitment_fit::testing::Scenario;
+        for scenario in [
+            Scenario::WindowsPlatform,
+            Scenario::OtherProtocol,
+            Scenario::OtherPid,
+            Scenario::OtherScript,
+            Scenario::OtherLock,
+            Scenario::OtherBinding,
+            Scenario::OtherKernel,
+            Scenario::OtherSite,
+            Scenario::OtherPython,
+            Scenario::ImportError,
+            Scenario::CrashBeforeHello,
+        ] {
+            let dir = root(&format!("handshake-{}", scenario.name()));
+            inputs(&dir);
+            let fake = Fake::install_embedded(&dir, scenario);
+            let fit = fit_dir(&fake);
+            let (code, stdout, stderr) = run(
+                &dir,
+                &[
+                    "match",
+                    "bracket.json",
+                    "m_bracket.stp",
+                    "--fit",
+                    "s01_bolted.stp",
+                    "--fit-dir",
+                    &fit,
+                    "-o",
+                    "out.json",
+                ],
+            );
+            assert_eq!(code, 1, "{scenario:?}: {stderr}");
+            assert_eq!(stdout, "", "{scenario:?}");
+            assert!(!dir.join("out.json").exists(), "{scenario:?}");
+            assert!(
+                stderr.contains("the fit helper cannot be used"),
+                "{scenario:?}: {stderr}"
+            );
+            if scenario == Scenario::WindowsPlatform {
+                assert!(stderr.contains("Windows"), "{stderr}");
+            }
+        }
+    }
+
+    /// FT9, FV5 through the binary (the reviews of PR 3): a control that
+    /// interferes, complete, withholds the bracket's `verified`
+    /// (`original_fails_fit`) and keeps the lug's `Reject`; the run exits
+    /// by its verdicts (4), not 1, and stderr says once why.
+    fn a_control_that_fails_completely_exits_by_its_verdicts() {
+        let dir = root("control-fails");
+        let document = inputs(&dir);
+        let fake = Fake::install_embedded(&dir, fitment_fit::testing::Scenario::Replay);
+        let assembly = fs::read(dir.join("s01_bolted.stp")).unwrap();
+        let helper = fake.helper(fast());
+        let session = OcctSession::open(&helper, assembly, &document).unwrap();
+        let replaying = Replaying::answering(&session, &fake, |request| {
+            let mut measures = kernel(request);
+            if matches!(request.body(), FitBody::Component { .. }) {
+                let plan = request.plan(&measures.scene, &measures.place);
+                let plate = plan.asked().position(|p| p.name.starts_with("PLATE"));
+                assert!(interfere(&mut measures, &plan, plate.unwrap(), 16.0));
+            }
+            measures
+        });
+        let matcher = Matcher::new(
+            &document,
+            MatchPolicy::default(),
+            MatchOptions::default(),
+            &replaying,
+        )
+        .unwrap();
+        let results: Vec<_> = ["m_bracket.stp", "m_bracket_lug.stp"]
+            .iter()
+            .map(|n| {
+                let bytes = fs::read(dir.join(n)).unwrap();
+                (matcher.judge_step(&bytes), vec![(*n).to_owned()])
+            })
+            .collect();
+        assert!(!matcher.fit_incomplete(results.iter().map(|(r, _)| r)));
+        let expected = MatchDocument::new(&matcher, results).to_json();
+        let fit = fit_dir(&fake);
+        let (code, stdout, stderr) = run(
+            &dir,
+            &[
+                "match",
+                "bracket.json",
+                "m_bracket.stp",
+                "m_bracket_lug.stp",
+                "--fit",
+                "s01_bolted.stp",
+                "--fit-dir",
+                &fit,
+                "--format",
+                "json",
+            ],
+        );
+        if refused_on_windows(code, &stdout, &stderr) {
+            return;
+        }
+        assert_eq!(code, 4, "{stderr}");
+        assert_eq!(stdout, expected);
+        let doc = json(&stdout);
+        assert_eq!(doc["fit"]["control"][0]["fit"]["status"], "interferes");
+        assert_eq!(doc["candidates"][0]["fit"]["code"], "original_fails_fit");
+        assert_eq!(doc["candidates"][1]["fit"]["status"], "interferes");
+        assert_eq!(
+            stderr
+                .matches("the original fails its own fit check")
+                .count(),
+            1,
+            "{stderr}"
+        );
+        assert!(!stderr.contains("incomplete"), "{stderr}");
+    }
+
+    /// M7-49 (the reviews of PR 3): the cap's verdict never depends on
+    /// `--jobs` or `--fit-jobs`: the bracket and the lug both pass their
+    /// interface, so `--max-fits 1` is refused and `--max-fits 2` writes
+    /// the same document, on one thread and on several.
+    fn max_fits_does_not_depend_on_jobs() {
+        let dir = root("max-fits-jobs");
+        let fake = Fake::install_embedded(&dir, fitment_fit::testing::Scenario::Replay);
+        library(&dir, &fake, fast(), false);
+        let fit = fit_dir(&fake);
+        let mut documents = Vec::new();
+        for jobs in [
+            &["--jobs", "1"][..],
+            &["--jobs", "4", "--fit-jobs", "2"][..],
+        ] {
+            for cap in ["1", "2"] {
+                let mut args = vec![
+                    "match",
+                    "bracket.json",
+                    "m_bracket.stp",
+                    "m_bracket_lug.stp",
+                    "--fit",
+                    "s01_bolted.stp",
+                    "--fit-dir",
+                    &fit,
+                    "--max-fits",
+                    cap,
+                    "--format",
+                    "json",
+                ];
+                args.extend(jobs);
+                let (code, stdout, stderr) = run(&dir, &args);
+                if refused_on_windows(code, &stdout, &stderr) {
+                    return;
+                }
+                if cap == "1" {
+                    assert_eq!(code, 3, "{jobs:?}: {stderr}");
+                    assert_eq!(stdout, "");
+                } else {
+                    assert_eq!(code, 0, "{jobs:?}: {stderr}");
+                    documents.push(stdout);
+                }
+            }
+        }
+        assert_eq!(documents[0], documents[1]);
+    }
+
+    /// FV8 in a catalog run (the reviews of PR 3): a helper that breaks
+    /// its protocol, or one whose check passes `--fit-timeout`, leaves the
+    /// passing candidates' fits `helper_protocol` or `helper_timeout`, the
+    /// document written, exit 1.
+    fn a_catalog_run_with_a_failing_helper_exits_1_with_its_document() {
+        use fitment_catalog::{Catalog, NoObserver, Options, Selection};
+        use fitment_fit::testing::{Scenario, Stage};
+        for (scenario, code_) in [
+            (Scenario::ErrorFrame(Stage::Place), "helper_protocol"),
+            (Scenario::HangAtCheck, "helper_timeout"),
+        ] {
+            let dir = root(&format!("catalog-{}", scenario.name()));
+            let document = inputs(&dir);
+            let (mut catalog, _) = Catalog::init(&dir.join("cat"), Options::default()).unwrap();
+            catalog.ingest(&[core("candidates")], None).unwrap();
+            let fake = Fake::install_embedded(&dir, scenario);
+            let assembly = fs::read(dir.join("s01_bolted.stp")).unwrap();
+            let helper = fake.helper(fast().with_timeout(Duration::from_secs(1)));
+            let session = OcctSession::open(&helper, assembly, &document).unwrap();
+            let replaying = Replaying::answering(&session, &fake, kernel);
+            let matcher = Matcher::new(
+                &document,
+                MatchPolicy::default(),
+                MatchOptions::default(),
+                &replaying,
+            )
+            .unwrap();
+            let blobs = catalog.fit_blobs();
+            let snapshot = catalog.snapshot().unwrap();
+            let judged = snapshot
+                .match_catalog_fitted(&matcher, &Selection::Full, 2, &NoObserver, &blobs)
+                .unwrap()
+                .unwrap();
+            drop(snapshot);
+            assert!(matcher.fit_incomplete(judged.results.iter().map(|(r, _)| r)));
+            let fit = fit_dir(&fake);
+            let (code, stdout, stderr) = run(
+                &dir,
+                &[
+                    "match",
+                    "bracket.json",
+                    "-C",
+                    "cat",
+                    "--fit",
+                    "s01_bolted.stp",
+                    "--fit-dir",
+                    &fit,
+                    "--fit-timeout",
+                    "1",
+                    "-o",
+                    "out.json",
+                ],
+            );
+            if refused_on_windows(code, &stdout, &stderr) {
+                return;
+            }
+            assert_eq!(code, 1, "{scenario:?}: {stderr}");
+            let doc = json(&fs::read_to_string(dir.join("out.json")).unwrap());
+            let asked: Vec<&Value> = doc["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["fit"]["code"] == code_)
+                .collect();
+            assert!(!asked.is_empty(), "{scenario:?}: {doc}");
+            assert!(
+                doc["candidates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|c| c["verdict"] != "match"),
+                "{scenario:?}"
+            );
+        }
     }
 }

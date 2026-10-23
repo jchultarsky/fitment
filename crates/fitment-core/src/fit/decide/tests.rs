@@ -762,7 +762,7 @@ fn process_failures_are_never_verified() {
         (FitFailure::Cancelled, FitCode::Cancelled, true),
         (FitFailure::Protocol, FitCode::HelperProtocol, true),
         (
-            FitFailure::StoredBytesUnreadable,
+            FitFailure::StoredBytesUnreadable("missing: no file for the content".to_owned()),
             FitCode::StoredBytesUnreadable,
             true,
         ),

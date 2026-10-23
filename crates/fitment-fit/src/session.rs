@@ -847,6 +847,25 @@ impl<'h> OcctSession<'h> {
         })
     }
 
+    /// FU2, FV8: [`OcctSession::open`] for a run that has already checked
+    /// a helper of `helper` ([`OcctHelper::check`], as the CLI does before
+    /// any candidate): a helper that cannot start later depends on the
+    /// machine, not the installation, so it is a protocol failure and the
+    /// run incomplete, as after the session's own first handshake.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::NotTheSource`].
+    pub fn open_checked(
+        helper: &'h OcctHelper,
+        assembly: Vec<u8>,
+        socket: &SocketDocument,
+    ) -> Result<Self, SessionError> {
+        let session = Self::open(helper, assembly, socket)?;
+        session.handshaken.store(true, Ordering::Relaxed);
+        Ok(session)
+    }
+
     /// FX4: this session, cancelled when `flag` is set: every wait reads
     /// it every 100 ms and kills its helper; the fit is `cancelled`.
     #[must_use]

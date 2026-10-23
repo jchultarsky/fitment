@@ -69,6 +69,12 @@ pub enum NotRun {
     /// Its observer stopped it (CA2, `docs/research/m6-api.md`): no
     /// result, not even a partial one.
     Cancelled,
+    /// A matcher with a fit verifier that has an identity, run without the
+    /// catalog's files (`docs/research/m7-fit.md`, FC6): its fits could
+    /// read no candidate's bytes, so it is refused rather than run with
+    /// every fit unavailable; [`Snapshot::match_catalog_fitted`] takes the
+    /// files (exit 1, a caller's error).
+    FitWithoutFiles,
 }
 
 /// What a catalog run judged.
@@ -295,6 +301,10 @@ impl Snapshot<'_> {
         if observer.cancelled() {
             return Ok(Err(NotRun::Cancelled));
         }
+        // FC6: a fit without the files would be no fit; fail closed.
+        if blobs.is_none() && matcher.fit_identity().is_some() {
+            return Ok(Err(NotRun::FitWithoutFiles));
+        }
         let conn: &Connection = self.connection();
         let (entries, indexed, quarantined) = tally(conn)?;
         let mut run = CatalogRun {
@@ -336,6 +346,36 @@ impl Snapshot<'_> {
 }
 
 impl Snapshot<'_> {
+    /// QR1's refusals of `selection` for `matcher`, without judging any
+    /// candidate: what [`Snapshot::match_catalog`] would refuse with, so a
+    /// caller can say it before slower checks of its own (M7's `--fit`,
+    /// FU1). Level 1 runs for a full run.
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    pub fn refusal(
+        &self,
+        matcher: &Matcher<'_>,
+        selection: &Selection,
+    ) -> Result<Option<NotRun>, Error> {
+        let conn: &Connection = self.connection();
+        let (entries, indexed, quarantined) = tally(conn)?;
+        let mut run = CatalogRun {
+            generation: self.generation(),
+            entries,
+            indexed,
+            quarantined,
+            level_one: None,
+            selected: 0,
+            results: Vec::new(),
+            corrupt: Vec::new(),
+            judged: 0,
+            bugs: Vec::new(),
+        };
+        Ok(keys(conn, matcher, selection, &mut run)?.err())
+    }
+
     /// Level 1 over this snapshot's stored index alone, for CT3's
     /// comparison with the in-memory index.
     ///

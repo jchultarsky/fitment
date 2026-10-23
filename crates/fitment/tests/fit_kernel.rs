@@ -275,18 +275,23 @@ fn a_catalog_run_with_the_fit_is_the_file_run_restricted() {
     assert!(fitted >= 2, "the bracket and its twin at least: {fitted}");
 }
 
-/// FB5 through the real helper: the bracket of another assembly (s01
-/// under another header) is found in the helper's second scene by its
-/// faces, and matches, as the socket's own bracket does.
+/// FB5 through the real helper: the bracket of another assembly,
+/// `s01_bolted_tgt` (the corpus's s01 with its targets modelled in a tilted
+/// frame and placed back by its inverse, copied from `corpus/out` into
+/// `tests/data`), is found in the helper's second scene by its faces: its
+/// geometry in its own frame is not the socket's bracket's, so the
+/// landmarks the helper reads there agree with fitment's only if it
+/// measured that assembly's solid. It matches, as the socket's own does;
+/// and the socket's own bracket judged as a component of the socket's
+/// assembly needs no second scene.
 #[test]
 fn a_component_of_another_assembly_matches_through_the_real_helper() {
     let fit = need_kernel!();
     let assembly = fs::read(core("assemblies/s01_bolted.stp")).unwrap();
     let document = SocketDocument::extract(&assembly, Some("BRACKET"), None).unwrap();
-    let other = String::from_utf8(assembly.clone())
-        .unwrap()
-        .replacen("FILE_NAME('", "FILE_NAME('other", 1)
-        .into_bytes();
+    let other =
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/s01_bolted_tgt.stp"))
+            .unwrap();
     let helper = OcctHelper::open(fit, HelperFiles::embedded(), HelperOptions::default()).unwrap();
     let session = OcctSession::open(&helper, assembly, &document).unwrap();
     let matcher = Matcher::new(
@@ -297,6 +302,17 @@ fn a_component_of_another_assembly_matches_through_the_real_helper() {
     )
     .unwrap();
     let component = fitment_core::SelectedComponent::read(&other, Some("BRACKET"), None).unwrap();
+    let own = fitment_core::SelectedComponent::read(
+        &fs::read(core("assemblies/s01_bolted.stp")).unwrap(),
+        Some("BRACKET"),
+        None,
+    )
+    .unwrap();
+    assert_ne!(
+        format!("{:?}", component.part().extent),
+        format!("{:?}", own.part().extent),
+        "another solid in its own frame, not the socket's bracket under a new header"
+    );
     let result = matcher.judge_component_in(&component, component.source(), &other);
     let expected = if refused_here() {
         fitment_core::VerdictKind::InterfaceMatch

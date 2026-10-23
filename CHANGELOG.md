@@ -41,15 +41,24 @@ Until 1.0, minor versions may contain breaking changes.
   `judge_component_in` (a component of another assembly, its bytes the
   helper's second scene, FB5), `judge_original`, `with_max_fits`,
   `max_fits`, `interface_passes`, `over_max_fits` and `fit_unavailable`;
-  `fit::FetchError` and `fit::Fetch`; `FitBody::component_of`, and
-  `FitBody::Component` gains the other assembly's bytes; v2 states its
-  `max_fits`. `fitment-catalog` gains `FitBlobs` (`Catalog::fit_blobs`) and
-  `Snapshot::match_catalog_fitted`. `fitment-fit`'s session sends a
-  component's own assembly as the helper's second scene, a relative fit
-  directory is made absolute, and its test support installs a fake helper
-  under the embedded script (`Fake::install_embedded`), answers with given
-  measures (`Replaying::answering`) and hangs at `check`
-  (`Scenario::HangAtCheck`).
+  `fit::FetchError`, `fit::Fetch` and `fit::MAX_FITS_REACHED` (each
+  socket's fit past the cap); `FitBody::component_of`, and
+  `FitBody::Component` gains the other assembly's bytes;
+  `FitFailure::StoredBytesUnreadable` carries the store's reason; v2
+  states its `max_fits`. `fitment-catalog` gains `FitBlobs`
+  (`Catalog::fit_blobs`), `Snapshot::match_catalog_fitted` and
+  `Snapshot::refusal` (QR1's refusal without judging), and refuses a
+  match whose verifier has an identity without the files
+  (`NotRun::FitWithoutFiles`). `fitment-fit`'s session sends a
+  component's own assembly as the helper's second scene,
+  `OcctSession::open_checked` opens one after a run's own helper check, a
+  relative fit directory is made absolute, and its test support installs a
+  fake helper under the embedded script (`Fake::install_embedded`),
+  answers with given measures (`Replaying::answering`), hangs at `check`
+  (`Scenario::HangAtCheck`), locks `tmp/` after its handshake
+  (`Scenario::LocksTmp`) and, under `test-support` only, lets a helper past
+  M7-50 on Windows (`HelperOptions::with_unproven_platform`). A build
+  without `fit` hides `--fit` and its flags, and its help is 0.3.0's.
 - **M7, PR 1b (the matcher, the v2 writer and its schema):** a fit
   verifier now returns a kernel's measures, never a status, and the
   matcher decides from them itself (`docs/research/m7-fit.md`, FC1): with a

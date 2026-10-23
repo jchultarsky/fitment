@@ -205,9 +205,14 @@ impl Matcher<'_> {
         {
             return None;
         }
-        // M7-49: past the cap the run is refused, its document unwritten;
-        // the candidate's sockets keep the fit they were judged with.
+        // M7-49: past the cap the run is to be refused, its document
+        // unwritten; a caller that writes it anyway states why no fit was
+        // asked, and none is verified.
         if !fitting.within_max_fits(counted) {
+            for (ready, result) in self.sockets.iter().zip(sockets.iter_mut()) {
+                let reason = fit::MAX_FITS_REACHED.to_owned();
+                refit(ready, result, FitStatus::NotChecked { reason });
+            }
             return None;
         }
         if sockets.iter().any(unplaced) {
@@ -349,10 +354,10 @@ impl Matcher<'_> {
         // FC6: a stored file's bytes, read now that its fit is asked, and
         // only if they hash to its row.
         let fetched = match body {
-            Body::Stored { sha256, fetch } => match fetch() {
-                Ok(bytes) if crate::sha256::sha256_hex(&bytes) == *sha256 => Some(bytes),
-                _ => {
-                    let outcome = FitOutcome::failed(ids, &FitFailure::StoredBytesUnreadable);
+            Body::Stored { sha256, fetch } => match checked(fetch(), sha256) {
+                Ok(bytes) => Some(bytes),
+                Err(why) => {
+                    let outcome = FitOutcome::failed(ids, &FitFailure::StoredBytesUnreadable(why));
                     return FitEvidence::unmeasured(outcome, placements);
                 }
             },
@@ -407,6 +412,20 @@ impl Matcher<'_> {
         measured.unwrap_or_else(|failure| {
             FitEvidence::unmeasured(FitOutcome::failed(ids, &failure), placements)
         })
+    }
+}
+
+/// FC6: a stored file's bytes, if they hash to its row's SHA-256; else
+/// why not, the store's own sentence or core's.
+fn checked(
+    fetched: Result<Vec<u8>, crate::fit::FetchError>,
+    sha256: &str,
+) -> Result<Vec<u8>, String> {
+    let bytes = fetched.map_err(|e| e.why)?;
+    if crate::sha256::sha256_hex(&bytes) == sha256 {
+        Ok(bytes)
+    } else {
+        Err("damaged: the stored file's SHA-256 is not its row's".to_owned())
     }
 }
 

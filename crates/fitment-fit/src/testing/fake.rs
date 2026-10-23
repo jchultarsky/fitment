@@ -209,6 +209,9 @@ impl Fake {
             if self.write(&mut stdout, &op, &bytes).is_err() {
                 return 4;
             }
+            if op == "hello" && self.scenario == Scenario::LocksTmp {
+                lock_tmp();
+            }
             checks += usize::from(op == "check");
             if self.scenario == Scenario::Floods && checks == 2 {
                 self.flood(&mut stdout);
@@ -504,6 +507,21 @@ fn hostile_error_frame(header: &Value) -> Vec<u8> {
 }
 
 /// Waits for fitment to end this process, at most a minute.
+/// `LocksTmp`: the fit directory's `tmp/`, the parent of this helper's
+/// own working directory, made 0500 (Unix only).
+fn lock_tmp() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(tmp) = std::env::current_dir()
+            .ok()
+            .and_then(|d| d.parent().map(std::path::Path::to_path_buf))
+        {
+            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o500));
+        }
+    }
+}
+
 fn linger() -> ! {
     std::thread::sleep(AT_MOST);
     std::process::exit(5);

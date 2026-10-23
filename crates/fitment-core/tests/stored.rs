@@ -376,3 +376,133 @@ fn admitted_holds_what_level_two_keeps() {
         "no candidate kept: the test shows nothing"
     );
 }
+
+/// FC6: a stored document's bytes, fetched only when its fit is asked,
+/// are checked by core against the row's SHA-256 before the verifier sees
+/// them: other bytes, empty bytes or a fetch that fails are
+/// `stored_bytes_unreadable` with the reason, the run incomplete, and the
+/// verifier asked nothing for the candidate; the right bytes are judged as
+/// the file is. A candidate whose interface rejects, or a run with no
+/// verifier that has an identity, never fetches.
+#[test]
+fn a_stored_file_is_fetched_when_its_fit_is_asked_and_checked_by_core() {
+    use fitment_core::fit::{FetchError, FitCode};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let document = &sockets()[0];
+    let identity = fitment_core::FitIdentity::new("test", "1");
+    let verifier = MeasuresVerifier::exact(identity, ASSEMBLIES[0].0.to_vec());
+    let matcher = Matcher::new(
+        document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier,
+    )
+    .unwrap();
+    let bracket = CANDIDATES[0];
+    let (doc, source) = stored(bracket);
+    let wrong = CANDIDATES[1].to_vec();
+    let cases: [(&str, Result<Vec<u8>, FetchError>); 3] = [
+        (
+            "damaged: the stored file's SHA-256 is not its row's",
+            Ok(wrong),
+        ),
+        (
+            "damaged: the stored file's SHA-256 is not its row's",
+            Ok(Vec::new()),
+        ),
+        (
+            "missing: no file for the content",
+            Err(FetchError::new("missing: no file for the content")),
+        ),
+    ];
+    for (why, fetched) in cases {
+        let before = verifier.asked().len();
+        let fetch = || fetched.clone();
+        let result = matcher
+            .judge_document_with_fetch(&doc, source.clone(), &fetch)
+            .unwrap();
+        let outcome = result.fit.as_deref().unwrap().outcome();
+        assert_eq!(
+            outcome.code(),
+            Some(FitCode::StoredBytesUnreadable),
+            "{why}"
+        );
+        assert_eq!(outcome.findings()[0].detail, why);
+        assert!(
+            result.fit_incomplete() && !matches!(result.verdict.fit(), FitStatus::Verified { .. })
+        );
+        let asked = verifier.asked();
+        assert!(
+            asked[before..]
+                .iter()
+                .all(|a| a.candidate.starts_with("component ")),
+            "the verifier never saw the candidate: {asked:?}"
+        );
+    }
+    let right = || Ok(bracket.to_vec());
+    let judged = matcher
+        .judge_document_with_fetch(&doc, source.clone(), &right)
+        .unwrap();
+    assert_eq!(judged.verdict, matcher.judge_step(bracket).verdict);
+    // Never fetched where no fit is asked.
+    let calls = AtomicUsize::new(0);
+    let counted = || {
+        calls.fetch_add(1, Ordering::Relaxed);
+        Ok(bracket.to_vec())
+    };
+    let (rejected, rejected_source) = stored(CANDIDATES[3]);
+    matcher
+        .judge_document_with_fetch(&rejected, rejected_source, &counted)
+        .unwrap();
+    let none = Matcher::new(
+        document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &NoFitVerifier,
+    )
+    .unwrap();
+    none.judge_document_with_fetch(&doc, source, &counted)
+        .unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+}
+
+/// M7-49: past the cap no fit is asked and none is verified: each socket
+/// states the cap was reached, and the run is to be refused; the original
+/// never counts against it.
+#[test]
+fn past_the_cap_no_fit_is_asked_and_none_is_verified() {
+    let document = &sockets()[0];
+    let identity = fitment_core::FitIdentity::new("test", "1");
+    let verifier = MeasuresVerifier::exact(identity, ASSEMBLIES[0].0.to_vec());
+    let matcher = Matcher::new(
+        document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier,
+    )
+    .unwrap()
+    .with_max_fits(Some(1));
+    let original = fitment_core::SelectedComponent::target(ASSEMBLIES[0].0, document).unwrap();
+    let judged = matcher.judge_original(&original, original.source());
+    assert!(matches!(judged.verdict.fit(), FitStatus::Verified { .. }));
+    assert_eq!(matcher.interface_passes(), 0, "the original is not counted");
+    let first = matcher.judge_step(CANDIDATES[0]);
+    assert!(matches!(first.verdict.fit(), FitStatus::Verified { .. }));
+    assert!(!matcher.over_max_fits());
+    let asked = verifier.asked().len();
+    let second = matcher.judge_step(CANDIDATES[0]);
+    assert_eq!(verifier.asked().len(), asked, "no fit asked past the cap");
+    assert!(matcher.over_max_fits());
+    assert_eq!(matcher.interface_passes(), 2);
+    assert_eq!(
+        second.verdict.kind(),
+        fitment_core::VerdictKind::InterfaceMatch
+    );
+    for socket in &second.sockets {
+        assert!(
+            matches!(socket.verdict.fit(), FitStatus::NotChecked { reason } if reason == fitment_core::fit::MAX_FITS_REACHED),
+            "{:?}",
+            socket.verdict.fit()
+        );
+    }
+}

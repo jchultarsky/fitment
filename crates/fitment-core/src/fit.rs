@@ -233,6 +233,11 @@ pub const OCCURRENCE_UNPLACED: &str = "an occurrence of the socket could not be 
 pub const OCCURRENCE_UNPLACED_ELSEWHERE: &str =
     "an occurrence of another socket could not be placed";
 
+/// The reason a candidate whose interface passed past the run's cap on fits
+/// gets none (M7-49): the run is refused, `too_large`, and a caller that
+/// writes its document anyway says so.
+pub const MAX_FITS_REACHED: &str = "the run's cap on fits was reached";
+
 /// The reason a socket whose interface failed gets no fit check
 /// (`docs/research/m4-match.md`, VD4).
 pub const INTERFACE_REJECTED: &str = "interface rejected";
