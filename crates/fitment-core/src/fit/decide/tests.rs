@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::features::Part;
-use crate::fit::{BodyMeasure, CheckMeasures, Zone};
+use crate::fit::{BodyMeasure, CheckMeasures, Zones};
 use crate::fit::{
     FitBody, FitCandidate, FitIdentity, FitScene, PairMeasure, PlaceMeasures, Placed,
     PlacementMeasure, PlanInput, ReachClaim, SceneMeasures, SolidMeasure, ZoneMeasure, plan, zones,
@@ -17,10 +17,11 @@ use crate::socket::SocketDocument;
 const S01: &[u8] = include_bytes!("../../../tests/assemblies/s01_bolted.stp");
 const VOLUME: f64 = 1000.0;
 
-/// s01's bracket socket and everything a plan of it needs.
+/// A socket of a committed assembly, its original as the candidate, and
+/// everything a plan of it needs.
 struct Rig {
     scene: FitScene,
-    zones: Vec<Zone>,
+    zones: Zones,
     part: Part,
     candidate: FitCandidate,
     placements: Vec<Placed>,
@@ -28,13 +29,22 @@ struct Rig {
 }
 
 impl Rig {
+    /// s01's bracket socket.
     fn s01() -> Self {
-        let document = SocketDocument::extract(S01, Some("BRACKET"), None).unwrap();
-        let scene = FitScene::of(S01, &document).unwrap();
+        Self::of(S01, "BRACKET")
+    }
+
+    fn of(bytes: &[u8], target: &str) -> Self {
+        let document = SocketDocument::extract(bytes, Some(target), None).unwrap();
+        let scene = FitScene::of(bytes, &document).unwrap();
         let zones = zones(&document, &scene);
-        let bracket = scene.bodies().iter().find(|b| b.selected).unwrap();
-        let part = scene.part(bracket).unwrap().clone();
-        let body = FitBody::component(scene.sha256(), bracket.path.clone(), bracket.faces.clone());
+        let original = scene.bodies().iter().find(|b| b.selected).unwrap();
+        let part = scene.part(original).unwrap().clone();
+        let body = FitBody::component(
+            scene.sha256(),
+            original.path.clone(),
+            original.faces.clone(),
+        );
         let candidate = FitCandidate::of(&part, &body);
         let placements = Placed::every(&document, "socket-1", &Rigid::IDENTITY).unwrap();
         Self {
@@ -51,22 +61,28 @@ impl Rig {
         FitIdentity::new("open_cascade", "8.0.1")
     }
 
-    fn plan(&self, measures: &FitMeasures) -> FitPlan {
-        let input = PlanInput::new(
+    fn input(&self) -> PlanInput<'_> {
+        PlanInput::new(
             &self.scene,
             &self.zones,
             &self.candidate,
             &self.placements,
             &self.policy,
             Self::identity(),
-        );
-        plan(&input, &measures.scene, &measures.place)
+        )
+    }
+
+    fn plan(&self, measures: &FitMeasures) -> FitPlan {
+        plan(&self.input(), &measures.scene, &measures.place)
     }
 
     /// The kernel's reading of the scene and the placed candidate, as
     /// fitment's own.
     fn read(&self) -> FitMeasures {
-        let mut scene = SceneMeasures::default();
+        let mut scene = SceneMeasures {
+            request_sha256: Some(self.scene.request_digest()),
+            ..SceneMeasures::default()
+        };
         for body in self.scene.bodies() {
             let part = self.scene.part(body).unwrap();
             let bounds = moved(&part.extent.unwrap(), &body.transform).unwrap();
@@ -86,6 +102,7 @@ impl Rig {
             });
         }
         let mut place = PlaceMeasures {
+            request_sha256: Some(self.input().place_digest()),
             valid: true,
             volume_mm3: VOLUME,
             tolerance_mm: 1e-7,
@@ -123,7 +140,10 @@ impl Rig {
 }
 
 fn clean_check(plan: &FitPlan) -> CheckMeasures {
-    let mut check = CheckMeasures::default();
+    let mut check = CheckMeasures {
+        request_sha256: Some(plan.check_digest().to_owned()),
+        ..CheckMeasures::default()
+    };
     for pair in plan.asked() {
         let zoned = !pair.zones.is_empty();
         let built = |b: Option<Built>| {
@@ -313,7 +333,7 @@ fn a_gap_at_or_under_the_threshold_is_a_proximity() {
         .unwrap()
         .path
         .clone();
-    bare.zones.retain(|z| z.body != plate_path);
+    bare.zones.0.retain(|z| z.body != plate_path);
     let (plan, mut measures) = bare.clean();
     let at = plate(&plan);
     assert_eq!(plan.asked().nth(at).unwrap().zones.len(), 0);
@@ -504,6 +524,7 @@ fn a_zone_with_no_closed_form_is_not_asked() {
     let mut rig = Rig::s01();
     let zone = rig
         .zones
+        .0
         .iter_mut()
         .find(|z| z.kind == super::super::ZoneKind::Slab)
         .unwrap();
@@ -522,7 +543,12 @@ fn a_zone_s_body_beyond_reach_fails_binding() {
     let rig = Rig::s01();
     let (plan, mut measures) = rig.clean();
     let at = plate(&plan);
-    measures.check.pairs[at].distance_mm = None;
+    let pair = &mut measures.check.pairs[at];
+    pair.distance_mm = None;
+    pair.zoned_distance_mm = None;
+    pair.body_kept_mm3 = None;
+    pair.body_inside_mm3 = None;
+    pair.proximity_zones.clear();
     assert_eq!(codes(&decide(&plan, &measures)), [FitCode::BindingFailed]);
 }
 
@@ -546,7 +572,7 @@ fn a_cut_that_loses_volume_is_conservation() {
     measures.check.pairs[plate(&plan)].body_kept_mm3 = Some(VOLUME * (1.0 - 1e-8));
     assert_eq!(codes(&decide(&plan, &measures)), [FitCode::Conservation]);
     let (plan, mut measures) = rig.clean();
-    measures.check.pairs[plate(&plan)].body_kept_mm3 = Some(VOLUME * (1.0 - 1e-10));
+    measures.check.pairs[plate(&plan)].body_kept_mm3 = Some(VOLUME * (1.0 - 1e-11));
     assert!(verified(decide(&plan, &measures).candidate()));
 }
 
@@ -562,7 +588,12 @@ fn an_unclaimed_solid_within_reach_is_reported() {
         location: location(&Rigid::IDENTITY),
         bounds: near,
     });
-    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::UnclaimedBody]);
+    assert_eq!(
+        codes(&decide(&plan, &measures)),
+        [FitCode::BindingFailed, FitCode::UnclaimedBody]
+    );
+    // One far away is not unclaimed, but no leaf of fitment's accounts
+    // for it: the kernel's scene is not fitment's (FB6, the review's H5).
     let (plan, mut measures) = rig.clean();
     measures.scene.solids.push(SolidMeasure {
         faces: vec![999_999],
@@ -572,7 +603,7 @@ fn an_unclaimed_solid_within_reach_is_reported() {
             max_mm: [1001.0; 3],
         },
     });
-    assert!(verified(decide(&plan, &measures).candidate()));
+    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::BindingFailed]);
 }
 
 /// FT8: a body the helper finds within reach that the plan does not pair
@@ -722,31 +753,24 @@ fn a_free_placement_is_not_unique() {
 /// sockets; a finding at one placement only for its own socket.
 #[test]
 fn a_copy_s_interference_counts_for_both_sockets() {
-    let mut rig = Rig::s01();
-    // Two occurrences of the bracket in two sockets, the second 50 mm up:
-    // a copy pair between them, within reach once lowered onto the first.
-    let first = rig.placements[0].clone();
+    // s01's four bolts, the second of them in a socket of its own and
+    // placed 4 mm up the first's axis: a copy pair between them.
+    let mut rig = Rig::of(S01, "BOLT");
+    assert_eq!(rig.placements.len(), 4);
     let up = Rigid::new(Rigid::IDENTITY.rotation(), [0.0, 0.0, 4.0]).unwrap();
-    let second = Placed::new("socket-2", vec![424_242], up);
-    rig.placements.push(second.clone());
-    let mut measures = rig.read();
-    let mut copy = measures.place.placements[0].clone();
-    copy.occurrence = second.occurrence.clone();
-    copy.bounds = moved(&rig.part.extent.unwrap(), &up).unwrap();
-    copy.landmarks = rig
-        .candidate
-        .landmarks
-        .iter()
-        .map(|l| measure_of(&l.placed(&up).unwrap()))
+    rig.placements[1].transform = rig.placements[0].transform.then(&up).unwrap();
+    rig.placements[1].socket = "socket-2".to_owned();
+    let (first, second) = (rig.placements[0].clone(), rig.placements[1].clone());
+    let (plan, mut measures) = rig.clean();
+    let copies: Vec<&Pair> = plan
+        .asked()
+        .filter(|p| p.copy && [&first.occurrence, &second.occurrence].contains(&&p.occurrence))
         .collect();
-    measures.place.placements.push(copy);
-    let plan = rig.plan(&measures);
-    let copies: Vec<&Pair> = plan.asked().filter(|p| p.copy).collect();
     assert_eq!(copies.len(), 2, "each copy pair once from each side");
-    measures.check = clean_check(&plan);
+    assert!(verified(decide(&plan, &measures).candidate()));
     let at = plan
         .asked()
-        .position(|p| p.copy && p.occurrence == first.occurrence)
+        .position(|p| p.copy && p.occurrence == first.occurrence && p.body == second.occurrence)
         .unwrap();
     measures.check.pairs[at].common_mm3 = 2.0;
     measures.check.pairs[at].residual_mm3 = 2.0;
@@ -794,5 +818,343 @@ fn the_reasons_are_a_closed_list() {
     assert_eq!(
         finding.sentence(),
         "a body is within the threshold outside every declared contact: 0.005 mm"
+    );
+}
+
+// The reviews' findings, each a test that passed a pass before its fix.
+
+/// OCCT's empty box and a box with a NaN.
+fn unsound_boxes() -> [FitBox; 2] {
+    [
+        FitBox {
+            min_mm: [1e100; 3],
+            max_mm: [-1e100; 3],
+        },
+        FitBox {
+            min_mm: [f64::NAN, 0.0, 0.0],
+            max_mm: [1.0; 3],
+        },
+    ]
+}
+
+/// The index of the measure of the scene body whose label starts with
+/// `product`.
+fn body_measure(rig: &Rig, measures: &FitMeasures, product: &str) -> usize {
+    let path = &rig
+        .scene
+        .bodies()
+        .iter()
+        .find(|b| b.label().starts_with(product))
+        .unwrap()
+        .path;
+    measures
+        .scene
+        .bodies
+        .iter()
+        .position(|m| &m.path == path)
+        .unwrap()
+}
+
+/// The pair of the asked pairs whose body's label starts with `product`,
+/// made to interfere.
+fn interfering(plan: &FitPlan, measures: &mut FitMeasures, product: &str) {
+    let at = plan
+        .asked()
+        .position(|p| p.name.starts_with(product))
+        .unwrap();
+    let pair = &mut measures.check.pairs[at];
+    pair.common_mm3 = 3.0;
+    pair.residual_mm3 = 3.0;
+    pair.distance_mm = Some(0.0);
+}
+
+/// C1: a found body whose kernel box is unsound (OCCT's empty box, a NaN)
+/// is never culled, and fails binding: here a nut, far from the bracket.
+#[test]
+fn an_unsound_kernel_box_is_never_culled() {
+    let rig = Rig::s01();
+    for bad in unsound_boxes() {
+        let mut measures = rig.read();
+        let nut = body_measure(&rig, &measures, "NUT");
+        measures.scene.bodies[nut].bounds = bad;
+        let plan = rig.plan(&measures);
+        let path = &measures.scene.bodies[nut].path;
+        assert!(plan.asked().any(|p| &p.body == path), "{bad:?}");
+        measures.check = clean_check(&plan);
+        let outcome = decide(&plan, &measures);
+        assert_eq!(codes(&outcome), [FitCode::BindingFailed], "{bad:?}");
+        assert!(matches!(outcome.candidate(), FitStatus::NotVerified { .. }));
+    }
+    // The candidate's own box likewise.
+    for bad in unsound_boxes() {
+        let mut measures = rig.read();
+        measures.place.placements[0].bounds = bad;
+        let plan = rig.plan(&measures);
+        assert_eq!(plan.clear(), 0, "every body within reach of an unknown box");
+        measures.check = clean_check(&plan);
+        assert!(codes(&decide(&plan, &measures)).contains(&FitCode::BindingFailed));
+    }
+}
+
+/// C2: a kernel box of the placed candidate too small (here a 1 mm cube
+/// within it, at a skew placement) culls nothing: reach is judged on its
+/// hull with fitment's own box, and the plate's interference is found.
+#[test]
+fn a_candidate_box_too_small_culls_nothing() {
+    let mut rig = Rig::s01();
+    let (sin, cos) = libm::sincos(5f64.to_radians());
+    let skew = Rigid::new(
+        [[cos, -sin, 0.0], [sin, cos, 0.0], [0.0, 0.0, 1.0]],
+        [0.0; 3],
+    )
+    .unwrap();
+    rig.placements[0].transform = skew;
+    let mut measures = rig.read();
+    measures.place.placements[0].bounds = FitBox {
+        min_mm: [0.0, 0.0, 3.0],
+        max_mm: [1.0, 1.0, 4.0],
+    };
+    let plan = rig.plan(&measures);
+    measures.check = clean_check(&plan);
+    interfering(&plan, &mut measures, "PLATE");
+    let outcome = decide(&plan, &measures);
+    assert!(
+        matches!(outcome.candidate(), FitStatus::Interferes { .. }),
+        "{:?}",
+        outcome.findings()
+    );
+}
+
+/// C2: a neighbour's kernel box too small (a 1 mm cube at the plate's
+/// far corner) culls nothing either.
+#[test]
+fn a_neighbour_box_too_small_culls_nothing() {
+    let rig = Rig::s01();
+    let mut measures = rig.read();
+    let plate = body_measure(&rig, &measures, "PLATE");
+    measures.scene.bodies[plate].bounds = FitBox {
+        min_mm: [-50.0, -30.0, -10.0],
+        max_mm: [-49.0, -29.0, -9.0],
+    };
+    let plan = rig.plan(&measures);
+    measures.check = clean_check(&plan);
+    interfering(&plan, &mut measures, "PLATE");
+    assert!(matches!(
+        decide(&plan, &measures).candidate(),
+        FitStatus::Interferes { .. }
+    ));
+}
+
+/// H4: a neighbour's kernel box must lie within fitment's box of it, as
+/// the candidate's must (FB3).
+#[test]
+fn a_neighbour_box_off_fitment_s_fails_binding() {
+    let rig = Rig::s01();
+    let (plan, mut measures) = rig.clean();
+    let plate = body_measure(&rig, &measures, "PLATE");
+    measures.scene.bodies[plate].bounds.max_mm[0] += 1.0;
+    measures.scene.bodies[plate].bounds.min_mm[0] += 1.0;
+    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::BindingFailed]);
+}
+
+/// H4: a block of planes only (p21's channel), slid in its own plane, moves
+/// a landmark: its landmarks fix every direction and every slide (FB3).
+#[test]
+fn an_in_plane_slide_moves_a_landmark() {
+    let part =
+        crate::features::read_part(include_bytes!("../../../tests/data/p21_planes.stp")).unwrap();
+    assert_eq!(part.cylinders.len(), 0);
+    let own = crate::fit::landmarks(&part);
+    let read: Vec<LandmarkMeasure> = own.iter().map(measure_of).collect();
+    assert!(landmarks_agree(&own, &read));
+    for shift in [[0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 0.5]] {
+        let slid = Rigid::new(Rigid::IDENTITY.rotation(), shift).unwrap();
+        let moved: Vec<Landmark> = own.iter().map(|l| l.placed(&slid).unwrap()).collect();
+        assert!(!landmarks_agree(&moved, &read), "{shift:?}");
+    }
+}
+
+/// H3: a pair with no zone is judged on its distance alone; a zoned
+/// distance, a body's cut or a proximity zone measured for it answers no
+/// request, and breaks the protocol.
+#[test]
+fn an_unasked_zoned_distance_breaks_the_protocol() {
+    let mut bare = Rig::s01();
+    let plate_path = bare.scene.bodies()[0].path.clone();
+    assert!(bare.scene.bodies()[0].label().starts_with("PLATE"));
+    bare.zones.0.retain(|z| z.body != plate_path);
+    let answers: [&dyn Fn(&mut PairMeasure); 3] = [
+        &|p| p.zoned_distance_mm = Some(0.3),
+        &|p| p.body_kept_mm3 = Some(VOLUME),
+        &|p| p.proximity_zones = vec![ZoneMeasure::default()],
+    ];
+    for answer in answers {
+        let (plan, mut measures) = bare.clean();
+        let at = plate(&plan);
+        measures.check.pairs[at].distance_mm = Some(0.005);
+        answer(&mut measures.check.pairs[at]);
+        assert_eq!(codes(&decide(&plan, &measures)), [FitCode::HelperProtocol]);
+    }
+    let (plan, mut measures) = bare.clean();
+    measures.check.pairs[plate(&plan)].distance_mm = Some(0.005);
+    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::Proximity]);
+}
+
+/// M6: measures that contradict themselves break the protocol: volume
+/// within no zone, more within the zones than they hold, a Common between
+/// bodies apart, a body less its zones nearer than the body.
+#[test]
+fn measures_that_contradict_themselves_break_the_protocol() {
+    let rig = Rig::s01();
+    let contradictions: [&dyn Fn(&mut PairMeasure); 3] = [
+        &|p| {
+            p.common_mm3 = 1000.0;
+            p.inside_mm3 = 1000.0;
+        },
+        &|p| {
+            p.common_mm3 = 1.0;
+            p.inside_mm3 = 1.0;
+            p.distance_mm = Some(0.5);
+        },
+        &|p| {
+            p.distance_mm = Some(0.009);
+            p.zoned_distance_mm = Some(0.005);
+        },
+    ];
+    for contradiction in contradictions {
+        let (plan, mut measures) = rig.clean();
+        contradiction(&mut measures.check.pairs[plate(&plan)]);
+        assert_eq!(codes(&decide(&plan, &measures)), [FitCode::HelperProtocol]);
+    }
+    let mut bare = Rig::s01();
+    let plate_path = bare.scene.bodies()[0].path.clone();
+    bare.zones.0.retain(|z| z.body != plate_path);
+    let (plan, mut measures) = bare.clean();
+    let at = plate(&plan);
+    measures.check.pairs[at].common_mm3 = 0.1;
+    measures.check.pairs[at].inside_mm3 = 0.1;
+    measures.check.pairs[at].distance_mm = Some(0.0);
+    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::HelperProtocol]);
+}
+
+/// M6: conservation's slack is 1e-9 of the volume but never a tenth of
+/// the resolution: 5e-7 mm³ lost from a 1000 mm³ body is a miss.
+#[test]
+fn conservation_s_slack_is_bounded() {
+    assert!((slack(1000.0) - FIT_VOLUME_MM3 / 10.0).abs() < 1e-20);
+    assert!((slack(1.0) - 1e-9).abs() < 1e-20);
+    let rig = Rig::s01();
+    let (plan, mut measures) = rig.clean();
+    measures.check.pairs[plate(&plan)].body_kept_mm3 = Some(VOLUME - 5e-7);
+    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::Conservation]);
+}
+
+/// M7: a plan with no placement, or not one at each selected occurrence,
+/// is not verified; `not_verified` with no finding has its code's
+/// sentence.
+#[test]
+fn an_empty_or_partial_plan_is_not_verified() {
+    let mut rig = Rig::s01();
+    rig.placements.clear();
+    let (plan, measures) = rig.clean();
+    assert_eq!(plan.pairs().len(), 0);
+    let outcome = decide(&plan, &measures);
+    assert_eq!(codes(&outcome), [FitCode::BindingFailed]);
+    assert!(matches!(outcome.candidate(), FitStatus::NotVerified { .. }));
+    let mut rig = Rig::of(S01, "BOLT");
+    rig.placements.pop();
+    let (plan, measures) = rig.clean();
+    assert!(codes(&decide(&plan, &measures)).contains(&FitCode::BindingFailed));
+    let mut rig = Rig::of(S01, "BOLT");
+    let again = rig.placements[0].clone();
+    rig.placements[1] = again;
+    let (plan, measures) = rig.clean();
+    assert!(codes(&decide(&plan, &measures)).contains(&FitCode::BindingFailed));
+    let free = FitOutcome::not_unique(&["socket-1"], &[]);
+    assert_eq!(
+        free.candidate(),
+        &FitStatus::NotVerified {
+            reason: FitCode::PlacementNotUnique.sentence().to_owned()
+        }
+    );
+}
+
+/// M9: each reply must echo its request's digest; one that answers another
+/// request, or none, breaks the protocol.
+#[test]
+fn a_reply_to_another_request_breaks_the_protocol() {
+    let rig = Rig::s01();
+    let wrong = Some("0".repeat(64));
+    let replies: [&dyn Fn(&mut FitMeasures); 4] = [
+        &|m| m.scene.request_sha256.clone_from(&wrong),
+        &|m| m.place.request_sha256.clone_from(&wrong),
+        &|m| m.check.request_sha256.clone_from(&wrong),
+        &|m| m.check.request_sha256 = None,
+    ];
+    for reply in replies {
+        let (plan, mut measures) = rig.clean();
+        reply(&mut measures);
+        assert_eq!(codes(&decide(&plan, &measures)), [FitCode::HelperProtocol]);
+    }
+    // Another candidate's check: another digest.
+    let mut other = Rig::s01();
+    other.candidate.uncertainty_mm = 1e-4;
+    let (theirs, _) = other.clean();
+    let (plan, _) = rig.clean();
+    assert_ne!(theirs.check_digest(), plan.check_digest());
+}
+
+/// LOW: a body, a placement or a claim of reach measured twice breaks the
+/// protocol: no first one wins.
+#[test]
+fn measures_named_twice_break_the_protocol() {
+    let rig = Rig::s01();
+    let twice: [&dyn Fn(&mut FitMeasures); 3] = [
+        &|m| {
+            let again = m.scene.bodies[0].clone();
+            m.scene.bodies.push(again);
+        },
+        &|m| {
+            let again = m.place.placements[0].clone();
+            m.place.placements.push(again);
+        },
+        &|m| {
+            let again = m.check.reach[0].clone();
+            m.check.reach.push(again);
+        },
+    ];
+    for change in twice {
+        let (plan, mut measures) = rig.clean();
+        change(&mut measures);
+        assert_eq!(codes(&decide(&plan, &measures)), [FitCode::HelperProtocol]);
+    }
+}
+
+/// LOW: a body whose kernel tolerance is not a number is never culled,
+/// and fails binding.
+#[test]
+fn a_nan_tolerance_is_never_culled() {
+    let rig = Rig::s01();
+    let mut measures = rig.read();
+    let nut = body_measure(&rig, &measures, "NUT");
+    measures.scene.bodies[nut].tolerance_mm = f64::NAN;
+    let plan = rig.plan(&measures);
+    let path = measures.scene.bodies[nut].path.clone();
+    assert!(plan.asked().any(|p| p.body == path));
+    measures.check = clean_check(&plan);
+    assert!(codes(&decide(&plan, &measures)).contains(&FitCode::BindingFailed));
+}
+
+/// LOW: FT7 counts a vertex offset as M4's `u_T` does: a candidate whose
+/// vertices lie 0.02 mm off its surfaces leaves no tolerance.
+#[test]
+fn a_vertex_offset_counts_in_u_pair() {
+    let mut rig = Rig::s01();
+    rig.candidate.vertex_offset_mm = 0.02;
+    let (plan, measures) = rig.clean();
+    assert_eq!(plan.asked().count(), 0);
+    assert_eq!(
+        codes(&decide(&plan, &measures)),
+        [FitCode::UncertaintyAboveTolerance]
     );
 }

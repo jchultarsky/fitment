@@ -285,14 +285,26 @@ fn revolved(base: V, w: V, corners: &[[f64; 2]; 4], d: f64) -> Option<Built> {
     })
 }
 
+/// Every zone of a socket document, as [`zones`] derives them: only core
+/// builds them, so a plan's zones are always fitment's own reading.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Zones(pub(crate) Vec<Zone>);
+
+impl Zones {
+    /// The zones, in socket, occurrence and requirement order.
+    pub fn as_slice(&self) -> &[Zone] {
+        &self.0
+    }
+}
+
 /// FZ1: every zone of `document`'s sockets, for each occurrence and body,
 /// from every requirement, removed ones included (a removal waives what a
 /// candidate must satisfy, not the contact the assembly makes), in socket,
 /// occurrence and requirement order. `unresolved` requirements, clearance
 /// spans, grips and continuations declare none (FZ8).
-pub fn zones(document: &SocketDocument, scene: &FitScene) -> Vec<Zone> {
+pub fn zones(document: &SocketDocument, scene: &FitScene) -> Zones {
     let Some(extracted) = document.extracted() else {
-        return Vec::new();
+        return Zones::default();
     };
     let mut out = Vec::new();
     for socket in &extracted.sockets {
@@ -312,7 +324,7 @@ pub fn zones(document: &SocketDocument, scene: &FitScene) -> Vec<Zone> {
             }
         }
     }
-    out
+    Zones(out)
 }
 
 /// One requirement at one occurrence of the target.

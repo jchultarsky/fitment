@@ -18,7 +18,7 @@ fn zones_of(dir: &Path, case: &str, part: &str) -> (FitScene, Vec<Zone>) {
     let bytes = fs::read(dir.join(format!("{case}.stp"))).unwrap();
     let document = SocketDocument::extract(&bytes, Some(part), None).unwrap();
     let scene = FitScene::of(&bytes, &document).unwrap();
-    let zones = zones(&document, &scene);
+    let zones = zones(&document, &scene).as_slice().to_vec();
     (scene, zones)
 }
 

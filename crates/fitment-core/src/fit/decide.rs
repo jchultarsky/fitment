@@ -340,7 +340,7 @@ impl FitOutcome {
         };
         let finding = Finding::new(FitCode::of(failure), FindingAt::Run, detail);
         let incomplete = !matches!(failure, FitFailure::Crashed | FitFailure::Unavailable(_));
-        Self::not_verified(sockets, vec![finding], incomplete)
+        Self::not_verified(sockets, vec![finding], FitCode::of(failure), incomplete)
     }
 
     /// FV6: no fit asked, for a placement the interface leaves free at
@@ -360,10 +360,20 @@ impl FitOutcome {
                 )
             })
             .collect();
-        Self::not_verified(sockets, findings, false)
+        Self::not_verified(sockets, findings, FitCode::PlacementNotUnique, false)
     }
 
-    fn not_verified(sockets: &[&str], findings: Vec<Finding>, incomplete: bool) -> Self {
+    /// Every socket `not_verified` for the first of `findings`, or for
+    /// `code` alone, whose finding is added, when there is none.
+    fn not_verified(
+        sockets: &[&str],
+        mut findings: Vec<Finding>,
+        code: FitCode,
+        incomplete: bool,
+    ) -> Self {
+        if findings.is_empty() {
+            findings.push(Finding::new(code, FindingAt::Run, ""));
+        }
         let status = FitStatus::NotVerified {
             reason: findings.first().map(Finding::sentence).unwrap_or_default(),
         };
@@ -418,9 +428,12 @@ impl FitOutcome {
 /// FV2 to FV4 and FV7 are its branches, with the cross-checks of FB2 to
 /// FB4, FB6, FT6, FT8, FZ7, FZ9 and FY4. FV5, FV6 and FV8 are
 /// [`FitOutcome::controlled_by`], [`FitOutcome::not_unique`] and
-/// [`FitOutcome::failed`].
+/// [`FitOutcome::failed`]. It fails closed: a reply it cannot prove
+/// consistent with the plan and with itself is `helper_protocol` or
+/// `binding_failed`, never a pass.
 pub fn decide(plan: &FitPlan, measures: &FitMeasures) -> FitOutcome {
     let mut findings = Vec::new();
+    replies(plan, measures, &mut findings);
     scene_findings(plan, &measures.scene, &mut findings);
     place_findings(plan, &measures.place, &mut findings);
     unclaimed(plan, measures, &mut findings);
@@ -467,6 +480,71 @@ pub fn decide(plan: &FitPlan, measures: &FitMeasures) -> FitOutcome {
     aggregate(plan, findings, interferences)
 }
 
+/// FH2, FH5, FB6, FT2: each reply answers this plan's request (its
+/// digest echoed), names each body, placement and claim once, and the
+/// kernel transferred one solid per leaf; the plan places the candidate
+/// once at every selected occurrence, and at nothing else.
+fn replies(plan: &FitPlan, measures: &FitMeasures, out: &mut Vec<Finding>) {
+    let run = |code, detail: String| Finding::new(code, FindingAt::Run, detail);
+    for (reply, echoed, expected) in [
+        ("scene", &measures.scene.request_sha256, plan.scene_digest()),
+        ("place", &measures.place.request_sha256, plan.place_digest()),
+        ("check", &measures.check.request_sha256, plan.check_digest()),
+    ] {
+        if echoed.as_deref() != Some(expected) {
+            out.push(run(
+                FitCode::HelperProtocol,
+                format!("the {reply} reply answers another request"),
+            ));
+        }
+    }
+    let twice = |keys: Vec<(&[u64], &[u64])>| {
+        let unique: BTreeSet<(&[u64], &[u64])> = keys.iter().copied().collect();
+        unique.len() != keys.len()
+    };
+    let bodies = measures.scene.bodies.iter().map(|b| (&b.path[..], &[][..]));
+    let placed = (measures.place.placements.iter()).map(|p| (&p.occurrence[..], &[][..]));
+    let claims = (measures.check.reach.iter()).map(|c| (&c.body[..], &c.occurrence[..]));
+    for (what, keys) in [
+        ("body", bodies.collect::<Vec<_>>()),
+        ("placement", placed.collect()),
+        ("claim of reach", claims.collect()),
+    ] {
+        if twice(keys) {
+            out.push(run(
+                FitCode::HelperProtocol,
+                format!("a {what} is measured twice"),
+            ));
+        }
+    }
+    let leaves = plan.bodies().len() + plan.unread();
+    if measures.scene.solids.len() != leaves {
+        out.push(run(
+            FitCode::BindingFailed,
+            format!(
+                "the kernel transferred {} solids from {leaves} leaves",
+                measures.scene.solids.len()
+            ),
+        ));
+    }
+    let selected: BTreeSet<&[u64]> = (plan.bodies().iter())
+        .filter(|b| b.selected)
+        .map(|b| &b.path[..])
+        .collect();
+    let at: Vec<&[u64]> = plan
+        .placements()
+        .iter()
+        .map(|p| &p.occurrence[..])
+        .collect();
+    let once: BTreeSet<&[u64]> = at.iter().copied().collect();
+    if at.is_empty() || once.len() != at.len() || once != selected {
+        out.push(run(
+            FitCode::BindingFailed,
+            "the candidate is not placed once at each selected occurrence".to_owned(),
+        ));
+    }
+}
+
 fn pair_at(pair: &Pair) -> FindingAt {
     FindingAt::Pair {
         occurrence: pair.occurrence.clone(),
@@ -509,8 +587,9 @@ fn body_volume(measures: &FitMeasures, pair: &Pair) -> f64 {
 }
 
 /// FB2, FB3, FB6, FT6: each body core named is found once, where fitment
-/// places it, its landmarks fitment's; each body of an asked pair is
-/// valid with a shape tolerance at most t/10.
+/// places it, its box sound and within fitment's own and its landmarks
+/// fitment's; each body of an asked pair is valid with a shape tolerance
+/// at most t/10.
 fn scene_findings(plan: &FitPlan, scene: &SceneMeasures, out: &mut Vec<Finding>) {
     let tested: BTreeSet<&[u64]> = plan
         .asked()
@@ -535,6 +614,14 @@ fn scene_findings(plan: &FitPlan, scene: &SceneMeasures, out: &mut Vec<Finding>)
             ));
             continue;
         };
+        let ours = body.extent.as_ref().and_then(|e| moved(e, &body.transform));
+        if !box_holds(&measure.bounds, measure.tolerance_mm, ours) {
+            out.push(Finding::new(
+                FitCode::BindingFailed,
+                at(),
+                format!("{}'s box is not within fitment's", body.name),
+            ));
+        }
         if !landmarks_agree(&body.landmarks, &measure.landmarks) {
             out.push(Finding::new(
                 FitCode::BindingFailed,
@@ -546,6 +633,20 @@ fn scene_findings(plan: &FitPlan, scene: &SceneMeasures, out: &mut Vec<Finding>)
             fit_to_judge(plan, measure_facts(measure), at(), out);
         }
     }
+}
+
+/// FB3: a kernel box is sound and, where fitment has a sound box of the
+/// body, lies within it moved where fitment places the body, widened by
+/// the kernel's tolerance and 1e-6 mm. It need not hold fitment's box: a
+/// box moved off the axes is larger than the body's own.
+fn box_holds(kernel: &FitBox, tolerance: f64, ours: Option<FitBox>) -> bool {
+    if !(kernel.sound() && tolerance.is_finite() && tolerance >= 0.0) {
+        return false;
+    }
+    ours.is_none_or(|ours| {
+        let ours = ours.grown(tolerance + LOCATION_MM);
+        (0..3).all(|i| kernel.min_mm[i] >= ours.min_mm[i] && kernel.max_mm[i] <= ours.max_mm[i])
+    })
 }
 
 fn measure_facts(measure: &BodyMeasure) -> (bool, f64, f64) {
@@ -589,7 +690,7 @@ fn placed_at(solid: &SolidMeasure, transform: &Rigid) -> bool {
 }
 
 /// FB3: every landmark fitment named agrees with the kernel's reading.
-fn landmarks_agree(ours: &[Landmark], theirs: &[LandmarkMeasure]) -> bool {
+pub(crate) fn landmarks_agree(ours: &[Landmark], theirs: &[LandmarkMeasure]) -> bool {
     ours.len() == theirs.len() && ours.iter().zip(theirs).all(|(o, t)| landmark_agrees(o, t))
 }
 
@@ -633,8 +734,8 @@ fn landmark_agrees(ours: &Landmark, theirs: &LandmarkMeasure) -> bool {
 
 /// FT6, FB3, FB4: the candidate is a valid solid of small tolerance, its
 /// bytes are the ones fitment read, and at each placement its landmarks
-/// are fitment's placed, and its box lies within fitment's sound box
-/// moved by the same placement.
+/// are fitment's placed and its box sound and within fitment's own moved
+/// by the same placement.
 fn place_findings(plan: &FitPlan, place: &PlaceMeasures, out: &mut Vec<Finding>) {
     let candidate = plan.candidate();
     fit_to_judge(
@@ -643,7 +744,7 @@ fn place_findings(plan: &FitPlan, place: &PlaceMeasures, out: &mut Vec<Finding>)
         FindingAt::Candidate,
         out,
     );
-    if candidate.sha256.is_some() && candidate.sha256 != place.sha256 {
+    if candidate.sha256().is_some() && candidate.sha256() != place.sha256.as_deref() {
         out.push(Finding::new(
             FitCode::BindingFailed,
             FindingAt::Candidate,
@@ -667,7 +768,7 @@ fn place_findings(plan: &FitPlan, place: &PlaceMeasures, out: &mut Vec<Finding>)
             continue;
         };
         let expected: Option<Vec<Landmark>> = candidate
-            .landmarks
+            .landmarks()
             .iter()
             .map(|l| l.placed(&placed.transform))
             .collect();
@@ -678,19 +779,8 @@ fn place_findings(plan: &FitPlan, place: &PlaceMeasures, out: &mut Vec<Finding>)
                 "the placed candidate's landmarks are not fitment's",
             ));
         }
-        let holds = match &candidate.extent {
-            Some(extent) => moved(extent, &placed.transform).is_some_and(|ours| {
-                let slack = place.tolerance_mm.max(0.0) + LOCATION_MM;
-                let ours = ours.grown(slack);
-                measure.bounds.sound()
-                    && (0..3).all(|i| {
-                        measure.bounds.min_mm[i] >= ours.min_mm[i]
-                            && measure.bounds.max_mm[i] <= ours.max_mm[i]
-                    })
-            }),
-            None => measure.bounds.sound(),
-        };
-        if !holds {
+        let ours = candidate.extent().and_then(|e| moved(e, &placed.transform));
+        if !box_holds(&measure.bounds, place.tolerance_mm, ours) {
             out.push(Finding::new(
                 FitCode::BindingFailed,
                 at(),
@@ -701,7 +791,9 @@ fn place_findings(plan: &FitPlan, place: &PlaceMeasures, out: &mut Vec<Finding>)
 }
 
 /// FB6: a solid the kernel transferred that no body claims, within reach
-/// of a placement, is `unclaimed_body`; one outside reach is counted.
+/// of a placement, is `unclaimed_body`; one outside reach is counted. Its
+/// reach uses the candidate's and the occurrence's floors and the guard:
+/// it states none of its own, and no shape tolerance.
 fn unclaimed(plan: &FitPlan, measures: &FitMeasures, out: &mut Vec<Finding>) {
     for solid in &measures.scene.solids {
         let claimed = plan
@@ -711,21 +803,11 @@ fn unclaimed(plan: &FitPlan, measures: &FitMeasures, out: &mut Vec<Finding>) {
         if claimed {
             continue;
         }
+        let theirs = solid.bounds.sound().then_some((solid.bounds, 0.0));
         let near = plan.placements().iter().any(|placed| {
             let values = plan.values(&placed.occurrence, &[]);
-            measures
-                .place
-                .placements
-                .iter()
-                .find(|m| m.occurrence == placed.occurrence)
-                .is_none_or(|m| {
-                    !solid.bounds.sound()
-                        || within(
-                            &values,
-                            (m.bounds, measures.place.tolerance_mm),
-                            (solid.bounds, 0.0),
-                        )
-                })
+            let ours = plan.candidate_box(&measures.place, &placed.occurrence);
+            within(&values, ours, theirs)
         });
         if near {
             out.push(Finding::new(
@@ -790,12 +872,8 @@ fn check_pair(
 ) -> Option<PairInterference> {
     let at = || pair_at(pair);
     let v = &pair.values;
-    if !numbers_sound(m) || m.zones.len() != pair.zones.len() {
-        out.push(Finding::new(
-            FitCode::HelperProtocol,
-            at(),
-            "the pair's measures are out of range or incomplete",
-        ));
+    if let Some(why) = inconsistent(pair, m) {
+        out.push(Finding::new(FitCode::HelperProtocol, at(), why));
         return None;
     }
     if !m.alerts.is_empty() {
@@ -850,13 +928,67 @@ fn check_pair(
     })
 }
 
+/// True if the pair's zoned distance was asked: its body within the
+/// threshold, and zones to cut it by (FT5).
+fn zoned_asked(pair: &Pair, m: &PairMeasure) -> bool {
+    !pair.zones.is_empty() && m.distance_mm.is_some_and(|d| d <= pair.values.threshold_mm)
+}
+
+/// FH5, FY4: what makes one pair's measures inconsistent with its request
+/// or with themselves, if anything.
+fn inconsistent(pair: &Pair, m: &PairMeasure) -> Option<&'static str> {
+    if !numbers_sound(m) {
+        return Some("the pair's measures are out of range");
+    }
+    if m.zones.len() != pair.zones.len() {
+        return Some("a zone's measure is missing or extra");
+    }
+    let held = |zones: &mut dyn Iterator<Item = Option<Built>>| {
+        zones
+            .map(|b| b.map_or(f64::NAN, |b| b.volume_mm3))
+            .sum::<f64>()
+    };
+    let within_zones = held(&mut pair.zones.iter().map(|z| z.interference));
+    if pair.zones.is_empty()
+        && (m.inside_mm3 != 0.0 || (m.residual_mm3 - m.common_mm3).abs() > slack(m.common_mm3))
+    {
+        return Some("a pair with no zone has volume within one");
+    }
+    if m.inside_mm3 > within_zones + slack(within_zones) {
+        return Some("more of the Common lies within the zones than they hold");
+    }
+    if m.common_mm3 >= FIT_VOLUME_MM3 && !m.distance_mm.is_some_and(|d| d <= LOCATION_MM) {
+        return Some("bodies with a Common volume are apart");
+    }
+    if !zoned_asked(pair, m) {
+        let answered = m.zoned_distance_mm.is_some()
+            || m.body_kept_mm3.is_some()
+            || m.body_inside_mm3.is_some()
+            || !m.proximity_zones.is_empty();
+        return answered.then_some("a zoned distance was measured that was not asked");
+    }
+    let (Some(zoned), Some(_), Some(inside)) =
+        (m.zoned_distance_mm, m.body_kept_mm3, m.body_inside_mm3)
+    else {
+        return Some("the zoned distance was not measured");
+    };
+    if m.proximity_zones.len() != pair.zones.len() {
+        return Some("a proximity zone's measure is missing or extra");
+    }
+    if m.distance_mm.is_some_and(|d| zoned < d) {
+        return Some("the body less its zones is nearer than the body");
+    }
+    let wide = held(&mut pair.zones.iter().map(|z| z.proximity));
+    (inside > wide + slack(wide)).then_some("more of the body lies within the zones than they hold")
+}
+
 /// FT5, FZ9: a pair within its threshold is in proximity if the body less
-/// its zones is too; every zone's body must come within the threshold.
+/// its zones is too, or with no zone, the body itself; every zone's body
+/// must come within the threshold.
 fn proximity(pair: &Pair, m: &PairMeasure, body_volume: f64, out: &mut Vec<Finding>) {
     let at = || pair_at(pair);
     let threshold = pair.values.threshold_mm;
-    let near = m.distance_mm.filter(|d| *d <= threshold);
-    let Some(distance) = near else {
+    let Some(distance) = m.distance_mm.filter(|d| *d <= threshold) else {
         if !pair.zones.is_empty() {
             out.push(Finding::new(
                 FitCode::BindingFailed,
@@ -866,29 +998,19 @@ fn proximity(pair: &Pair, m: &PairMeasure, body_volume: f64, out: &mut Vec<Findi
         }
         return;
     };
-    if pair.zones.is_empty() {
-        let zoned = m.zoned_distance_mm.unwrap_or(distance);
-        if zoned <= threshold {
-            out.push(Finding::new(
-                FitCode::Proximity,
-                at(),
-                format!("{zoned} mm"),
-            ));
-        }
-        return;
-    }
     let (Some(zoned), Some(kept), Some(inside)) =
         (m.zoned_distance_mm, m.body_kept_mm3, m.body_inside_mm3)
     else {
+        // No zone: the distance alone (`inconsistent` refused any other).
         out.push(Finding::new(
-            FitCode::HelperProtocol,
+            FitCode::Proximity,
             at(),
-            "the zoned distance was not measured",
+            format!("{distance} mm"),
         ));
         return;
     };
     let built: Vec<Option<Built>> = pair.zones.iter().map(|z| z.proximity).collect();
-    if m.proximity_zones.len() != built.len() || !zones_agree(&built, &m.proximity_zones) {
+    if !zones_agree(&built, &m.proximity_zones) {
         out.push(Finding::new(
             FitCode::ZoneUnbuilt,
             at(),
@@ -916,7 +1038,7 @@ fn proximity(pair: &Pair, m: &PairMeasure, body_volume: f64, out: &mut Vec<Findi
 fn numbers_sound(m: &PairMeasure) -> bool {
     let finite = |x: f64| x.is_finite() && x >= 0.0;
     let optional = |x: Option<f64>| x.is_none_or(finite);
-    let slack = CONSERVATION_REL * m.common_mm3.max(FIT_VOLUME_MM3);
+    let slack = slack(m.common_mm3);
     finite(m.common_mm3)
         && finite(m.residual_mm3)
         && finite(m.inside_mm3)
@@ -929,9 +1051,16 @@ fn numbers_sound(m: &PairMeasure) -> bool {
         && m.residual_box.is_none_or(|b| b.sound())
 }
 
-/// FY4: `parts` is `whole` within 1e-9 relative.
+/// FY4's slack for a volume `whole`: 1e-9 of it, but never a tenth of the
+/// volume resolution or more, so a residual at the resolution's scale
+/// cannot hide in the rounding of a large body.
+fn slack(whole: f64) -> f64 {
+    (CONSERVATION_REL * whole.abs()).min(FIT_VOLUME_MM3 / 10.0)
+}
+
+/// FY4: `parts` is `whole` within [`slack`].
 fn conserved(parts: f64, whole: f64) -> bool {
-    (parts - whole).abs() <= CONSERVATION_REL * whole.abs().max(FIT_VOLUME_MM3)
+    (parts - whole).abs() <= slack(whole)
 }
 
 /// FZ7: each zone the kernel built agrees with its closed form: volume

@@ -133,6 +133,9 @@ pub struct SolidMeasure {
 #[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub struct SceneMeasures {
+    /// The SHA-256 of the request, as the reply echoes it
+    /// ([`super::FitScene::request_digest`]).
+    pub request_sha256: Option<String>,
     /// One per body core sent, in its order.
     pub bodies: Vec<BodyMeasure>,
     /// Every solid the reader transferred.
@@ -155,6 +158,9 @@ pub struct PlacementMeasure {
 #[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub struct PlaceMeasures {
+    /// The SHA-256 of the request, as the reply echoes it
+    /// ([`super::PlanInput::place_digest`]).
+    pub request_sha256: Option<String>,
     /// True if the candidate is a valid solid.
     pub valid: bool,
     /// Its volume, in mm³.
@@ -252,6 +258,9 @@ impl ReachClaim {
 #[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub struct CheckMeasures {
+    /// The SHA-256 of the request, as the reply echoes it
+    /// ([`super::FitPlan::check_digest`]).
+    pub request_sha256: Option<String>,
     /// One per pair the plan asked, in its order.
     pub pairs: Vec<PairMeasure>,
     /// One per scene body that is not selected and placement.

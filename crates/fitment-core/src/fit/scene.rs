@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::assembly::{ComponentRead, DefinitionKind, read_assembly};
-use crate::features::{Axis, CylinderClass, DefinitionRef, Part};
+use crate::features::{Axis, CylinderClass, DefinitionRef, Extent, Part};
 use crate::gate::Refusal;
 use crate::geom::{Dir3, Rigid};
 use crate::sha256::sha256_hex;
@@ -114,22 +114,26 @@ impl Landmark {
 /// FB3: the landmark faces of `part`, in its own frame, in a fixed order:
 /// the two largest planes by known area (each by its largest face of known
 /// area, ties to the smaller `#id`), then the two largest full cylinders
-/// by radius (each by its first face). A plane's value is its normal with
-/// that face's own offset.
+/// by radius (each by its first face); then, while their normals and axes
+/// span fewer than three directions or leave a slide that moves none of
+/// them, each further plane (by area, those of unknown area last) and full
+/// cylinder (by radius) that adds a direction or fixes a slide. A plane's
+/// value is its normal with that face's own offset. So a body moved by any
+/// rigid motion moves a landmark, unless its faces themselves allow none.
 pub fn landmarks(part: &Part) -> Vec<Landmark> {
     let mut planes: Vec<(f64, u64, Landmark)> = part
         .planes
         .iter()
         .filter_map(|plane| {
-            let area = plane.area_mm2?;
-            let face = plane
+            let known = plane
                 .faces
                 .iter()
                 .filter_map(|f| f.area_mm2.map(|a| (a, f)))
-                .max_by(|(a, f), (b, g)| a.total_cmp(b).then(g.face.cmp(&f.face)))?
-                .1;
+                .max_by(|(a, f), (b, g)| a.total_cmp(b).then(g.face.cmp(&f.face)))
+                .map(|(_, f)| f);
+            let face = known.or_else(|| plane.faces.first())?;
             Some((
-                area,
+                plane.area_mm2.unwrap_or(f64::NEG_INFINITY),
                 plane.id.instance(),
                 Landmark {
                     face: face.face,
@@ -166,12 +170,75 @@ pub fn landmarks(part: &Part) -> Vec<Landmark> {
         })
         .collect();
     cylinders.sort_by(|(a, i, _), (b, j, _)| b.total_cmp(a).then(i.cmp(j)));
-    planes
-        .into_iter()
+    let (planes, cylinders): (Vec<Landmark>, Vec<Landmark>) = (
+        planes.into_iter().map(|(_, _, l)| l).collect(),
+        cylinders.into_iter().map(|(_, _, l)| l).collect(),
+    );
+    let mut chosen: Vec<Landmark> = planes
+        .iter()
         .take(LANDMARK_PLANES)
-        .chain(cylinders.into_iter().take(LANDMARK_CYLINDERS))
-        .map(|(_, _, l)| l)
-        .collect()
+        .chain(cylinders.iter().take(LANDMARK_CYLINDERS))
+        .copied()
+        .collect();
+    let rest = planes
+        .iter()
+        .skip(LANDMARK_PLANES)
+        .chain(cylinders.iter().skip(LANDMARK_CYLINDERS));
+    for landmark in rest {
+        let now = fixes(&chosen);
+        if now == (3, 3) {
+            break;
+        }
+        let mut more = chosen.clone();
+        more.push(*landmark);
+        let then = fixes(&more);
+        if then.0 > now.0 || then.1 > now.1 {
+            chosen = more;
+        }
+    }
+    chosen
+}
+
+/// How far `landmarks` fix a rigid motion: the number of independent
+/// directions among their normals and axes, and of independent slides
+/// they see (a plane sees a slide along its normal, a cylinder one across
+/// its axis).
+fn fixes(landmarks: &[Landmark]) -> (usize, usize) {
+    let mut directions = Vec::new();
+    let mut slides = Vec::new();
+    for landmark in landmarks {
+        match landmark.value {
+            LandmarkValue::Plane { normal, .. } => {
+                directions.push(normal.to_array());
+                slides.push(normal.to_array());
+            }
+            LandmarkValue::Cylinder { axis, .. } => {
+                let d = axis.direction.to_array();
+                let (u, v) = crate::socket::geo::perpendiculars(d);
+                directions.push(d);
+                slides.extend([u, v]);
+            }
+        }
+    }
+    (rank(&directions), rank(&slides))
+}
+
+/// The number of independent vectors among unit `vectors`, by
+/// Gram-Schmidt with a floor of 1e-6.
+fn rank(vectors: &[[f64; 3]]) -> usize {
+    use crate::socket::geo::{dot, norm, scale, sub};
+    let mut basis: Vec<[f64; 3]> = Vec::new();
+    for v in vectors {
+        let mut rest = *v;
+        for b in &basis {
+            rest = sub(rest, scale(*b, dot(rest, *b)));
+        }
+        let length = norm(rest);
+        if length > 1e-6 && basis.len() < 3 {
+            basis.push(scale(rest, 1.0 / length));
+        }
+    }
+    basis.len()
 }
 
 /// Every face `#id` of `part`'s solid, sorted.
@@ -216,6 +283,8 @@ pub struct SceneBody {
     pub selected: bool,
     /// Its landmarks, in the root frame (FB3).
     pub landmarks: Vec<Landmark>,
+    /// Its part's sound box, in the part's own frame, if it has one.
+    pub extent: Option<Extent>,
     part: usize,
 }
 
@@ -330,6 +399,7 @@ impl FitScene {
                 vertex_offset_mm: occurrence.vertex_offset_mm,
                 placement_uncertainty_mm: occurrence.placement_uncertainty_mm,
                 landmarks,
+                extent: part.extent,
                 part: index,
             });
         }
@@ -362,6 +432,23 @@ impl FitScene {
             }
         }
         Ok(())
+    }
+
+    /// The SHA-256 of what the `scene` request names: the assembly's
+    /// SHA-256 and every body's path, faces, transform and landmarks. The
+    /// helper echoes it in its reply, and [`super::decide`] requires it
+    /// (FH2, beside the protocol's nonce).
+    pub fn request_digest(&self) -> String {
+        let mut d = super::plan::Digest::new("scene");
+        d.text(&self.sha256);
+        d.count(self.bodies.len() as u64);
+        for body in &self.bodies {
+            d.ids(&body.path);
+            d.ids(&body.faces);
+            d.rigid(&body.transform);
+            d.landmarks(&body.landmarks);
+        }
+        d.finish()
     }
 
     /// The assembly's SHA-256: the socket's `source`.
@@ -417,7 +504,7 @@ mod tests {
                 "{}",
                 body.name
             );
-            assert!(body.landmarks.len() <= 4);
+            assert_eq!(fixes(&body.landmarks), (3, 3), "{}", body.name);
             assert!(scene.body(&body.path).is_some());
         }
         assert_eq!(scene.sha256(), socket.source().sha256);
@@ -463,7 +550,9 @@ mod tests {
         let bracket = scene.bodies().iter().find(|b| b.selected).unwrap();
         let part = scene.part(bracket).unwrap();
         let own = landmarks(part);
-        assert_eq!(own.len(), 4);
+        assert!(own.len() > 4, "{own:?}");
+        assert_eq!(fixes(&own), (3, 3));
+        assert_eq!(fixes(&own[..4]), (1, 3), "the planes and holes all on z");
         assert!(matches!(own[0].value, LandmarkValue::Plane { .. }));
         assert!(matches!(own[1].value, LandmarkValue::Plane { .. }));
         assert!(matches!(own[2].value, LandmarkValue::Cylinder { .. }));

@@ -19,7 +19,7 @@ const PTS: [[f64; 2]; 4] = [[-30.0, -15.0], [30.0, -15.0], [-30.0, 15.0], [30.0,
 fn zones_of(bytes: &[u8], part: &str) -> (FitScene, Vec<Zone>) {
     let document = SocketDocument::extract(bytes, Some(part), None).unwrap();
     let scene = FitScene::of(bytes, &document).unwrap();
-    let zones = zones(&document, &scene);
+    let zones = zones(&document, &scene).as_slice().to_vec();
     (scene, zones)
 }
 
@@ -267,6 +267,7 @@ fn a_removed_requirement_keeps_its_zones() {
     let scene = FitScene::of(S01, &document).unwrap();
     let before = zones(&document, &scene);
     let seat = before
+        .as_slice()
         .iter()
         .find(|z| product(&scene, z) == "PLATE")
         .unwrap()

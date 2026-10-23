@@ -13,12 +13,13 @@ use crate::matching::{CandidateView, MatchPolicy, Passing, Placement, SocketView
 use crate::socket::Requires;
 use crate::socket::geo::{V, across, cross, dot, norm, perpendiculars, scale, sub};
 
-/// The turn tried either way about each axis and normal, in degrees.
-pub const FREE_TURN_DEG: f64 = 1.0;
+/// The turns tried either way about each axis and normal, in degrees,
+/// largest first: a turn free only over less than 1° is found too.
+pub const FREE_TURNS_DEG: [f64; 3] = [1.0, 0.5, 0.25];
 
-/// The slide tried either way along each axis, normal and in-plane
-/// direction, in mm.
-pub const FREE_SLIDE_MM: f64 = 0.1;
+/// The slides tried either way along each axis, normal and in-plane
+/// direction, in mm, largest first.
+pub const FREE_SLIDES_MM: [f64; 3] = [0.1, 0.05, 0.02];
 
 /// Lines this close are one: in sine, and in mm.
 const SAME_LINE_SINE: f64 = 1e-9;
@@ -92,12 +93,12 @@ impl Freedom {
 }
 
 /// One motion to try: its kind, its line in the socket's frame, and the
-/// two motions either way.
+/// motions of each size either way, largest first.
 struct Trial {
     kind: MotionKind,
     point: V,
     direction: V,
-    either: [Rigid; 2],
+    either: Vec<Rigid>,
 }
 
 /// FC4: the motions free at placement `at` of the candidate `cand` in
@@ -154,10 +155,10 @@ pub fn freedom(
     out
 }
 
-/// FT10's motions for `view`'s socket: a turn either way about every
-/// requirement axis and every seat normal (through the seat's plane), a
-/// slide either way along each, and along two directions in every seat's
-/// plane, each line once.
+/// FT10's motions for `view`'s socket: turns of [`FREE_TURNS_DEG`] either
+/// way about every requirement axis and every seat normal (through the
+/// seat's plane), slides of [`FREE_SLIDES_MM`] either way along each, and
+/// along two directions in every seat's plane, each line once.
 fn trials(view: &SocketView<'_>) -> Vec<Trial> {
     // Axes first, then seat normals, each line once among both.
     let mut lines: Vec<(V, V)> = Vec::new();
@@ -230,10 +231,19 @@ fn push_slide(slides: &mut Vec<(V, V)>, p: V, d: V) {
 }
 
 fn trial(kind: MotionKind, p: V, d: V) -> Option<Trial> {
-    let either = match kind {
-        MotionKind::Turn => [turn(p, d, FREE_TURN_DEG)?, turn(p, d, -FREE_TURN_DEG)?],
-        MotionKind::Slide => [slide(d, FREE_SLIDE_MM)?, slide(d, -FREE_SLIDE_MM)?],
+    let sizes = match kind {
+        MotionKind::Turn => FREE_TURNS_DEG,
+        MotionKind::Slide => FREE_SLIDES_MM,
     };
+    let mut either = Vec::new();
+    for size in sizes {
+        for signed in [size, -size] {
+            either.push(match kind {
+                MotionKind::Turn => turn(p, d, signed)?,
+                MotionKind::Slide => slide(d, signed)?,
+            });
+        }
+    }
     Some(Trial {
         kind,
         point: p,
@@ -308,6 +318,26 @@ mod tests {
         assert!(norm(sub(off.to_array(), [1.0, 1.0, 0.0])) < 1e-12);
         let s = slide([0.0, 1.0, 0.0], 0.1).unwrap();
         assert_eq!(s.translation(), [0.0, 0.1, 0.0]);
+    }
+
+    /// M8 of the reviews: each motion is tried at three sizes either way,
+    /// down to 0.25° and 0.02 mm, so a turn or slide free only over less
+    /// than the largest is found.
+    #[test]
+    fn each_motion_is_tried_at_three_sizes() {
+        let point = [0.0; 3];
+        let z = [0.0, 0.0, 1.0];
+        let turns = trial(MotionKind::Turn, point, z).unwrap();
+        assert_eq!(turns.either.len(), 6);
+        let smallest = turns.either[4]
+            .apply_point(Point3::new([100.0, 0.0, 0.0]).unwrap())
+            .unwrap()
+            .to_array();
+        let angle = libm::atan2(smallest[1], smallest[0]).to_degrees();
+        assert!((angle - 0.25).abs() < 1e-9, "{angle}");
+        let slides = trial(MotionKind::Slide, point, z).unwrap();
+        assert_eq!(slides.either.len(), 6);
+        assert!((slides.either[5].translation()[2] + 0.02).abs() < 1e-15);
     }
 
     /// Coaxial lines are one, parallel ones two; slides along one

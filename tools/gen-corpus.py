@@ -1714,6 +1714,8 @@ FIT_SRC, FIT_CORE, FIT_CLI = "crates/fitment-core/src/fit", "crates/fitment-core
 FIT_DECIDE = f"{FIT_SRC}/decide/tests.rs"
 M7_PR1A = {
     "FT3": [f"{FIT_DECIDE}::the_bracket_s_plan_pairs_its_seated_neighbours",
+            f"{FIT_DECIDE}::a_candidate_box_too_small_culls_nothing",
+            f"{FIT_DECIDE}::a_neighbour_box_too_small_culls_nothing",
             f"{FIT_DECIDE}::a_copy_s_interference_counts_for_both_sockets",
             f"{FIT_SRC}/plan.rs::reach_is_the_pairs_enlargement"],
     "FZ1": [f"{FIT_CORE}/zones.rs::a_removed_requirement_keeps_its_zones",
@@ -1744,13 +1746,18 @@ M7_PR1A = {
             f"{FIT_SRC}/zones.rs::a_face_without_a_closed_form_is_unbuilt",
             f"{FIT_SRC}/plan.rs::a_pairs_values_straddle_the_tolerance",
             f"{FIT_DECIDE}::measures_out_of_range_break_the_protocol",
-            f"{FIT_SRC}/freedom.rs::only_axisymmetric_turns_are_excused"],
+            f"{FIT_SRC}/freedom.rs::only_axisymmetric_turns_are_excused",
+            f"{FIT_DECIDE}::a_reply_to_another_request_breaks_the_protocol",
+            f"{FIT_DECIDE}::measures_named_twice_break_the_protocol",
+            f"{FIT_DECIDE}::an_empty_or_partial_plan_is_not_verified",
+            f"{FIT_SRC}/plan.rs::reach_is_judged_on_the_hull_of_both_boxes"],
     "FC4": [f"{FIT_CORE}/freedom.rs::placements_fixed_by_their_features_are_unique",
             f"{FIT_CORE}/freedom.rs::round_parts_are_free_to_turn_and_excused",
             f"{FIT_CORE}/freedom.rs::freedom_is_the_placement_s_own",
             f"{FIT_CLI}/freedom.rs::originals_are_unique_free_or_excused_as_their_shapes_say",
             f"{FIT_CLI}/freedom.rs::cone_and_landmark_seeds_are_judged_alike",
-            f"{FIT_CLI}/freedom.rs::the_corpus_s_free_placements_are_section_5_6_s"],
+            f"{FIT_CLI}/freedom.rs::the_corpus_s_free_placements_are_section_5_6_s",
+            f"{FIT_SRC}/freedom.rs::each_motion_is_tried_at_three_sizes"],
 }
 for rule, tests in M7_PR1A.items():
     RULES[rule] = {"tests": tests}

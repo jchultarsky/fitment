@@ -192,6 +192,7 @@ fn the_corpus_s_free_placements_are_section_5_6_s() {
     let policy = MatchPolicy::default();
     let mut documents: BTreeMap<(String, String), SocketDocument> = BTreeMap::new();
     let mut tally: BTreeMap<String, u32> = BTreeMap::new();
+    let mut free: Vec<(String, &str)> = Vec::new();
     for case in corpus.match_cases() {
         let CandidateRef::File(file) = case.candidate() else {
             continue;
@@ -231,23 +232,24 @@ fn the_corpus_s_free_placements_are_section_5_6_s() {
         for s in &result.sockets {
             let view = SocketView::new(document, &s.socket).unwrap();
             let at = s.placement.as_ref().unwrap();
-            let free = freedom(&view, &cand, at, &policy);
-            let seed = match at.seed {
-                Seed::AxisPair { .. } => "axis_pair",
-                Seed::OneAxis { .. } => "one_axis",
-                Seed::Cone { .. } => "cone",
-                Seed::Landmark { .. } => "landmark",
-                _ => "given",
-            };
-            let outcome = if free.unique() {
+            let free_motions = freedom(&view, &cand, at, &policy);
+            let seed = seed_name(&at.seed);
+            let outcome = if free_motions.unique() {
                 "unique"
-            } else if free.excused() {
+            } else if free_motions.excused() {
                 "free turn, axisymmetric"
             } else {
                 asked = false;
                 "placement_not_unique"
             };
-            if free.motions.iter().any(|m| m.kind == MotionKind::Slide) {
+            if outcome != "unique" {
+                free.push((format!("{} {}", case.id(), s.socket), outcome));
+            }
+            if free_motions
+                .motions
+                .iter()
+                .any(|m| m.kind == MotionKind::Slide)
+            {
                 *tally.entry("a free slide".to_owned()).or_default() += 1;
             }
             *tally.entry(format!("{seed}: {outcome}")).or_default() += 1;
@@ -262,7 +264,27 @@ fn the_corpus_s_free_placements_are_section_5_6_s() {
             .entry(format!("candidates ({truth}): {asked}"))
             .or_default() += 1;
     }
-    let expected: BTreeMap<String, u32> = [
+    let (expected, named) = section_5_6();
+    assert_eq!(tally, expected);
+    free.sort();
+    assert_eq!(free, named);
+}
+
+fn seed_name(seed: &Seed) -> &'static str {
+    match seed {
+        Seed::AxisPair { .. } => "axis_pair",
+        Seed::OneAxis { .. } => "one_axis",
+        Seed::Cone { .. } => "cone",
+        Seed::Landmark { .. } => "landmark",
+        _ => "given",
+    }
+}
+
+/// Section 5.6's counts, and which socket results are free: the
+/// axisymmetric washers, bearing, tube and screw excused, the housing and
+/// the block not.
+fn section_5_6() -> (BTreeMap<String, u32>, Vec<(String, &'static str)>) {
+    let counts = [
         ("axis_pair: unique", 15),
         ("one_axis: unique", 11),
         ("one_axis: free turn, axisymmetric", 5),
@@ -274,5 +296,18 @@ fn the_corpus_s_free_placements_are_section_5_6_s() {
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
     .collect();
-    assert_eq!(tally, expected);
+    let excused = "free turn, axisymmetric";
+    let named = [
+        ("m_bearing04 socket-1", excused),
+        ("m_housing04 socket-1", "placement_not_unique"),
+        ("m_s21_block socket-1", "placement_not_unique"),
+        ("m_screw02 socket-1", excused),
+        ("m_tube50 socket-1", excused),
+        ("m_washer05 socket-1", excused),
+        ("m_washer05 socket-2", excused),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v))
+    .collect();
+    (counts, named)
 }

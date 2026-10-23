@@ -18,7 +18,7 @@ mod zones;
 use serde::Serialize;
 
 pub use decide::{Finding, FindingAt, FitCode, FitOutcome, PairInterference, decide};
-pub use freedom::{FREE_SLIDE_MM, FREE_TURN_DEG, FreeMotion, Freedom, MotionKind, freedom};
+pub use freedom::{FREE_SLIDES_MM, FREE_TURNS_DEG, FreeMotion, Freedom, MotionKind, freedom};
 pub use measures::{
     BodyMeasure, CheckMeasures, FitBox, FitFailure, FitMeasures, LandmarkMeasure, PairMeasure,
     PlaceMeasures, PlacementMeasure, ReachClaim, SceneMeasures, SolidMeasure, ZoneMeasure,
@@ -29,7 +29,7 @@ pub use plan::{
 pub use scene::{
     FitScene, FitSceneError, Landmark, LandmarkValue, SceneBody, UnreadLeaf, landmarks,
 };
-pub use zones::{Built, Unbuilt, Zone, ZoneKind, ZoneShape, zones};
+pub use zones::{Built, Unbuilt, Zone, ZoneKind, ZoneShape, Zones, zones};
 
 /// The version of the fit's own rules (FH6, FC8): it rises with any change
 /// that could change a fit's status or evidence, such as a zone, a depth,
