@@ -2013,6 +2013,8 @@ M7_PR4 = {
     "FT10": [FIT_GATE, f"{FIT_CLI}/freedom.rs::the_corpus_s_free_placements_are_section_5_6_s"],
     "FZ7": [FIT_LIES, FIT_GATE],
     "FZ9": [FIT_LIES, f"{FIT_DECIDE}::a_zone_that_declares_no_touch_may_have_its_body_away",
+            f"{FIT_DECIDE}::a_zone_that_declares_no_touch_excuses_no_interference",
+            f"{FIT_SRC}/zones.rs::a_ring_named_twice_touches_if_either_source_does",
             f"{FIT_CLI}/zones.rs::a_zone_says_whether_its_source_touches"],
     "FB3": [FIT_LIES],
     "FB6": [FIT_LIES, FIT_GATE],
@@ -5373,6 +5375,20 @@ def stated_passes(case):
     return isinstance(expect, dict) and expect.get("verdict") == "interface_match"
 
 
+SIN_HALF_DEG = math.sin(math.radians(0.5))
+
+
+def block57_pads(h, nurbs=False):
+    """s57's block, 10 x 10 x 10 under its tilted disc, with a 4 x 0.5 pad off each side rising `h` over its top
+    (and as far below), a pinwheel: each quarter turn puts one under the disc's low side; as B-splines if
+    `nurbs`."""
+    pads = [box(-9, 4, -10 - h, 4, 0.5, 10 + 2 * h), box(-4.5, -9, -10 - h, 0.5, 4, 10 + 2 * h),
+            box(5, -4.5, -10 - h, 4, 0.5, 10 + 2 * h), box(4, 5, -10 - h, 0.5, 4, 10 + 2 * h)]
+    if nurbs:
+        pads = [BRepBuilderAPI_NurbsConvert(p, True).Shape() for p in pads]
+    return fuse(box(-5, -5, -10, 10, 10, 10), *pads)
+
+
 def fit_ok(status, code=None, flags=()):
     """An interface that passes (m_ok) and the fit FK2 states for it."""
     return {**m_ok(flags), "fit": {"status": status, **({"code": code} if code else {})}}
@@ -5514,6 +5530,32 @@ def fit_cases():
         ("f_inflated", B, pad_beyond(0.005), (VARIANT, 0.006), "collides", "f_uncertain", fit_ok("interferes"),
          "a pad 0.005 into the plate, the candidate stating 0.006 mm: its own uncertainty makes the zone "
          "shallower (0.004), never deeper", ["FT7", "FZ6", "FV3", "FK2"], "unique"),
+        # The reviews of PR 4. s57's block under its disc, tilted 0.5 degrees: C5's near band declares a slab of the
+        # disc's face with the faces apart, a zone that declares no touch and so excuses no interference (FZ9's
+        # reviews). A pad off each side of the block, a pinwheel, so every quarter turn the square block's interface
+        # passes at puts one under the disc's low side.
+        ("f_near_zone", ("s57_tilted_disc", "BLOCK"), block57_pads(SIN_HALF_DEG + 0.005), VARIANT, "collides",
+         "f_zone", fit_ok("interferes"),
+         "pads off the block 0.005 into the tilted disc, inside its near band's slab, which excuses nothing: the "
+         "reviews' false Match", ["FZ2", "FZ9", "FV3", "FK2"], "unique"),
+        ("f_bspline_contact", ("s57_tilted_disc", "BLOCK"),
+         block57_pads(SIN_HALF_DEG - 0.0005, nurbs=True), VARIANT, "fits", "f_scene",
+         fit_ok("not_verified", "unsupported_geometry"),
+         "the pads, written as B-splines, 0.0005 under the disc's lowest line: within reach of its face on "
+         "non-analytic faces, where BRepExtrema's distance is not trusted", ["FT5", "FV4", "FK2"], "unique"),
+        # One pad, on the disc's high side at the stated placement: verified there, the Match vouching for that
+        # placement alone; at the quarter turn that puts it under the low side it would collide, an alternative
+        # the fit does not check (FM3, FT12).
+        ("f_alternative", ("s57_tilted_disc", "BLOCK"),
+         fuse(box(-5, -5, -10, 10, 10, 10), box(5, -4.5, -10, 4, 0.5, 10 + SIN_HALF_DEG + 0.005)), IDENTITY, "fits",
+         "f_free", {**fit_ok("verified"), "alternative_collides": True},
+         "one pad 0.005 over the disc's lowest line, on its high side: clear at the stated placement, into the "
+         "disc at the quarter turn its alternatives list", ["FM3", "FT12", "FK2"], "unique"),
+        # C1's neighbour half: s68's plate states 0.004 mm, so its zone is 0.006 deep; a pad 0.007 into it
+        # interferes, where a zone t deep would excuse it.
+        ("f_uncertain_zone", ("s68_plate_4um", "BRACKET"), pad_beyond(0.007), VARIANT, "collides", "f_uncertain",
+         fit_ok("interferes"), "a pad 0.007 into a plate stating 0.004 mm: past its zone, 0.006 deep",
+         ["FT7", "FZ6", "FV3", "FK2"], "unique"),
         # The control (FT9, FV5): s65's original bracket is the lug, which interferes with the plate.
         ("f_control_fails", ("s65_lug", "BRACKET"), "m_bracket", None, "fits", "f_control",
          fit_ok("not_verified", "original_fails_fit"),
@@ -5522,10 +5564,7 @@ def fit_cases():
         ("f_control_fails_lug", ("s65_lug", "BRACKET"), "m_bracket_lug", None, "collides", "f_control",
          fit_ok("interferes"), "the lug against s65: beside a failing control a Reject stays a Reject",
          ["FT9", "FV5", "FK2"], "unique"),
-        # The scene (FB2, FB6): s24's bolt placed twice at one place. FK2's f_bspline_contact is not built: a
-        # part fitment cannot bound makes every socket near it unresolved (N4), and a candidate's B-spline face
-        # fails every bore's core, so no B-spline contact reaches the fit; FV4's unsupported_geometry is the
-        # fake helper's (adversarial.rs).
+        # The scene (FB2, FB6): s24's bolt placed twice at one place.
         ("f_duplicate_leaf", ("s24_coincident", "BRACKET"), "m_bracket", None, "fits", "f_scene",
          fit_ok("not_verified", "binding_failed"),
          "the bracket against s24, a bolt placed twice at one place: two leaves the faces of one product bind",
@@ -5602,9 +5641,6 @@ def build_fit_cases(w: Writer):
         if isinstance(shape, str):
             base = by_id[shape]
             frame, placement, file = base["frame"], base["placement"], base["file"]
-            if motion == "inflated":
-                stated = stated_uncertainty((w.out / file).read_text(encoding="latin-1"), FIT_T)
-                file = w.text(stated, cid, Path(file).stem).name
         else:
             if isinstance(shape, tuple):
                 shape = LEAVES[shape]

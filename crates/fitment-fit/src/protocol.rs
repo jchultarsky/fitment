@@ -344,6 +344,10 @@ struct ZoneRequest<'a> {
     depth_mm: f64,
     #[serde(serialize_with = "finite")]
     proximity_depth_mm: f64,
+    /// FZ9's reviews: whether the zone excuses interference (its source
+    /// says the bodies touch); one that does not serves the proximity cut
+    /// alone.
+    excuses: bool,
 }
 
 #[derive(Serialize)]
@@ -386,6 +390,7 @@ fn pair_request(pair: &Pair) -> Result<PairRequest<'_>, EncodeError> {
                 shape: WireShape::of(&z.zone.shape).ok_or_else(unbuilt)?,
                 depth_mm: z.interference.ok_or_else(unbuilt)?.depth_mm,
                 proximity_depth_mm: z.proximity.ok_or_else(unbuilt)?.depth_mm,
+                excuses: z.zone.touching,
             })
         })
         .collect::<Result<_, EncodeError>>()?;

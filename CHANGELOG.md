@@ -22,9 +22,12 @@ Until 1.0, minor versions may contain breaking changes.
   control that fails; each match case whose interface passes states its
   freedom (FK3), and s14 and s20 their controls (FK4). `fitment-core`'s
   `fit::Zone` gains `touching`: a zone whose source declares no touch (a
-  near-band seat with the faces apart, an unread occupant) no longer asks
-  its body to be near (FZ9), and two distances the kernel measures to one
-  contact may differ by 1e-9 mm. `fitment-fit`'s test support gains seven
+  near-band seat with the faces apart, an unread occupant) neither asks
+  its body to be near (FZ9) nor excuses interference, only proximity (a
+  false `Match` the reviews found: pads 0.005 mm into a near band's
+  neighbour verified); each zone of a `check` request states whether it
+  excuses, and the helper cuts the Common by those alone. Two distances
+  the kernel measures to one contact may differ by 1e-9 mm. `fitment-fit`'s test support gains seven
   lying-kernel scenarios and, for the weekly Windows corpus run only,
   `HelperOptions::with_windows_proof`. CI generates the corpus once
   (`corpus-gen`), runs the corpus with the real helper on Ubuntu and macOS

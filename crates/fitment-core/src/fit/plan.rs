@@ -705,6 +705,7 @@ fn check_digest(plan: &FitPlan) -> String {
         d.count(pair.zones.len() as u64);
         for zone in &pair.zones {
             d.text(&zone.zone.requirement);
+            d.count(u64::from(zone.zone.touching));
             d.built(zone.interference);
             d.built(zone.proximity);
         }

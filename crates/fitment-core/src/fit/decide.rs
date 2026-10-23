@@ -970,11 +970,15 @@ fn inconsistent(pair: &Pair, m: &PairMeasure) -> Option<&'static str> {
             .map(|b| b.map_or(f64::NAN, |b| b.volume_mm3))
             .sum::<f64>()
     };
-    let within_zones = held(&mut pair.zones.iter().map(|z| z.interference));
-    if pair.zones.is_empty()
+    // FZ9's reviews: only a zone whose source says the bodies touch
+    // excuses interference; one that declares no touch serves the
+    // proximity cut alone.
+    let excusing = || pair.zones.iter().filter(|z| z.zone.touching);
+    let within_zones = held(&mut excusing().map(|z| z.interference));
+    if excusing().next().is_none()
         && (m.inside_mm3 != 0.0 || (m.residual_mm3 - m.common_mm3).abs() > slack(m.common_mm3))
     {
-        return Some("a pair with no zone has volume within one");
+        return Some("a pair with no zone that excuses has volume within one");
     }
     if m.inside_mm3 > within_zones + slack(within_zones) {
         return Some("more of the Common lies within the zones than they hold");

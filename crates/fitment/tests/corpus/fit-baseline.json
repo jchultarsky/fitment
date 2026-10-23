@@ -1,6 +1,6 @@
 {
   "fit_rules_version": 1,
-  "helper_sha256": "5f0247e20a44a254d2c7318b60f6caab94f9e1733827cef448e729439184ac6e",
+  "helper_sha256": "4d60f166cc640ab25300e541f8268d0bc16361a2ac8b11dfc5523d29d621a6ef",
   "binding": "cadquery-ocp-novtk 8.0.1.1.0",
   "runs": [
     {"case":"f_copy","code":null,"policy":"default","status":"interferes","verdict":"reject"},
@@ -311,6 +311,12 @@
     {"case":"m_s52_plate_own","code":null,"policy":"functional","status":"not_checked","verdict":"reject"},
     {"case":"f_landmark_s53","code":null,"policy":"default","status":"verified","verdict":"match"},
     {"case":"f_landmark_s53","code":null,"policy":"functional","status":"verified","verdict":"match"},
+    {"case":"f_alternative","code":null,"policy":"default","status":"verified","verdict":"match"},
+    {"case":"f_bspline_contact","code":"unsupported_geometry","policy":"default","status":"not_verified","verdict":"interface_match"},
+    {"case":"f_near_zone","code":null,"policy":"default","status":"interferes","verdict":"reject"},
+    {"case":"f_alternative","code":null,"policy":"functional","status":"verified","verdict":"match"},
+    {"case":"f_bspline_contact","code":"unsupported_geometry","policy":"functional","status":"not_verified","verdict":"interface_match"},
+    {"case":"f_near_zone","code":null,"policy":"functional","status":"interferes","verdict":"reject"},
     {"case":"m_s58_plate_own","code":null,"policy":"default","status":"not_checked","verdict":"reject"},
     {"case":"m_s58_plate_own","code":null,"policy":"functional","status":"not_checked","verdict":"reject"},
     {"case":"m_s59_block","code":null,"policy":"default","status":"verified","verdict":"match"},
@@ -334,7 +340,9 @@
     {"case":"f_tolerance","code":"tolerance_too_large","policy":"default","status":"not_verified","verdict":"interface_match"},
     {"case":"f_tolerance","code":"tolerance_too_large","policy":"functional","status":"not_verified","verdict":"interface_match"},
     {"case":"f_uncertain_neighbour","code":null,"policy":"default","status":"interferes","verdict":"reject"},
+    {"case":"f_uncertain_zone","code":null,"policy":"default","status":"interferes","verdict":"reject"},
     {"case":"f_uncertain_neighbour","code":null,"policy":"functional","status":"interferes","verdict":"reject"},
+    {"case":"f_uncertain_zone","code":null,"policy":"functional","status":"interferes","verdict":"reject"},
     {"case":"f_uncertain_neighbour_58","code":"uncertainty_above_tolerance","policy":"default","status":"not_verified","verdict":"interface_match"},
     {"case":"f_uncertain_neighbour_58","code":"uncertainty_above_tolerance","policy":"functional","status":"not_verified","verdict":"interface_match"}
   ]

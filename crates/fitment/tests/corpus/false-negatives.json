@@ -1,9 +1,11 @@
 {
   "cases": [
+    "f_alternative",
     "f_below_resolution_id",
     "f_below_resolution_skew",
     "f_below_resolution_tilt",
     "f_below_resolution_var",
+    "f_bspline_contact",
     "f_cone_s41",
     "f_contained",
     "f_control_fails",
@@ -18,6 +20,7 @@
     "f_inflated",
     "f_landmark_s53",
     "f_major_minor",
+    "f_near_zone",
     "f_other_zone",
     "f_overlap_1um_id",
     "f_overlap_1um_skew",
@@ -41,6 +44,7 @@
     "f_turn_small",
     "f_uncertain_neighbour",
     "f_uncertain_neighbour_58",
+    "f_uncertain_zone",
     "f_zone_edge",
     "m_base02",
     "m_base02_post",

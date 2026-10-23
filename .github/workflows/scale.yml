@@ -139,13 +139,33 @@ jobs:
           FITMENT_SCALE_DIR: ${{ runner.temp }}/scaled
           FITMENT_FIT_DIR: ${{ runner.temp }}/fit
 
+  fit-corpus:
+    name: the corpus for the fit's Windows run
+    # VT77 compares Windows' digests with Ubuntu's: both judge one corpus,
+    # generated here once, since the generator's numbers may differ by
+    # 1e-9 between platforms (as ci.yml's corpus-gen).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+      - run: tools/gen-corpus.py corpus/out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fit-corpus
+          path: corpus/out
+          retention-days: 7
+          if-no-files-found: error
+
   fit-windows:
     name: the fit's corpus on Windows
     # VT77 (M7-50): the fit job's library path on Windows, the real helper
     # let through in the test build alone (FITMENT_FIT_WINDOWS_PROOF=1; the
     # release binary still refuses it), its digests compared with
-    # Ubuntu's. Until this run is green the helper on Windows answers
-    # helper_unavailable, so no fit is verified there.
+    # Ubuntu's, both on fit-corpus's one corpus. Until this run is green the
+    # helper on Windows answers helper_unavailable, so no fit is verified
+    # there.
+    needs: fit-corpus
     strategy:
       fail-fast: false
       matrix:
@@ -157,8 +177,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v10.1.0
-      - run: tools/gen-corpus.py corpus/out
-        shell: bash
+      - uses: actions/download-artifact@v8
+        with:
+          name: fit-corpus
+          path: corpus/out
       - run: cargo build --release -p fitment --locked
       - run: target/release/fitment fit setup --fit-dir "$RUNNER_TEMP/fit"
         shell: bash

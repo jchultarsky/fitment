@@ -596,6 +596,37 @@ fn a_zone_that_declares_no_touch_may_have_its_body_away() {
     assert!(matches!(outcome.candidate(), FitStatus::Verified { .. }));
 }
 
+/// The reviews of PR 4 (a false `Match`): a zone that declares no touch
+/// (a near band's faces apart, an unread occupant) never excuses
+/// interference. Its pair's Common within it is a residual, so a body
+/// 0.005 mm into such a zone's neighbour interferes; a helper claiming
+/// volume within it breaks the protocol.
+#[test]
+fn a_zone_that_declares_no_touch_excuses_no_interference() {
+    let mut rig = Rig::s01();
+    let plate_path = rig.scene.bodies()[0].path.clone();
+    for zone in rig.zones.0.iter_mut().filter(|z| z.body == plate_path) {
+        zone.touching = false;
+    }
+    let (plan, mut measures) = rig.clean();
+    let at = plate(&plan);
+    let pair = &mut measures.check.pairs[at];
+    pair.common_mm3 = 7.17e-4;
+    pair.residual_mm3 = 7.17e-4;
+    pair.residual_box = Some(FitBox::default());
+    let hit = decide(&plan, &measures);
+    assert!(
+        matches!(hit.candidate(), FitStatus::Interferes { .. }),
+        "{:?}",
+        hit.candidate()
+    );
+    let (plan, mut measures) = rig.clean();
+    let pair = &mut measures.check.pairs[at];
+    pair.common_mm3 = 7.17e-4;
+    pair.inside_mm3 = 7.17e-4;
+    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::HelperProtocol]);
+}
+
 /// FY4: R plus the Common's volume within the zones must be V, and the
 /// body kept plus within the proximity zones its volume, within 1e-9.
 #[test]

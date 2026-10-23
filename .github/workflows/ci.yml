@@ -390,6 +390,29 @@ jobs:
       - run: cargo build --release -p fitment --locked
       - run: tools/verify-occt.py fit corpus/out fit-ubuntu/fit
 
+  fit-gate:
+    name: fit gate
+    # One check for the fit's jobs (the reviews of M7's PR 4): it fails if
+    # corpus-gen, either fit leg, the digests' comparison or the oracle on
+    # the fit's documents failed, was cancelled or was skipped, so a single
+    # required status covers them all. Making it required is a repository
+    # setting, the user's to choose.
+    needs: [corpus-gen, fit, fit-digests, fit-oracle]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every fit job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "a fit job ended $r"
+              exit 1
+            fi
+          done
+
   determinism:
     name: catalog and API outputs equal on every OS
     needs: test
