@@ -264,7 +264,29 @@ jobs:
       - name: Assert the MSRV toolchain is active
         run: rustc --version | grep -q "^rustc ${{ steps.msrv.outputs.version }}\." || { rustc --version; exit 1; }
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-features --locked
+      # fitment-server states its own, higher rust-version: the next job.
+      - run: cargo check --workspace --exclude fitment-server --all-features --locked
+
+  # fitment-server's own rust-version (1.87, for RUSTSEC-2026-0385's fix in
+  # argon2's ctutils): it is never published, and its image builds with it.
+  msrv-server:
+    name: MSRV (server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read rust-version from fitment-server's Cargo.toml
+        id: msrv
+        run: echo "version=$(grep -m1 '^rust-version' crates/fitment-server/Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        id: toolchain
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - name: Use the MSRV toolchain over rust-toolchain.toml
+        run: echo "RUSTUP_TOOLCHAIN=${{ steps.toolchain.outputs.name }}" >> "$GITHUB_ENV"
+      - name: Assert the MSRV toolchain is active
+        run: rustc --version | grep -q "^rustc ${{ steps.msrv.outputs.version }}\." || { rustc --version; exit 1; }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p fitment-server --all-features --locked
 
   docs:
     name: rustdoc
