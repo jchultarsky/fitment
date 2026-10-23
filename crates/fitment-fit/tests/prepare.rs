@@ -344,12 +344,13 @@ fn the_helper_is_spawned_from_the_manifest_with_nothing_inherited() {
 /// cannot close without `unsafe`), or the file this process holds open.
 fn spawn_and_report(fake: &Fake, helper: &OcctHelper) -> (Value, String, Vec<u32>) {
     let inherited = open_fds();
-    // A spare file is opened first, so the held one never takes 3, the
-    // number the helper's own listing of /dev/fd takes.
+    // A spare file is opened first, so the held one rarely takes 3, the
+    // number the helper's own listing of /dev/fd takes: another test's
+    // thread can free 3 between the two. A held file on 3 is not checked
+    // on that spawn (the filter below starts past 3); the next spawn is.
     let spare = std::fs::File::open(fake.dir.join(MANIFEST)).unwrap();
     let held = std::fs::File::open(fake.dir.join(MANIFEST)).unwrap();
     let held_fd = held_fd(&held);
-    assert!(held_fd != 3 || cfg!(not(unix)), "the held file took 3");
     let handshake = helper.check().unwrap();
     drop(held);
     drop(spare);
