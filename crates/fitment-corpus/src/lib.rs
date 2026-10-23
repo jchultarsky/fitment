@@ -12,6 +12,7 @@
 pub mod baseline;
 pub mod checker;
 pub mod corpus;
+pub mod fit;
 pub mod gate;
 pub mod outcome;
 pub mod parity;

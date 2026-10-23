@@ -5,8 +5,10 @@ name: Scale
 # exhaustively, compared by digest. M6's weekly legs (docs/research/
 # m6-api.md, section 11.2; PR 8): the same catalog through the API (VT27,
 # VT28), the restart soak (VT10), a full disk (VT11) and many clients over
-# the corpus (VT14). Weekly, and on
-# request; 10⁵ is run by hand (each test's header says how).
+# the corpus (VT14). M7's weekly legs (docs/research/m7-fit.md, section 7):
+# the same catalog with the real helper (VT79) and the fit's corpus on
+# Windows (VT77, M7-50). Weekly, and on request; 10⁵ is run by hand (each
+# test's header says how).
 on:
   schedule:
     - cron: "17 4 * * 1"
@@ -114,3 +116,99 @@ jobs:
       - run: cargo test --release -p fitment-server --test concurrency --locked many_clients_match_the_corpus_alike -- --nocapture
         env:
           FITMENT_REQUIRE_CORPUS: "1"
+
+  fit:
+    name: 10⁴ scaled parts with the fit
+    # VT79 (R8): the scaled catalog with the real helper; every corpus
+    # socket's full run with the fit is the file run with it over level 1's
+    # survivors, digest for digest; the fits, their time each and in all
+    # reported.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v10.1.0
+      - run: tools/gen-corpus.py corpus/out
+      - run: tools/scale-step.py corpus/out "$RUNNER_TEMP/scaled" 10000 --manifest corpus/out/manifest.json
+      - run: cargo build --release -p fitment --locked
+      - run: target/release/fitment fit setup --fit-dir "$RUNNER_TEMP/fit"
+      - run: cargo test --release -p fitment --test catalog_scale --locked -- --nocapture a_scaled_catalog_with_the_fit
+        env:
+          FITMENT_SCALE_DIR: ${{ runner.temp }}/scaled
+          FITMENT_FIT_DIR: ${{ runner.temp }}/fit
+
+  fit-corpus:
+    name: the corpus for the fit's Windows run
+    # VT77 compares Windows' digests with Ubuntu's: both judge one corpus,
+    # generated here once, since the generator's numbers may differ by
+    # 1e-9 between platforms (as ci.yml's corpus-gen).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+      - run: tools/gen-corpus.py corpus/out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fit-corpus
+          path: corpus/out
+          retention-days: 7
+          if-no-files-found: error
+
+  fit-windows:
+    name: the fit's corpus on Windows
+    # VT77 (M7-50): the fit job's library path on Windows, the real helper
+    # let through in the test build alone (FITMENT_FIT_WINDOWS_PROOF=1; the
+    # release binary still refuses it), its digests compared with
+    # Ubuntu's, both on fit-corpus's one corpus. Until this run is green the
+    # helper on Windows answers helper_unavailable, so no fit is verified
+    # there.
+    needs: fit-corpus
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/download-artifact@v8
+        with:
+          name: fit-corpus
+          path: corpus/out
+      - run: cargo build --release -p fitment --locked
+      - run: target/release/fitment fit setup --fit-dir "$RUNNER_TEMP/fit"
+        shell: bash
+        # On Windows setup states M7-50's refusal and exits 0 with it.
+      - run: cargo test --release -p fitment --test fit_corpus --test fit_original --locked -- --nocapture --test-threads 1
+        shell: bash
+        env:
+          FITMENT_REQUIRE_FIT: "1"
+          FITMENT_REQUIRE_CORPUS: "1"
+          FITMENT_FIT_DIR: ${{ runner.temp }}/fit
+          FITMENT_FIT_WINDOWS_PROOF: "1"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: fit-windows-${{ matrix.os }}
+          path: |
+            target/fitment-corpus/fit-report.json
+            target/fitment-corpus/fit-digests.json
+          retention-days: 14
+          if-no-files-found: error
+
+  fit-windows-digests:
+    name: the fit's digests equal on Windows and Ubuntu
+    # VT77: Windows' decisions are Ubuntu's, document by document.
+    needs: fit-windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: fit-windows-*
+      - run: diff fit-windows-ubuntu-latest/fit-digests.json fit-windows-windows-latest/fit-digests.json

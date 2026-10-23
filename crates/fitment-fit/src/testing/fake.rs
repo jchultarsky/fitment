@@ -309,8 +309,14 @@ impl Fake {
                     .first()
                     .map_or(Value::Null, |p| json!(sha256_hex(p)));
                 self.at_place(number);
+                if self.scenario == Scenario::LandmarkOff {
+                    lie_landmark(&mut body);
+                }
             }
-            _ => self.at_check(&mut body),
+            _ => {
+                self.at_check(&mut body);
+                self.lie_reach(&mut body);
+            }
         }
         Some(body)
     }
@@ -322,6 +328,17 @@ impl Fake {
             Scenario::ExtraKey => body["bodies"][0]["extra"] = json!(1),
             Scenario::NegativeVolume => body["bodies"][0]["volume_mm3"] = json!(-1.0),
             Scenario::NanInReply => body["bodies"][0]["volume_mm3"] = json!("__NAN__"),
+            Scenario::UnclaimedSolid => {
+                let first = body["bodies"][0]["box"].clone();
+                if let Some(solids) = body["solids"].as_array_mut() {
+                    solids.push(json!({
+                        "faces": [],
+                        "location": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
+                        "box": first,
+                        "non_solid": true,
+                    }));
+                }
+            }
             Scenario::CrashOnceThenAnotherScene if number > 0 => {
                 if let Some(v) = body["bodies"][0]["volume_mm3"].as_f64() {
                     body["bodies"][0]["volume_mm3"] = json!(f64::from_bits(v.to_bits() + 1));
@@ -394,6 +411,32 @@ impl Fake {
                     first["distance_mm"] = json!(0.0);
                 }
             }
+            Scenario::KernelAlert => {
+                if let Some(first) = pairs.first_mut() {
+                    first["alerts"] = json!(["BOPAlgo_AlertFaceBuilderUnusedEdges"]);
+                }
+            }
+            Scenario::NonAnalytic => {
+                if let Some(first) = pairs.first_mut() {
+                    first["non_analytic"] = json!(true);
+                }
+            }
+            Scenario::ZoneOff => {
+                let zone = &mut zoned_first(pairs)["zones"][0];
+                if let Some(v) = zone["volume_mm3"].as_f64() {
+                    zone["volume_mm3"] = json!(v * (1.0 + 1e-6));
+                }
+            }
+            Scenario::ZoneFar => {
+                // The zoned pair in contact, moved apart: nothing within
+                // its threshold, so no zoned distance either.
+                let pair = zoned_first(pairs);
+                pair["distance_mm"] = json!(1.0);
+                for key in ["zoned_distance_mm", "body_kept_mm3", "body_inside_mm3"] {
+                    pair[key] = Value::Null;
+                }
+                pair["proximity_zones"] = json!([]);
+            }
             Scenario::ConservationMiss => {
                 // A zoned pair, in contact: some of the Common is lost.
                 let zoned = pairs.iter_mut().find(|p| {
@@ -407,6 +450,19 @@ impl Fake {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The check reply's claims of reach, broken as `UntestedBody` says:
+    /// the first body claimed out of reach is claimed within it.
+    fn lie_reach(&self, body: &mut Value) {
+        if self.scenario != Scenario::UntestedBody {
+            return;
+        }
+        let claims = body["reach"].as_array_mut();
+        if let Some(claim) = claims.and_then(|c| c.iter_mut().find(|c| c["within"] == json!(false)))
+        {
+            claim["within"] = json!(true);
         }
     }
 
@@ -572,5 +628,27 @@ fn die(death: Death) -> ! {
         };
         #[allow(clippy::cast_possible_wrap)]
         std::process::exit(code as i32);
+    }
+}
+
+/// The first pair of a check reply with zones (s01's bracket on its
+/// plate): the pair a zone's lie is told about.
+fn zoned_first(pairs: &mut [Value]) -> &mut Value {
+    let at = pairs
+        .iter()
+        .position(|p| p["zones"].as_array().is_some_and(|z| !z.is_empty()))
+        .unwrap_or(0);
+    &mut pairs[at]
+}
+
+/// FB3's lie: the candidate's first landmark at its first placement moved
+/// 1e-3 mm (a plane's offset, a cylinder's radius).
+fn lie_landmark(body: &mut Value) {
+    let landmark = &mut body["placements"][0]["landmarks"][0];
+    for (kind, key) in [("plane", "offset_mm"), ("cylinder", "radius_mm")] {
+        if let Some(v) = landmark[kind][key].as_f64() {
+            landmark[kind][key] = json!(v + 1e-3);
+            return;
+        }
     }
 }

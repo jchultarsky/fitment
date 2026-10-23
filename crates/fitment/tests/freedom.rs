@@ -179,10 +179,65 @@ fn cone_and_landmark_seeds_are_judged_alike() {
     assert_eq!(found[0].2, free);
 }
 
+/// What FK3 states of a placement: `unique`, `turn_axisymmetric` (free
+/// only to turn, excused), `slide` (free to slide), or `turn`.
+fn statement(free: &Freedom) -> &'static str {
+    if free.unique() {
+        "unique"
+    } else if free.excused() {
+        "turn_axisymmetric"
+    } else if free.motions.iter().any(|m| m.kind == MotionKind::Slide) {
+        "slide"
+    } else {
+        "turn"
+    }
+}
+
+/// A case's candidate file judged at its socket (read without review,
+/// edit or floor) under `policy`, when its interface passes: the socket's
+/// key in `documents`, the result and the file's bytes.
+fn interface_pass(
+    dir: &Path,
+    case: fitment_corpus::Case<'_>,
+    documents: &mut BTreeMap<(String, String), SocketDocument>,
+    policy: &MatchPolicy,
+) -> Option<((String, String), fitment_core::CandidateResult, Vec<u8>)> {
+    let CandidateRef::File(file) = case.candidate() else {
+        return None;
+    };
+    let socket = &case.value()["socket"];
+    let reviewed = socket["review"].as_array().is_some_and(|r| !r.is_empty());
+    let edited = !socket["edit"].is_null() || !socket["floor"].is_null();
+    if case.truth() == Truth::Refused || reviewed || edited || !socket["occurrence"].is_null() {
+        return None;
+    }
+    let key = (
+        socket["case"].as_str()?.to_owned(),
+        socket["part"].as_str()?.to_owned(),
+    );
+    let document = documents.entry(key.clone()).or_insert_with(|| {
+        let bytes = fs::read(dir.join(format!("{}.stp", key.0))).unwrap();
+        SocketDocument::extract(&bytes, Some(&key.1), None).unwrap()
+    });
+    let matcher = Matcher::new(
+        document,
+        policy.clone(),
+        MatchOptions::default(),
+        &NoFitVerifier,
+    )
+    .ok()?;
+    let bytes = fs::read(dir.join(&file)).unwrap();
+    let result = matcher.judge_step(&bytes);
+    (result.verdict.kind() != VerdictKind::Reject).then_some((key, result, bytes))
+}
+
 /// VT76, P6 as a test (section 5.6): over every corpus match case whose
 /// candidate file passes its interface under the default policy, on a
 /// socket read without review, each socket result's freedom by its seed,
-/// and each candidate's by its truth.
+/// and each candidate's by its truth: section 5.6's counts over the cases
+/// P6 ran (FK2's `f_` cases aside); and for every such case, FK2's
+/// included, FC4's freedom at each socket is the one the manifest states
+/// (FK3).
 #[test]
 fn the_corpus_s_free_placements_are_section_5_6_s() {
     let Some(corpus) = Corpus::locate() else {
@@ -193,46 +248,34 @@ fn the_corpus_s_free_placements_are_section_5_6_s() {
     let mut documents: BTreeMap<(String, String), SocketDocument> = BTreeMap::new();
     let mut tally: BTreeMap<String, u32> = BTreeMap::new();
     let mut free: Vec<(String, &str)> = Vec::new();
+    let mut misstated: Vec<String> = Vec::new();
+    let mut stated = 0;
     for case in corpus.match_cases() {
-        let CandidateRef::File(file) = case.candidate() else {
+        let Some((key, result, bytes)) = interface_pass(dir, case, &mut documents, &policy) else {
             continue;
         };
-        let socket = &case.value()["socket"];
-        let reviewed = socket["review"].as_array().is_some_and(|r| !r.is_empty());
-        let edited = !socket["edit"].is_null() || !socket["floor"].is_null();
-        if case.truth() == Truth::Refused || reviewed || edited || !socket["occurrence"].is_null() {
-            continue;
-        }
-        let (source, part) = (
-            socket["case"].as_str().unwrap(),
-            socket["part"].as_str().unwrap(),
-        );
-        let document = documents
-            .entry((source.to_owned(), part.to_owned()))
-            .or_insert_with(|| {
-                let bytes = fs::read(dir.join(format!("{source}.stp"))).unwrap();
-                SocketDocument::extract(&bytes, Some(part), None).unwrap()
-            });
-        let Ok(matcher) = Matcher::new(
-            document,
-            policy.clone(),
-            MatchOptions::default(),
-            &NoFitVerifier,
-        ) else {
-            continue;
-        };
-        let bytes = fs::read(dir.join(&file)).unwrap();
-        let result = matcher.judge_step(&bytes);
-        if result.verdict.kind() == VerdictKind::Reject {
-            continue;
-        }
+        let document = &documents[&key];
+        stated += 1;
         let candidate = read_part(&bytes).unwrap();
         let cand = CandidateView::of(&candidate);
         let mut asked = true;
+        let p6 = !case.id().starts_with("f_");
         for s in &result.sockets {
             let view = SocketView::new(document, &s.socket).unwrap();
             let at = s.placement.as_ref().unwrap();
             let free_motions = freedom(&view, &cand, at, &policy);
+            let stated = case.value()["freedom"].as_str().unwrap_or("none stated");
+            if statement(&free_motions) != stated {
+                misstated.push(format!(
+                    "{} {}: FC4 finds {}, the manifest states {stated}",
+                    case.id(),
+                    s.socket,
+                    statement(&free_motions)
+                ));
+            }
+            if !p6 {
+                continue;
+            }
             let seed = seed_name(&at.seed);
             let outcome = if free_motions.unique() {
                 "unique"
@@ -254,6 +297,9 @@ fn the_corpus_s_free_placements_are_section_5_6_s() {
             }
             *tally.entry(format!("{seed}: {outcome}")).or_default() += 1;
         }
+        if !p6 {
+            continue;
+        }
         let truth = case.value()["truth"].as_str().unwrap();
         let asked = if asked {
             "fit asked"
@@ -268,6 +314,8 @@ fn the_corpus_s_free_placements_are_section_5_6_s() {
     assert_eq!(tally, expected);
     free.sort();
     assert_eq!(free, named);
+    assert!(stated > 40, "{stated} cases");
+    assert!(misstated.is_empty(), "{}", misstated.join("\n"));
 }
 
 fn seed_name(seed: &Seed) -> &'static str {

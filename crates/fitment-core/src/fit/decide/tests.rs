@@ -571,6 +571,62 @@ fn a_zone_s_body_beyond_reach_fails_binding() {
     assert_eq!(codes(&decide(&plan, &measures)), [FitCode::BindingFailed]);
 }
 
+/// FZ9 asks only a zone whose source says the bodies touch: PR 4's corpus
+/// met near-band seats with their faces apart (C5 `near_gap`: s42, s54,
+/// s57) and unread occupants with a gap (B8, I7: s17, s45), whose bodies
+/// are rightly away. Such a zone, its body beyond reach, excuses nothing,
+/// and the fit verifies.
+#[test]
+fn a_zone_that_declares_no_touch_may_have_its_body_away() {
+    let mut rig = Rig::s01();
+    let plate_path = rig.scene.bodies()[0].path.clone();
+    for zone in rig.zones.0.iter_mut().filter(|z| z.body == plate_path) {
+        zone.touching = false;
+    }
+    let (plan, mut measures) = rig.clean();
+    let at = plate(&plan);
+    let pair = &mut measures.check.pairs[at];
+    pair.distance_mm = None;
+    pair.zoned_distance_mm = None;
+    pair.body_kept_mm3 = None;
+    pair.body_inside_mm3 = None;
+    pair.proximity_zones.clear();
+    let outcome = decide(&plan, &measures);
+    assert_eq!(codes(&outcome), []);
+    assert!(matches!(outcome.candidate(), FitStatus::Verified { .. }));
+}
+
+/// The reviews of PR 4 (a false `Match`): a zone that declares no touch
+/// (a near band's faces apart, an unread occupant) never excuses
+/// interference. Its pair's Common within it is a residual, so a body
+/// 0.005 mm into such a zone's neighbour interferes; a helper claiming
+/// volume within it breaks the protocol.
+#[test]
+fn a_zone_that_declares_no_touch_excuses_no_interference() {
+    let mut rig = Rig::s01();
+    let plate_path = rig.scene.bodies()[0].path.clone();
+    for zone in rig.zones.0.iter_mut().filter(|z| z.body == plate_path) {
+        zone.touching = false;
+    }
+    let (plan, mut measures) = rig.clean();
+    let at = plate(&plan);
+    let pair = &mut measures.check.pairs[at];
+    pair.common_mm3 = 7.17e-4;
+    pair.residual_mm3 = 7.17e-4;
+    pair.residual_box = Some(FitBox::default());
+    let hit = decide(&plan, &measures);
+    assert!(
+        matches!(hit.candidate(), FitStatus::Interferes { .. }),
+        "{:?}",
+        hit.candidate()
+    );
+    let (plan, mut measures) = rig.clean();
+    let pair = &mut measures.check.pairs[at];
+    pair.common_mm3 = 7.17e-4;
+    pair.inside_mm3 = 7.17e-4;
+    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::HelperProtocol]);
+}
+
 /// FY4: R plus the Common's volume within the zones must be V, and the
 /// body kept plus within the proximity zones its volume, within 1e-9.
 #[test]
@@ -1091,6 +1147,24 @@ fn measures_that_contradict_themselves_break_the_protocol() {
     measures.check.pairs[at].common_mm3 = 0.1;
     measures.check.pairs[at].inside_mm3 = 0.1;
     measures.check.pairs[at].distance_mm = Some(0.0);
+    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::HelperProtocol]);
+}
+
+/// FY4 at the kernel's rounding (PR 4's corpus, `f_below_resolution` in
+/// a skew frame): a body less its zones measured 1.7e-17 mm under the body
+/// is one contact measured twice, a proximity, not a contradiction; 2e-9
+/// mm under it still breaks the protocol.
+#[test]
+fn a_zoned_distance_under_the_distance_by_rounding_is_consistent() {
+    let rig = Rig::s01();
+    let (plan, mut measures) = rig.clean();
+    let at = plate(&plan);
+    measures.check.pairs[at].distance_mm = Some(1.734_723_475_976_807e-17);
+    measures.check.pairs[at].zoned_distance_mm = Some(0.0);
+    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::Proximity]);
+    let (plan, mut measures) = rig.clean();
+    measures.check.pairs[at].distance_mm = Some(2e-9);
+    measures.check.pairs[at].zoned_distance_mm = Some(0.0);
     assert_eq!(codes(&decide(&plan, &measures)), [FitCode::HelperProtocol]);
 }
 

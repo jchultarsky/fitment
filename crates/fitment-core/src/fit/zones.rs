@@ -6,7 +6,7 @@
 //! form (volume, centroid, box) at a depth, which core compares with what
 //! the helper built (FZ7).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 
 use crate::features::{Axis, Outline, Part, Segment};
@@ -126,6 +126,13 @@ pub struct Zone {
     pub copy: bool,
     /// Its kind.
     pub kind: ZoneKind,
+    /// True if the source that declares it says the two bodies touch: a
+    /// seat's contact of faces (C1, C5 into each other), an interference
+    /// or a line-to-line span (B2 to B4, I2), a conical seat. A contact
+    /// within the near band with the faces apart (C5, `near_gap`) and an
+    /// unread occupant (B8, I7) say nothing of touching, so FZ9 does not
+    /// ask their bodies to be near: there the zone excuses nothing.
+    pub touching: bool,
     /// Its description.
     pub shape: ZoneShape,
 }
@@ -345,13 +352,19 @@ impl At<'_> {
                 for toucher in contacts.iter().flat_map(|c| &c.by) {
                     // A plane contact's source (C1, C5) names it: a ring
                     // (H1) is an edge on the plane, not a contact of faces.
-                    let named = self.sources().any(|s| {
-                        s.rule.starts_with('C')
-                            && s.neighbour == toucher.neighbour
-                            && s.faces.contains(&toucher.face)
-                    });
-                    if named && seen.insert((toucher.neighbour.clone(), toucher.face)) {
-                        out.push(self.zone(&toucher.neighbour, ZoneKind::Slab, || {
+                    let naming: Vec<&SourceRef> = self
+                        .sources()
+                        .filter(|s| {
+                            s.rule.starts_with('C')
+                                && s.neighbour == toucher.neighbour
+                                && s.faces.contains(&toucher.face)
+                        })
+                        .collect();
+                    let touching = naming.iter().any(|s| !s.flags.contains(&Flag::NearGap));
+                    if !naming.is_empty() && seen.insert((toucher.neighbour.clone(), toucher.face))
+                    {
+                        let kind = (ZoneKind::Slab, touching);
+                        out.push(self.zone(&toucher.neighbour, kind, || {
                             self.slab(&toucher.neighbour, toucher.face)
                         }));
                     }
@@ -379,7 +392,7 @@ impl At<'_> {
                 let mut seen = BTreeSet::new();
                 for source in self.sources().filter(|s| !s.neighbour.is_empty()) {
                     if seen.insert(source.neighbour.clone()) {
-                        out.push(self.zone(&source.neighbour, ZoneKind::Shell, || {
+                        out.push(self.zone(&source.neighbour, (ZoneKind::Shell, true), || {
                             self.shell(axis, *apex_mm, included_angle_rad / 2.0, *radii)
                         }));
                     }
@@ -397,7 +410,12 @@ impl At<'_> {
             .filter(|s| s.occurrence == self.occurrence)
     }
 
-    fn zone(&self, body: &[u64], kind: ZoneKind, shape: impl FnOnce() -> ZoneShape) -> Zone {
+    fn zone(
+        &self,
+        body: &[u64],
+        (kind, touching): (ZoneKind, bool),
+        shape: impl FnOnce() -> ZoneShape,
+    ) -> Zone {
         let copy = self.scene.body(body).is_some_and(|b| b.selected)
             || self
                 .sources()
@@ -409,6 +427,7 @@ impl At<'_> {
             body: body.to_vec(),
             copy,
             kind,
+            touching,
             shape: shape(),
         }
     }
@@ -426,7 +445,7 @@ impl At<'_> {
         out: &mut Vec<Zone>,
     ) {
         let e = 1e-9 * (1.0 + from.abs().max(to.abs()));
-        let mut seen = BTreeSet::new();
+        let mut seen = BTreeMap::new();
         for source in self
             .sources()
             .filter(|s| tight(s) && !s.neighbour.is_empty())
@@ -445,28 +464,31 @@ impl At<'_> {
                 lo.to_bits(),
                 hi.to_bits(),
             );
-            if !seen.insert(key) {
+            let touching = !matches!(source.rule.as_str(), "B8" | "I7");
+            if merged(&mut seen, out, key, touching) {
                 continue;
             }
-            out.push(self.zone(&source.neighbour, ZoneKind::Annulus, || {
-                let placed = self
-                    .placed
-                    .apply_point(axis.point_mm)
-                    .zip(self.placed.apply_dir(axis.direction));
-                match placed {
-                    Some((point_mm, direction)) if theirs.is_finite() => ZoneShape::Annulus {
-                        axis: Axis {
-                            point_mm,
-                            direction,
+            out.push(
+                self.zone(&source.neighbour, (ZoneKind::Annulus, touching), || {
+                    let placed = self
+                        .placed
+                        .apply_point(axis.point_mm)
+                        .zip(self.placed.apply_dir(axis.direction));
+                    match placed {
+                        Some((point_mm, direction)) if theirs.is_finite() => ZoneShape::Annulus {
+                            axis: Axis {
+                                point_mm,
+                                direction,
+                            },
+                            from_mm: lo,
+                            to_mm: hi,
+                            inner_mm: own.min(theirs),
+                            outer_mm: own.max(theirs),
                         },
-                        from_mm: lo,
-                        to_mm: hi,
-                        inner_mm: own.min(theirs),
-                        outer_mm: own.max(theirs),
-                    },
-                    _ => unbuilt(Unbuilt::Degenerate),
-                }
-            }));
+                        _ => unbuilt(Unbuilt::Degenerate),
+                    }
+                }),
+            );
         }
     }
 
@@ -509,6 +531,28 @@ impl At<'_> {
         };
         slab(part, &placed, face).unwrap_or_else(unbuilt)
     }
+}
+
+/// An annulus's key: its neighbour, the neighbour's radius and its
+/// stations, by their bits.
+type AnnulusKey = (Vec<u64>, u64, u64, u64);
+
+/// FZ3, FZ9: true if the ring `key` names is already among `out`, its
+/// zone then touching if any source that names it says so, whatever their
+/// order (as a slab's naming sources are); else `key` is recorded at the
+/// zone about to be pushed.
+fn merged(
+    seen: &mut BTreeMap<AnnulusKey, usize>,
+    out: &mut [Zone],
+    key: AnnulusKey,
+    touching: bool,
+) -> bool {
+    if let Some(zone) = seen.get(&key).and_then(|&at| out.get_mut(at)) {
+        zone.touching |= touching;
+        return true;
+    }
+    seen.insert(key, out.len());
+    false
 }
 
 fn unbuilt(reason: Unbuilt) -> ZoneShape {
@@ -793,6 +837,7 @@ mod tests {
             body: vec![2],
             copy: false,
             kind: ZoneKind::Slab,
+            touching: true,
             shape: ZoneShape::Slab {
                 face: 7,
                 normal: Dir3::from_unit(n).unwrap(),
@@ -870,6 +915,7 @@ mod tests {
             body: vec![2],
             copy: false,
             kind: ZoneKind::Annulus,
+            touching: true,
             shape: ZoneShape::Annulus {
                 axis,
                 from_mm: 0.0,
@@ -985,6 +1031,7 @@ mod tests {
             body: plate.path.clone(),
             copy: false,
             kind: ZoneKind::Slab,
+            touching: true,
             shape: unbuilt(Unbuilt::NotAPlane),
         };
         assert_eq!(zone.at(0.01), None);
@@ -1004,6 +1051,32 @@ mod tests {
 
     /// FZ3 and FZ8: interference, line-to-line and pinned unread spans
     /// declare a zone; clearance spans and unpinned unread ones none.
+    /// FZ9's reviews: sources naming one ring merge into one annulus
+    /// that touches if any of them says so, in either order.
+    #[test]
+    fn a_ring_named_twice_touches_if_either_source_does() {
+        for first in [false, true] {
+            let zone = Zone {
+                socket: "socket-1".to_owned(),
+                requirement: "bore:hole-1".to_owned(),
+                occurrence: vec![1],
+                body: vec![2],
+                copy: false,
+                kind: ZoneKind::Annulus,
+                touching: first,
+                shape: unbuilt(Unbuilt::Degenerate),
+            };
+            let mut seen = BTreeMap::new();
+            let mut out = Vec::new();
+            let key: AnnulusKey = (vec![2], 3.0f64.to_bits(), 0, 1);
+            assert!(!merged(&mut seen, &mut out, key.clone(), first));
+            out.push(zone);
+            assert!(merged(&mut seen, &mut out, key, !first));
+            assert_eq!(out.len(), 1);
+            assert!(out[0].touching);
+        }
+    }
+
     #[test]
     fn only_tight_spans_are_zoned() {
         assert!(zoned(Fit::Interference, true));

@@ -339,7 +339,13 @@ fn every_pinned_socket_target_gives_its_pinned_summary() {
                 failures.push(format!("{path} {target}: does not read back: {error}"));
             }
             let found = socket_summary(&document);
-            if &found != pin {
+            // The fit's control is fit_original.rs's pin (VT59), not the
+            // socket's.
+            let mut pin = pin.clone();
+            if let Some(pin) = pin.as_object_mut() {
+                pin.remove("fit_control");
+            }
+            if found != pin {
                 failures.push(format!("{path} {target}: {found}, pinned {pin}"));
             }
         }

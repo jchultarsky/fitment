@@ -384,6 +384,7 @@ fn a_path_is_compared_on_what_it_ran() {
             sockets: Vec::new(),
             flags: Vec::new(),
             fit: "not_checked".to_owned(),
+            fit_code: None,
             policy: json!({}),
         },
         path: RunPath::Binary,
@@ -454,4 +455,165 @@ fn the_checker_holds_v2_s_verified_fits_to_the_fit_s_rules() {
             "{what}: {found:?}"
         );
     }
+}
+
+/// A case of s01's bracket judged by its interface alone: the bracket,
+/// whose interface passes, with `truth` and what it expects.
+fn fitted_case(truth: &str, expect: &Value) -> Value {
+    json!({
+        "id": format!("f_{truth}"), "kind": "match", "file": "m_bracket.stp", "class": "f", "truth": truth,
+        "socket": {"case": "s01_bolted", "part": "BRACKET", "occurrence": null, "review": []},
+        "candidate": {"file": "m_bracket.stp"},
+        "expect": {"default": expect, "functional": "default"}, "defect": [],
+    })
+}
+
+/// The bracket's outcome with the fit's verdict, status and code as given.
+fn fitted(verdict: &str, fit: &str, code: Option<&str>) -> (Outcome, Vec<fitment_core::Socket>) {
+    let document = SocketDocument::extract(S01, Some("BRACKET"), None).unwrap();
+    let sockets = document.extracted().unwrap().sockets.clone();
+    let matcher = Matcher::new(
+        &document,
+        Policy::Default.match_policy(),
+        MatchOptions::default(),
+        &NoFitVerifier,
+    )
+    .unwrap();
+    let mut outcome = Outcome::of_result(&matcher.judge_step(BRACKET), matcher.policy());
+    verdict.clone_into(&mut outcome.verdict);
+    fit.clone_into(&mut outcome.fit);
+    outcome.fit_code = code.map(str::to_owned);
+    (outcome, sockets)
+}
+
+/// FK1 (`docs/research/m7-fit.md`): with a verifier, a `Match` and a
+/// `Reject` by `interferes` are what the interface left an
+/// `InterfaceMatch`; a `Match` on a case whose truth does not fit is a
+/// false positive; a `collides` case ends `Reject` by `interferes`, or
+/// `InterfaceMatch` with one of four codes; a `fits` case is never
+/// `Reject` by `interferes`; every socket passing asks a fit; and a case's
+/// stated fit holds, status and code.
+#[test]
+fn the_fit_gate_holds_fk1_s_truths() {
+    let ok = json!({"verdict": "interface_match", "must_fail": [], "may_fail": []});
+    let gate = |truth: &str, expect: &Value, judged: (Outcome, Vec<fitment_core::Socket>)| {
+        let (outcome, sockets) = judged;
+        fitment_corpus::fit::gate(&fitted_case(truth, expect), "default", &sockets, &outcome)
+    };
+    let clean = |problems: Vec<String>| assert_eq!(problems, Vec::<String>::new());
+    let fails = |problems: Vec<String>, why: &str| {
+        assert!(
+            problems.iter().any(|p| p.contains(why)),
+            "{why}: {problems:?}"
+        );
+    };
+    clean(gate("fits", &ok, fitted("match", "verified", None)));
+    clean(gate("collides", &ok, fitted("reject", "interferes", None)));
+    clean(gate(
+        "collides",
+        &ok,
+        fitted(
+            "interface_match",
+            "not_verified",
+            Some("placement_not_unique"),
+        ),
+    ));
+    clean(gate(
+        "fits",
+        &ok,
+        fitted("interface_match", "not_verified", Some("proximity")),
+    ));
+    fails(
+        gate("collides", &ok, fitted("match", "verified", None)),
+        "a false positive",
+    );
+    fails(
+        gate(
+            "collides",
+            &ok,
+            fitted("interface_match", "not_verified", Some("proximity")),
+        ),
+        "a collides case ends",
+    );
+    fails(
+        gate("fits", &ok, fitted("reject", "interferes", None)),
+        "Reject by interferes",
+    );
+    fails(
+        gate("fits", &ok, fitted("interface_match", "not_checked", None)),
+        "no fit was asked",
+    );
+    fails(
+        gate("fits", &ok, fitted("interface_match", "not_verified", None)),
+        "no code",
+    );
+    let mut stated = ok.clone();
+    stated["fit"] = json!({"status": "not_verified", "code": "proximity"});
+    clean(gate(
+        "fits",
+        &stated,
+        fitted("interface_match", "not_verified", Some("proximity")),
+    ));
+    fails(
+        gate(
+            "fits",
+            &stated,
+            fitted("interface_match", "not_verified", Some("below_resolution")),
+        ),
+        "its case states proximity",
+    );
+    fails(
+        gate("fits", &stated, fitted("match", "verified", None)),
+        "its case states not_verified",
+    );
+}
+
+/// FK6: the fit baseline is the record of every run's fit; comparing
+/// fails on any difference, blessing in CI is refused, and a blessing that
+/// changes a known case's fit is refused unless `FIT_RULES_VERSION` rose
+/// or the helper changed. A new case blesses.
+#[test]
+fn the_fit_baseline_refuses_a_changed_known_fit() {
+    use fitment_corpus::fit::{Against, Blessing, baseline_document, judge_baseline};
+    let (outcome, _) = fitted("match", "verified", None);
+    let one = fitment_corpus::fit::entry("f_a", "default", &outcome);
+    let against = Against {
+        helper_sha256: "a".repeat(64),
+        binding: "cadquery-ocp-novtk 8.0.1.1.0".to_owned(),
+    };
+    let committed = baseline_document(std::slice::from_ref(&one), &against);
+    assert_eq!(
+        judge_baseline(
+            Some(&committed),
+            std::slice::from_ref(&one),
+            &against,
+            Blessing::Compare
+        ),
+        Ok(None)
+    );
+    let mut changed = one.clone();
+    changed["status"] = json!("not_verified");
+    changed["code"] = json!("proximity");
+    let runs = [changed.clone()];
+    for blessing in [Blessing::Compare, Blessing::InCi, Blessing::Bless] {
+        assert!(
+            judge_baseline(Some(&committed), &runs, &against, blessing).is_err(),
+            "{blessing:?}"
+        );
+    }
+    let helper = Against {
+        helper_sha256: "b".repeat(64),
+        ..against.clone()
+    };
+    assert_eq!(
+        judge_baseline(Some(&committed), &runs, &helper, Blessing::Bless),
+        Ok(Some(baseline_document(&runs, &helper)))
+    );
+    let mut added = one.clone();
+    added["case"] = json!("f_b");
+    let runs = [one, added];
+    assert_eq!(
+        judge_baseline(Some(&committed), &runs, &against, Blessing::Bless),
+        Ok(Some(baseline_document(&runs, &against)))
+    );
 }

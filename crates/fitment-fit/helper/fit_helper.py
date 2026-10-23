@@ -1106,7 +1106,7 @@ def zones_at(zones, depth_key, body, alerts):
 # ---------------------------------------------------------------------------- check (FT4, FT5, FY4)
 
 
-ZONE_FIELDS = ("kind", "requirement", "shape", "depth_mm", "proximity_depth_mm")
+ZONE_FIELDS = ("kind", "requirement", "shape", "depth_mm", "proximity_depth_mm", "excuses")
 PAIR_FIELDS = ("occurrence", "body", "copy", "u_pair_mm", "epsilon_mm", "threshold_mm", "zones")
 
 
@@ -1120,8 +1120,10 @@ def read_pair(p):
         kind, shape = tagged(g["shape"], ZONE_SHAPES)
         if g["kind"] != kind:
             raise Refused("unreadable", "a zone whose kind is not its shape's")
+        if not isinstance(g["excuses"], bool):
+            raise Refused("unreadable", "a zone whose excuses is not a boolean")
         zones.append({"kind": kind, "shape": shape, "depth_mm": number(g["depth_mm"]),
-                      "proximity_depth_mm": number(g["proximity_depth_mm"])})
+                      "proximity_depth_mm": number(g["proximity_depth_mm"]), "excuses": g["excuses"]})
     return {"occurrence": ids(f["occurrence"]), "body": ids(f["body"]), "copy": f["copy"],
             "epsilon_mm": number(f["epsilon_mm"]), "threshold_mm": number(f["threshold_mm"]),
             "u_pair_mm": number(f["u_pair_mm"]), "zones": zones}
@@ -1162,15 +1164,18 @@ def measure_pair(p, c, scene, raise_here: bool):
         common = boolean(BOPAlgo_COMMON, shape, [body_shape], alerts)
         v = volume(common)
         out["common_mm3"], out["residual_mm3"] = v, v
-        if v > 0.0 and zones and len(zones) == len(p["zones"]):
-            residual = boolean(BOPAlgo_CUT, common, zones, alerts)
-            inside = boolean(BOPAlgo_COMMON, common, [united(zones, alerts)], alerts)
+        # Only a zone whose source says the bodies touch excuses interference (FZ9's reviews); one that declares
+        # no touch is built and measured (FZ7) and serves the proximity cut alone.
+        excusing = [s for s, z in zip(zones, p["zones"]) if z["excuses"]]
+        if v > 0.0 and len(zones) != len(p["zones"]):
+            raise Alerted("a zone was not built")
+        if v > 0.0 and excusing:
+            residual = boolean(BOPAlgo_CUT, common, excusing, alerts)
+            inside = boolean(BOPAlgo_COMMON, common, [united(excusing, alerts)], alerts)
             out["residual_mm3"], out["inside_mm3"] = volume(residual), volume(inside)
             if out["residual_mm3"] > 0.0:
                 out["residual_box"] = box_of(residual)
         elif v > 0.0:
-            if p["zones"]:
-                raise Alerted("a zone was not built")
             out["residual_box"] = box_of(common)
         gap = distance(shape, body_shape, alerts)
         out["distance_mm"] = gap if gap <= threshold else None

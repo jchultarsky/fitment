@@ -326,3 +326,57 @@ fn a_component_of_another_assembly_matches_through_the_real_helper() {
         session.take_reports()
     );
 }
+
+/// FB5 with an interfering second scene (PR 4, `docs/research/m7-fit.md`,
+/// section 11): `s65_lug_tgt` (the corpus's s01 with the lug's bracket in
+/// the bracket's place, modelled in a tilted frame and placed back by its
+/// inverse, copied from `corpus/out` into `tests/data`) gives a component
+/// geometrically its own, which binds only in its own scene; its lug goes 5
+/// mm into the plate of the socket's scene, so it is a `Reject` by
+/// `interferes` with the plate, measured as the lug file's 299.40006 mm³.
+#[test]
+fn a_component_of_another_assembly_that_interferes_is_rejected() {
+    let fit = need_kernel!();
+    let assembly = fs::read(core("assemblies/s01_bolted.stp")).unwrap();
+    let document = SocketDocument::extract(&assembly, Some("BRACKET"), None).unwrap();
+    let other =
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/s65_lug_tgt.stp")).unwrap();
+    let helper = OcctHelper::open(fit, HelperFiles::embedded(), HelperOptions::default()).unwrap();
+    let session = OcctSession::open(&helper, assembly.clone(), &document).unwrap();
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &session,
+    )
+    .unwrap();
+    let component = fitment_core::SelectedComponent::read(&other, Some("BRACKET"), None).unwrap();
+    let own = fitment_core::SelectedComponent::read(&assembly, Some("BRACKET"), None).unwrap();
+    assert_ne!(
+        format!("{:?}", component.part().extent),
+        format!("{:?}", own.part().extent),
+        "another solid in its own frame"
+    );
+    let result = matcher.judge_component_in(&component, component.source(), &other);
+    if refused_here() {
+        assert_eq!(
+            result.verdict.kind(),
+            fitment_core::VerdictKind::InterfaceMatch
+        );
+        return;
+    }
+    assert_eq!(
+        result.verdict.kind(),
+        fitment_core::VerdictKind::Reject,
+        "{:?}",
+        session.take_reports()
+    );
+    let fitment_core::FitStatus::Interferes { interferences } = result.verdict.fit() else {
+        panic!("{:?}", result.verdict.fit());
+    };
+    assert_eq!(interferences.len(), 1, "{interferences:?}");
+    assert!(
+        (interferences[0].volume_mm3 - 299.400_06).abs() < 1e-3,
+        "{interferences:?}"
+    );
+}
