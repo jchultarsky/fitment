@@ -236,23 +236,35 @@ async fn metrics_are_served_on_their_own_listener() {
         .await
         .unwrap();
     assert_eq!(other.status, 404);
-    // Review S11 of PR 5: past its cap, a connection is closed at accept.
+    // Review S11 of PR 5: past its cap (net.rs's METRICS_CONNECTIONS, 16),
+    // a connection is closed at accept. Connections are opened one by one
+    // until one is closed; at most 16 may have been held open, whatever
+    // the earlier requests' connections had released by then (on CI's
+    // Linux runner they had not, and a 17th fixed connection was served).
     let mut idle = Vec::new();
-    for _ in 0..16 {
-        // net.rs's METRICS_CONNECTIONS.
-        idle.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+    let mut closed = false;
+    for _ in 0..24 {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(
+            Duration::from_millis(500),
+            tokio::io::AsyncReadExt::read(&mut stream, &mut byte),
+        )
+        .await;
+        match read {
+            Ok(Ok(0) | Err(_)) => {
+                closed = true;
+                break;
+            }
+            Ok(Ok(_)) => panic!("an idle metrics connection was sent bytes"),
+            Err(_) => idle.push(stream),
+        }
     }
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let mut extra = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let mut byte = [0_u8; 1];
-    let read = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::io::AsyncReadExt::read(&mut extra, &mut byte),
-    )
-    .await;
+    assert!(closed, "no connection was closed past the cap");
     assert!(
-        matches!(read, Ok(Ok(0) | Err(_))),
-        "the extra connection was served: {read:?}"
+        idle.len() <= 16,
+        "{} connections were held open",
+        idle.len()
     );
     drop(idle);
     let start = Instant::now();
