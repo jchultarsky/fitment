@@ -20,5 +20,9 @@ listen = "0.0.0.0:8080"
 # pepper_file = "/run/secrets/fitment-pepper"
 
 [paths]
+# Both on a local disk, never a network file system or a sync folder, and
+# one server per catalog: SQLite's write-ahead log needs one host's shared
+# memory (OP10). The fitment CLI may work on the same catalog meanwhile;
+# the server sees its changes at its next snapshot.
 catalog = "/var/lib/fitment/catalog"
 state = "/var/lib/fitment/state"

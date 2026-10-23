@@ -359,7 +359,7 @@ fn the_image_is_built_as_op8_says() {
         .filter(|l| !l.trim_start().starts_with('#'))
         .collect();
     let text = lines.join("\n");
-    assert!(text.contains("FROM rust:1.85-bookworm@sha256:"));
+    assert!(text.contains("FROM rust:1.87-bookworm@sha256:"));
     assert!(text.contains("FROM gcr.io/distroless/cc-debian12:nonroot@sha256:"));
     assert!(text.contains("cargo build --release --locked -p fitment-server -p fitment"));
     assert!(
@@ -386,6 +386,47 @@ fn the_image_is_built_as_op8_says() {
     let manifest = std::fs::read_to_string(crate_dir().join("Cargo.toml")).unwrap();
     assert!(manifest.lines().any(|l| l == "publish = false"));
     assert!(manifest.contains("[package.metadata.dist]\ndist = false"));
+}
+
+/// A file's words, comment markers and line breaks aside, in lower case,
+/// so a sentence wrapped anywhere still reads as one.
+fn prose(text: &str) -> String {
+    text.lines()
+        .map(|l| l.trim().trim_start_matches('#').trim())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// OP10, CC5: one server per catalog, with both volumes, the catalog's
+/// and the state's, on a local disk, never a network file system or a
+/// sync folder, as the README, the Containerfile and the image's
+/// configuration say, each naming both; the CLI on the same catalog is
+/// `concurrency.rs::a_cli_ingest_beside_the_server_is_consistent`.
+#[test]
+fn one_replica_on_local_disks_as_op10_says() {
+    for (file, both) in [
+        ("README.md", "both directories on a local disk"),
+        ("deploy/Containerfile", "both volumes on a local disk"),
+        ("deploy/fitment-server.toml", "both on a local disk"),
+    ] {
+        let text = prose(&std::fs::read_to_string(root().join(file)).unwrap());
+        for words in [
+            "one server per catalog",
+            both,
+            "never a network file system or a sync folder",
+        ] {
+            assert!(text.contains(words), "{file} does not say {words:?}");
+        }
+    }
+    // The configuration's note stands over the two paths it covers.
+    let config = std::fs::read_to_string(root().join("deploy/fitment-server.toml")).unwrap();
+    let note = config.find("Both on a local disk").unwrap();
+    let paths = &config[note..];
+    assert!(paths.contains("\ncatalog = ") && paths.contains("\nstate = "));
+    // The README names what the two directories are.
+    let readme = prose(&std::fs::read_to_string(root().join("README.md")).unwrap());
+    assert!(readme.contains("serve --catalog dir --state dir"));
 }
 
 /// OP11: the seams exist under `test-support` only, which no default or

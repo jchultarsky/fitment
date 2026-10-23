@@ -3,7 +3,11 @@ name = "fitment-server"
 description = "fitment's REST API: jobs over the catalog and the matcher (never published; shipped as a container image)"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# 1.87, above the workspace's 1.85: argon2's ctutils is fixed for
+# RUSTSEC-2026-0385 only from 0.4.3, which needs 1.87. The server is never
+# published, and its image builds with 1.87 (deploy/Containerfile); the
+# published crates keep the workspace's MSRV (CI's MSRV job).
+rust-version = "1.87"
 authors.workspace = true
 license.workspace = true
 repository.workspace = true

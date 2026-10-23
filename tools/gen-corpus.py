@@ -1668,6 +1668,18 @@ for rule, tests in {
             f"{S_HOST}::an_upload_past_its_minutes_is_cut"],
 }.items():
     RULES[rule]["tests"] = RULES[rule]["tests"] + tests
+# PR 9 closes M6 (section 12, item 9): OP10, the last rule waiting, is built as it says. One replica per catalog with
+# both volumes on a local disk is what the README, the Containerfile and the image's configuration say; the CLI beside
+# the server on its catalog keeps both sides' writes, and the server sees the CLI's at its next snapshot. Nothing waits
+# for an M6 PR after it: the coverage test no longer allows "M6 PR" deferrals (section 11.1's gate at the exit).
+M6_PR9 = {
+    "OP10": [f"{S_LAY}::one_replica_on_local_disks_as_op10_says",
+             f"{S_CONC}::a_cli_ingest_beside_the_server_is_consistent"],
+}
+for rule, tests in M6_PR9.items():
+    assert RULES[rule] == {"deferred": "M6 PR 9"}, rule
+    RULES[rule] = {"tests": tests}
+assert not [r for r, e in RULES.items() if e.get("deferred", "").startswith("M6 PR ")], "an M6 rule is still deferred"
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],

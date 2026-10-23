@@ -13,13 +13,16 @@
 # names, such as an orchestrator's service links, are ignored).
 #
 # Run it with a read-only root file system, both volumes on a local disk
-# (never a network or sync folder: OP10, CC5), and a stop grace period of
-# at least 45 s (SD1). The catalog volume must hold a catalog:
+# (never a network file system or a sync folder: SQLite's write-ahead log
+# needs one host's shared memory; OP10, CC5), one server per catalog (no
+# replicas), and a stop grace period of at least 45 s (SD1). The fitment
+# CLI may share the catalog with it. The catalog volume must hold a
+# catalog:
 #
 #   docker run --rm -v cat:/var/lib/fitment/catalog --entrypoint fitment \
 #     fitment-server catalog init -C /var/lib/fitment/catalog
 
-FROM rust:1.85-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4 AS build
+FROM rust:1.87-bookworm@sha256:251cec8da4689d180f124ef00024c2f83f79d9bf984e43c180a598119e326b84 AS build
 WORKDIR /src
 COPY . .
 RUN cargo build --release --locked -p fitment-server -p fitment

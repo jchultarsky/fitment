@@ -11,12 +11,15 @@ same axes, diameters within limits, the same seating planes and grip
 length. It is deterministic (rules and arithmetic, no machine learning),
 written in Rust, and built on [stepq](https://github.com/jchultarsky/stepq).
 
-> **Status: M5 done (the catalog).** `fitment catalog` stores STEP parts
-> by content, gated and indexed, and `fitment match --catalog` searches
-> them: a catalog run is the file run over the parts its index admits,
-> digest for digest, and on the 10⁵-part scaled corpus every full run
-> holds every part an exhaustive run passes. Version 0.2.0 (M5) follows
-> 0.1.0 (M4).
+> **Status: M6 done (the REST API).** `fitment-server` serves the catalog
+> and the matcher over HTTP, with jobs, uploads by SHA-256, sockets with
+> revisions, bearer tokens and roles; every result document it serves is
+> byte for byte what the CLI prints for the same inputs. Every one of the
+> corpus's 125 gated match cases (its 129 less the socket gate's 4, which
+> run apart and pass) passes through the API, under both policies, with no
+> false positive and the library's report to the byte. It ships as a
+> container image and is not published as a crate. M6 is to be released as
+> 0.3.0, after 0.2.0 (M5, the catalog) and 0.1.0 (M4).
 >
 > `fitment features` reads one part from a
 > STEP file, refusing a file that is not a canonical part, with reasons.
@@ -202,7 +205,10 @@ N` judges N candidates at once and changes no byte of the result.
   against their SHA-256 first. `replace ID FILE` gives an entry a new
   revision and keeps the old one's bytes for `get ID@rN`; `delete ID...`
   deletes all or none; `prune --revisions` releases kept revisions'
-  bytes.
+  bytes. `delete`, `prune`, `verify` and `gc` take `--format json` as the
+  other commands do: `fitment.catalog` with its `changes` for the first
+  two, and `fitment.verify` and `fitment.gc`, which name no path, for the
+  others.
 - **Upgrades:** a fitment that reads parts differently marks the catalog
   stale, and every match refuses it until `fitment catalog reindex -C
   DIR` has brought each entry up to date. A part that a new gate no
@@ -224,8 +230,111 @@ N` judges N candidates at once and changes no byte of the result.
   fitment writes can give a torn copy.
 
 A build without the `catalog` cargo feature has no catalog: `fitment
-catalog` and `fitment match --catalog` exit 2 and say so. A REST API over
-the catalog and the matcher is M6.
+catalog` and `fitment match --catalog` exit 2 and say so.
+
+## Running the server
+
+`fitment-server` is the REST API over one catalog and the matcher. It is
+not published as a crate: build it from this repository (`cargo build
+--release -p fitment-server`), or build the container image, which holds
+the server and the `fitment` CLI of the same version and no Python, uv or
+Open CASCADE:
+
+```console
+$ docker build -f deploy/Containerfile -t fitment-server .
+$ docker run --rm -v cat:/var/lib/fitment/catalog --entrypoint fitment \
+    fitment-server catalog init -C /var/lib/fitment/catalog
+$ docker run -d --name fitment --read-only --stop-timeout 45 -p 127.0.0.1:8080:8080 \
+    -v cat:/var/lib/fitment/catalog -v state:/var/lib/fitment/state fitment-server
+$ docker exec fitment fitment-server admin bootstrap --username ada
+fitment_pat_…
+```
+
+`--stop-timeout 45` gives a stop the time the server's drain needs: it
+gives requests 10 s and running jobs 25 s, side by side, before it exits,
+and Docker's default of 10 s would kill it while jobs are still being
+settled.
+
+Outside the image, `fitment-server serve --catalog DIR --state DIR`
+serves an existing catalog (make it with `fitment catalog init`) and keeps
+its own state, users, uploads, sockets and jobs, in the state directory;
+the two must not nest. It listens on `127.0.0.1:8080` unless told
+otherwise, writes JSON logs on stderr and one line on stdout, the address
+it bound. Every setting is a key of a TOML file (`--config`, or
+`FITMENT_SERVER_CONFIG`), and each key can be set by a variable such as
+`FITMENT_SERVER__LIMITS__MAX_UPLOAD_MIB`; unknown keys refuse the start,
+and `fitment-server check-config` checks a configuration without starting.
+`deploy/fitment-server.toml`, the image's own, shows the keys a deployment
+usually sets. SIGTERM or Ctrl-C stops it gracefully: a running read or
+match goes back to the queue for the next start, and a catalog change cut
+short keeps the batches it committed and says so.
+
+- **The first admin** is made offline, beside the running server or
+  before it starts: `fitment-server admin bootstrap --state DIR --username
+  NAME` prints an admin's token to stdout, once. `admin user` and `admin
+  token` manage users and tokens the same way, and are the way back in if
+  every admin token is lost. Through the API, `POST /v1/auth/login` turns
+  a password into a token, `POST /v1/auth/tokens` mints a token within the
+  presenting one's role and expiry (a read-only token for CI, say), and an
+  admin manages users under `/v1/auth/users`. Every request but health,
+  readiness, the OpenAPI document and login carries `Authorization: Bearer
+  TOKEN`; roles are reader, writer (changes the catalog) and admin. The
+  Prometheus metrics need no token either: they are served on their own
+  port, `metrics.listen`, off unless set; keep it on a private network.
+- **Passwords** are hashed with argon2id. Give the server a pepper, a file
+  of 16 to 1,024 random bytes that only it can read (`auth.pepper_file`),
+  and pass the same configuration to `fitment-server admin`; without one
+  it warns at start.
+- **TLS** is a reverse proxy's job: the server speaks plain HTTP/1.1. List
+  the proxy's own addresses in `server.trusted_proxies`, so that the
+  client's address, on which login limits are kept, is read from
+  `X-Forwarded-For`.
+- **Where to run it:** one server per catalog, both directories on a local
+  disk, never a network file system or a sync folder: SQLite's write-ahead
+  log needs one host's shared memory, and a second server on the catalog
+  is not supported. The `fitment` CLI may work on the same catalog while
+  the server runs, under the catalog's own locking; the server sees its
+  changes at its next snapshot. Back up both directories; a catalog
+  copied elsewhere is trusted after `fitment catalog verify --deep`.
+
+A match over HTTP, the s01 case above: the bytes go in by their SHA-256,
+work that reads STEP runs as a job, and `Prefer: wait=N` (at most 60 s)
+answers with the finished job:
+
+```console
+$ AUTH="Authorization: Bearer $TOKEN"
+$ ASM=$(sha256sum s01_bolted.stp | cut -d' ' -f1)
+$ CAND=$(sha256sum m_bracket_blind.stp | cut -d' ' -f1)
+$ curl -X PUT --data-binary @s01_bolted.stp -H "$AUTH" \
+    -H 'Content-Type: application/octet-stream' localhost:8080/v1/uploads/sha256:$ASM
+$ curl -H "$AUTH" -H 'Prefer: wait=30' -H 'Content-Type: application/json' \
+    -d '{"upload": "sha256:'$ASM'", "file_name": "s01_bolted.stp"}' localhost:8080/v1/assemblies
+$ curl -H "$AUTH" -H 'Prefer: wait=30' -H 'Content-Type: application/json' \
+    -d '{"assembly": "sha256:'$ASM'", "part": "BRACKET"}' localhost:8080/v1/sockets
+{"format": "fitment.job", "kind": "socket_extract", "state": "succeeded", "exit_code": 0,
+ "result": {"href": "/v1/sockets/sk_94a02d9adb35b429e8d1@r1", …}, …}
+$ curl -X PUT --data-binary @m_bracket_blind.stp -H "$AUTH" \
+    -H 'Content-Type: application/octet-stream' localhost:8080/v1/uploads/sha256:$CAND
+$ curl -H "$AUTH" -H 'Prefer: wait=30' -H 'Content-Type: application/json' \
+    -d '{"socket": "sk_94a02d9adb35b429e8d1@r1", "candidates": {"files":
+         [{"upload": "sha256:'$CAND'", "label": "m_bracket_blind.stp"}]}}' localhost:8080/v1/matches
+{"format": "fitment.job", "id": "j_…", "kind": "match", "state": "succeeded", "exit_code": 5,
+ "outcome": "reject", …}
+$ curl -H "$AUTH" localhost:8080/v1/matches/j_…/document
+```
+
+The socket at `/v1/sockets/sk_…@r1` is byte for byte the file `fitment
+socket s01_bolted.stp --part BRACKET` writes, and the match document what
+`fitment match` prints with `--format json`, its exit code in the
+`Fitment-Exit-Code` header. A review is `POST /v1/sockets/sk_…@r1/review`,
+which makes `@r2`; `candidates` may also name leaves of your registered
+assemblies (`components`) or the catalog (`{"catalog": {"selection":
+"full"}}`). The catalog's commands are under `/v1/catalog`, each a job or
+a request with the CLI's document. `GET /v1/openapi.json` describes every
+operation, document and error code; an error is `application/problem+json`
+with a stable `code`, never a path. A job states its progress at
+`/v1/jobs/{id}/events` and stops on `POST /v1/jobs/{id}/cancel`; a match
+that did not succeed has no verdict, anywhere.
 
 ## Roadmap
 
@@ -237,7 +346,7 @@ the catalog and the matcher is M6.
 | M3 | Socket extraction |
 | M4 | Matching, evidence, and the known-answer corpus (done, 0.1.0) |
 | M5 | Catalog (done, 0.2.0) |
-| M6 | REST API |
+| M6 | REST API (done; 0.3.0 to come) |
 | M7 | Optional body-fit verifier |
 | M8 | Viewer |
 
