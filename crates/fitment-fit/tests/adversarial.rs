@@ -28,6 +28,7 @@ fn main() {
         the_handshake_refuses_another_helper,
         a_missing_library_is_named,
         windows_is_refused_until_its_corpus_run_is_green,
+        without_the_override_windows_refuses_even_the_fake,
         kernel_noise_reaches_the_log_and_never_a_frame,
         a_crash_is_retried_once_in_a_fresh_helper,
         a_crash_retry_beside_a_busy_helper_takes_the_crashed_one_s_place,
@@ -348,6 +349,46 @@ fn windows_is_refused_until_its_corpus_run_is_green() {
         "{:?}",
         findings(&result)
     );
+    // The tag is refused without the tests' override too.
+    let strict = HelperOptions::default()
+        .with_timeout(Duration::from_secs(20))
+        .with_setup_timeout(Duration::from_secs(20));
+    let Err(HelperError::Failed(report)) = fake.helper(strict).check() else {
+        panic!("a Windows helper was accepted without the override");
+    };
+    assert_eq!(
+        report.failure,
+        FitFailure::Unavailable(WINDOWS_UNPROVEN.to_owned())
+    );
+}
+
+/// M7-50: without the tests' override, a build on Windows refuses even
+/// a fake helper that states no Windows tag, so no fit is verified there;
+/// elsewhere the same helper passes its handshake.
+fn without_the_override_windows_refuses_even_the_fake() {
+    let root = root("m7-50-strict");
+    let fake = Fake::install(&root, Scenario::Replay);
+    let strict = HelperOptions::default()
+        .with_timeout(Duration::from_secs(20))
+        .with_setup_timeout(Duration::from_secs(20));
+    let checked = fake.helper(strict.clone()).check();
+    if cfg!(windows) {
+        let Err(HelperError::Failed(report)) = checked else {
+            panic!("Windows let a helper through without the override");
+        };
+        assert_eq!(
+            report.failure,
+            FitFailure::Unavailable(WINDOWS_UNPROVEN.to_owned())
+        );
+        let helper = fake.helper(strict);
+        let document = s01();
+        let session = OcctSession::open(&helper, S01.to_vec(), &document).unwrap();
+        let result = judge(&Replaying::new(&session, &fake));
+        assert!(!verified(&result));
+        assert_eq!(code(&result), Some(FitCode::HelperUnavailable));
+    } else {
+        assert!(checked.is_ok(), "{checked:?}");
+    }
 }
 
 /// FH2: what the kernel prints reaches stderr, kept for the log, and
@@ -589,7 +630,9 @@ fn a_helper_that_stops_reading_misses_its_write_deadline() {
 fn a_cancel_kills_the_helper() {
     let root = root("cancel");
     let fake = Fake::install(&root, Scenario::Hang);
-    let options = HelperOptions::default().with_setup_timeout(Duration::from_secs(60));
+    let options = HelperOptions::default()
+        .with_setup_timeout(Duration::from_secs(60))
+        .with_unproven_platform();
     let helper = fake.helper(options);
     let document = s01();
     let flag = AtomicBool::new(false);

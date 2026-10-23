@@ -1910,6 +1910,7 @@ for rule, tests in M7_PR2B.items():
 for rule, tests in {
     "FH2": [f"{FIT_KERN}::hostile_files_end_in_a_frame_or_a_failure"],
     "FH3": [f"{FIT_ADV}::windows_is_refused_until_its_corpus_run_is_green",
+            f"{FIT_ADV}::without_the_override_windows_refuses_even_the_fake",
             f"{FIT}/src/session.rs::only_windows_is_refused",
             f"{FIT_KERN}::setup_prepares_the_helper_and_its_self_test_passes"],
     "FH4": [f"{FIT_KERN}::the_lug_interferes_and_the_bracket_verifies",

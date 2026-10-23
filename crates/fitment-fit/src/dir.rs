@@ -703,6 +703,7 @@ fn private(path: &Path, me: Option<u32>) -> Result<(), PrepareError> {
 /// macOS is writable by the `admin` group (CI's macOS runner), and the
 /// SHA-256 the manifest pins, checked before every spawn, is what refuses
 /// an interpreter changed since setup.
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn interpreter_owned(path: &Path, me: u32) -> Result<(), PrepareError> {
     #[cfg(unix)]
     {

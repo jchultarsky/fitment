@@ -46,6 +46,12 @@ pub struct HelperOptions {
     /// never reach it (the server's); the CLI's helpers stay in fitment's,
     /// so a user's Ctrl-C ends both.
     pub own_process_group: bool,
+    /// M7-50, for the tests only: a helper on Windows is let through when
+    /// this build is on Windows, so the fake helper's verified fits can be
+    /// tested there. The platform tag a helper states is refused whatever
+    /// this says. No release build has the field.
+    #[cfg(feature = "test-support")]
+    unproven_platform: bool,
 }
 
 impl Default for HelperOptions {
@@ -57,6 +63,8 @@ impl Default for HelperOptions {
             max_checks: 256,
             memory_mib: 4096,
             own_process_group: false,
+            #[cfg(feature = "test-support")]
+            unproven_platform: false,
         }
     }
 }
@@ -102,6 +110,31 @@ impl HelperOptions {
     pub fn with_own_process_group(mut self, own: bool) -> Self {
         self.own_process_group = own;
         self
+    }
+
+    /// M7-50, for the tests only (`test-support`): a build on Windows lets
+    /// its helper through, so the fake helper's fits can be tested there.
+    /// A helper stating a Windows platform tag is still refused, and the
+    /// real helper's tests never use it.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn with_unproven_platform(mut self) -> Self {
+        self.unproven_platform = true;
+        self
+    }
+
+    /// True if this build's own Windows may be let through (test-support's
+    /// override); always false in a release build.
+    #[cfg_attr(not(feature = "test-support"), allow(clippy::unused_self))]
+    fn unproven_platform(&self) -> bool {
+        #[cfg(feature = "test-support")]
+        {
+            self.unproven_platform
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            false
+        }
     }
 }
 
@@ -160,8 +193,8 @@ pub const WINDOWS_UNPROVEN: &str = "the fit kernel is not yet proven on Windows:
 /// build's own target or by the platform tag the helper states
 /// (`sysconfig`'s: `win-amd64`, `win32`, `win-arm64`), so neither alone can
 /// let an unproven kernel through.
-pub(crate) fn platform_refusal(platform: &str) -> Option<&'static str> {
-    refused_on(cfg!(windows), platform)
+pub(crate) fn platform_refusal(platform: &str, options: &HelperOptions) -> Option<&'static str> {
+    refused_on(cfg!(windows) && !options.unproven_platform(), platform)
 }
 
 /// M7-50's rule for a build on Windows or not.
@@ -513,7 +546,7 @@ impl OcctHelper {
             }
         })?;
         identify(&reply, process.pid(), manifest, &self.files)?;
-        let refusal = platform_refusal(&reply.platform);
+        let refusal = platform_refusal(&reply.platform, &self.options);
         let handshake = Handshake {
             pid: reply.pid,
             python: reply.python,
@@ -1157,10 +1190,22 @@ mod tests {
                 assert_eq!(refused_on(windows, tag), expected, "{tag} {windows}");
             }
         }
+        let options = HelperOptions::default();
         assert_eq!(
-            platform_refusal("linux-x86_64"),
+            platform_refusal("linux-x86_64", &options),
             cfg!(windows).then_some(WINDOWS_UNPROVEN)
         );
+        // The tests' override lets this build's Windows through, never a
+        // Windows tag.
+        #[cfg(feature = "test-support")]
+        {
+            let lenient = HelperOptions::default().with_unproven_platform();
+            assert_eq!(platform_refusal("linux-x86_64", &lenient), None);
+            assert_eq!(platform_refusal("fake", &lenient), None);
+            for tag in ["win-amd64", "win32", "win-arm64"] {
+                assert_eq!(platform_refusal(tag, &lenient), Some(WINDOWS_UNPROVEN));
+            }
+        }
         assert!(WINDOWS_UNPROVEN.contains("M7-50"));
     }
 

@@ -34,18 +34,23 @@ pub fn root(test: &str) -> PathBuf {
     dir
 }
 
-/// Deadlines a test's helper meets on a loaded runner: 20 s each.
+/// Deadlines a test's fake helper meets on a loaded runner: 20 s each;
+/// on Windows let past M7-50 (test-support's override), since the fake
+/// is no kernel. The real helper's tests never use these.
 pub fn fast() -> HelperOptions {
     HelperOptions::default()
         .with_timeout(Duration::from_secs(20))
         .with_setup_timeout(Duration::from_secs(20))
+        .with_unproven_platform()
 }
 
-/// Deadlines a test means its helper to miss: 2 s each.
+/// Deadlines a test means its fake helper to miss: 2 s each; past M7-50
+/// on Windows, as [`fast`].
 pub fn short() -> HelperOptions {
     HelperOptions::default()
         .with_timeout(Duration::from_secs(2))
         .with_setup_timeout(Duration::from_secs(2))
+        .with_unproven_platform()
 }
 
 /// The bracket judged against s01's socket with `verifier`.
