@@ -119,18 +119,22 @@ crates/
                   never published, shipped as a container image
   fitment-corpus/ lib: the corpus's one scorer (M6), a dev-dependency
                   only, never published
+  fitment-fit/    lib: the fit verifier's process and protocol (M7): drives
+                  the Open CASCADE helper out of process; the only crate
+                  that spawns one, pure Rust on four crates
+    clippy.toml   source-level bans for this crate
 deploy/           the server's Containerfile, its configuration, smoke test
 deny.toml         workspace policy: licences, sources, D1 crate bans
 deny/core.toml    the exact crates fitment-core may depend on
-deny/sync.toml    no async runtime in fitment or fitment-catalog
-fuzz/             the API's fuzz targets, a workspace of its own
+deny/sync.toml    no async runtime in fitment, fitment-catalog or fitment-fit
+fuzz/             the API's and the fit helper's frames' fuzz targets, a
+                  workspace of its own
 tools/            check-core.sh and core-deps.py (the crates' checks), the
                   corpus generator, the Open CASCADE oracle, the fixtures'
                   fetch and the output and comparison scripts
 docs/             PLAN.md, the Vectera audit, decision research, the spike
 ```
 
-Coming later: `fitment-fit` (M7, drives the Open CASCADE helper).
 The full design is in
 [docs/research/workspace-layout.md](docs/research/workspace-layout.md).
 

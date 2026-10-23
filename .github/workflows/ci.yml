@@ -45,6 +45,10 @@ jobs:
       # M6's server without its features: no schema, no test seams in the
       # library (docs/research/m6-api.md, section 11.2).
       - run: cargo clippy -p fitment-server --all-targets --no-default-features --locked -- -D warnings
+      # M7's fitment-fit as published, without its test support (its own
+      # tests turn that on, so only the library alone shows what it lacks;
+      # docs/research/m7-fit.md, FG1).
+      - run: cargo clippy -p fitment-fit --lib --no-default-features --locked -- -D warnings
 
   corpus:
     name: test parts and Open CASCADE oracle

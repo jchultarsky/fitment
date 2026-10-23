@@ -26,6 +26,9 @@ publish = true
 # Internal crates: exact versions, released in lockstep.
 fitment-core = { path = "crates/fitment-core", version = "=0.3.0" }
 fitment-catalog = { path = "crates/fitment-catalog", version = "=0.3.0" }
+# M7 (docs/research/m7-fit.md, FG1): the fit verifier's process and
+# protocol, published from 0.4.0 after fitment-catalog and before fitment.
+fitment-fit = { path = "crates/fitment-fit", version = "=0.3.0" }
 # The corpus's scorer (docs/research/m6-api.md, SC3): never published, and
 # without a version, so `cargo publish` strips it from every dev-dependency.
 fitment-corpus = { path = "crates/fitment-corpus" }

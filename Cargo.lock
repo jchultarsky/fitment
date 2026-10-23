@@ -421,6 +421,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fitment-fit"
+version = "0.3.0"
+dependencies = [
+ "fitment-core",
+ "fitment-fit",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "fitment-server"
 version = "0.3.0"
 dependencies = [

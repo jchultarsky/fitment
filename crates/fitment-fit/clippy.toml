@@ -1,0 +1,19 @@
+# Clippy reads this file for fitment-fit only, its tests included
+# (docs/research/m7-fit.md, FG1): no order that changes from run to run.
+# The library may spawn, read its fit directory and its environment; only
+# its test support exits or aborts (the fake helper is a process of its
+# own). A local `#[allow]` with a comment is the escape hatch, and it shows
+# up in review.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "random iteration order makes output nondeterministic; use BTreeMap" },
+  { path = "std::collections::HashSet", reason = "random iteration order makes output nondeterministic; use BTreeSet" },
+]
+
+disallowed-methods = [
+  { path = "std::process::exit", reason = "a library never exits the process" },
+  { path = "std::process::abort", reason = "a library never ends the process" },
+]

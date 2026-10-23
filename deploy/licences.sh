@@ -29,7 +29,7 @@ while IFS='|' read -r package licence; do
   name=${package% v*}
   version=${package##* v}
   case $name in
-    fitment | fitment-core | fitment-catalog | fitment-server)
+    fitment | fitment-core | fitment-catalog | fitment-fit | fitment-server)
       echo "$name $version: this repository, $licence (LICENSE)" >>"$out/THIRD-PARTY.txt"
       continue ;;
   esac

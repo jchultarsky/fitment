@@ -359,10 +359,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fitment-fit"
+version = "0.3.0"
+dependencies = [
+ "fitment-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "fitment-fuzz"
 version = "0.0.0"
 dependencies = [
  "fitment-catalog",
+ "fitment-fit",
  "fitment-server",
  "libfuzzer-sys",
 ]

@@ -27,8 +27,8 @@ check "uses a std module it must not (fs, net, env, process, thread, os)" \
 # synchronous too.
 check "contains async code" \
   grep -rnE '\basync\b|\.await\b' "$src"
-check "fitment-catalog or fitment contains async code" \
-  grep -rnE '\basync\b|\.await\b' crates/fitment-catalog/src crates/fitment/src
+check "fitment-catalog, fitment or fitment-fit contains async code" \
+  grep -rnE '\basync\b|\.await\b' crates/fitment-catalog/src crates/fitment/src crates/fitment-fit/src
 
 # With unsafe forbidden, global mutable state needs a static item.
 check "declares a static item (global state)" \
@@ -42,7 +42,7 @@ check "names stepq outside gate/, features/step.rs, assembly/step.rs and propert
 # The tests hold STEP files that must never ship, in either package. Each
 # listing runs on its own first, so that a failing `cargo package` fails the
 # script (set -e) rather than look like a clean list.
-for package in fitment-core fitment fitment-catalog; do
+for package in fitment-core fitment fitment-catalog fitment-fit; do
   packaged=$(cargo package --list -p "$package" --locked --allow-dirty)
   check "would publish a STEP file in $package" \
     grep -iE '\.(stp|step|p21)$' <<<"$packaged"
@@ -67,7 +67,7 @@ version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
 # fitment-catalog, which only the workspace's local overlay holds.
 # fitment-server is never published either (M6-35).
 cargo package --workspace --exclude fitment-corpus --exclude fitment-server --no-verify --locked --allow-dirty --quiet
-for package in fitment-core fitment fitment-catalog; do
+for package in fitment-core fitment fitment-catalog fitment-fit; do
   tree=$(cargo tree -p "$package" -e normal,build --all-features --locked --prefix none)
   check "fitment-corpus is in $package's normal graph" \
     grep -q '^fitment-corpus ' <<<"$tree"
@@ -75,6 +75,17 @@ for package in fitment-core fitment fitment-catalog; do
   check "the packaged $package names fitment-corpus" \
     grep -q 'fitment-corpus' <<<"$manifest"
 done
+
+# FG1 (docs/research/m7-fit.md): fitment-fit is pure Rust on four crates,
+# whatever its features: fitment-core, serde, serde_json and thiserror (no
+# Open CASCADE, binding or C++ bridge: deny.toml bans those everywhere),
+# and it is the only crate that spawns a process.
+direct=$(cargo tree -p fitment-fit -e normal,build --all-features --locked --prefix none --depth 1 |
+  sed 1d | cut -d' ' -f1 | sort -u | tr '\n' ' ')
+check "fitment-fit's direct dependencies are not fitment-core, serde, serde_json, thiserror: $direct" \
+  test "$direct" != "fitment-core serde serde_json thiserror "
+check "a crate other than fitment-fit spawns a process" \
+  grep -rnE '\bprocess::Command\b|\bCommand::new\(' crates/fitment-core/src crates/fitment-catalog/src crates/fitment/src crates/fitment-server/src
 
 # M6 (docs/research/m6-api.md, section 4.13). M6-35: fitment-server is
 # never published and not a dist artifact.
@@ -133,9 +144,9 @@ check "names rusqlite outside fitment-server's state/db.rs and state/db/" \
 check "uses serde_json::(Value|from_str|to_value) in matching.rs or objects.rs" \
   sh -c "grep -nE 'serde_json::(Value|from_str|to_value)' $server/src/matching.rs $server/src/state/objects.rs 2>/dev/null | grep ."
 
-# SV1, VT35: no async runtime or HTTP stack in the CLI's or the catalog's
-# graph, whatever their features...
-for package in fitment fitment-catalog; do
+# SV1, VT35: no async runtime or HTTP stack in the CLI's, the catalog's or
+# the fit verifier's (FG1) graph, whatever their features...
+for package in fitment fitment-catalog fitment-fit; do
   tree=$(cargo tree -p "$package" -e normal --all-features --locked --prefix none)
   check "$package's graph holds an async crate" \
     grep -qE '^(tokio|mio|hyper|axum|tower|async-std|smol|futures-executor) ' <<<"$tree"
