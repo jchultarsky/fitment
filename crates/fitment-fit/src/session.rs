@@ -20,8 +20,10 @@ use fitment_core::{FitIdentity, FitRequest, FitVerifier, SocketDocument, sha256_
 use crate::dir::{FitDir, HelperFiles, Manifest, PrepareError, SCRIPT};
 use crate::exit::ExitClass;
 use crate::nonce::Nonces;
-use crate::process::{Ended, Process, Spawn, Wait};
-use crate::protocol::{self, EncodeError, HelloRequest, ProtocolError, Request, Sent, quoted};
+use crate::process::{Ended, Process, Spawn, Spawner, Wait};
+use crate::protocol::{
+    self, EncodeError, HelloRequest, ProtocolError, Request, Sent, Stress, quoted, wire,
+};
 use crate::{BINDING, FIT_PROTOCOL, KERNEL, KERNEL_NAME, KERNEL_VERSION, PYTHON};
 
 /// How a session runs its helpers (FL1, FL3, FL4, FL5).
@@ -37,10 +39,19 @@ pub struct HelperOptions {
     pub jobs: usize,
     /// The checks a helper serves before it is retired: 256.
     pub max_checks: u32,
+    /// The memory a helper may map (`fit.memory_mib`): 4,096 MiB, by
+    /// `RLIMIT_AS` on Linux and a job object on Windows (FY3).
+    pub memory_mib: u64,
     /// FL5: a process group of the helper's own, so a terminal's signals
     /// never reach it (the server's); the CLI's helpers stay in fitment's,
     /// so a user's Ctrl-C ends both.
     pub own_process_group: bool,
+    /// M7-50, for the tests only: a helper on Windows is let through when
+    /// this build is on Windows, so the fake helper's verified fits can be
+    /// tested there. The platform tag a helper states is refused whatever
+    /// this says. No release build has the field.
+    #[cfg(feature = "test-support")]
+    unproven_platform: bool,
 }
 
 impl Default for HelperOptions {
@@ -50,7 +61,10 @@ impl Default for HelperOptions {
             setup_timeout: Duration::from_secs(300),
             jobs: 1,
             max_checks: 256,
+            memory_mib: 4096,
             own_process_group: false,
+            #[cfg(feature = "test-support")]
+            unproven_platform: false,
         }
     }
 }
@@ -84,11 +98,43 @@ impl HelperOptions {
         self
     }
 
+    /// With each helper's memory bounded at `memory_mib` MiB (at least 1).
+    #[must_use]
+    pub fn with_memory_mib(mut self, memory_mib: u64) -> Self {
+        self.memory_mib = memory_mib.max(1);
+        self
+    }
+
     /// With the helper in a process group of its own, or not.
     #[must_use]
     pub fn with_own_process_group(mut self, own: bool) -> Self {
         self.own_process_group = own;
         self
+    }
+
+    /// M7-50, for the tests only (`test-support`): a build on Windows lets
+    /// its helper through, so the fake helper's fits can be tested there.
+    /// A helper stating a Windows platform tag is still refused, and the
+    /// real helper's tests never use it.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn with_unproven_platform(mut self) -> Self {
+        self.unproven_platform = true;
+        self
+    }
+
+    /// True if this build's own Windows may be let through (test-support's
+    /// override); always false in a release build.
+    #[cfg_attr(not(feature = "test-support"), allow(clippy::unused_self))]
+    fn unproven_platform(&self) -> bool {
+        #[cfg(feature = "test-support")]
+        {
+            self.unproven_platform
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            false
+        }
     }
 }
 
@@ -133,6 +179,93 @@ pub struct HelperReport {
     pub status: Option<String>,
     /// The end of its stderr, escaped.
     pub stderr: String,
+    /// Its handshake, when the handshake itself held and the helper is
+    /// refused for its platform (M7-50), so `fitment fit setup` can say what
+    /// answered.
+    pub handshake: Option<Handshake>,
+}
+
+/// M7-50: until the weekly Windows corpus run (VT77) is green, a helper on
+/// Windows is refused: no fit is verified there.
+pub const WINDOWS_UNPROVEN: &str = "the fit kernel is not yet proven on Windows: no fit is verified there until the weekly Windows corpus run is green (M7-50)";
+
+/// M7-50's rule: the refusal, if the helper runs on Windows, by this
+/// build's own target or by the platform tag the helper states
+/// (`sysconfig`'s: `win-amd64`, `win32`, `win-arm64`), so neither alone can
+/// let an unproven kernel through.
+pub(crate) fn platform_refusal(platform: &str, options: &HelperOptions) -> Option<&'static str> {
+    refused_on(cfg!(windows) && !options.unproven_platform(), platform)
+}
+
+/// M7-50's rule for a build on Windows or not.
+fn refused_on(windows: bool, platform: &str) -> Option<&'static str> {
+    (windows || platform.starts_with("win")).then_some(WINDOWS_UNPROVEN)
+}
+
+/// One case of the self-test (FU4): what the kernel measured, what it
+/// must, and whether it did.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct SelfTestCase {
+    /// `touching`, `overlapping` or `apart`.
+    pub name: String,
+    /// The Common's volume the kernel measured, in mm³.
+    pub common_mm3: f64,
+    /// The distance it measured, in mm.
+    pub distance_mm: f64,
+    /// Its alerts, by class name.
+    pub alerts: Vec<String>,
+    /// The Common's volume two unit boxes have, in mm³.
+    pub expected_common_mm3: f64,
+    /// Their distance, in mm.
+    pub expected_distance_mm: f64,
+    /// True if the kernel measured both within 1e-9 (relative for the
+    /// volume) and raised no alert.
+    pub passed: bool,
+}
+
+/// FU4: a helper's handshake and its self-test.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct SelfTest {
+    /// The handshake.
+    pub handshake: Handshake,
+    /// The three cases, in order.
+    pub cases: Vec<SelfTestCase>,
+}
+
+impl SelfTest {
+    /// True if every case passed.
+    pub fn passed(&self) -> bool {
+        self.cases.iter().all(|c| c.passed)
+    }
+
+    fn of(handshake: Handshake, reply: wire::SelfTestReply) -> Self {
+        let cases = reply
+            .cases
+            .into_iter()
+            .map(|c| {
+                let (common, distance) = match c.name.as_str() {
+                    "overlapping" => (1e-3, 0.0),
+                    "apart" => (0.0, 0.02),
+                    _ => (0.0, 0.0),
+                };
+                let passed = c.alerts.is_empty()
+                    && (c.common_mm3 - common).abs() <= 1e-9 * common.max(1e-3)
+                    && (c.distance_mm - distance).abs() <= 1e-9;
+                SelfTestCase {
+                    name: c.name,
+                    common_mm3: c.common_mm3,
+                    distance_mm: c.distance_mm,
+                    alerts: c.alerts,
+                    expected_common_mm3: common,
+                    expected_distance_mm: distance,
+                    passed,
+                }
+            })
+            .collect();
+        Self { handshake, cases }
+    }
 }
 
 /// Why a helper could not be checked (FU2): a fit directory that is not
@@ -164,21 +297,24 @@ enum Kind {
 struct Failed {
     kind: Kind,
     why: String,
+    handshake: Option<Box<Handshake>>,
 }
 
 impl Failed {
-    fn protocol(why: impl Into<String>) -> Self {
+    fn new(kind: Kind, why: impl Into<String>) -> Self {
         Self {
-            kind: Kind::Protocol,
+            kind,
             why: why.into(),
+            handshake: None,
         }
     }
 
+    fn protocol(why: impl Into<String>) -> Self {
+        Self::new(Kind::Protocol, why)
+    }
+
     fn unavailable(sentence: impl Into<String>, why: impl Into<String>) -> Self {
-        Self {
-            kind: Kind::Unavailable(sentence.into()),
-            why: why.into(),
-        }
+        Self::new(Kind::Unavailable(sentence.into()), why)
     }
 
     /// The failure a fit records: a crash on the request's second try is
@@ -218,7 +354,7 @@ impl From<Ended> for Failed {
                 )
             }
         };
-        Self { kind, why }
+        Self::new(kind, why)
     }
 }
 
@@ -253,6 +389,7 @@ pub struct OcctHelper {
     options: HelperOptions,
     nonces: Nonces,
     identity: FitIdentity,
+    spawner: Spawner,
 }
 
 impl OcctHelper {
@@ -291,6 +428,7 @@ impl OcctHelper {
             options,
             nonces: Nonces::new(),
             identity,
+            spawner: Spawner::default(),
         })
     }
 
@@ -352,7 +490,7 @@ impl OcctHelper {
             dir: dir.clone(),
             own_group: self.options.own_process_group,
         };
-        let mut process = match Process::spawn(spawn) {
+        let mut process = match self.spawner.spawn(spawn) {
             Ok(process) => process,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&dir);
@@ -393,6 +531,10 @@ impl OcctHelper {
             kernel: manifest.kernel.clone(),
             python: manifest.python.clone(),
             site: manifest.site.to_string_lossy().into_owned(),
+            timeout_seconds: seconds(self.options.timeout),
+            setup_timeout_seconds: seconds(self.options.setup_timeout),
+            memory_mib: hello_bounds(&self.options).0,
+            max_checks: hello_bounds(&self.options).1,
         };
         let wait = Wait::new(self.options.setup_timeout, cancel);
         let request = protocol::hello(self.nonces.next(), &body)?;
@@ -404,7 +546,8 @@ impl OcctHelper {
             }
         })?;
         identify(&reply, process.pid(), manifest, &self.files)?;
-        Ok(Handshake {
+        let refusal = platform_refusal(&reply.platform, &self.options);
+        let handshake = Handshake {
             pid: reply.pid,
             python: reply.python,
             platform: reply.platform,
@@ -417,7 +560,55 @@ impl OcctHelper {
                     value: l.value,
                 })
                 .collect(),
-        })
+        };
+        match refusal {
+            // M7-50: the handshake held; the platform is not proven.
+            Some(sentence) => Err(Failed {
+                handshake: Some(Box::new(handshake)),
+                ..Failed::unavailable(sentence, sentence)
+            }),
+            None => Ok(handshake),
+        }
+    }
+
+    /// FU4: spawns one helper, checks its handshake (FH3), runs the
+    /// kernel's self-test (two unit boxes touching, overlapping by 1e-3 mm
+    /// and apart by 0.02 mm) and ends it (FL5): what `fitment fit setup`
+    /// does once the manifest is written.
+    ///
+    /// # Errors
+    ///
+    /// [`HelperError`] with the reason; a helper refused for its platform
+    /// (M7-50) carries its handshake in the report.
+    pub fn self_test(&self) -> Result<SelfTest, HelperError> {
+        self.self_test_with(None)
+    }
+
+    /// The self-test, with VT70's `stress` if one is given.
+    pub(crate) fn self_test_with(&self, stress: Option<Stress>) -> Result<SelfTest, HelperError> {
+        let mut live = self.start(None).map_err(|(failed, process)| {
+            HelperError::Failed(Box::new(report(&failed, process.as_deref())))
+        })?;
+        let wait = Wait::new(self.options.setup_timeout, None);
+        let measured = protocol::self_test(self.nonces.next(), stress)
+            .map_err(Failed::from)
+            .and_then(|request| {
+                round(&mut live.process, request, &wait, protocol::self_test_reply)
+            });
+        match measured {
+            Ok(reply) => {
+                let handshake = live.handshake.clone();
+                self.finish(&mut [&mut live]);
+                Ok(SelfTest::of(handshake, reply))
+            }
+            Err(failed) => {
+                live.process.kill();
+                Err(HelperError::Failed(Box::new(report(
+                    &failed,
+                    Some(&live.process),
+                ))))
+            }
+        }
     }
 
     /// FL5: `bye` to each, then 2 s, then a kill; every one reaped.
@@ -523,7 +714,22 @@ fn report(failed: &Failed, process: Option<&Process>) -> HelperReport {
         pid: process.map(Process::pid),
         status: process.and_then(Process::status),
         stderr: process.map(Process::stderr).unwrap_or_default(),
+        handshake: failed.handshake.as_deref().cloned(),
     }
+}
+
+/// The memory and the checks `hello` states, each at least one, however
+/// the options were built (the reviews of PR 2b).
+fn hello_bounds(options: &HelperOptions) -> (u64, u32) {
+    (options.memory_mib.max(1), options.max_checks.max(1))
+}
+
+/// A deadline in whole seconds, at least one, for the helper's own bounds
+/// (FL4, FY3).
+fn seconds(d: Duration) -> u64 {
+    d.as_secs()
+        .saturating_add(u64::from(d.subsec_nanos() > 0))
+        .max(1)
 }
 
 /// Why a session cannot be opened.
@@ -566,6 +772,8 @@ pub struct OcctSession<'h> {
     spawned: AtomicUsize,
     #[cfg(feature = "test-support")]
     panic_next: AtomicBool,
+    #[cfg(feature = "test-support")]
+    raise_at: Mutex<Option<usize>>,
 }
 
 fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -630,6 +838,8 @@ impl<'h> OcctSession<'h> {
             spawned: AtomicUsize::new(0),
             #[cfg(feature = "test-support")]
             panic_next: AtomicBool::new(false),
+            #[cfg(feature = "test-support")]
+            raise_at: Mutex::new(None),
         })
     }
 
@@ -696,10 +906,10 @@ impl<'h> OcctSession<'h> {
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(Failed {
-                    kind: Kind::Timeout,
-                    why: "no helper was free before the request's deadline".to_owned(),
-                });
+                return Err(Failed::new(
+                    Kind::Timeout,
+                    "no helper was free before the request's deadline",
+                ));
             }
             pool = self
                 .freed
@@ -792,7 +1002,11 @@ impl<'h> OcctSession<'h> {
         let sent = protocol::place(self.helper.nonces.next(), request)?;
         let place = round(&mut live.process, sent, &wait, protocol::place_measures)?;
         let plan = request.plan(&scene, &place);
-        let sent = protocol::check(self.helper.nonces.next(), &plan)?;
+        #[cfg(feature = "test-support")]
+        let raise_at = locked(&self.raise_at).take();
+        #[cfg(not(feature = "test-support"))]
+        let raise_at = None;
+        let sent = protocol::check(self.helper.nonces.next(), &plan, raise_at)?;
         let check = round(&mut live.process, sent, &wait, protocol::check_measures)?;
         live.checks += 1;
         Ok(FitMeasures::new(scene, place, check))
@@ -879,6 +1093,62 @@ pub(crate) fn panic_in_next_serve(session: &OcctSession<'_>) {
     session.panic_next.store(true, Ordering::Relaxed);
 }
 
+/// VT71, for the tests: the session's next `check` asks the helper to
+/// raise at the pair `index`, as its kernel might.
+#[cfg(feature = "test-support")]
+pub(crate) fn raise_at_pair(session: &OcctSession<'_>, index: usize) {
+    *locked(&session.raise_at) = Some(index);
+}
+
+/// A placement a probe asks: its socket, occurrence and transform.
+#[cfg(feature = "test-support")]
+pub(crate) type ProbeAt = (String, Vec<u64>, fitment_core::Rigid);
+
+/// What a probe of the real helper got (VT71): the scene's measures, and
+/// the place's if a candidate was handed.
+#[cfg(feature = "test-support")]
+pub(crate) type Probed = (
+    fitment_core::fit::SceneMeasures,
+    Option<fitment_core::fit::PlaceMeasures>,
+);
+
+/// VT71, for the tests: a helper of `helper` handed `assembly` as a scene
+/// that names no body, claiming the SHA-256 `claimed`, then, if given, the
+/// file candidate `candidate` at `placements`; each reply decoded as
+/// strictly as a session decodes it, under the helper's deadlines.
+#[cfg(feature = "test-support")]
+pub(crate) fn probe(
+    helper: &OcctHelper,
+    (assembly, claimed): (&[u8], &str),
+    candidate: Option<(&[u8], &[ProbeAt])>,
+) -> Result<Probed, Box<HelperReport>> {
+    let mut live = helper
+        .start(None)
+        .map_err(|(failed, process)| Box::new(report(&failed, process.as_deref())))?;
+    let rounds = (|| {
+        let wait = Wait::new(helper.options.setup_timeout, None);
+        let sent = protocol::scene_probe(helper.nonces.next(), claimed, assembly)?;
+        let scene = round(&mut live.process, sent, &wait, protocol::scene_measures)?;
+        let Some((bytes, placements)) = candidate else {
+            return Ok((scene, None));
+        };
+        let wait = Wait::new(helper.options.timeout, None);
+        let sent = protocol::place_probe(helper.nonces.next(), claimed, bytes, placements)?;
+        let place = round(&mut live.process, sent, &wait, protocol::place_measures)?;
+        Ok((scene, Some(place)))
+    })();
+    match rounds {
+        Ok(probed) => {
+            helper.finish(&mut [&mut live]);
+            Ok(probed)
+        }
+        Err(failed) => {
+            live.process.kill();
+            Err(Box::new(report(&failed, Some(&live.process))))
+        }
+    }
+}
+
 /// VT55's write deadline (FL4), for the tests: a helper started from
 /// `helper` is sent a frame with a payload of `bytes`, which must be
 /// written within `within`.
@@ -900,4 +1170,64 @@ pub(crate) fn write_probe(
     live.process
         .send(frame, &wait)
         .map_err(|e| Failed::from(e).failure())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M7-50: every platform tag Windows' Python states is refused, with
+    /// the sentence every fit there records; Linux's and macOS's are not.
+    #[test]
+    fn only_windows_is_refused() {
+        for windows in [false, true] {
+            for tag in ["win-amd64", "win32", "win-arm64"] {
+                assert_eq!(refused_on(windows, tag), Some(WINDOWS_UNPROVEN), "{tag}");
+            }
+            for tag in ["linux-x86_64", "linux-aarch64", "macosx-11.0-arm64", "fake"] {
+                // A build on Windows refuses whatever tag its helper states.
+                let expected = windows.then_some(WINDOWS_UNPROVEN);
+                assert_eq!(refused_on(windows, tag), expected, "{tag} {windows}");
+            }
+        }
+        let options = HelperOptions::default();
+        assert_eq!(
+            platform_refusal("linux-x86_64", &options),
+            cfg!(windows).then_some(WINDOWS_UNPROVEN)
+        );
+        // The tests' override lets this build's Windows through, never a
+        // Windows tag.
+        #[cfg(feature = "test-support")]
+        {
+            let lenient = HelperOptions::default().with_unproven_platform();
+            assert_eq!(platform_refusal("linux-x86_64", &lenient), None);
+            assert_eq!(platform_refusal("fake", &lenient), None);
+            for tag in ["win-amd64", "win32", "win-arm64"] {
+                assert_eq!(platform_refusal(tag, &lenient), Some(WINDOWS_UNPROVEN));
+            }
+        }
+        assert!(WINDOWS_UNPROVEN.contains("M7-50"));
+    }
+
+    /// The reviews of PR 2b: the bounds `hello` states are never 0, however
+    /// the options were built.
+    #[test]
+    fn hello_s_bounds_are_at_least_one() {
+        let zero = HelperOptions {
+            memory_mib: 0,
+            max_checks: 0,
+            ..HelperOptions::default()
+        };
+        assert_eq!(hello_bounds(&zero), (1, 1));
+        assert_eq!(hello_bounds(&HelperOptions::default()), (4096, 256));
+    }
+
+    /// FL4, FY3: the bounds `hello` states are whole seconds, at least one.
+    #[test]
+    fn deadlines_are_stated_in_whole_seconds() {
+        assert_eq!(seconds(Duration::from_millis(1)), 1);
+        assert_eq!(seconds(Duration::from_millis(1500)), 2);
+        assert_eq!(seconds(Duration::from_secs(120)), 120);
+        assert_eq!(seconds(Duration::MAX), u64::MAX);
+    }
 }

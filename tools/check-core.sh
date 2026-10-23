@@ -76,6 +76,21 @@ for package in fitment-core fitment fitment-catalog fitment-fit; do
     grep -q 'fitment-corpus' <<<"$manifest"
 done
 
+# FG1, FG2 (docs/research/m7-fit.md): fitment-fit's package carries the
+# helper's script and its lock, which it embeds with include_bytes!, and
+# nothing else of helper/: no Open CASCADE, no wheel, no cache.
+packaged=$(cargo package --list -p fitment-fit --locked --allow-dirty)
+for file in helper/fit_helper.py helper/fit_helper.py.lock; do
+  check "fitment-fit would not publish $file" \
+    sh -c "! grep -qx '$file' <<'EOF'
+$packaged
+EOF"
+done
+check "fitment-fit would publish a file of helper/ but its script and lock" \
+  sh -c "grep '^helper/' <<'EOF' | grep -vxE 'helper/fit_helper\.py(\.lock)?'
+$packaged
+EOF"
+
 # FG1 (docs/research/m7-fit.md): fitment-fit is pure Rust on four crates,
 # whatever its features: fitment-core, serde, serde_json and thiserror (no
 # Open CASCADE, binding or C++ bridge: deny.toml bans those everywhere),

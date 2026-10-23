@@ -374,6 +374,8 @@ pub(crate) struct WireSolid {
     pub location: Rows,
     #[serde(rename = "box", deserialize_with = "nullable")]
     pub bounds: Option<WireBox>,
+    /// A leaf's shape that is not a solid (FB6).
+    pub non_solid: bool,
 }
 
 impl WireSolid {
@@ -382,6 +384,7 @@ impl WireSolid {
             faces: m.faces.clone(),
             location: m.location,
             bounds: WireBox::of(&m.bounds),
+            non_solid: m.non_solid,
         }
     }
 
@@ -390,6 +393,7 @@ impl WireSolid {
         m.faces = self.faces;
         m.location = self.location.map(|row| row.map(zero));
         m.bounds = WireBox::measure(self.bounds);
+        m.non_solid = self.non_solid;
         m
     }
 }
@@ -581,6 +585,27 @@ impl WireReach {
 pub(crate) struct CheckReply {
     pub pairs: Vec<WirePair>,
     pub reach: Vec<WireReach>,
+}
+
+/// FU4's self-test cases, in the order the helper measures them.
+pub(crate) const SELF_TEST_CASES: [&str; 3] = ["touching", "overlapping", "apart"];
+
+/// One case of the self-test: the Common of two unit boxes and their
+/// distance, as the kernel measured them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SelfTestCase {
+    pub name: String,
+    pub common_mm3: f64,
+    pub distance_mm: f64,
+    pub alerts: Vec<String>,
+}
+
+/// The `selftest` reply (FU4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SelfTestReply {
+    pub cases: Vec<SelfTestCase>,
 }
 
 /// An `error` frame's body (FH5): the helper could not parse a request.

@@ -25,4 +25,28 @@ the only fitment crate that spawns a process.
   a crash is retried once, a timeout or resource kill makes the run
   incomplete, and nothing is ever `verified` but by core.
 
-The helper script itself arrives with M7's PR 2b.
+- **The helper** (FG2, FH, FY3): `helper/fit_helper.py` and its lock
+  `helper/fit_helper.py.lock` are embedded in this crate (`include_bytes!`,
+  each with its SHA-256) and written to the fit directory by
+  `fitment_fit::setup`, `fitment fit setup`'s internals: the only step that runs
+  uv, and the only one that may download (Python 3.13 and the pinned
+  `cadquery-ocp-novtk` 8.0.1.1.0 wheel). The helper moves its standard
+  output onto stderr before it imports Open CASCADE, sets its own bounds
+  (`RLIMIT_AS` on Linux, a per-request CPU limit and alarm on Unix, a job
+  object on Windows, `PR_SET_PDEATHSIG` on Linux), reads each assembly
+  through XCAF with its faces bound to their STEP `#id`s, and measures
+  Commons, cuts and distances with non-destructive `BOPAlgo_BOP` booleans,
+  every alert and exception reported per pair. It decides nothing.
+- **Windows** (M7-50): until the weekly Windows corpus run is green, a
+  helper on Windows is refused after its handshake, so no fit is verified
+  there.
+
+## Licence
+
+This crate is MIT, and so is the helper's script: it is fitment's own text.
+The crate contains no Open CASCADE, binding or library, only that text and
+the lock that names the wheels uv fetches on the user's machine. The helper
+imports Open CASCADE (the `cadquery-ocp-novtk` wheel, LGPL-2.1 with its
+exception, and the libraries the wheel bundles) at run time from the
+environment `fitment fit setup` made; whoever builds an image with that
+environment in it distributes Open CASCADE and owes its notices (FX8).

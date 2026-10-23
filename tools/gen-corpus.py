@@ -1698,7 +1698,7 @@ M7_COUNTS = {"FT": 12, "FZ": 9, "FB": 6, "FV": 9, "FH": 6, "FL": 6, "FY": 7, "FC
              "FX": 9, "FK": 8, "FO": 3}
 M7_PR = {"FT": "4", "FZ": "4", "FB": "4", "FV": "4", "FH": "2a", "FL": "2a", "FY": "2a", "FC": "1b", "FM": "1b",
          "FG": "2a", "FU": "3", "FX": "5a", "FK": "4", "FO": "4"}
-M7_OTHER_PR = {"FT1": "6", "FT2": "1b", "FT11": "1b", "FT12": "1b", "FB2": "2b", "FB4": "2b", "FB5": "2b",
+M7_OTHER_PR = {"FT1": "6", "FT2": "1b", "FT11": "1b", "FT12": "1b", "FB2": "2b", "FB4": "2b", "FB5": "3",
                "FV8": "2a", "FH6": "2b", "FY1": "2b", "FY3": "2b", "FY6": "5a", "FY7": "2b", "FC6": "3", "FC8": "2a",
                "FM6": "3", "FG2": "2b", "FG3": "3", "FG4": "5a", "FG5": "5b", "FG6": "6", "FX8": "5b"}
 for prefix, count in M7_COUNTS.items():
@@ -1882,6 +1882,58 @@ M7_PR2A = {
 }
 for rule, tests in M7_PR2A.items():
     RULES[rule] = {"tests": tests}
+# PR 2b builds the real helper and the fit-kernel job (section 11, item 2b): the embedded script and its lock with their
+# SHA-256s (FG2) and the pin grep (FH6); faces bound by their #ids and placement through XCAF (FB2); the candidate's
+# bytes hashed by the helper (FB4) and the gate's bytes alone reaching the kernel, hostile files handed directly
+# answering in frames (FY1); the helper's own bounds, RLIMIT_AS on Linux, a per-request CPU limit and alarm, Windows'
+# job object (FY3), PR_SET_PDEATHSIG from a spawner thread (FL5) and the cheap bounds named against a sandbox (FY7).
+# The tests are fitment-fit's kernel.rs (uv: FITMENT_FIT_KERNEL=1, CI's fit-kernel job on three OSes) and the fake's
+# M7-50 refusal. FB5's second scene is the helper's; the session asks for none until a request carries another
+# assembly's bytes (PR 3), so it waits for PR 3.
+FIT_KERN = f"{FIT}/tests/kernel.rs"
+M7_PR2B = {
+    "FB2": [f"{FIT_KERN}::the_lug_interferes_and_the_bracket_verifies"],
+    "FB4": [f"{FIT_KERN}::the_lug_interferes_and_the_bracket_verifies",
+            f"{FIT_KERN}::hostile_files_end_in_a_frame_or_a_failure"],
+    "FH6": [f"{FIT_PREP}::the_helper_s_pin_is_the_oracle_s", f"{FIT_PREP}::embedded_hashes_are_the_files",
+            f"{FIT}/src/lib.rs::the_versions_are_fc8_s"],
+    "FY1": [f"{FIT_KERN}::hostile_files_end_in_a_frame_or_a_failure"],
+    "FY3": [f"{FIT_KERN}::the_helper_s_own_bounds_end_it",
+            f"{FIT_KERN}::setup_prepares_the_helper_and_its_self_test_passes"],
+    "FY7": [f"{FIT_KERN}::the_helper_s_own_bounds_end_it",
+            f"{FIT_KERN}::a_helper_outlives_the_thread_that_asked_for_it"],
+    "FG2": [f"{FIT_PREP}::embedded_hashes_are_the_files"],
+}
+for rule, tests in M7_PR2B.items():
+    assert RULES[rule] == {"deferred": "M7 PR 2b"}, rule
+    RULES[rule] = {"tests": tests}
+for rule, tests in {
+    "FH2": [f"{FIT_KERN}::hostile_files_end_in_a_frame_or_a_failure"],
+    "FH3": [f"{FIT_ADV}::windows_is_refused_until_its_corpus_run_is_green",
+            f"{FIT_ADV}::without_the_override_windows_refuses_even_the_fake",
+            f"{FIT}/src/session.rs::only_windows_is_refused",
+            f"{FIT_KERN}::setup_prepares_the_helper_and_its_self_test_passes"],
+    "FH4": [f"{FIT_KERN}::the_lug_interferes_and_the_bracket_verifies",
+            f"{FIT}/src/protocol/tests.rs::a_self_test_reply_names_its_three_cases"],
+    "FL2": [f"{FIT_KERN}::setup_prepares_the_helper_and_its_self_test_passes"],
+    "FL4": [f"{FIT_KERN}::the_helper_s_own_bounds_end_it",
+            f"{FIT}/src/session.rs::deadlines_are_stated_in_whole_seconds"],
+    "FL5": [f"{FIT_KERN}::a_helper_outlives_the_thread_that_asked_for_it",
+            f"{FIT_KERN}::a_killed_helper_leaves_no_process"],
+    "FV8": [f"{FIT_KERN}::the_helper_s_own_bounds_end_it"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
+# The two reviews of PR 2b: the spawner never spawns on the caller, setup's uv is never left running and its cache
+# must outlast the run, hello's bounds are at least one, and a candidate is its one solid and nothing else.
+for rule, tests in {
+    "FL5": [f"{FIT}/src/process.rs::a_spawner_without_its_thread_never_spawns_on_the_caller"],
+    "FL2": [f"{FIT}/src/setup.rs::a_cache_that_would_not_last_is_refused",
+            f"{FIT}/src/setup.rs::uv_s_ends_are_reported_and_it_is_never_left_running"],
+    "FY3": [f"{FIT}/src/session.rs::hello_s_bounds_are_at_least_one"],
+    "FB4": [f"{FIT_KERN}::a_shape_that_is_not_a_solid_is_reported_and_is_no_candidate"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
+assert not [r for r, e in RULES.items() if e.get("deferred") == "M7 PR 2b"], "an M7 rule still waits for PR 2b"
 
 
 

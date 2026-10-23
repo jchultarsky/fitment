@@ -182,7 +182,9 @@ pub enum Scenario {
     StaleReply,
     /// Crashes at `check` (T1).
     CrashAtCheck,
-    /// Its second helper crashes at its first `place`, once (T1).
+    /// Its second helper crashes at its first `place`, once; its first
+    /// holds each `place` after its first until the second has started
+    /// (T1).
     CrashSecondHelperOnce,
     /// After its second `check` reply, sends 64 frames of 1 MiB nobody
     /// asked for, counting each one written (P5).
@@ -214,6 +216,9 @@ pub enum Scenario {
     /// A handshake that cannot import the kernel, naming the missing
     /// library (FH3).
     ImportError,
+    /// A handshake from Windows (`win-amd64`), which fitment refuses until
+    /// the weekly Windows corpus run is green (M7-50).
+    WindowsPlatform,
 }
 
 /// Where a fake breaks a reply's envelope (T1).
@@ -276,7 +281,7 @@ fn all() -> Vec<Scenario> {
 }
 
 /// Every scenario but the deaths and the envelope's breaks.
-const ALL: [Scenario; 42] = [
+const ALL: [Scenario; 43] = [
     Scenario::Replay,
     Scenario::NoiseOnStderr,
     Scenario::CrashOnce,
@@ -314,6 +319,7 @@ const ALL: [Scenario; 42] = [
     Scenario::OtherSite,
     Scenario::OtherPython,
     Scenario::ImportError,
+    Scenario::WindowsPlatform,
     Scenario::HostileErrorFrame,
     Scenario::StaleReply,
     Scenario::CrashAtCheck,
@@ -495,6 +501,64 @@ pub fn next_helper_dir() -> u64 {
     crate::dir::next_helper_dir()
 }
 
+/// VT71: the next `check` of `session` asks its helper to raise at the
+/// pair `index`, as its kernel might; the alert must come back for that
+/// pair alone.
+pub fn raise_at_pair(session: &OcctSession<'_>, index: usize) {
+    crate::session::raise_at_pair(session, index);
+}
+
+/// What [`stress`] asks a helper to do besides its self-test (VT70).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(clippy::exhaustive_structs)] // test support, built by the tests
+pub struct Stressed {
+    /// MiB of memory to take in Python.
+    pub allocate_mib: Option<u64>,
+    /// MiB of memory to take through Open CASCADE's own allocator.
+    pub kernel_allocate_mib: Option<u64>,
+    /// Seconds of CPU to burn.
+    pub cpu_seconds: Option<u64>,
+}
+
+/// VT70: the self-test of a helper of `helper`, asking it besides to take
+/// memory (in Python, or inside Open CASCADE) or burn CPU, as `asked`
+/// says, so that its own bounds (FY3) end it.
+///
+/// # Errors
+///
+/// The helper's failure, as a session reports it.
+pub fn stress(helper: &OcctHelper, asked: Stressed) -> Result<crate::SelfTest, crate::HelperError> {
+    helper.self_test_with(Some(crate::protocol::Stress {
+        allocate_mib: asked.allocate_mib,
+        kernel_allocate_mib: asked.kernel_allocate_mib,
+        cpu_seconds: asked.cpu_seconds,
+    }))
+}
+
+/// What [`probe`] got: the scene's measures, and the place's if a
+/// candidate was handed.
+pub type Probed = crate::session::Probed;
+
+/// A placement [`probe`] asks: its socket, occurrence and transform.
+pub type ProbeAt = crate::session::ProbeAt;
+
+/// VT71: a helper of `helper` handed `assembly` directly, bypassing the
+/// gate, as a scene that names no body and claims the SHA-256 `claimed`;
+/// then, if given, the file candidate's bytes at its placements. Every
+/// reply is decoded as strictly as a session decodes it.
+///
+/// # Errors
+///
+/// The helper's failure, as a session reports it.
+pub fn probe(
+    helper: &OcctHelper,
+    assembly: &[u8],
+    claimed: &str,
+    candidate: Option<(&[u8], &[ProbeAt])>,
+) -> Result<Probed, Box<crate::HelperReport>> {
+    crate::session::probe(helper, (assembly, claimed), candidate)
+}
+
 /// The review of PR 2a (P1): the next request `session` serves panics
 /// while its helper is taken.
 pub fn panic_in_next_serve(session: &OcctSession<'_>) {
@@ -520,6 +584,7 @@ pub fn fuzz_frames(data: &[u8]) {
             let _ = protocol::scene_measures(header, &sent);
             let _ = protocol::place_measures(header, &sent);
             let _ = protocol::check_measures(header, &sent);
+            let _ = protocol::self_test_reply(header, &sent);
         }
     }
 }
@@ -592,6 +657,7 @@ fn sents(header: &[u8]) -> Vec<Sent> {
         own(Op::Scene, Expect::Scene(bodies)),
         own(Op::Place, Expect::Place(placements, 2)),
         own(Op::Check, Expect::Check(pairs)),
+        own(Op::SelfTest, Expect::Nothing),
         fixed(Op::Scene, Expect::Scene(vec![(vec![1], 2)])),
         fixed(Op::Check, Expect::Check(Vec::new())),
     ]

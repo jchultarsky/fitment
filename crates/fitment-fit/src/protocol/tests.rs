@@ -128,7 +128,7 @@ fn a_reply_is_decoded_strictly() {
             b["bodies"][0]["volume_mm3"] = json!(-1.0);
         }),
         ("an unsorted solid", |b| {
-            b["solids"] = json!([{"faces": [3, 1], "location": [[1,0,0,0],[0,1,0,0],[0,0,1,0]], "box": null}]);
+            b["solids"] = json!([{"faces": [3, 1], "location": [[1,0,0,0],[0,1,0,0],[0,0,1,0]], "box": null, "non_solid": false}]);
         }),
     ];
     for (what, edit) in cases {
@@ -288,4 +288,52 @@ fn the_measures_carry_the_helper_s_echo() {
         read.request_sha256.as_deref(),
         Some("ef".repeat(32).as_str())
     );
+}
+
+/// FU4: a `selftest` reply names its three cases in order, its alerts
+/// sorted; anything else is a protocol error.
+#[test]
+fn a_self_test_reply_names_its_three_cases() {
+    let case =
+        |name: &str| json!({"name": name, "common_mm3": 0.0, "distance_mm": 0.0, "alerts": []});
+    let good = json!({"cases": [case("touching"), case("overlapping"), case("apart")]});
+    let sent = || Sent {
+        digest: None,
+        ..sent(Op::SelfTest, Expect::Nothing)
+    };
+    let envelope = |reply: &Value| {
+        serde_json::to_vec(&json!({
+            "op": "selftest",
+            "nonce": "ab".repeat(16),
+            "request_sha256": "cd".repeat(32),
+            "reply": reply,
+        }))
+        .unwrap()
+    };
+    assert_eq!(
+        self_test_reply(&envelope(&good), &sent())
+            .unwrap()
+            .cases
+            .len(),
+        3
+    );
+    let edits: [Edit; 4] = [
+        ("a case missing", |v| {
+            v["cases"].as_array_mut().unwrap().pop();
+        }),
+        ("cases out of order", |v| {
+            v["cases"].as_array_mut().unwrap().swap(0, 2);
+        }),
+        ("alerts unsorted", |v| {
+            v["cases"][0]["alerts"] = json!(["b", "a"]);
+        }),
+        ("an extra key", |v| {
+            v["cases"][1]["extra"] = json!(1);
+        }),
+    ];
+    for (what, edit) in edits {
+        let mut bad = good.clone();
+        edit(&mut bad);
+        assert!(self_test_reply(&envelope(&bad), &sent()).is_err(), "{what}");
+    }
 }

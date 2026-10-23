@@ -449,7 +449,7 @@ impl FitDir {
 
     /// FL2, FL6, FY5: what every spawn checks first: the directory is
     /// still FL6's, and on Unix no other user can write it, its `tmp/`, its
-    /// files or the interpreter; the manifest agrees with this build and
+    /// files or (by its owner) the interpreter; the manifest agrees with this build and
     /// `files`; its interpreter (by its SHA-256) and site exist; and the
     /// script and lock on disk are `files`. The manifest, if so.
     ///
@@ -474,7 +474,7 @@ impl FitDir {
                 path: manifest.interpreter.clone(),
             });
         }
-        private(&manifest.interpreter, Some(me))?;
+        interpreter_owned(&manifest.interpreter, me)?;
         if interpreter_sha256(&manifest.interpreter)? != manifest.interpreter_sha256 {
             return Err(PrepareError::Changed {
                 what: "interpreter",
@@ -675,6 +675,7 @@ pub(crate) fn not_private(mode: u32, owner: u32, me: Option<u32>) -> Option<&'st
 /// P4 on Unix: `path` is not writable by another user, and owned by `me`
 /// or root when `me` is given. On Windows the fit directory's ACLs are
 /// not read: the trust boundary is the user's account (FY5).
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn private(path: &Path, me: Option<u32>) -> Result<(), PrepareError> {
     #[cfg(unix)]
     {
@@ -697,7 +698,41 @@ fn private(path: &Path, me: Option<u32>) -> Result<(), PrepareError> {
     Ok(())
 }
 
+/// P4 for the interpreter, which lives outside the fit directory (Unix):
+/// owned by `me` or root. Its mode is not read: a python.org install on
+/// macOS is writable by the `admin` group (CI's macOS runner), and the
+/// SHA-256 the manifest pins, checked before every spawn, is what refuses
+/// an interpreter changed since setup.
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
+fn interpreter_owned(path: &Path, me: u32) -> Result<(), PrepareError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = match fs::metadata(path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(PrepareError::io(path, &e)),
+        };
+        if let Some(why) = not_owned(meta.uid(), me) {
+            return Err(PrepareError::NotPrivate {
+                path: path.to_owned(),
+                why,
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (path, me);
+    Ok(())
+}
+
+/// The interpreter's rule: owned by `me` or root, whatever its mode.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn not_owned(owner: u32, me: u32) -> Option<&'static str> {
+    (owner != me && owner != 0).then_some("owned by another user")
+}
+
 /// The owner of `path` (Unix; 0 elsewhere).
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn owner_of(path: &Path) -> std::io::Result<u32> {
     #[cfg(unix)]
     {
@@ -768,5 +803,16 @@ mod tests {
             None,
             "no owner checked"
         );
+    }
+
+    /// The interpreter is held to its owner alone (its SHA-256 pins its
+    /// bytes): root's or this user's, as a python.org install on macOS
+    /// is, writable by the `admin` group.
+    #[test]
+    fn the_interpreter_is_held_to_its_owner() {
+        let me = 501;
+        assert_eq!(not_owned(me, me), None);
+        assert_eq!(not_owned(0, me), None);
+        assert_eq!(not_owned(me + 1, me), Some("owned by another user"));
     }
 }

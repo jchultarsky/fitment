@@ -3,3 +3,6 @@
 *.stp  -text
 *.step -text
 *.p21  -text
+# The fit helper's script and lock are embedded byte for byte, with their
+# SHA-256s (docs/research/m7-fit.md, FG2): never converted on checkout.
+crates/fitment-fit/helper/* -text

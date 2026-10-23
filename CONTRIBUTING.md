@@ -122,6 +122,8 @@ crates/
   fitment-fit/    lib: the fit verifier's process and protocol (M7): drives
                   the Open CASCADE helper out of process; the only crate
                   that spawns one, pure Rust on four crates
+    helper/       the helper's script and its uv lock, embedded in the
+                  crate with their SHA-256s (edit one, restate both)
     clippy.toml   source-level bans for this crate
 deploy/           the server's Containerfile, its configuration, smoke test
 deny.toml         workspace policy: licences, sources, D1 crate bans
@@ -200,6 +202,20 @@ number within 1e-9 mm, since Open CASCADE's trigonometry rounds the last
 digit by the platform. Change the generator and regenerate the set in the
 same commit; it must stay under 300 KB. Tests that need the generated corpus skip without it,
 and fail without it when `FITMENT_REQUIRE_CORPUS=1`, which CI sets.
+
+### The fit helper
+
+`crates/fitment-fit/helper/fit_helper.py` is the helper the fit verifier
+runs (M7), a uv script with its committed lock; `src/embedded.rs` states
+both files' SHA-256s, and `embedded_hashes_are_the_files` fails until a
+change to either is restated there. Its pin of `cadquery-ocp-novtk` must be
+the oracle's (`tools/verify-occt.py`). The tests that run the real helper
+need uv and set up a fit directory of their own; they run when
+`FITMENT_FIT_KERNEL=1` is set, as CI's `fit-kernel` job sets it:
+
+```console
+$ FITMENT_FIT_KERNEL=1 cargo test --release -p fitment-fit --test kernel
+```
 
 ### Golden files
 

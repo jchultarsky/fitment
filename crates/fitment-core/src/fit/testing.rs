@@ -158,6 +158,7 @@ pub fn exact(request: &FitRequest<'_>) -> FitMeasures {
             faces: body.faces.clone(),
             location: location(&body.transform),
             bounds,
+            non_solid: false,
         });
     }
     for _ in scene.unread() {
@@ -165,6 +166,7 @@ pub fn exact(request: &FitRequest<'_>) -> FitMeasures {
             faces: Vec::new(),
             location: location(&Rigid::IDENTITY),
             bounds: UNKNOWN_BOX,
+            non_solid: false,
         });
     }
     let candidate = request.candidate();

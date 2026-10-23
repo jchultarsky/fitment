@@ -7,14 +7,15 @@
 
 mod common;
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use common::{BRACKET, S01, code, fast, findings, judge, root, s01, short, verified};
-use fitment_core::fit::{FitCode, FitFailure};
-use fitment_core::{CandidateResult, VerdictKind};
+use fitment_core::fit::{FitCode, FitFailure, FitMeasures};
+use fitment_core::{CandidateResult, FitIdentity, FitRequest, FitVerifier, VerdictKind};
 use fitment_fit::testing::{Death, Fake, Replaying, Scenario, Stage, write_probe};
-use fitment_fit::{HelperError, HelperOptions, HelperReport, OcctSession};
+use fitment_fit::{HelperError, HelperOptions, HelperReport, OcctSession, WINDOWS_UNPROVEN};
 
 fn main() {
     fitment_fit::harness![
@@ -27,6 +28,8 @@ fn main() {
         measures_out_of_their_ranges_never_verify,
         the_handshake_refuses_another_helper,
         a_missing_library_is_named,
+        windows_is_refused_until_its_corpus_run_is_green,
+        without_the_override_windows_refuses_even_the_fake,
         kernel_noise_reaches_the_log_and_never_a_frame,
         a_crash_is_retried_once_in_a_fresh_helper,
         a_crash_retry_beside_a_busy_helper_takes_the_crashed_one_s_place,
@@ -314,6 +317,81 @@ fn a_missing_library_is_named() {
     );
 }
 
+/// M7-50, on every OS: a helper whose handshake holds but whose platform is
+/// Windows (`win-amd64`) is refused with M7-50's sentence until the weekly
+/// Windows corpus run (VT77) is green: its check fails with the handshake
+/// it gave (for `fitment fit setup` to print), it is killed and reaped,
+/// and every fit through it is `helper_unavailable`, never `verified`.
+fn windows_is_refused_until_its_corpus_run_is_green() {
+    let root = root("m7-50");
+    let fake = Fake::install(&root, Scenario::WindowsPlatform);
+    let Err(HelperError::Failed(report)) = fake.helper(fast()).check() else {
+        panic!("a Windows helper was accepted");
+    };
+    assert_eq!(
+        report.failure,
+        FitFailure::Unavailable(WINDOWS_UNPROVEN.to_owned())
+    );
+    let handshake = report.handshake.as_ref().expect("the handshake that held");
+    assert_eq!(handshake.platform, "win-amd64");
+    assert_eq!(Some(handshake.pid), report.pid);
+    assert!(report.status.is_some(), "killed and reaped: {report:?}");
+    ends(
+        "m7-50",
+        Scenario::WindowsPlatform,
+        FitCode::HelperUnavailable,
+        false,
+    );
+    let (result, _, _) = through("m7-50", Scenario::WindowsPlatform, fast());
+    assert!(
+        findings(&result)
+            .iter()
+            .any(|f| f.detail == WINDOWS_UNPROVEN),
+        "{:?}",
+        findings(&result)
+    );
+    // The tag is refused without the tests' override too.
+    let strict = HelperOptions::default()
+        .with_timeout(Duration::from_secs(20))
+        .with_setup_timeout(Duration::from_secs(20));
+    let Err(HelperError::Failed(report)) = fake.helper(strict).check() else {
+        panic!("a Windows helper was accepted without the override");
+    };
+    assert_eq!(
+        report.failure,
+        FitFailure::Unavailable(WINDOWS_UNPROVEN.to_owned())
+    );
+}
+
+/// M7-50: without the tests' override, a build on Windows refuses even
+/// a fake helper that states no Windows tag, so no fit is verified there;
+/// elsewhere the same helper passes its handshake.
+fn without_the_override_windows_refuses_even_the_fake() {
+    let root = root("m7-50-strict");
+    let fake = Fake::install(&root, Scenario::Replay);
+    let strict = HelperOptions::default()
+        .with_timeout(Duration::from_secs(20))
+        .with_setup_timeout(Duration::from_secs(20));
+    let checked = fake.helper(strict.clone()).check();
+    if cfg!(windows) {
+        let Err(HelperError::Failed(report)) = checked else {
+            panic!("Windows let a helper through without the override");
+        };
+        assert_eq!(
+            report.failure,
+            FitFailure::Unavailable(WINDOWS_UNPROVEN.to_owned())
+        );
+        let helper = fake.helper(strict);
+        let document = s01();
+        let session = OcctSession::open(&helper, S01.to_vec(), &document).unwrap();
+        let result = judge(&Replaying::new(&session, &fake));
+        assert!(!verified(&result));
+        assert_eq!(code(&result), Some(FitCode::HelperUnavailable));
+    } else {
+        assert!(checked.is_ok(), "{checked:?}");
+    }
+}
+
 /// FH2: what the kernel prints reaches stderr, kept for the log, and
 /// never a frame: the bracket is still a `Match`.
 fn kernel_noise_reaches_the_log_and_never_a_frame() {
@@ -370,11 +448,15 @@ fn a_crash_is_retried_once_in_a_fresh_helper() {
 
 /// FV8, T1: with two helpers, one busy, the retry after a crash spawns in
 /// the crashed helper's own place: it waits for no other and retires none,
-/// and both candidates are a `Match`.
+/// and both candidates are a `Match`. The matcher runs the control once,
+/// in the first helper; that helper then holds a candidate's `place` until
+/// the other judge has spawned a second beside it, so the overlap never
+/// depends on the runner's load. The deadline outlasts the fake's hold.
 fn a_crash_retry_beside_a_busy_helper_takes_the_crashed_one_s_place() {
     let root = root("crash-beside");
     let fake = Fake::install(&root, Scenario::CrashSecondHelperOnce);
-    let helper = fake.helper(fast().with_jobs(2));
+    let options = fast().with_jobs(2).with_timeout(Duration::from_secs(90));
+    let helper = fake.helper(options);
     let document = s01();
     let session = OcctSession::open(&helper, S01.to_vec(), &document).unwrap();
     let replaying = Replaying::new(&session, &fake);
@@ -403,8 +485,35 @@ fn a_crash_retry_beside_a_busy_helper_takes_the_crashed_one_s_place() {
     assert_eq!(reports.len(), 1, "{reports:#?}");
 }
 
+/// A verifier that adds up the time its measures take, so a test can time
+/// the session's part of a judging without core's matching around it.
+struct Timed<'v> {
+    inner: &'v dyn FitVerifier,
+    spent: Mutex<Duration>,
+}
+
+impl FitVerifier for Timed<'_> {
+    fn identity(&self) -> Option<FitIdentity> {
+        self.inner.identity()
+    }
+
+    fn assembly(&self) -> Option<&[u8]> {
+        self.inner.assembly()
+    }
+
+    fn measure(&self, request: &FitRequest<'_>) -> Result<FitMeasures, FitFailure> {
+        let started = Instant::now();
+        let measured = self.inner.measure(request);
+        *self.spent.lock().unwrap() += started.elapsed();
+        measured
+    }
+}
+
 /// P1: a panic while a helper is taken gives its place back: the next
-/// fit, on a session of one helper, gets one at once.
+/// fit, on a session of one helper, gets one at once. A place leaked would
+/// wait out the request's deadline (40 s here) and fail the fit; only the
+/// measures are timed, since core's matching of a candidate in a debug
+/// build takes 20 s on a busy runner by itself.
 fn a_panic_while_a_helper_is_taken_leaks_no_place() {
     let root = root("panic");
     let fake = Fake::install(&root, Scenario::Replay);
@@ -415,19 +524,20 @@ fn a_panic_while_a_helper_is_taken_leaks_no_place() {
     fitment_fit::testing::panic_in_next_serve(&session);
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| judge(&replaying)));
     assert!(panicked.is_err(), "the forced panic");
-    let started = Instant::now();
-    let result = judge(&replaying);
+    let timed = Timed {
+        inner: &replaying,
+        spent: Mutex::new(Duration::ZERO),
+    };
+    let result = judge(&timed);
     assert_eq!(
         result.verdict.kind(),
         VerdictKind::Match,
         "{:?}",
         findings(&result)
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(15),
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(verified(&result), "{:?}", findings(&result));
+    let spent = *timed.spent.lock().unwrap();
+    assert!(spent < Duration::from_secs(15), "{spent:?}");
 }
 
 /// P5: a helper that floods its channel unasked waits in its own pipe,
@@ -553,7 +663,9 @@ fn a_helper_that_stops_reading_misses_its_write_deadline() {
 fn a_cancel_kills_the_helper() {
     let root = root("cancel");
     let fake = Fake::install(&root, Scenario::Hang);
-    let options = HelperOptions::default().with_setup_timeout(Duration::from_secs(60));
+    let options = HelperOptions::default()
+        .with_setup_timeout(Duration::from_secs(60))
+        .with_unproven_platform();
     let helper = fake.helper(options);
     let document = s01();
     let flag = AtomicBool::new(false);

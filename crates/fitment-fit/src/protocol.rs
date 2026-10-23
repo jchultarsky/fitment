@@ -37,6 +37,7 @@ pub(crate) enum Op {
     Scene,
     Place,
     Check,
+    SelfTest,
     Bye,
 }
 
@@ -47,6 +48,7 @@ impl Op {
             Self::Scene => "scene",
             Self::Place => "place",
             Self::Check => "check",
+            Self::SelfTest => "selftest",
             Self::Bye => "bye",
         }
     }
@@ -147,7 +149,9 @@ fn request<B: Serialize>(
 }
 
 /// What `hello` states it expects of the helper: the manifest's values
-/// (FL2, FH3).
+/// (FL2, FH3), and the bounds the helper sets on itself before it imports
+/// Open CASCADE (FY3, FL4): the memory it may map, a candidate's deadline,
+/// `scene`'s, and the checks it serves before it is retired.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HelloRequest {
@@ -158,6 +162,10 @@ pub(crate) struct HelloRequest {
     pub kernel: String,
     pub python: String,
     pub site: String,
+    pub timeout_seconds: u64,
+    pub setup_timeout_seconds: u64,
+    pub memory_mib: u64,
+    pub max_checks: u32,
 }
 
 /// FH3: the first frame.
@@ -354,7 +362,16 @@ struct PairRequest<'a> {
 
 #[derive(Serialize)]
 struct CheckRequest<'a> {
+    /// The policy's linear tolerance, by which the helper states its own
+    /// claims of reach (FT8).
+    #[serde(serialize_with = "finite")]
+    linear_mm: f64,
     pairs: Vec<PairRequest<'a>>,
+    /// VT71, under `test-support` only: the pair at which the helper
+    /// raises, as if its kernel had, so its alert comes back for that pair
+    /// alone. A release build never sends it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raise_at: Option<usize>,
 }
 
 fn pair_request(pair: &Pair) -> Result<PairRequest<'_>, EncodeError> {
@@ -384,8 +401,12 @@ fn pair_request(pair: &Pair) -> Result<PairRequest<'_>, EncodeError> {
 }
 
 /// FH4's `check`: every pair the plan asks, with its tolerances and its
-/// zones at both depths (FT4, FT5, FT7, FZ6).
-pub(crate) fn check(nonce: String, plan: &FitPlan) -> Result<Request, EncodeError> {
+/// zones at both depths (FT4, FT5, FT7, FZ6); `raise_at` is VT71's.
+pub(crate) fn check(
+    nonce: String,
+    plan: &FitPlan,
+    raise_at: Option<usize>,
+) -> Result<Request, EncodeError> {
     let pairs = plan
         .asked()
         .map(pair_request)
@@ -404,10 +425,97 @@ pub(crate) fn check(nonce: String, plan: &FitPlan) -> Result<Request, EncodeErro
         Op::Check,
         nonce,
         Some(plan.check_digest().to_owned()),
-        CheckRequest { pairs },
+        CheckRequest {
+            linear_mm: plan.linear_mm(),
+            pairs,
+            raise_at,
+        },
         &[],
         expect,
     )
+}
+
+/// What `selftest` may ask besides the self-test itself, for VT70 only:
+/// memory to take and CPU to burn, so a test sees the helper's own bounds
+/// end it. A release build never sends either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub(crate) struct Stress {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocate_mib: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_allocate_mib: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_seconds: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct SelfTestRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stress: Option<Stress>,
+}
+
+/// FU4's self-test: two unit boxes touching, overlapping by 1e-3 mm and
+/// apart by 0.02 mm, each measured by the kernel; `stress` is VT70's.
+pub(crate) fn self_test(nonce: String, stress: Option<Stress>) -> Result<Request, EncodeError> {
+    request(
+        Op::SelfTest,
+        nonce,
+        None,
+        SelfTestRequest { stress },
+        &[],
+        Expect::Nothing,
+    )
+}
+
+/// VT71, for the tests: a `scene` request for `assembly` that names no
+/// body, claiming its SHA-256 is `sha256`.
+#[cfg(feature = "test-support")]
+pub(crate) fn scene_probe(
+    nonce: String,
+    sha256: &str,
+    assembly: &[u8],
+) -> Result<Request, EncodeError> {
+    let body = SceneRequest {
+        scene: sha256,
+        bodies: Vec::new(),
+    };
+    let digest = Some(format!("probe {sha256}"));
+    request(
+        Op::Scene,
+        nonce,
+        digest,
+        body,
+        &[assembly],
+        Expect::Scene(Vec::new()),
+    )
+}
+
+/// VT71, for the tests: a `place` request for the file candidate `bytes`
+/// at `placements`, with no landmark, in the scene `scene`.
+#[cfg(feature = "test-support")]
+pub(crate) fn place_probe(
+    nonce: String,
+    scene: &str,
+    bytes: &[u8],
+    placements: &[crate::session::ProbeAt],
+) -> Result<Request, EncodeError> {
+    let sha256 = sha256_hex(bytes);
+    let body = PlaceRequest {
+        scene,
+        candidate: CandidateRequest::Step { sha256: &sha256 },
+        landmarks: Vec::new(),
+        placements: placements
+            .iter()
+            .map(|(socket, occurrence, at)| PlacementRequest {
+                socket,
+                occurrence,
+                transform: rows(at),
+            })
+            .collect(),
+    };
+    let expect = Expect::Place(placements.iter().map(|p| p.1.clone()).collect(), 0);
+    let digest = Some(format!("probe {sha256}"));
+    request(Op::Place, nonce, digest, body, &[bytes], expect)
 }
 
 /// Only the operation, to tell an `error` frame from a reply.
@@ -684,6 +792,24 @@ pub(crate) fn check_measures(header: &[u8], sent: &Sent) -> Result<CheckMeasures
 /// session's to judge.
 pub(crate) fn hello_reply(header: &[u8], sent: &Sent) -> Result<HelloReply, ProtocolError> {
     reply(header, sent).map(|e| e.reply)
+}
+
+/// FU4: the `selftest` reply, its envelope checked and its three cases
+/// named in order; whether each is right is the helper's caller's to
+/// judge.
+pub(crate) fn self_test_reply(
+    header: &[u8],
+    sent: &Sent,
+) -> Result<wire::SelfTestReply, ProtocolError> {
+    let body: wire::SelfTestReply = reply(header, sent)?.reply;
+    let names: Vec<&str> = body.cases.iter().map(|c| c.name.as_str()).collect();
+    if names != wire::SELF_TEST_CASES {
+        return refuse("a selftest reply whose cases are not the three asked");
+    }
+    if body.cases.iter().any(|c| !sorted(&c.alerts)) {
+        return refuse("a selftest reply with its alerts unsorted");
+    }
+    Ok(body)
 }
 
 /// The reply bodies a kernel would send for `measures`, for the fake

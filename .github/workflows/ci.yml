@@ -221,6 +221,45 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  fit-kernel:
+    name: fit kernel (${{ matrix.os }})
+    # M7's real helper (docs/research/m7-fit.md, section 11, PR 2b; M7-26):
+    # `fitment fit setup`'s internals make a fit directory with uv (the only
+    # download), and the embedded helper, spawned from its manifest, speaks
+    # to Open CASCADE: VT74's uv half (the manifest, the handshake, the
+    # self-test, the limits each OS takes), VT71 (hostile files handed
+    # directly, an exception in one pair, a killed helper leaves no process),
+    # VT70 (its own CPU and memory bounds end it) and s01 (the lug
+    # interferes, the bracket verifies). Until the weekly Windows corpus run
+    # is green (VT77), Windows' helper is refused (M7-50): there the job
+    # checks setup, the handshake and the refusal, not verification.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The oracle job's uv, pinned as it pins it.
+      - uses: astral-sh/setup-uv@v10.1.0
+      # FH6, decision 11: the helper's pin and the oracle's are the same
+      # cadquery-ocp-novtk.
+      - name: The helper's pin is the oracle's
+        shell: bash
+        run: |
+          pin() { grep -m1 '^# dependencies = ' "$1" | grep -o 'cadquery-ocp-novtk==[^"]*'; }
+          helper=$(pin crates/fitment-fit/helper/fit_helper.py)
+          oracle=$(pin tools/verify-occt.py)
+          echo "helper: $helper; oracle: $oracle"
+          test -n "$helper" && test "$helper" = "$oracle"
+      # In release: the matcher's interface and freedom take most of a debug
+      # build's time per candidate.
+      - run: cargo test --release -p fitment-fit --test kernel --locked -- --nocapture
+        env:
+          FITMENT_FIT_KERNEL: "1"
+
   determinism:
     name: catalog and API outputs equal on every OS
     needs: test

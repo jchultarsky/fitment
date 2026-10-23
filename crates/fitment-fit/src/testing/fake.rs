@@ -271,6 +271,7 @@ impl Fake {
                 "unavailable",
                 json!("libGL.so.1: cannot open shared object file: No such file or directory"),
             ),
+            Scenario::WindowsPlatform => ("platform", json!("win-amd64")),
             _ => return hello,
         };
         hello[key] = value;
@@ -323,10 +324,11 @@ impl Fake {
     fn at_place(&self, number: usize) {
         self.places.set(self.places.get() + 1);
         match self.scenario {
-            // The first helper is slow with the candidates, so a second is
-            // spawned beside it.
+            // The first helper holds a candidate's `place` until a second
+            // has spawned beside it, so the two judges overlap whatever
+            // the runner's load (a fixed delay did not, on a busy one).
             Scenario::CrashSecondHelperOnce if number == 0 && self.places.get() > 1 => {
-                std::thread::sleep(Duration::from_millis(1500));
+                self.until_spawned(1);
             }
             Scenario::Dies(death) => die(death),
             Scenario::CrashOnce | Scenario::CrashOnceThenAnotherScene if number == 0 => {
@@ -334,6 +336,16 @@ impl Fake {
             }
             Scenario::CrashSecondHelperOnce if number == 1 => die(Death::Segv),
             _ => {}
+        }
+    }
+
+    /// Waits until the scenario's helper `number` has started, at most
+    /// [`AT_MOST`].
+    fn until_spawned(&self, number: usize) {
+        let marker = self.state.join(format!("spawn-{number}"));
+        let until = std::time::Instant::now() + AT_MOST;
+        while !marker.exists() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 

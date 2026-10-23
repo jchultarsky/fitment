@@ -526,13 +526,16 @@ fn replies(plan: &FitPlan, measures: &FitMeasures, out: &mut Vec<Finding>) {
         }
     }
     let leaves = plan.bodies().len() + plan.unread();
-    if measures.scene.solids.len() != leaves {
+    let solids = measures
+        .scene
+        .solids
+        .iter()
+        .filter(|s| !s.non_solid)
+        .count();
+    if solids != leaves {
         out.push(run(
             FitCode::BindingFailed,
-            format!(
-                "the kernel transferred {} solids from {leaves} leaves",
-                measures.scene.solids.len()
-            ),
+            format!("the kernel transferred {solids} solids from {leaves} leaves"),
         ));
     }
     let selected: BTreeSet<&[u64]> = (plan.bodies().iter())
@@ -612,7 +615,7 @@ fn scene_findings(plan: &FitPlan, scene: &SceneMeasures, out: &mut Vec<Finding>)
         let claims = scene
             .solids
             .iter()
-            .filter(|s| s.faces == body.faces && placed_at(s, &body.transform))
+            .filter(|s| !s.non_solid && s.faces == body.faces && placed_at(s, &body.transform))
             .count();
         let Some(measure) = measure.filter(|m| m.found && claims == 1) else {
             out.push(Finding::new(
@@ -804,10 +807,11 @@ fn place_findings(plan: &FitPlan, place: &PlaceMeasures, out: &mut Vec<Finding>)
 /// it states none of its own, and no shape tolerance.
 fn unclaimed(plan: &FitPlan, measures: &FitMeasures, out: &mut Vec<Finding>) {
     for solid in &measures.scene.solids {
-        let claimed = plan
-            .bodies()
-            .iter()
-            .any(|b| b.faces == solid.faces && placed_at(solid, &b.transform));
+        let claimed = !solid.non_solid
+            && plan
+                .bodies()
+                .iter()
+                .any(|b| b.faces == solid.faces && placed_at(solid, &b.transform));
         if claimed {
             continue;
         }
@@ -818,10 +822,15 @@ fn unclaimed(plan: &FitPlan, measures: &FitMeasures, out: &mut Vec<Finding>) {
             within(&values, ours, theirs)
         });
         if near {
+            let what = if solid.non_solid {
+                "a shape that is not a solid".to_owned()
+            } else {
+                format!("a solid of faces {:?}", first_faces(&solid.faces))
+            };
             out.push(Finding::new(
                 FitCode::UnclaimedBody,
                 FindingAt::Body { path: Vec::new() },
-                format!("a solid of faces {:?}", first_faces(&solid.faces)),
+                what,
             ));
         }
     }
