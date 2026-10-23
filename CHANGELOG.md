@@ -10,6 +10,27 @@ Until 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- **M7, PR 4 (the corpus, the oracle and the fit job):** the corpus gains
+  FK2's fit cases (`docs/research/m7-fit.md`, section 4.13): contacts
+  touching, 0.001 mm and 1e-8 mm into a neighbour and under the volume
+  resolution, a body inside the candidate's material, a copy hitting a
+  copy, free turns (one excused, one not, one colliding at every turn), a
+  turn free over less than 1 degree, a free slide, AL9's cone and landmark
+  seeds, seats proud by 0.5 ε, t and 1.5 ε, a zone's lateral edge, another
+  neighbour's coplanar face, a neighbour of large shape tolerance, an
+  uncertain neighbour and an uncertain candidate, a duplicate leaf and a
+  control that fails; each match case whose interface passes states its
+  freedom (FK3), and s14 and s20 their controls (FK4). `fitment-core`'s
+  `fit::Zone` gains `touching`: a zone whose source declares no touch (a
+  near-band seat with the faces apart, an unread occupant) no longer asks
+  its body to be near (FZ9), and two distances the kernel measures to one
+  contact may differ by 1e-9 mm. `fitment-fit`'s test support gains seven
+  lying-kernel scenarios and, for the weekly Windows corpus run only,
+  `HelperOptions::with_windows_proof`. CI generates the corpus once
+  (`corpus-gen`), runs the corpus with the real helper on Ubuntu and macOS
+  (`fit`), compares their v2 digests and checks Ubuntu's documents with
+  the oracle's new `fit` mode (FO1 to FO3); `scale.yml` gains the weekly
+  scaled catalog with the fit and the fit's corpus on Windows.
 - **M7, PR 3 (the CLI and the catalog):** the `fitment` CLI gains the fit
   verifier, behind a new `fit` cargo feature on by default
   (`docs/research/m7-fit.md`, section 4.11). `fitment fit setup

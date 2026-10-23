@@ -126,6 +126,13 @@ pub struct Zone {
     pub copy: bool,
     /// Its kind.
     pub kind: ZoneKind,
+    /// True if the source that declares it says the two bodies touch: a
+    /// seat's contact of faces (C1, C5 into each other), an interference
+    /// or a line-to-line span (B2 to B4, I2), a conical seat. A contact
+    /// within the near band with the faces apart (C5, `near_gap`) and an
+    /// unread occupant (B8, I7) say nothing of touching, so FZ9 does not
+    /// ask their bodies to be near: there the zone excuses nothing.
+    pub touching: bool,
     /// Its description.
     pub shape: ZoneShape,
 }
@@ -345,13 +352,19 @@ impl At<'_> {
                 for toucher in contacts.iter().flat_map(|c| &c.by) {
                     // A plane contact's source (C1, C5) names it: a ring
                     // (H1) is an edge on the plane, not a contact of faces.
-                    let named = self.sources().any(|s| {
-                        s.rule.starts_with('C')
-                            && s.neighbour == toucher.neighbour
-                            && s.faces.contains(&toucher.face)
-                    });
-                    if named && seen.insert((toucher.neighbour.clone(), toucher.face)) {
-                        out.push(self.zone(&toucher.neighbour, ZoneKind::Slab, || {
+                    let naming: Vec<&SourceRef> = self
+                        .sources()
+                        .filter(|s| {
+                            s.rule.starts_with('C')
+                                && s.neighbour == toucher.neighbour
+                                && s.faces.contains(&toucher.face)
+                        })
+                        .collect();
+                    let touching = naming.iter().any(|s| !s.flags.contains(&Flag::NearGap));
+                    if !naming.is_empty() && seen.insert((toucher.neighbour.clone(), toucher.face))
+                    {
+                        let kind = (ZoneKind::Slab, touching);
+                        out.push(self.zone(&toucher.neighbour, kind, || {
                             self.slab(&toucher.neighbour, toucher.face)
                         }));
                     }
@@ -379,7 +392,7 @@ impl At<'_> {
                 let mut seen = BTreeSet::new();
                 for source in self.sources().filter(|s| !s.neighbour.is_empty()) {
                     if seen.insert(source.neighbour.clone()) {
-                        out.push(self.zone(&source.neighbour, ZoneKind::Shell, || {
+                        out.push(self.zone(&source.neighbour, (ZoneKind::Shell, true), || {
                             self.shell(axis, *apex_mm, included_angle_rad / 2.0, *radii)
                         }));
                     }
@@ -397,7 +410,12 @@ impl At<'_> {
             .filter(|s| s.occurrence == self.occurrence)
     }
 
-    fn zone(&self, body: &[u64], kind: ZoneKind, shape: impl FnOnce() -> ZoneShape) -> Zone {
+    fn zone(
+        &self,
+        body: &[u64],
+        (kind, touching): (ZoneKind, bool),
+        shape: impl FnOnce() -> ZoneShape,
+    ) -> Zone {
         let copy = self.scene.body(body).is_some_and(|b| b.selected)
             || self
                 .sources()
@@ -409,6 +427,7 @@ impl At<'_> {
             body: body.to_vec(),
             copy,
             kind,
+            touching,
             shape: shape(),
         }
     }
@@ -448,25 +467,28 @@ impl At<'_> {
             if !seen.insert(key) {
                 continue;
             }
-            out.push(self.zone(&source.neighbour, ZoneKind::Annulus, || {
-                let placed = self
-                    .placed
-                    .apply_point(axis.point_mm)
-                    .zip(self.placed.apply_dir(axis.direction));
-                match placed {
-                    Some((point_mm, direction)) if theirs.is_finite() => ZoneShape::Annulus {
-                        axis: Axis {
-                            point_mm,
-                            direction,
+            let touching = !matches!(source.rule.as_str(), "B8" | "I7");
+            out.push(
+                self.zone(&source.neighbour, (ZoneKind::Annulus, touching), || {
+                    let placed = self
+                        .placed
+                        .apply_point(axis.point_mm)
+                        .zip(self.placed.apply_dir(axis.direction));
+                    match placed {
+                        Some((point_mm, direction)) if theirs.is_finite() => ZoneShape::Annulus {
+                            axis: Axis {
+                                point_mm,
+                                direction,
+                            },
+                            from_mm: lo,
+                            to_mm: hi,
+                            inner_mm: own.min(theirs),
+                            outer_mm: own.max(theirs),
                         },
-                        from_mm: lo,
-                        to_mm: hi,
-                        inner_mm: own.min(theirs),
-                        outer_mm: own.max(theirs),
-                    },
-                    _ => unbuilt(Unbuilt::Degenerate),
-                }
-            }));
+                        _ => unbuilt(Unbuilt::Degenerate),
+                    }
+                }),
+            );
         }
     }
 
@@ -793,6 +815,7 @@ mod tests {
             body: vec![2],
             copy: false,
             kind: ZoneKind::Slab,
+            touching: true,
             shape: ZoneShape::Slab {
                 face: 7,
                 normal: Dir3::from_unit(n).unwrap(),
@@ -870,6 +893,7 @@ mod tests {
             body: vec![2],
             copy: false,
             kind: ZoneKind::Annulus,
+            touching: true,
             shape: ZoneShape::Annulus {
                 axis,
                 from_mm: 0.0,
@@ -985,6 +1009,7 @@ mod tests {
             body: plate.path.clone(),
             copy: false,
             kind: ZoneKind::Slab,
+            touching: true,
             shape: unbuilt(Unbuilt::NotAPlane),
         };
         assert_eq!(zone.at(0.01), None);

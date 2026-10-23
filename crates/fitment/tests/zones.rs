@@ -131,3 +131,30 @@ fn the_countersink_s_shell_is_the_cone_s() {
         assert!(close(built.centroid_mm[0], 0.0) && close(built.centroid_mm[1], 0.0));
     }
 }
+
+/// FZ9's reach (PR 4): a zone says whether its source declares the two
+/// bodies touch. s01's bracket's slabs on the plate and under the heads
+/// (C1) and its nut's thread annulus (B3) do; s42's plate's slab of the
+/// pin's end within the near band, faces apart (C5 `near_gap`), and s17's
+/// pin's annulus in its slot's half hole, an unread occupant (I7), do not,
+/// so their bodies may be away and their controls verify.
+#[test]
+fn a_zone_says_whether_its_source_touches() {
+    let Some(corpus) = Corpus::locate() else {
+        return;
+    };
+    let dir = corpus.dir();
+    for (case, part, touching) in [
+        ("s01_bolted", "BRACKET", true),
+        ("s01_bolted", "NUT", true),
+        ("s42_chamfer", "PLATE", false),
+        ("s17_slot", "PIN", false),
+    ] {
+        let (_, zones) = zones_of(dir, case, part);
+        assert!(!zones.is_empty(), "{case} {part}");
+        assert!(
+            zones.iter().all(|z| z.touching == touching),
+            "{case} {part}: {zones:#?}"
+        );
+    }
+}

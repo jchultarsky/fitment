@@ -30,6 +30,11 @@ const ZONE_VOLUME_REL: f64 = 1e-9;
 const ZONE_MM: f64 = 1e-6;
 /// Volumes are conserved across a cut within this, relative (FY4).
 const CONSERVATION_REL: f64 = 1e-9;
+/// Two distances the kernel measures to one contact may differ by its
+/// rounding: a zoned distance under the distance by no more than this is
+/// no contradiction (FY4). PR 4's corpus met 1.7e-17 mm against 0 in a
+/// skew frame (`f_below_resolution`).
+const DISTANCE_NOISE_MM: f64 = 1e-9;
 
 /// FV9: every reason a fit is not verified, a closed list.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -992,7 +997,7 @@ fn inconsistent(pair: &Pair, m: &PairMeasure) -> Option<&'static str> {
     if m.proximity_zones.len() != pair.zones.len() {
         return Some("a proximity zone's measure is missing or extra");
     }
-    if m.distance_mm.is_some_and(|d| zoned < d) {
+    if m.distance_mm.is_some_and(|d| zoned + DISTANCE_NOISE_MM < d) {
         return Some("the body less its zones is nearer than the body");
     }
     let wide = held(&mut pair.zones.iter().map(|z| z.proximity));
@@ -1000,13 +1005,15 @@ fn inconsistent(pair: &Pair, m: &PairMeasure) -> Option<&'static str> {
 }
 
 /// FT5, FZ9: a pair within its threshold is in proximity if the body less
-/// its zones is too, or with no zone, the body itself; every zone's body
-/// must come within the threshold.
+/// its zones is too, or with no zone, the body itself; the body of every
+/// zone whose source says the two touch must come within the threshold
+/// (a near band's contact apart, or an unread occupant, says nothing of
+/// touching: its zone, its body away, excuses nothing).
 fn proximity(pair: &Pair, m: &PairMeasure, body_volume: f64, out: &mut Vec<Finding>) {
     let at = || pair_at(pair);
     let threshold = pair.values.threshold_mm;
     let Some(distance) = m.distance_mm.filter(|d| *d <= threshold) else {
-        if !pair.zones.is_empty() {
+        if pair.zones.iter().any(|z| z.zone.touching) {
             out.push(Finding::new(
                 FitCode::BindingFailed,
                 at(),

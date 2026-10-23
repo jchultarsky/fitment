@@ -52,6 +52,11 @@ pub struct HelperOptions {
     /// this says. No release build has the field.
     #[cfg(feature = "test-support")]
     unproven_platform: bool,
+    /// VT77, for the tests only: the weekly Windows corpus run, whose green
+    /// lifts M7-50, lets the real helper through on Windows, its platform
+    /// tag included. No release build has the field.
+    #[cfg(feature = "test-support")]
+    windows_proof: bool,
 }
 
 impl Default for HelperOptions {
@@ -65,6 +70,8 @@ impl Default for HelperOptions {
             own_process_group: false,
             #[cfg(feature = "test-support")]
             unproven_platform: false,
+            #[cfg(feature = "test-support")]
+            windows_proof: false,
         }
     }
 }
@@ -121,6 +128,31 @@ impl HelperOptions {
     pub fn with_unproven_platform(mut self) -> Self {
         self.unproven_platform = true;
         self
+    }
+
+    /// VT77 (M7-50), for the tests only (`test-support`): the weekly
+    /// Windows corpus run lets the real helper through on Windows, whatever
+    /// platform tag it states, to prove the kernel there; until that run is
+    /// green, no build a user runs can.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn with_windows_proof(mut self) -> Self {
+        self.windows_proof = true;
+        self
+    }
+
+    /// True for VT77's proof run (test-support's); always false in a
+    /// release build.
+    #[cfg_attr(not(feature = "test-support"), allow(clippy::unused_self))]
+    fn windows_proof(&self) -> bool {
+        #[cfg(feature = "test-support")]
+        {
+            self.windows_proof
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            false
+        }
     }
 
     /// True if this build's own Windows may be let through (test-support's
@@ -194,6 +226,9 @@ pub const WINDOWS_UNPROVEN: &str = "the fit kernel is not yet proven on Windows:
 /// (`sysconfig`'s: `win-amd64`, `win32`, `win-arm64`), so neither alone can
 /// let an unproven kernel through.
 pub(crate) fn platform_refusal(platform: &str, options: &HelperOptions) -> Option<&'static str> {
+    if options.windows_proof() {
+        return None;
+    }
     refused_on(cfg!(windows) && !options.unproven_platform(), platform)
 }
 
@@ -1251,6 +1286,11 @@ mod tests {
             assert_eq!(platform_refusal("fake", &lenient), None);
             for tag in ["win-amd64", "win32", "win-arm64"] {
                 assert_eq!(platform_refusal(tag, &lenient), Some(WINDOWS_UNPROVEN));
+            }
+            // VT77's proof run lets every tag through, in test builds only.
+            let proof = HelperOptions::default().with_windows_proof();
+            for tag in ["win-amd64", "win32", "win-arm64", "linux-x86_64"] {
+                assert_eq!(platform_refusal(tag, &proof), None);
             }
         }
         assert!(WINDOWS_UNPROVEN.contains("M7-50"));

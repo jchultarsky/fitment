@@ -53,8 +53,30 @@ jobs:
       # docs/research/m7-fit.md, FG1).
       - run: cargo clippy -p fitment-fit --lib --no-default-features --locked -- -D warnings
 
+  corpus-gen:
+    name: the corpus
+    # M7-26 (docs/research/m7-fit.md, section 7, the feasibility review's
+    # M6): the corpus is generated once, here, and every job that judges it
+    # (the oracle, the tests on three OSes, the fit job) takes it from this
+    # artifact rather than generating it again.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # setup-uv publishes no moving major tag, so pin the release.
+      - uses: astral-sh/setup-uv@v10.1.0
+      # Every test part, with answers from the construction alone.
+      - run: tools/gen-corpus.py corpus/out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: corpus
+          path: corpus/out
+          retention-days: 7
+          if-no-files-found: error
+
   corpus:
     name: test parts and Open CASCADE oracle
+    needs: corpus-gen
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -62,6 +84,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # setup-uv publishes no moving major tag, so pin the release.
       - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/download-artifact@v8
+        with:
+          name: corpus
+          path: corpus/out
       - name: Cache fixtures
         uses: actions/cache@v6
         with:
@@ -73,8 +99,6 @@ jobs:
             fixtures/steptools
           key: fixtures-${{ hashFiles('tools/fetch-fixtures.sh') }}
       - run: tools/fetch-fixtures.sh core
-      # Every test part, with answers from the construction alone.
-      - run: tools/gen-corpus.py corpus/out
       # Open CASCADE 8.0.1, a kernel the generator does not use, reads every
       # part as its construction says: this catches generator bugs.
       - run: tools/verify-occt.py manifest corpus/out
@@ -111,12 +135,6 @@ jobs:
       - run: cargo test --release -p fitment-server --test parity --locked every_corpus_source_is_the_clis_through_jobs
         env:
           FITMENT_REQUIRE_CORPUS: "1"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: corpus
-          path: corpus/out
-          retention-days: 7
-          if-no-files-found: error
       # The library's report (KH6), which the API's must equal from M6's
       # PR 6 on (docs/research/m6-api.md, XH6, VT3).
       - uses: actions/upload-artifact@v7
@@ -181,7 +199,7 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     # The generated corpus runs on every OS from the artifact, without Python.
-    needs: corpus
+    needs: corpus-gen
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -270,6 +288,107 @@ jobs:
       - run: cargo test --release -p fitment --test fit_kernel --locked -- --nocapture
         env:
           FITMENT_FIT_KERNEL: "1"
+
+  fit:
+    name: fit (${{ matrix.os }})
+    # M7's PR 4 (docs/research/m7-fit.md, section 7; M7-26): the corpus with
+    # the real helper, PR-gating on Ubuntu and macOS, from corpus-gen's
+    # artifact. VT58, VT60 and VT63: every match case under both policies,
+    # the library path one session per source assembly, the binary path on
+    # the committed candidates, the collides cases and FK2's with one
+    # helper; FK1's truths, FK2's stated fits and the fit baseline (FK6);
+    # every document again in reverse with a fresh helper per check. VT59:
+    # every corpus and fixture original's control (FK4, FK5). Each OS's
+    # report, documents and digests are uploaded; fit-digests compares the
+    # digests and fit-oracle checks Ubuntu's documents (VT63, VT72).
+    # Windows' corpus is weekly (scale.yml's fit-windows, VT77).
+    needs: corpus-gen
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The oracle job's uv, pinned as it pins it.
+      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/download-artifact@v8
+        with:
+          name: corpus
+          path: corpus/out
+      - name: Cache fixtures
+        uses: actions/cache@v6
+        with:
+          path: |
+            fixtures/nist
+            fixtures/nist-edm
+            fixtures/steptools
+          key: fixtures-${{ hashFiles('tools/fetch-fixtures.sh') }}
+      - run: tools/fetch-fixtures.sh core
+        shell: bash
+      - run: cargo build --release -p fitment --locked
+      # The only step that downloads: Python and the locked wheels.
+      - run: target/release/fitment fit setup --fit-dir "$RUNNER_TEMP/fit"
+        shell: bash
+      - run: cargo test --release -p fitment --test fit_corpus --test fit_original --locked -- --nocapture --test-threads 1
+        shell: bash
+        env:
+          FITMENT_REQUIRE_FIT: "1"
+          FITMENT_REQUIRE_CORPUS: "1"
+          FITMENT_REQUIRE_FIXTURES: "1"
+          FITMENT_FIT_DIR: ${{ runner.temp }}/fit
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: fit-${{ matrix.os }}
+          path: |
+            target/fitment-corpus/fit
+            target/fitment-corpus/fit-report.json
+            target/fitment-corpus/fit-digests.json
+            target/fitment-corpus/fit-originals.json
+          retention-days: 7
+          if-no-files-found: error
+
+  fit-digests:
+    name: the fit's digests equal on Ubuntu and macOS
+    # VT63, FM5: every v2 document's digest, which leaves out the kernel's
+    # measured numbers and keeps every decision, is the same on both OSes.
+    needs: fit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: fit-*
+      - run: diff fit-ubuntu-latest/fit-digests.json fit-macos-latest/fit-digests.json
+
+  fit-oracle:
+    name: the oracle on the fit's documents
+    # VT72 (FO1 to FO3): every Match physically clear of every neighbour and
+    # copy outside the oracle's own zones at t, at every excused turn; every
+    # interference re-measured at its pair's depth; every collides case
+    # colliding at its construction's placement; each mutation of a v2
+    # document met somewhere. On Ubuntu's documents.
+    needs: [corpus-gen, fit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/download-artifact@v8
+        with:
+          name: corpus
+          path: corpus/out
+      - uses: actions/download-artifact@v8
+        with:
+          name: fit-ubuntu-latest
+          path: fit-ubuntu
+      - run: cargo build --release -p fitment --locked
+      - run: tools/verify-occt.py fit corpus/out fit-ubuntu/fit
 
   determinism:
     name: catalog and API outputs equal on every OS

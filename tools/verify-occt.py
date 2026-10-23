@@ -10,6 +10,7 @@
     tools/verify-occt.py socket DIR
     tools/verify-occt.py mutations DIR
     tools/verify-occt.py match [--expect MANIFEST] DIR
+    tools/verify-occt.py fit DIR DOCS
 
 Reads every case of DIR/manifest.json (written by tools/gen-corpus.py) with
 Open CASCADE 8.0.1, the kernel the M7 fit verifier pins (decision 8), and
@@ -99,6 +100,24 @@ original's rim and into a neighbour is a defect, not a collision. KO2:
 every bad case but a mirror image, at its construction's placement,
 departs physically only with the neighbours its defect's requirements
 name as sources.
+
+`fit` (docs/research/m7-fit.md, FO1 to FO3, VT72) checks the fitment.match
+v2 documents the fit corpus suite writes (crates/fitment/tests/fit_corpus.rs,
+into DOCS with an index.json) against the corpus in DIR, with zones the oracle
+builds itself from fitment's socket document (a seat's cited neighbour face
+swept d either side, a tight span's annulus, a conical seat's shell), never
+fitment's: every `Match` has no common volume with any other leaf or copy
+outside them at depth t, and none at 8 turns where a free turn was excused
+(FO1); every `interferes` re-measured at the pair's stated epsilon agrees
+with fitment's residual (FO2), and every `collides` case collides at its
+construction's placement, at every turn of a free axisymmetric candidate and
+some of another's (FO2, FK3); each placement's freedom is the one its case
+states (FK3); and three mutations of the documents (an interferes turned
+verified, a collides case verified, a freedom dropped) each meet a
+disagreement (FO3). In manifest and match mode, a source whose original
+interferes by construction (FK4's `original_interferes`) is not judged by
+KO1 or KO3, and an FK2 `fits` case that states its fit has gained volume on a
+seat's plane, within the tolerance, excused as FO1's zones excuse it.
 
 `features` checks fitment against Open CASCADE instead. PATH is a STEP
 file, or a directory: a generated corpus (its manifest's cases), the
@@ -1209,6 +1228,30 @@ def expected_sockets(directory, source, part):
     return (case.get("expect", {}).get("sockets") or {}).get(part, [])
 
 
+def fo_seat_excused(departures, spec, m):
+    """KO1 for a `fits` case that states its fit (FK2): gained common volume with a neighbour that lies within
+    the slab, d = TOL either side, of the neighbour's faces on a seat plane of M3's expected sockets (placed by
+    m) is a contact within the tolerance, as FO1's zones (fo_zones) excuse it; any other departure stands."""
+    out = []
+    planes = [(turn(m, item["plane"][0]), item["plane"]) for item in spec if "plane" in item]
+    for kind, text, neighbour, gained in departures:
+        if kind == "volume":
+            slabs = []
+            for n, (normal, offset) in planes:
+                o = dot(n, apply_point(m, [c * offset for c in normal]))
+                for f in (as_face(e) for e in explore(neighbour, TopAbs_FACE)):
+                    facts = plane_facts(f)
+                    if facts and abs(abs(dot(facts[0], n)) - 1) <= 1e-9 and abs(dot(facts[1], n) - o) <= 1e-6:
+                        slabs.append(fo_slab(f, TOL))
+            rest = gained
+            for slab in slabs:
+                rest = without(rest, slab)
+            if volume_of(rest) <= VOLUME:
+                continue
+        out.append((kind, text, neighbour, gained))
+    return out
+
+
 def match_physics(directory, case):
     """KO1: the candidate placed by the construction (the occurrence's transform after the case's placement)
     into its socket's source assembly, at every occurrence of the target, judged against the original; the
@@ -1220,6 +1263,11 @@ def match_physics(directory, case):
     name, truth = case["id"], case["truth"]
     socket = case["socket"]
     if truth in ("edge", "refused", "waived") or "file" not in case["candidate"]:
+        return []
+    if socket.get("original_interferes"):
+        # FK4: the original already interferes by construction, and KO1 judges a candidate against it.
+        KO1_TALLY["not judged: an original that interferes (FK4)"] = \
+            KO1_TALLY.get("not judged: an original that interferes (FK4)", 0) + 1
         return []
     if truth == "fn_rule" and case["class"] in UNJUDGED:
         print(f"skip {name}: {UNJUDGED[case['class']]}")
@@ -1234,13 +1282,17 @@ def match_physics(directory, case):
     KO1_TALLY[truth] = KO1_TALLY.get(truth, 0) + 1
     originals = [shape for _, shape in targets]
     placed = [moved(candidate, compose(m, case["placement"])) for m, _ in targets]
-    spec = [r_ for s_ in expected_sockets(directory, socket["case"], socket["part"])
+    # A match-only source written from another (M7's `from`, FK2) has that one's expected sockets.
+    spec = [r_ for s_ in expected_sockets(directory, socket.get("from", socket["case"]), socket["part"])
             for r_ in region_spec_from_expectation(s_)]
+    stated_fit = (case.get("expect", {}).get("default") or {}).get("fit") if truth == "fits" else None
     departures, problems = [], []
     try:
         for k, (m, original) in enumerate(targets):
             found = physics(original, placed[k], neighbours_at(leaves, socket["part"], k, originals, placed),
                             f"{name} at occurrence {k}")
+            if stated_fit is not None:
+                found = fo_seat_excused(found, spec, m)
             if truth == "collides":
                 if not spec:
                     return [f"{name}: labelled collides, and its source states no socket to bound the collision"]
@@ -1928,6 +1980,9 @@ def document_problems(directory, doc, socket, leaves, group, clearance, tally):
         tally["passes"] += 1
         label = entry["labels"][0]
         truths = {c["truth"] for c in group if c["candidate"]["file"] in entry["labels"]}
+        # FK2's `fits` cases that state their fit: a contact within the tolerance on a seat's plane is theirs.
+        stated_fits = truths == {"fits"} and all((c.get("expect", {}).get("default") or {}).get("fit")
+                                                 for c in group if c["candidate"]["file"] in entry["labels"])
         where = f"{label} ({clearance})"
         if {r_["socket"] for r_ in entry["sockets"]} != set(by_socket):
             problems.append(f"{where}: a pass whose socket results are not the document's sockets")
@@ -1967,8 +2022,15 @@ def document_problems(directory, doc, socket, leaves, group, clearance, tally):
                     # placement are checked above (KO5), its physics is not KO3's to judge.
                     tally["not judged: waived passes"] = tally.get("not judged: waived passes", 0) + 1
                     continue
+                if any(c.get("socket", {}).get("original_interferes") for c in group):
+                    # FK4: the original already interferes by construction; KO3 judges against it.
+                    key = "not judged: an original that interferes (FK4)"
+                    tally[key] = tally.get(key, 0) + 1
+                    continue
                 found = physics(original, placed[k], neighbours_at(leaves, part, k, originals, placed),
                                 f"{where} at {occurrence['path']}")
+                if stated_fits:
+                    found = fo_seat_excused(found, region_spec_from_document(result_socket), o)
                 if "collides" in truths and found:
                     inside = collisions_problems(found, regions(region_spec_from_document(result_socket), o,
                                                                 originals[k], placed[k]))
@@ -4082,6 +4144,510 @@ def socket_main(argv):
     sys.exit(1 if problems else 0)
 
 
+# ---------------------------------------------------------------- fit mode (FO1 to FO3, VT72)
+
+FO_TIGHT = {"B2", "B3", "B4", "B8", "I2", "I7"}  # sources whose relation declares a zone (FZ3)
+FO_AGREE_REL, FO_AGREE_ABS = 1e-6, 1e-7  # FO2: a re-measured residual agrees with fitment's within these
+FO_TURNS = 8  # FO1, FO2: an excused free turn is checked at this many turns about its axis
+
+
+def parts_paths(binary, path):
+    """`fitment parts`' leaf occurrences of an assembly: path (usage #ids) -> (product name, 3x4 rows)."""
+    doc, problem = run_fitment(binary, ["parts", str(path), "--format", "json"], (0,))
+    if problem:
+        return None, problem
+    out = {}
+    for p in doc["parts"]:
+        if p["kind"] != "part":
+            continue
+        for o in p["occurrences"]:
+            out[tuple(o["path"])] = (p["definition"]["product"]["name"], placement_rows(o["transform"]))
+    return out, None
+
+
+class FitScene:
+    """One socket of a source, as the fit mode reads it: Open CASCADE's leaves bound by face #id, fitment's
+    socket document, each of fitment's paths bound to its leaves (by product and transform), and the target's
+    occurrences with their transforms."""
+
+    def __init__(self, socket, leaves, face_id, paths):
+        self.socket, self.leaves, self.face_id = socket, leaves, face_id
+        self.part = socket["selection"]["part"]
+        self.occurrences, self.originals, self.problems = occurrence_leaves(self.part, socket, leaves)
+        self.targets = [i for i, (n, _, _) in enumerate(leaves) if n == self.part]
+        self.by_path = {}
+        for path, (name, m) in paths.items():
+            self.by_path[path] = [i for i, (n, t, _) in enumerate(leaves) if n == name and all(
+                abs(t[i_][j] - m[i_][j]) <= 1e-9 for i_ in range(3) for j in range(4))]
+        self.at = {tuple(occ["path"]): (occ, o, k) for occ, o, k in self.occurrences}
+
+    def neighbours(self):
+        """Every leaf that is no occurrence of the target, by index."""
+        return [i for i in range(len(self.leaves)) if i not in self.targets]
+
+    def body(self, path):
+        """What a path names: ("copy", path) for an occurrence of the target, else ("leaf", i) for each leaf."""
+        path = tuple(path)
+        if path in self.at:
+            return [("copy", path)]
+        return [("leaf", i) for i in self.by_path.get(path, [])]
+
+    def face(self, body, face):
+        """The face #id `face` of a body, placed: a leaf's, or the original's at a copy's occurrence (FZ5)."""
+        shape = self.leaves[body[1]][2] if body[0] == "leaf" else self.originals[self.at[body[1]][2]]
+        return next((as_face(f) for f in explore(shape, TopAbs_FACE) if self.face_id(as_face(f)) == face), None)
+
+    def sources(self, occurrence):
+        """Every requirement of every socket with its sources at `occurrence`."""
+        for s_ in self.socket["extracted"]["sockets"]:
+            for requirement in s_["requirements"]:
+                yield requirement, [s for s in requirement.get("sources", []) if tuple(s["occurrence"]) == occurrence]
+
+
+def fo_slab(face, d):
+    """A planar face swept d either side of its plane; None for a face on another surface."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Vec
+    facts = plane_facts(face)
+    if facts is None:
+        return None
+    n = facts[0]
+    return BRepPrimAPI_MakePrism(translated(face, [-d * c for c in n]), gp_Vec(*[2 * d * c for c in n])).Shape()
+
+
+def fo_annulus(o, axis, lo, hi, r0, r1):
+    """The ring about `axis` (the target's frame, placed by o) from station lo to hi, radii r0 to r1."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir
+    point, d = apply_point(o, axis["point_mm"]), norm(turn(o, axis["direction"]))
+    base = gp_Ax2(gp_Pnt(*add(point, d, lo)), gp_Dir(*d))
+    outer = BRepPrimAPI_MakeCylinder(base, r1, hi - lo).Shape()
+    return outer if r0 <= 1e-9 else without(outer, BRepPrimAPI_MakeCylinder(base, r0, hi - lo).Shape())
+
+
+def fo_shell(o, q, d):
+    """A conical seat's shell: the cone over its radii widened by d, swept d either side of the surface along its
+    normal, revolved from a quadrilateral in a plane through the axis (the target's frame, placed by o)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol
+    from OCP.gp import gp_Ax1, gp_Dir
+    apex, w = q["apex_mm"], norm(q["axis"]["direction"])
+    if dot(sub(q["axis"]["point_mm"], apex), w) < 0:
+        w = tuple(-c for c in w)
+    a = q["included_angle_rad"] / 2
+    e = norm(cross(w, [1.0, 0.0, 0.0] if abs(w[0]) < 0.9 else [0.0, 1.0, 0.0]))
+    n = [math.cos(a) * e[i] - math.sin(a) * w[i] for i in range(3)]
+    corners = []
+    for r, side in [(min(q["radii_mm"]) - d, -1), (max(q["radii_mm"]) + d, -1), (max(q["radii_mm"]) + d, 1),
+                    (min(q["radii_mm"]) - d, 1)]:
+        on = [apex[i] + w[i] * r / math.tan(a) + e[i] * r for i in range(3)]
+        corners.append(apply_point(o, [on[i] + side * d * n[i] for i in range(3)]))
+    poly = BRepBuilderAPI_MakePolygon()
+    for c in corners:
+        poly.Add(gp_Pnt(*c))
+    poly.Close()
+    face = BRepBuilderAPI_MakeFace(poly.Wire()).Face()
+    return BRepPrimAPI_MakeRevol(face, gp_Ax1(gp_Pnt(*apply_point(o, apex)), gp_Dir(*turn(o, w)))).Shape()
+
+
+def fo_span_zones(scene, o, q, sources, body, d):
+    """FZ3's annuli as the oracle reads them: each tight source naming `body` over a zoned span."""
+    out = []
+    own_key = "hole_diameter_mm" if q["kind"] == "bore" else "shaft_diameter_mm"
+    sense = -1.0 if q["kind"] == "bore" else 1.0
+    for span in q.get("spans", []):
+        if not (span["fit"] in ("interference", "line_to_line") or (span["fit"] == "not_read" and span["pinned"])):
+            continue
+        own = span[own_key] / 2
+        for s in sources:
+            if s["rule"] not in FO_TIGHT or not s.get("span_mm") or body not in scene.body(s["neighbour"]):
+                continue
+            lo, hi = max(span["from_mm"], min(s["span_mm"])), min(span["to_mm"], max(s["span_mm"]))
+            if hi - lo <= 1e-9:
+                continue
+            theirs = own + sense * (s.get("margin_mm") or 0.0)
+            out.append(fo_annulus(o, q["axis"], lo - d, hi + d, min(own, theirs) - d, max(own, theirs) + d))
+    return out
+
+
+def fo_zones(scene, occurrence, body, d):
+    """FO1: the zones the oracle builds itself from fitment's socket document (never from fitment's zones) for
+    the candidate at `occurrence` against `body` (a leaf, or a copy at another occurrence), at depth d: each seat
+    face a plane-contact source (C1, C5) names on that body swept d either side; each tight source's annulus over
+    a zoned span (interference, line to line, a pinned unread occupant), radii widened by d; each conical seat's
+    shell, d either side of its cone. At a depth of 0 or less, none (FZ6: a pair whose uncertainty leaves no
+    tolerance has no zone)."""
+    out = []
+    if d <= 0:
+        return out
+    o = scene.at[occurrence][1]
+    for requirement, sources in scene.sources(occurrence):
+        q = requirement["requires"]
+        if q["kind"] == "seat":
+            for s in sources:
+                if s["rule"].startswith("C") and body in scene.body(s["neighbour"]):
+                    for face in s["faces"]:
+                        f = scene.face(body, face)
+                        slab = fo_slab(f, d) if f is not None else None
+                        if slab is not None:
+                            out.append(slab)
+        elif q["kind"] in ("bore", "shaft"):
+            out += fo_span_zones(scene, o, q, sources, body, d)
+        elif q["kind"] == "conical_seat" and q.get("radii_mm"):
+            if any(body in scene.body(s["neighbour"]) for s in sources if s["neighbour"]):
+                out.append(fo_shell(o, q, d))
+    return out
+
+
+# How many pairs had a Common the oracle's zones excused: shown, so a run whose zones excuse nothing is seen.
+FO_EXCUSED = {"pairs": 0}
+
+
+def fo_residual(candidate, other, zones):
+    """The Common of two placed shapes less `zones`: its volume (0 for boxes apart)."""
+    if apart(candidate, other, 1e-6):
+        return 0.0
+    v = common(candidate, other)
+    if volume_of(v) <= VOLUME:
+        return volume_of(v)
+    for z in zones:
+        v = without(v, z)
+    residual = volume_of(v)
+    if residual <= VOLUME:
+        FO_EXCUSED["pairs"] += 1
+    return residual
+
+
+def fo_placed(scene, candidate, placements, turns=None):
+    """The candidate at every occurrence: o · R · A, A its socket's placement, R a turn (or none) in the
+    target's frame."""
+    out = {}
+    for occ, o, _ in scene.occurrences:
+        a = placements[occ["socket"]]
+        if turns and occ["socket"] in turns:
+            a = compose(turns[occ["socket"]], a)
+        out[tuple(occ["path"])] = moved(candidate, compose(o, a))
+    return out
+
+
+def fo_pairs(scene, placed):
+    """Every pair FT3 checks: (occurrence, body key, the body's placed shape)."""
+    for occurrence, shape in placed.items():
+        for i in scene.neighbours():
+            yield occurrence, ("leaf", i), shape, scene.leaves[i][2]
+        for other, copy in placed.items():
+            if other != occurrence:
+                yield occurrence, ("copy", other), shape, copy
+
+
+def excused_turns(entry):
+    """Per socket, the axes of the turns FT10 excused (`axisymmetric`), in the target's frame."""
+    out = {}
+    for result in entry["sockets"]:
+        for motion in (result.get("placement") or {}).get("freedom") or []:
+            if motion["kind"] == "turn" and motion["axisymmetric"]:
+                out.setdefault(result["socket"], []).append(motion["about"])
+    return out
+
+
+def fo_matches(scene, entry, candidate, d, tally):
+    """FO1: every `Match`, physically: the candidate at every occurrence by its socket's placement, against every
+    other leaf and its own copies, has no common volume outside the oracle's own zones (fo_zones) at depth t;
+    where FT10 excused a free turn, the same at FO_TURNS turns about its axis."""
+    placements = {r["socket"]: placement_rows(r["placement"]) for r in entry["sockets"]}
+    axes = excused_turns(entry)
+    variants = [None] + [{s: rotation_about(a[0][0], a[0][1], 360.0 * k / FO_TURNS) for s, a in axes.items()}
+                         for k in range(1, FO_TURNS)] if axes else [None]
+    problems = []
+    for turns in variants:
+        tally["fo1 placements"] += 1
+        for occurrence, body, shape, other in fo_pairs(scene, fo_placed(scene, candidate, placements, turns)):
+            tally["fo1 pairs"] += 1
+            residual = fo_residual(shape, other, fo_zones(scene, occurrence, body, d))
+            if residual > VOLUME:
+                problems.append(f"{entry['labels'][0]}: a Match with {residual:.6g} mm³ in {body} at "
+                                f"{list(occurrence)} outside every zone{' turned' if turns else ''} (FO1)")
+                return problems
+    return problems
+
+
+def fo_interferences(scene, entry, candidate, tally):
+    """FO2: each interference a document states, re-measured: the candidate placed as the document says, the
+    named body, the Common less the oracle's zones at the pair's own epsilon exceeds 1e-6 mm³ and agrees with
+    fitment's residual within FO_AGREE_REL relative and FO_AGREE_ABS."""
+    placements = {r["socket"]: placement_rows(r["placement"]) for r in entry["sockets"]}
+    placed = fo_placed(scene, candidate, placements)
+    problems = []
+    for pair in entry["fit"]["interferences"]:
+        occurrence = tuple(pair["occurrence"])
+        bodies = scene.body(pair["body"]["path"])
+        if pair["body"]["kind"] == "copy":
+            bodies = [("copy", tuple(pair["body"]["path"]))]
+        if occurrence not in placed or not bodies:
+            problems.append(f"{entry['labels'][0]}: an interference names {pair} the oracle cannot bind (FO2)")
+            continue
+        body = bodies[0]
+        other = placed[body[1]] if body[0] == "copy" else scene.leaves[body[1]][2]
+        residual = fo_residual(placed[occurrence], other, fo_zones(scene, occurrence, body, pair["epsilon_mm"]))
+        stated = pair["measured"]["residual_mm3"]
+        tally["fo2 re-measured"] += 1
+        diff = abs(residual - stated)
+        tally["fo2 largest difference mm3"] = max(tally["fo2 largest difference mm3"], diff)
+        if residual <= VOLUME or diff > FO_AGREE_REL * stated + FO_AGREE_ABS:
+            problems.append(f"{entry['labels'][0]}: an interference with {pair['body']} at {list(occurrence)} "
+                            f"re-measured {residual:.9g} mm³, fitment {stated:.9g} (FO2)")
+    return problems
+
+
+def epsilons(value):
+    """Every `epsilon_mm` a document's fit states, anywhere in it."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k == "epsilon_mm" and isinstance(v, (int, float)):
+                yield v
+            else:
+                yield from epsilons(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from epsilons(v)
+
+
+def fo_collisions(scene, case, entry, candidate, t, tally):
+    """FO2's construction half: a `collides` case collides at its construction's placement (each occurrence's
+    transform after the case's placement), some pair's Common less the oracle's zones above 1e-6 mm³ at the
+    least epsilon its document states; where FK3 states a free turn, at FO_TURNS turns about the free axis:
+    at every one for an axisymmetric candidate, at some for another."""
+    d = min(epsilons(entry["fit"]), default=t - 1e-6)
+    a = case["placement"]
+    freedom = case.get("freedom", "unique")
+    axis = next((m["about"] for r in entry["sockets"] for m in (r.get("placement") or {}).get("freedom") or []
+                 if m["kind"] == "turn"), None)
+    if axis is None and freedom.startswith("turn"):
+        axis = first_axis(scene.socket, entry["sockets"][0])
+    turns = [0.0] + ([360.0 * k / FO_TURNS for k in range(1, FO_TURNS)] if freedom.startswith("turn") else [])
+    found = []
+    for degrees in turns:
+        r = rotation_about(axis[0], axis[1], degrees) if degrees else None
+        placed = {tuple(occ["path"]): moved(candidate, compose(o, compose(r, a) if r else a))
+                  for occ, o, _ in scene.occurrences}
+        tally["fo2 construction placements"] += 1
+        found.append(any(fo_residual(shape, other, fo_zones(scene, occ, body, d)) > VOLUME
+                         for occ, body, shape, other in fo_pairs(scene, placed)))
+    want = all(found) if freedom == "turn_axisymmetric" else any(found)
+    if not want:
+        return [f"{case['id']}: labelled collides, and it collides at {sum(found)} of {len(found)} placements "
+                f"(FK3: {freedom}) (FO2)"]
+    return []
+
+
+def freedom_statement(freedom):
+    """FK3's statement of a placement's freedom (FC4's motions)."""
+    if not freedom:
+        return "unique"
+    if all(m["kind"] == "turn" and m["axisymmetric"] for m in freedom):
+        return "turn_axisymmetric"
+    if any(m["kind"] == "slide" for m in freedom):
+        return "slide"
+    return "turn"
+
+
+def fo_freedom(entry, case):
+    """FK3 on a default-policy document: each socket's stated freedom is the one the manifest states for the
+    case (a freedom not worked out, null, is not judged)."""
+    stated = case.get("freedom")
+    out = []
+    for result in entry["sockets"]:
+        freedom = (result.get("placement") or {}).get("freedom")
+        if stated is None or freedom is None:
+            continue
+        if freedom_statement(freedom) != stated:
+            out.append(f"{case['id']} {result['socket']}: the document's freedom is "
+                       f"{freedom_statement(freedom)}, its case states {stated} (FK3)")
+    return out
+
+
+def fo_turned_match(entry):
+    """`entry` as a `Match` with a verified fit, its placements as stated."""
+    import copy
+    out = copy.deepcopy(entry)
+    out["verdict"] = "match"
+    out["fit"] = {"status": "verified", "kernel": "open_cascade", "version": "8.0.1", "pairs": [],
+                  "scope_not_checked": []}
+    return out
+
+
+def mutate_interferes(entry, case):
+    return fo_turned_match(entry) if entry["fit"]["status"] == "interferes" else None
+
+
+def mutate_collides(entry, case):
+    if case is None or case["truth"] != "collides":
+        return None
+    return entry if entry["verdict"] == "match" else fo_turned_match(entry)
+
+
+def mutate_freedom(entry, case):
+    import copy
+    for k, result in enumerate(entry["sockets"]):
+        if (result.get("placement") or {}).get("freedom"):
+            out = copy.deepcopy(entry)
+            out["sockets"][k]["placement"]["freedom"].pop()
+            return out
+    return None
+
+
+# FO3: each mutation of a v2 document must meet a disagreement somewhere in the corpus: FO1 meets the first two,
+# FK3's freedom check the third.
+FIT_MUTATIONS = [
+    ("an interferes turned verified", mutate_interferes, "match"),
+    ("a verified on a collides case", mutate_collides, "match"),
+    ("a freedom entry dropped from a placement", mutate_freedom, "freedom"),
+]
+
+
+def fo_mutations(scene, doc, cases, solid, met, tally):
+    """FO3: KO6's mutations for v2 documents (FIT_MUTATIONS), each tried on this document's entries until one
+    meets a disagreement; `met` collects the names met."""
+    default = doc["policy"]["clearance"] == "strict"
+    for name, mutate, check in FIT_MUTATIONS:
+        if name in met:
+            continue
+        for entry in doc["candidates"]:
+            if entry["source"]["kind"] != "file":
+                continue
+            case = cases.get(entry["labels"][0])
+            mutated = mutate(entry, case)
+            if mutated is None:
+                continue
+            tally["fo3 mutations tried"] += 1
+            if check == "match":
+                found = fo_matches(scene, mutated, solid(entry), doc["policy"]["linear_mm"], dict(tally))
+            else:
+                found = fo_freedom(mutated, case) if default and case else []
+            if found:
+                met.add(name)
+                break
+
+
+def fo_document(directory, scene, doc, cases, solid, tally):
+    """FO1, FO2 and FK3 on one v2 document: every file entry's Match physically, each interference
+    re-measured, and under the default policy each placement's freedom as its case states."""
+    problems = []
+    t = doc["policy"]["linear_mm"]
+    for entry in doc["candidates"]:
+        if entry["source"]["kind"] != "file":
+            continue
+        if entry["verdict"] == "match":
+            tally["fo1 matches"] += 1
+            problems += fo_matches(scene, entry, solid(entry), t, tally)
+        if entry["fit"]["status"] == "interferes":
+            problems += fo_interferences(scene, entry, solid(entry), tally)
+        case = cases.get(entry["labels"][0])
+        if doc["policy"]["clearance"] == "strict" and case is not None:
+            tally["fk3 freedoms"] += 1
+            problems += fo_freedom(entry, case)
+    return problems
+
+
+def fo_scene(binary, directory, key, scratch):
+    """The socket of one index key (source, part, review), as fitment writes it and its review leaves it, with
+    Open CASCADE's leaves and fitment's paths: a FitScene, or the problem."""
+    source, part, review = key
+    path = scratch / f"{source}--{part}--{hashlib.sha256(review.encode()).hexdigest()[:12]}.json"
+    socket, problem = run_fitment(binary, ["socket", str(directory / f"{source}.stp"), "--part", part,
+                                           "--format", "json"], (0,))
+    if problem:
+        return None, problem
+    path.write_text(json.dumps(socket), encoding="utf-8")
+    if json.loads(review):
+        socket, problem = reviewed_socket(binary, socket, path, json.loads(review))
+        if problem:
+            return None, problem
+    read = xcaf_leaves(directory / f"{source}.stp", bind=True)
+    paths, problem = parts_paths(binary, directory / f"{source}.stp")
+    if read is None or problem:
+        return None, problem or "Open CASCADE cannot read it"
+    scene = FitScene(socket, read[0], read[1], paths)
+    return scene, "; ".join(scene.problems) or None
+
+
+def fo_group(binary, directory, key, docs, cases, met, tally, scratch):
+    """One socket's v2 documents (each policy): FO1, FO2, FK3 and FO3's mutations on each, and FO2's
+    construction half on each of its `collides` cases."""
+    scene, problem = fo_scene(binary, directory, key, scratch)
+    if scene is None or problem:
+        return [f"{key[0]} {key[1]}: {problem}"]
+    solids = {}
+
+    def solid(entry):
+        label = entry["labels"][0]
+        if label not in solids:
+            solids[label] = one_solid(directory / label)
+        return solids[label]
+
+    problems = []
+    try:
+        for doc in docs:
+            tally["documents"] += 1
+            problems += fo_document(directory, scene, doc, cases, solid, tally)
+            fo_mutations(scene, doc, cases, solid, met, tally)
+        default = next((d for d in docs if d["policy"]["clearance"] == "strict"), None)
+        for label, case in sorted(cases.items()):
+            entry = next((e for e in default["candidates"] if label in e["labels"]), None) if default else None
+            if case["truth"] == "collides" and entry is not None:
+                tally["fo2 collides cases"] += 1
+                problems += fo_collisions(scene, case, entry, solid(entry), default["policy"]["linear_mm"], tally)
+    except BooleanFailed as failed:
+        problems.append(f"{key[0]} {key[1]}: {failed} failed in Open CASCADE")
+    return problems
+
+
+def fit_main(argv):
+    """`fit DIR DOCS` (VT72): FO1 to FO3 on every fitment.match v2 document the fit corpus suite wrote into DOCS
+    (`crates/fitment/tests/fit_corpus.rs`: one per socket and policy, and `index.json` naming each one's source,
+    part, review and policy), against the corpus in DIR: every `Match` fits physically outside the oracle's own
+    zones at depth t, and at FO_TURNS turns where a free turn was excused (FO1); every `interferes` re-measured
+    at the pair's own epsilon (FO2), and every `collides` case colliding at its construction's placement (and its
+    free turns, FK3); each placement's freedom as its case states (FK3); and each of FIT_MUTATIONS meets a
+    disagreement somewhere (FO3)."""
+    import tempfile
+    directory, docs_dir = Path(argv[0]), Path(argv[1])
+    binary = Path(os.environ.get("FITMENT", Path(__file__).resolve().parent.parent / "target/release/fitment"))
+    if not binary.is_file():
+        sys.exit(f"no fitment at {binary}: run cargo build --release -p fitment, or set FITMENT")
+    cases = [c for c in json.loads((directory / "manifest.json").read_text(encoding="utf-8"))["cases"]
+             if c.get("kind") == "match" and "file" in c["candidate"]]
+    groups = {}
+    for item in json.loads((docs_dir / "index.json").read_text(encoding="utf-8")):
+        s_ = item["socket"]
+        key = (s_["source"], s_["part"], json.dumps(s_["review"], sort_keys=True))
+        groups.setdefault(key, []).append(json.loads((docs_dir / item["file"]).read_text(encoding="utf-8")))
+    tally = {"documents": 0, "fo1 matches": 0, "fo1 placements": 0, "fo1 pairs": 0, "fo2 re-measured": 0,
+             "fo2 largest difference mm3": 0.0, "fo2 collides cases": 0, "fo2 construction placements": 0,
+             "fk3 freedoms": 0, "fo3 mutations tried": 0}
+    problems, met = [], set()
+    with tempfile.TemporaryDirectory(prefix="fitment-fit-oracle-") as scratch:
+        for key, docs in sorted(groups.items()):
+            mine = {c["candidate"]["file"]: c for c in cases if c["socket"]["case"] == key[0]
+                    and c["socket"]["part"] == key[1]
+                    and json.dumps(c["socket"].get("review") or [], sort_keys=True) == key[2]}
+            before = len(problems)
+            problems += fo_group(binary, directory, key, docs, mine, met, tally, Path(scratch))
+            print(f"{'ok  ' if len(problems) == before else 'FAIL'} {key[0]} {key[1]}"
+                  f"{' reviewed' if json.loads(key[2]) else ''}")
+    tally["pairs a zone excused"] = FO_EXCUSED["pairs"]
+    unmet = [name for name, _, _ in FIT_MUTATIONS if name not in met]
+    if unmet:
+        problems.append(f"mutations no check disagreed with anywhere (FO3): {unmet}")
+    if any(v == 0 for v in tally.values() if isinstance(v, int)):
+        problems.append("a fit check examined nothing: " + ", ".join(f"{v} {k}" for k, v in tally.items()))
+    for problem in problems:
+        print(problem, file=sys.stderr)
+    print(", ".join(f"{v:.3g} {k}" if isinstance(v, float) else f"{v} {k}" for k, v in tally.items())
+          + f"; {len(problems)} disagreements with Open CASCADE")
+    sys.exit(1 if problems else 0)
+
+
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "mutations":
         quiet()
@@ -4092,6 +4658,9 @@ def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "match":
         quiet()
         match_main(sys.argv[2:])
+    if len(sys.argv) == 4 and sys.argv[1] == "fit":
+        quiet()
+        fit_main(sys.argv[2:])
     if len(sys.argv) >= 3 and sys.argv[1] == "features":
         quiet()
         features_main(sys.argv[2:])

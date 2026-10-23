@@ -26,6 +26,9 @@ pub struct Outcome {
     pub flags: Vec<String>,
     /// The fit's status (VD4).
     pub fit: String,
+    /// The fit's code when it is not verified (FV9; `docs/research/m7-fit.md`,
+    /// FM3), as the document writes it.
+    pub fit_code: Option<String>,
     /// The policy, as the document states it (KH2.6).
     pub policy: Value,
 }
@@ -163,6 +166,13 @@ impl Outcome {
                 .ok()
                 .and_then(|v| v["status"].as_str().map(str::to_owned))
                 .unwrap_or_default(),
+            fit_code: matches!(
+                result.verdict.fit(),
+                fitment_core::FitStatus::NotVerified { .. }
+            )
+            .then(|| result.fit.as_deref().and_then(|e| e.outcome().code()))
+            .flatten()
+            .map(|c| c.as_str().to_owned()),
             policy: policy_value(policy),
         }
     }
@@ -188,6 +198,7 @@ impl Outcome {
                 .collect::<Result<_, _>>()?,
             flags: strings("flags")?,
             fit: text(&entry["fit"]["status"], "fit status")?,
+            fit_code: entry["fit"]["code"].as_str().map(str::to_owned),
             policy: policy.clone(),
         })
     }

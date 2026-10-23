@@ -1993,6 +1993,65 @@ for rule, tests in {
     RULES[rule]["tests"] = RULES[rule]["tests"] + tests
 
 
+# PR 4 builds the corpus, the oracle and the fit job (section 11, item 4): FK2's cases, each ending its fit as its
+# manifest states (VT60), FK3's freedom statements (VT76), FK4's marks (s14, s20) and FK5's originals (VT59), the
+# fit baseline (FK6), the lug in the committed set (FK7: f_copy, 26.8 KB, would take the set past its 210 KB), and
+# FK8's two lists, every rule of the first ended by a case or a fake helper's lie; FO1 to FO3 in the oracle's fit
+# mode (VT72); the fit job runs VT58 to VT60 and VT63 on Ubuntu and macOS.
+FIT_CORPUS, FIT_ORIGINAL = f"{FIT_CLI}/fit_corpus.rs", f"{FIT_CLI}/fit_original.rs"
+FIT_GATE = f"{FIT_CORPUS}::every_match_case_meets_its_construction_with_the_fit"
+FIT_LIES = f"{FIT_ADV}::a_lying_kernel_ends_each_fit_by_its_rule"
+FIT_SCORER = "crates/fitment-corpus/tests/scorer.rs"
+M7_PR4 = {
+    "FT4": [FIT_GATE],
+    "FT5": [FIT_GATE, f"{FIT_DECIDE}::a_zoned_distance_under_the_distance_by_rounding_is_consistent"],
+    "FT6": [FIT_GATE],
+    "FT7": [FIT_GATE],
+    "FT8": [FIT_LIES],
+    "FT9": [FIT_GATE, f"{FIT_ORIGINAL}::every_corpus_original_s_control_is_as_its_construction_says",
+            f"{FIT_ORIGINAL}::every_fixture_original_s_control_is_pinned"],
+    "FT10": [FIT_GATE, f"{FIT_CLI}/freedom.rs::the_corpus_s_free_placements_are_section_5_6_s"],
+    "FZ7": [FIT_LIES, FIT_GATE],
+    "FZ9": [FIT_LIES, f"{FIT_DECIDE}::a_zone_that_declares_no_touch_may_have_its_body_away",
+            f"{FIT_CLI}/zones.rs::a_zone_says_whether_its_source_touches"],
+    "FB3": [FIT_LIES],
+    "FB6": [FIT_LIES, FIT_GATE],
+    "FV2": [FIT_LIES, f"{FIT_KERN}::an_exception_in_one_pair_is_that_pair_s_alert"],
+    "FV3": [FIT_GATE],
+    "FV4": [FIT_GATE, FIT_LIES],
+    "FV5": [FIT_GATE, f"{FIT_ORIGINAL}::every_corpus_original_s_control_is_as_its_construction_says"],
+    "FV6": [FIT_GATE],
+    "FK1": [FIT_GATE, f"{FIT_CORPUS}::the_report_states_every_not_verified_by_code",
+            f"{FIT_SCORER}::the_fit_gate_holds_fk1_s_truths"],
+    "FK2": [FIT_GATE],
+    "FK3": [f"{FIT_CLI}/freedom.rs::the_corpus_s_free_placements_are_section_5_6_s", FIT_GATE],
+    "FK4": [f"{FIT_ORIGINAL}::every_corpus_original_s_control_is_as_its_construction_says",
+            f"{FIT_ORIGINAL}::every_fixture_original_s_control_is_pinned"],
+    "FK5": [f"{FIT_ORIGINAL}::every_corpus_original_s_control_is_as_its_construction_says",
+            f"{FIT_ORIGINAL}::every_fixture_original_s_control_is_pinned"],
+    "FK6": [f"{FIT_CORPUS}::the_fits_are_the_baseline", f"{FIT_SCORER}::the_fit_baseline_refuses_a_changed_known_fit"],
+    "FK7": [f"{FIT_KERN}::the_lug_interferes_and_the_bracket_verifies",
+            f"{FIT_CLI}/corpus.rs::the_candidate_set_fits_its_budget_and_its_manifest"],
+    "FK8": [f"{M6_COVER}::m7_deferrals_and_lists_hold"],
+}
+for rule, tests in M7_PR4.items():
+    assert RULES[rule] == {"deferred": "M7 PR 4"}, rule
+    RULES[rule] = {"tests": tests}
+RULES.update({
+    "FO1": {"oracle": [f"{M4_ORACLE}::fo_matches", f"{M4_ORACLE}::fo_zones"]},
+    "FO2": {"oracle": [f"{M4_ORACLE}::fo_interferences", f"{M4_ORACLE}::fo_collisions"]},
+    "FO3": {"oracle": [f"{M4_ORACLE}::fo_mutations"]},
+})
+# The reviews' corpus gaps and PR 3's leftovers, by what now shows them: the interference fit's VT63, the binary's
+# subset (VT58), and FB5's interfering second scene.
+for rule, tests in {
+    "FM5": [f"{FIT_CORPUS}::the_fit_is_the_same_in_reverse_with_a_fresh_helper_per_check"],
+    "FU1": [f"{FIT_CORPUS}::the_binary_agrees_with_the_library_on_its_subset"],
+    "FB5": [f"{FIT_CLI_KERN}::a_component_of_another_assembly_that_interferes_is_rejected"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
+assert not [r for r, e in RULES.items() if e.get("deferred") == "M7 PR 4"], "an M7 rule still waits for PR 4"
+
 
 def coverage(cases):
     """The `rule_ids` entry of the corpus manifest: every rule in RULES with
@@ -3861,9 +3920,12 @@ def build_assemblies(w: Writer, which):
     # s14: a box overlapping the block by 10 x 10 x 5, with no face of one near a face of the other: no rule
     # relates them. M7 catches the clash.
     s14 = Node("s14_clash").add(Leaf("BLOCK", box(0, 0, 0, 20, 20, 10))).add(Leaf("CLASH", box(10, 10, 5, 20, 20, 10)))
-    a.case("s14_clash", s14, "a box overlapping the block, no face near another", ["N3"], False,
+    # FK4 (docs/research/m7-fit.md): an assembly that already interferes, its 500 mm3 by construction; the block's
+    # socket states nothing, so its interface rejects and its control never runs.
+    a.case("s14_clash", s14, "a box overlapping the block, no face near another", ["N3", "FK4"], False,
            {"block": "20 x 20 x 10", "clash": "20 x 20 x 10 from (10, 10, 5)"},
-           asm_expect(s14, sockets={"BLOCK": [e_socket([])]}))
+           {**asm_expect(s14, sockets={"BLOCK": [e_socket([])]}),
+            "fit_control": {"BLOCK": {"interface": "rejects", "with": "CLASH", "overlap_mm3": 500.0}}})
 
     # s17: a dia 6 pin through one end of a 6.6-wide slot 20 long in a 10 mm plate. The slot's ends are half
     # holes: the occupied one is a partial bore (U1), the other is required of nothing; the pin is pinned in
@@ -3889,9 +3951,12 @@ def build_assemblies(w: Writer, which):
     sockets20 = {"PLATE": [e_socket([], seats=[e_seat((0, 0, 0), Z, by=2, flags=["interference", "near_gap"],
                                                       touchers=[("ABOVE", 0.05, ["near_gap"]),
                                                                 ("INTO", -0.05, ["interference"])])])]}
-    a.case("s20_near", s20, "blocks 0.05 mm above and 0.05 mm into a plate", ["C5", "Z6"], False,
+    # FK4: INTO is 0.05 into the plate, the interference flag's (C5) slab ε deep, so the plate's control interferes
+    # by 20 x 20 x (0.05 - ε) mm3: the exit's one exception (M7-28).
+    a.case("s20_near", s20, "blocks 0.05 mm above and 0.05 mm into a plate", ["C5", "Z6", "FK4"], False,
            {"plate": "100 x 40 x 10, top at z 0", "above": "20 x 20 x 10 at z 0.05", "into": "at z -0.05"},
-           asm_expect(s20, sockets=sockets20))
+           {**asm_expect(s20, sockets=sockets20),
+            "fit_control": {"PLATE": {"status": "interferes", "with": "INTO", "residual_mm3": 400 * (0.05 - FIT_EPS)}}})
 
     # s48: a dia 10 D-shaft line to line in a bushing's dia 10 hole along x, its flat beyond the bushing. The
     # shaft's cylinder is partial (U1): it is no round shaft, so B8 pins the hole, and the shaft gets a partial
@@ -5280,6 +5345,288 @@ def build_family_cases(w: Writer):
     case("m_bracket_split", *B, divide.Result(), VARIANT, "fits", "g_writer", m_ok(), [],
          "the original with every closed face split in two", ["KC6", "KC8"])
 
+# ------------------------------------------------------------ fit cases (M7)
+# docs/research/m7-fit.md, FK2 and FK3: candidates whose interface passes and whose body is the fit's to judge, each
+# stating its truth, its expected fit (status and code) and, where FC4 finds it free, its freedom. Each is a
+# candidate of an existing source unless said; a case whose fit depends on a value within 1e-3 mm is written in
+# four frames (KC7). s65 to s69 are match-only sources, written here.
+
+# The fit's tolerances on the corpus (FT7): t, and the depth of an interference zone, t - u_pair, with u_pair the
+# guard, since every corpus part states 1e-7 mm.
+FIT_T = M_TOL
+FIT_EPS = FIT_T - 1e-6
+
+FOUR_FRAMES = [("id", IDENTITY), ("var", VARIANT), ("tilt", TILT), ("skew", SKEW)]
+
+# FK3: how FC4 finds each case's placement where it is not unique: `turn` (free to turn, not excused),
+# `turn_axisymmetric` (free only to turn, excused), `slide`; every other case whose interface passes is
+# `unique` (section 5.6, P6; VT76 holds the counts).
+FREEDOM = {
+    "m_bearing04": "turn_axisymmetric", "m_screw02": "turn_axisymmetric", "m_tube50": "turn_axisymmetric",
+    "m_washer05": "turn_axisymmetric", "m_housing04": "turn", "m_s21_block": "turn",
+}
+
+
+def stated_passes(case):
+    """True if a match case expects its interface to pass under the default policy."""
+    expect = case["expect"]["default"]
+    return isinstance(expect, dict) and expect.get("verdict") == "interface_match"
+
+
+def fit_ok(status, code=None, flags=()):
+    """An interface that passes (m_ok) and the fit FK2 states for it."""
+    return {**m_ok(flags), "fit": {"status": status, **({"code": code} if code else {})}}
+
+
+def bracket_with(*extra):
+    """s01's bracket with `extra` solids fused to it."""
+    return fuse(c_bracket(), *extra)
+
+
+def tab_at_the_plate_side(y_in):
+    """The bracket with a bridge off its -y side and a tab hanging from it alongside the plate's y = -30 side, the
+    tab's inner face at y = -30 + `y_in` (0: touching; > 0: into the plate)."""
+    return bracket_with(box(-10, -33 + y_in, 0, 20, 8 - y_in, 8), box(-10, -33 + y_in, -5, 20, 3, 5))
+
+
+def pad_beyond(depth, length=4.0):
+    """The bracket with a pad beyond its x = 40 end, 10 wide and `length` long, its bottom `depth` below the
+    plate's top: over the plate's top face, the zone the bracket's seat cites, outside the original's contact."""
+    return bracket_with(box(40, -5, -depth, length, 10, 8 + depth))
+
+
+def ring(z0, h, r_in, r_out):
+    return cut(cyl((0, 0, z0), UP, r_out, h), cyl((0, 0, z0 - 1), UP, r_in, h + 2))
+
+
+def fit_cases():
+    """(id, (source, part), shape or the file of an existing case, motion, truth, class, expect, text, rules,
+    freedom): FK2's cases."""
+    B, N = ("s01_bolted", "BRACKET"), ("s01_bolted", "NUT")
+    out = []
+    # D1's probes: a tab alongside the plate's side, touching it, 0.001 into it and 1e-8 into it (below Open
+    # CASCADE's resolution, P1: read 0, so its status alone is asserted).
+    for name, motion in FOUR_FRAMES:
+        out += [
+            (f"f_touch_{name}", B, tab_at_the_plate_side(0.0), motion, "fits", "f_contact",
+             fit_ok("not_verified", "proximity"),
+             "a tab whose face touches the plate's side, gap 0, where no requirement declares a contact",
+             ["FT5", "FV4", "FK2"], "unique"),
+            (f"f_overlap_1um_{name}", B, tab_at_the_plate_side(0.001), motion, "collides", "f_contact",
+             fit_ok("interferes"), "the tab 0.001 mm into the plate's side", ["FT4", "FV3", "FK2"], "unique"),
+            (f"f_overlap_sub_{name}", B, tab_at_the_plate_side(1e-8), motion, "fits", "f_contact",
+             fit_ok("not_verified", "proximity"),
+             "the tab 1e-8 mm into the plate's side, below the kernel's resolution: a contact within the tolerance, "
+             "never verified", ["FT5", "FV4", "FK2"], "unique"),
+            (f"f_below_resolution_{name}", B,
+             bracket_with(box(-10, -33, 0, 20, 8, 8), box(0, -33, -0.6, 0.1, 3 + 1e-5, 0.6)), motion, "fits",
+             "f_contact", fit_ok("not_verified", "below_resolution"),
+             "a 0.1 mm wide tab 1e-5 mm into the plate's side over 0.6 mm: a residual under 1e-6 mm3",
+             ["FV3", "FK2"], "unique"),
+        ]
+    W = ("s05_stack", "WASHER")
+    out += [
+        ("f_head_touch", B, bracket_with(box(27, 25, 0, 6, 2, 11), box(27, 20.005, 9.2, 6, 6.995, 1.8)), VARIANT,
+         "fits", "f_contact", fit_ok("not_verified", "proximity"),
+         "a riser off the bracket's +y side and an arm back over its top, 1.2 above it (past the seat's near band), "
+         "0.005 from the flat of the bolt head at (30, 15)", ["FT5", "FV4", "FK2"], "unique"),
+        ("f_contained", ("s66_coplanar", "BRACKET"), bracket_with(box(40, 7, 0.5, 30, 10, 7.5)), VARIANT,
+         "collides", "f_contained", fit_ok("interferes"),
+         "a block off the bracket's end, 0.5 over the plate and the shim, wholly round s66's peg: a body inside "
+         "the candidate's material", ["FT4", "FV3", "FK2"], "unique"),
+        ("f_major_minor", N, c_nut(), TILT, "fits", "f_annulus",
+         fit_ok("verified", flags=["thread_not_confirmed"]),
+         "the nut at its minor dia 5 round the bolt's major dia 6: the thread's annulus zone (FZ3)",
+         ["FZ3", "FZ7", "FZ9", "FK2"], "unique"),
+        # A copy (FT3, V1): s05's washers meet their copies across a seat, where the interface already judges
+        # material; s01's bolts stand 30 mm apart with nothing between their heads. A disc, so that each of the
+        # hex head's six placements reaches the copy across the bracket's width.
+        ("f_copy", ("s01_bolted", "BOLT"), fuse(c_bolt(), cyl((0, 0, 1.2), UP, 31, 1.8)), VARIANT, "collides",
+         "f_copy", fit_ok("interferes", flags=["thread_not_confirmed"]),
+         "the bolt with a disc dia 62 round its head, 1.2 over the bracket: at every occurrence it is in the head "
+         "and the disc of its copy 30 mm away, and nothing else", ["FT3", "FV3", "FV7", "FK2"], "unique"),
+        # Free placements (FT10, FC4): s05's washers turn freely about their axis. A bridge 0.2 over the plate T
+        # under the lower washer, out to r 23, past the plate's x = 20 side.
+        ("f_free_turn", W, fuse(c_washer(), ring(0.2, 0.8, 5.5, 23), box(21, -0.5, -0.5, 2, 1, 0.7)),
+         VARIANT, "collides", "f_free", fit_ok("not_verified", "placement_not_unique"),
+         "the washer with a round flange out to r 23, 0.2 over plate T, and a tab 0.5 down from it at r 21 to 23: "
+         "clear past the plate's side at this turn, into its corner at 45 degrees", ["FT10", "FV6", "FK2", "FK3"],
+         "turn"),
+        ("f_free_turn_round", W, fuse(c_washer(), ring(0.2, 0.8, 5.5, 23)), VARIANT, "fits", "f_free",
+         fit_ok("verified"), "the washer with a round flange out to r 23, 0.2 over plate T: free to turn, "
+         "axisymmetric, excused", ["FT10", "FK2", "FK3"], "turn_axisymmetric"),
+        ("f_free_turn_round_collides", W,
+         fuse(c_washer(), ring(0.2, 0.8, 5.5, 23), ring(-0.5, 2.6, 21, 23)), VARIANT, "collides", "f_free",
+         fit_ok("interferes"), "the round flange with a skirt 0.5 below the washer and 0.5 above it at r 21 to 23: "
+         "into plate T's corners and the other copy's skirt at every turn, either way up", ["FT10", "FV3", "FK2",
+                                                                                          "FK3"],
+         "turn_axisymmetric"),
+        # The review of PR 1a: a turn free over less than 1 degree. The nut across flats 10.02 covers the
+        # original's hex for turns up to about 0.4 degrees.
+        ("f_turn_small", N, through(hex_prism(10.02, -5, 5), [(0, 0)], 5, -5, 0), VARIANT, "fits", "f_free",
+         fit_ok("not_verified", "placement_not_unique", ["thread_not_confirmed"]),
+         "the nut 10.02 across flats: free to turn by 0.25 degrees, not by 1", ["FT10", "FV6", "FK2", "FK3"],
+         "turn"),
+        ("f_free_slide", ("s17_slot", "PIN"), cyl((0, 0, -5), UP, 3, 20), VARIANT, "fits", "f_free",
+         fit_ok("not_verified", "placement_not_unique"),
+         "s17's pin, through its plate with nothing fixing its station: free to slide along its axis",
+         ["FT10", "FV6", "FK2", "FK3"], "slide"),
+        # AL9's seeds (VT62): a cone (s41) and a landmark (s53); each free to turn, axisymmetric, excused. Under
+        # functional clearance s41's screw is free to slide as well.
+        ("f_cone_s41", ("s41_cone_head", "SCREW"), ("s41_cone_head", "SCREW"), VARIANT, "fits", "f_free",
+         {"default": fit_ok("verified"), "functional": fit_ok("not_verified", "placement_not_unique")},
+         "s41's screw, placed by AL9's cone seed", ["FT10", "FC4", "FK2"], "turn_axisymmetric"),
+        ("f_landmark_s53", ("s53_flange", "FLANGE"), ("s53_flange", "FLANGE"), VARIANT, "fits", "f_free",
+         fit_ok("verified"), "s53's flange, placed by a landmark", ["FT10", "FC4", "FK2"], "turn_axisymmetric"),
+        # Zones (FZ2, FZ6): a pad beyond the bracket's end over the plate's top face, 0.5 eps, t and 1.5 eps
+        # below it.
+        ("f_seat_proud_05", B, pad_beyond(0.5 * FIT_EPS), VARIANT, "fits", "f_zone", fit_ok("verified"),
+         "a pad over the plate's top face 0.5 eps into it: inside the seat's zone", ["FZ2", "FZ6", "FK2"], "unique"),
+        ("f_seat_proud_15", B, pad_beyond(1.5 * FIT_EPS), VARIANT, "collides", "f_zone", fit_ok("interferes"),
+         "the pad 1.5 eps into the plate: deeper than the zone", ["FZ6", "FV3", "FK2"], "unique"),
+        ("f_zone_edge", B, bracket_with(box(40, -5, 0, 12, 10, 8), box(50 - 0.5 * FIT_EPS, -5, -2, 2 + 0.5 * FIT_EPS,
+                                                                       10, 2)),
+         VARIANT, "collides", "f_zone", fit_ok("interferes"),
+         "a bridge over the plate's x = 50 end and a tab 0.5 eps into its side, beside the slab's lateral edge",
+         ["FZ2", "FV3", "FK2"], "unique"),
+        ("f_other_zone", ("s66_coplanar", "BRACKET"), pad_beyond(0.5 * FIT_EPS, length=25), VARIANT, "collides",
+         "f_zone", fit_ok("interferes"),
+         "a pad 0.5 eps down over the plate and on over a shim coplanar with it: the plate's zone never excuses "
+         "the shim", ["FZ2", "FV3", "FK2"], "unique"),
+    ]
+    # The edge: a pad exactly t into the plate, 1e-6 mm past the zone (Soundness rule 4).
+    out += [(f"f_seat_proud_10_{name}", B, pad_beyond(FIT_T), motion, "collides", "f_zone", fit_ok("interferes"),
+             "the pad t into the plate: 1e-6 mm past the zone's depth, the edge rejects", ["FZ6", "FV3", "FK2"],
+             "unique") for name, motion in FOUR_FRAMES]
+    # Resolution and uncertainty (FT6, FT7, FV3).
+    out += [
+        ("f_tolerance", ("s67_plate_tolerance", "BRACKET"), "m_bracket", None, "fits", "f_uncertain",
+         fit_ok("not_verified", "tolerance_too_large"),
+         "the bracket against s01 whose plate has a corner 0.002 off its edges (and states 0.002 mm): Open "
+         "CASCADE's tolerance there above t/10", ["FT6", "FK2"], "unique"),
+        ("f_uncertain_neighbour", ("s68_plate_4um", "BRACKET"), pad_beyond(0.04), VARIANT, "collides",
+         "f_uncertain", fit_ok("interferes"),
+         "a boss 0.04 into the plate, the plate stating 0.004 mm (P7): its zone 0.006 deep, never deeper",
+         ["FT7", "FZ6", "FV3", "FK2"], "unique"),
+        ("f_uncertain_neighbour_58", ("s69_plate_58um", "BRACKET"), "f_uncertain_neighbour", None, "collides",
+         "f_uncertain", fit_ok("not_verified", "uncertainty_above_tolerance"),
+         "the boss, the plate stating 0.058 mm (the weldment's): no zone is left", ["FT7", "FK2"], "unique"),
+        ("f_inflated", B, pad_beyond(0.005), (VARIANT, 0.006), "collides", "f_uncertain", fit_ok("interferes"),
+         "a pad 0.005 into the plate, the candidate stating 0.006 mm: its own uncertainty makes the zone "
+         "shallower (0.004), never deeper", ["FT7", "FZ6", "FV3", "FK2"], "unique"),
+        # The control (FT9, FV5): s65's original bracket is the lug, which interferes with the plate.
+        ("f_control_fails", ("s65_lug", "BRACKET"), "m_bracket", None, "fits", "f_control",
+         fit_ok("not_verified", "original_fails_fit"),
+         "the bracket against s65, s01 with the lug's bracket in its place: the original's own fit interferes, "
+         "so no candidate's is verified", ["FT9", "FV5", "FK2"], "unique"),
+        ("f_control_fails_lug", ("s65_lug", "BRACKET"), "m_bracket_lug", None, "collides", "f_control",
+         fit_ok("interferes"), "the lug against s65: beside a failing control a Reject stays a Reject",
+         ["FT9", "FV5", "FK2"], "unique"),
+        # The scene (FB2, FB6): s24's bolt placed twice at one place. FK2's f_bspline_contact is not built: a
+        # part fitment cannot bound makes every socket near it unresolved (N4), and a candidate's B-spline face
+        # fails every bore's core, so no B-spline contact reaches the fit; FV4's unsupported_geometry is the
+        # fake helper's (adversarial.rs).
+        ("f_duplicate_leaf", ("s24_coincident", "BRACKET"), "m_bracket", None, "fits", "f_scene",
+         fit_ok("not_verified", "binding_failed"),
+         "the bracket against s24, a bolt placed twice at one place: two leaves the faces of one product bind",
+         ["FB2", "FB6", "FK2"], "unique"),
+    ]
+    return out
+
+
+# The match-only sources of the fit's cases, and what each case's socket states of them: `from` names the source
+# whose expected sockets (M3's construction) are this one's, for the oracle; `floor` the uncertainty a text edit
+# states, as s61's and s62's do; `original_interferes` that the source's target already interferes, by
+# construction (FK4), so the oracle's KO1, which judges a candidate against the original, does not judge it.
+FIT_SOURCES = {
+    "s65_lug": {"from": "s01_bolted", "original_interferes": True},
+    "s66_coplanar": {"from": "s01_bolted"},
+    "s67_plate_tolerance": {"from": "s01_bolted", "floor": {"neighbour_mm": 0.002}},
+    "s68_plate_4um": {"from": "s01_bolted", "floor": {"neighbour_mm": 0.004}},
+    "s69_plate_58um": {"from": "s01_bolted", "floor": {"neighbour_mm": 0.058}},
+}
+
+
+def s01_tree(name, bracket=None, extra=()):
+    """s01's tree under `name`, its bracket replaced, with `extra` leaves added (each (leaf, matrix))."""
+    root = Node(name).add(Leaf("PLATE", a_plate())).add(Leaf("BRACKET", bracket or a_bracket()))
+    bolt, nut_leaf = Leaf("BOLT", a_hex_bolt()), Leaf("NUT", a_hex_nut())
+    for x, y in PTS:
+        root.add(bolt, m_tr((x, y, 8)))
+        root.add(nut_leaf, m_tr((x, y, -10)))
+    for leaf, matrix in extra:
+        root.add(leaf, matrix)
+    return root
+
+
+def vertex_moved(text, at, to):
+    """`text` with the one vertex at `at` moved to `to`: its edges' curves stay, so the vertex lies off two of
+    them by the move, and Open CASCADE's reader widens its tolerance to cover the gap."""
+    f = Part21(text)
+    vertices = [n for n in f.find("VERTEX_POINT") if max(abs(a - b) for a, b in zip(f.point(f.refs(n)[0]), at)) < 1e-12]
+    if len(vertices) != 1:
+        raise RuntimeError(f"{len(vertices)} vertices at {at}")
+    f.inst[f.refs(vertices[0])[0]] = f"CARTESIAN_POINT('',{reals(to)})"
+    return f.text()
+
+
+def build_fit_sources(w: Writer):
+    """The fit cases' match-only sources: s65, s01 with the lug's bracket in the bracket's place, an original
+    that interferes (FT9, FV5), and s65_tgt, the same with its bracket modelled in TILT (FB5's interfering second
+    scene, copied into crates/fitment/tests/data); s66, s01 with a shim coplanar with the plate's top past the
+    bracket's end, and a peg floating over it, each at both ends; s67, s01 whose plate has its corner (50, 30, -10)
+    moved 0.002 along x, off its other two edges, and states 0.002 mm so fitment's gate admits it; s68 and s69, s01
+    whose plate states 0.004 and 0.058 mm."""
+    lug = s01_tree("s65_lug", bracket=c_bracket(lug=True))
+    write_xcaf(w, lug, "s65_lug")
+    write_xcaf(w, tilted(lug, {"BRACKET"}, "s65_lug_tgt"), "s65_lug_tgt")
+    # Each extra twice, a half turn about z apart, as the bracket's own symmetry is: a case's collision is then
+    # at both placements its interface passes at.
+    shim, peg = Leaf("SHIM", box(50, -10, -10, 20, 20, 10)), Leaf("PEG", box(60, 10, 2, 4, 4, 4))
+    half = m_rot((0, 0, 1), 180.0)
+    write_xcaf(w, s01_tree("s66_coplanar", extra=[(shim, I4), (shim, half), (peg, I4), (peg, half)]),
+               "s66_coplanar")
+    s01 = (w.out / "s01_bolted.stp").read_text(encoding="latin-1")
+    w.text(stated_uncertainty(vertex_moved(s01, (50, 30, -10), (50.002, 30, -10)), 0.002, root="PLATE"),
+           "s67_plate_tolerance", "s01_bolted")
+    w.text(stated_uncertainty(s01, 0.004, root="PLATE"), "s68_plate_4um", "s01_bolted")
+    w.text(stated_uncertainty(s01, 0.058, root="PLATE"), "s69_plate_58um", "s01_bolted")
+
+
+def build_fit_cases(w: Writer):
+    """FK2's cases (fit_cases), written as build_candidates writes M4's: each file in its frame, its placement the
+    frame's inverse (KC2); a case of an existing file shares its frame and placement."""
+    build_fit_sources(w)
+    by_id = {c["id"]: c for c in w.cases}
+    for cid, (source, part), shape, motion, truth, klass, expect, text, rules, freedom in fit_cases():
+        if isinstance(shape, str):
+            base = by_id[shape]
+            frame, placement, file = base["frame"], base["placement"], base["file"]
+            if motion == "inflated":
+                stated = stated_uncertainty((w.out / file).read_text(encoding="latin-1"), FIT_T)
+                file = w.text(stated, cid, Path(file).stem).name
+        else:
+            if isinstance(shape, tuple):
+                shape = LEAVES[shape]
+            motion, stated = motion if isinstance(motion, tuple) else (motion, None)
+            path = w.shape(BRepBuilderAPI_Transform(shape, motion.trsf(), True).Shape(), cid)
+            if stated is not None:
+                path.write_text(stated_uncertainty(path.read_text(encoding="latin-1"), stated), encoding="latin-1",
+                                newline="\n")
+            frame = {"axis": list(motion.axis), "angle_deg": motion.angle, "shift": list(motion.shift)}
+            placement, file = [row[:4] for row in m_inv(m_motion(motion))[:3]], f"{cid}.stp"
+        w.cases.append({
+            "id": cid, "kind": "match", "file": file, "set": "corpus",
+            "socket": {"case": source, "part": part, "occurrence": None, "review": [],
+                       **FIT_SOURCES.get(source, {})},
+            "candidate": {"file": file}, "class": klass, "truth": truth,
+            "construction": {"from": part, "defect": text}, "frame": frame, "placement": placement,
+            "expect": expect if "default" in expect else {"default": expect, "functional": "default"},
+            "defect": [], "rules": rules, "tests": text, "freedom": freedom,
+        })
+        by_id[cid] = w.cases[-1]
+
+
 def differences(generated: Path, committed: Path):
     """How the files of `committed` differ from those just `generated`: the
     manifests must be identical, and each .stp the same text but for
@@ -5344,6 +5691,11 @@ def main():
             build_mirror_cases(w)
             build_hostile_cases(w)
             build_family_cases(w)
+            build_fit_cases(w)
+            for case in w.cases:
+                # FK3: each case whose interface passes states its freedom (VT76 holds FC4 to it).
+                if case["kind"] == "match" and "freedom" not in case and stated_passes(case):
+                    case["freedom"] = FREEDOM.get(case["id"], "unique")
     committed = args.unit_set or args.assembly_set or args.candidate_set
     if committed:
         keep = {c["file"] for c in w.cases if c["set"] == "unit"}

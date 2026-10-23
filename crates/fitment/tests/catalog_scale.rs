@@ -10,11 +10,18 @@
 //! FITMENT_SCALE_DIR=scaled cargo test --release -p fitment --test catalog_scale -- --nocapture
 //! ```
 //!
-//! Without `FITMENT_SCALE_DIR` it passes with a note.
+//! VT79 (`docs/research/m7-fit.md`, R8), the weekly fit leg: the same
+//! catalog with the real helper (`FITMENT_FIT_DIR`, a directory `fitment
+//! fit setup` made), every corpus socket's full run with the fit the file
+//! run with the fit over level 1's survivors, digest for digest; the
+//! fits asked, their time each and in all reported.
+//!
+//! Without `FITMENT_SCALE_DIR` (and for VT79 `FITMENT_FIT_DIR`) they pass
+//! with a note.
 
 #![cfg(feature = "catalog")]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -56,11 +63,22 @@ fn sockets(corpus: &Path) -> BTreeSet<(String, String)> {
 /// A catalog in `root` of the files in `scaled`, verified; and how many
 /// entries it holds.
 fn build(root: &Path, scaled: PathBuf) -> (Catalog, usize) {
+    let (catalog, parts, _) = build_named(root, scaled);
+    (catalog, parts)
+}
+
+/// As [`build`], with each entry's file by its label (`catalog:<id>@r1`).
+fn build_named(root: &Path, scaled: PathBuf) -> (Catalog, usize, BTreeMap<String, PathBuf>) {
     let _ = fs::remove_dir_all(root);
     let (mut catalog, _) = Catalog::init(root, Options::default()).unwrap();
     let started = Instant::now();
     let run = catalog.ingest(&[scaled], None).unwrap();
     let parts = run.iter().filter(|l| l.revision.is_some()).count();
+    let files: BTreeMap<String, PathBuf> = run
+        .iter()
+        .filter(|l| l.revision.is_some())
+        .filter_map(|l| Some((format!("catalog:{}@r1", l.id.as_ref()?), l.input.clone())))
+        .collect();
     let quarantined = run
         .iter()
         .filter(|l| l.revision.is_some())
@@ -78,7 +96,7 @@ fn build(root: &Path, scaled: PathBuf) -> (Catalog, usize) {
     let problems = catalog.verify(false, false).unwrap();
     eprintln!("verify: {:?}", started.elapsed());
     assert_eq!(problems, Vec::new());
-    (catalog, parts)
+    (catalog, parts, files)
 }
 
 #[test]
@@ -178,5 +196,106 @@ fn a_scaled_catalog_is_the_file_run_restricted() {
     // Sockets compared and passes found, so the run is never vacuous.
     assert!(checked > 15, "{checked} sockets");
     assert!(total_passes > 0, "no pass to hide");
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// VT79: with the real helper, each corpus socket's full run is the file
+/// run over level 1's survivors, digest for digest, every fit complete;
+/// the fits asked (the stored files read), their time and the runs' time
+/// reported (R8).
+#[cfg(feature = "fit")]
+#[test]
+fn a_scaled_catalog_with_the_fit_is_the_file_run_restricted() {
+    use fitment_catalog::NoObserver;
+    use fitment_fit::{HelperFiles, HelperOptions, OcctHelper, OcctSession};
+    let (Some(scaled), Some(fit)) = (
+        std::env::var_os("FITMENT_SCALE_DIR").map(PathBuf::from),
+        std::env::var_os("FITMENT_FIT_DIR").map(PathBuf::from),
+    ) else {
+        eprintln!("skipped: set FITMENT_SCALE_DIR and FITMENT_FIT_DIR (fitment fit setup)");
+        return;
+    };
+    let corpus = corpus();
+    let root = std::env::temp_dir().join(format!("fitment-scale-fit-{}", std::process::id()));
+    let (mut catalog, _, files) = build_named(&root, scaled);
+    let helper = OcctHelper::open(
+        &fit,
+        HelperFiles::embedded(),
+        HelperOptions::default().with_jobs(4),
+    )
+    .unwrap();
+    let (mut checked, mut fits, mut fit_time) = (0, 0, Duration::ZERO);
+    let started = Instant::now();
+    for (case, part) in sockets(&corpus) {
+        let bytes = fs::read(corpus.join(format!("{case}.stp"))).unwrap();
+        let Ok(document) = SocketDocument::extract(&bytes, Some(&part), None) else {
+            continue;
+        };
+        let Ok(session) = OcctSession::open(&helper, bytes.clone(), &document) else {
+            continue;
+        };
+        let Ok(matcher) = Matcher::new(
+            &document,
+            MatchPolicy::default(),
+            MatchOptions::default(),
+            &session,
+        ) else {
+            continue;
+        };
+        let blobs = catalog.fit_blobs();
+        let run_started = Instant::now();
+        let full = catalog
+            .snapshot()
+            .unwrap()
+            .match_catalog_fitted(&matcher, &Selection::Full, JOBS, &NoObserver, &blobs)
+            .unwrap();
+        let Ok(full) = full else {
+            continue;
+        };
+        let run_time = run_started.elapsed();
+        let restricted: Vec<_> = full
+            .results
+            .iter()
+            .map(|(_, labels)| {
+                (
+                    matcher.judge_step(&fs::read(&files[&labels[0]]).unwrap()),
+                    labels.clone(),
+                )
+            })
+            .collect();
+        assert!(
+            full.corrupt.is_empty() && full.bugs.is_empty(),
+            "{case} {part}"
+        );
+        assert!(
+            !matcher.fit_incomplete(full.results.iter().map(|(r, _)| r)),
+            "{case} {part}"
+        );
+        assert_eq!(
+            MatchDocument::new(&matcher, full.results).digest(),
+            MatchDocument::new(&matcher, restricted).digest(),
+            "{case} {part}"
+        );
+        if blobs.reads() > 0 {
+            eprintln!(
+                "{case:<24} {part:<12} {} fits in {run_time:.2?}",
+                blobs.reads()
+            );
+        }
+        fits += blobs.reads();
+        fit_time += run_time;
+        checked += 1;
+    }
+    eprintln!(
+        "the fit at scale: {checked} sockets, {fits} fits; the full runs {fit_time:.2?} in all, at most {:.3} s a fit; the test {:.2?}",
+        if fits == 0 {
+            0.0
+        } else {
+            fit_time.as_secs_f64() / f64::from(u32::try_from(fits).unwrap_or(u32::MAX))
+        },
+        started.elapsed()
+    );
+    assert!(checked > 15, "{checked} sockets");
+    assert!(fits > 0, "no fit asked");
     let _ = fs::remove_dir_all(&root);
 }

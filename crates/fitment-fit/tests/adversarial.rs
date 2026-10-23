@@ -26,6 +26,7 @@ fn main() {
         a_stale_or_crossed_reply_is_refused,
         a_hostile_helper_s_text_is_escaped_and_capped,
         measures_out_of_their_ranges_never_verify,
+        a_lying_kernel_ends_each_fit_by_its_rule,
         the_handshake_refuses_another_helper,
         a_missing_library_is_named,
         windows_is_refused_until_its_corpus_run_is_green,
@@ -259,6 +260,48 @@ fn measures_out_of_their_ranges_never_verify() {
             .any(|f| f.code == FitCode::Conservation),
         "{:?}",
         findings(&result)
+    );
+}
+
+/// FK8's first list through the session (`docs/research/m7-fit.md`,
+/// section 11, PR 4): a kernel whose replies are well formed and lie,
+/// each about one measure core cross-checks or decides by, ends the
+/// bracket's fit by that rule, `not_verified`, the run complete: an alert
+/// (FV2), a non-analytic face within reach (FT5, FV4), a landmark off
+/// fitment's (FB3), a solid no body claims within reach (FB6), a zone off
+/// its closed form (FZ7), a zone whose body is not where the zone is
+/// (FZ9), and a body within reach no pair tests (FT8). No corpus case
+/// reaches the last five, nor FV4's `unsupported_geometry` (FK2's
+/// `f_bspline_contact` is not built: the interface refuses every B-spline
+/// contact first).
+fn a_lying_kernel_ends_each_fit_by_its_rule() {
+    each(
+        &[
+            (Scenario::KernelAlert, FitCode::KernelAlert),
+            (Scenario::NonAnalytic, FitCode::UnsupportedGeometry),
+            (Scenario::LandmarkOff, FitCode::BindingFailed),
+            (Scenario::UnclaimedSolid, FitCode::UnclaimedBody),
+            (Scenario::ZoneOff, FitCode::ZoneUnbuilt),
+            (Scenario::ZoneFar, FitCode::BindingFailed),
+            (Scenario::UntestedBody, FitCode::UntestedBody),
+        ],
+        |(scenario, expected)| {
+            let (result, reports, _) = through("lies", scenario, fast());
+            assert!(!verified(&result), "{scenario:?} verified");
+            assert_eq!(
+                result.verdict.kind(),
+                VerdictKind::InterfaceMatch,
+                "{scenario:?}"
+            );
+            assert_eq!(
+                code(&result),
+                Some(expected),
+                "{scenario:?}: {:?}",
+                findings(&result)
+            );
+            assert!(!result.fit_incomplete(), "{scenario:?}");
+            assert_eq!(reports, [], "{scenario:?}");
+        },
     );
 }
 

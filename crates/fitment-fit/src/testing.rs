@@ -202,6 +202,27 @@ pub enum Scenario {
     ResidualAboveCommon,
     /// A `check` reply whose cut loses volume (FY4).
     ConservationMiss,
+    /// A `check` reply whose first pair reports a kernel alert (FV2).
+    KernelAlert,
+    /// A `check` reply whose first pair has a non-analytic face within
+    /// reach (FT5, FV4).
+    NonAnalytic,
+    /// A `place` reply whose candidate's first landmark lies 1e-3 mm off
+    /// fitment's at its first placement (FB3).
+    LandmarkOff,
+    /// A `scene` reply with one more shape than the bodies claim, a shell
+    /// where the first body is (FB6: every leaf transfers one solid, so
+    /// the extra shape is a leaf's that is not a solid).
+    UnclaimedSolid,
+    /// A `check` reply whose first zone's volume is off its closed form by
+    /// 1e-6, relative (FZ7).
+    ZoneOff,
+    /// A `check` reply whose zoned pair in contact lies 1 mm apart, its
+    /// zones excusing a body that is not there (FZ9).
+    ZoneFar,
+    /// A `check` reply claiming a body within reach that no pair tests
+    /// (FT8).
+    UntestedBody,
     /// Kernel noise on its frames' channel before the `scene` reply.
     NoiseOnFrames,
     /// A handshake stating protocol 2.
@@ -288,7 +309,7 @@ fn all() -> Vec<Scenario> {
 }
 
 /// Every scenario but the deaths and the envelope's breaks.
-const ALL: [Scenario; 45] = [
+const ALL: [Scenario; 52] = [
     Scenario::Replay,
     Scenario::NoiseOnStderr,
     Scenario::CrashOnce,
@@ -316,6 +337,13 @@ const ALL: [Scenario; 45] = [
     Scenario::NegativeVolume,
     Scenario::ResidualAboveCommon,
     Scenario::ConservationMiss,
+    Scenario::KernelAlert,
+    Scenario::NonAnalytic,
+    Scenario::LandmarkOff,
+    Scenario::UnclaimedSolid,
+    Scenario::ZoneOff,
+    Scenario::ZoneFar,
+    Scenario::UntestedBody,
     Scenario::NoiseOnFrames,
     Scenario::OtherProtocol,
     Scenario::OtherPid,
