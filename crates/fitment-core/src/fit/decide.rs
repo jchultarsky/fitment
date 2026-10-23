@@ -13,7 +13,7 @@ use super::measures::{
     BodyMeasure, FitBox, FitFailure, FitMeasures, LandmarkMeasure, PairMeasure, PlaceMeasures,
     SceneMeasures, SolidMeasure, ZoneMeasure,
 };
-use super::plan::{FitPlan, Pair, PairState, PairValues, moved, within};
+use super::plan::{FitPlan, Pair, PairState, PairValues, Placed, moved, within};
 use super::scene::{Landmark, LandmarkValue};
 use super::zones::Built;
 use super::{FIT_VOLUME_MM3, FitStatus, Interference};
@@ -391,10 +391,13 @@ impl FitOutcome {
 
     /// FV5: this outcome under `control`, the original's own: if the
     /// control is not verified, every fit here that is `verified` becomes
-    /// `not_verified`, `original_fails_fit`, with the control's own code;
-    /// an `interferes` stays, as does anything else.
+    /// `not_verified`, `original_fails_fit`, with the control's own code
+    /// (the finding added only where a fit was withheld); an `interferes`
+    /// stays, as does anything else. A control whose run was incomplete
+    /// (FV8) makes this outcome incomplete too, whatever it withheld.
     #[must_use]
     pub fn controlled_by(mut self, control: &Self) -> Self {
+        self.incomplete |= control.incomplete;
         if matches!(control.candidate, FitStatus::Verified { .. }) {
             return self;
         }
@@ -411,15 +414,20 @@ impl FitOutcome {
         let downgraded = FitStatus::NotVerified {
             reason: finding.sentence(),
         };
+        let mut withheld = false;
         for (_, status) in &mut self.sockets {
             if matches!(status, FitStatus::Verified { .. }) {
                 *status = downgraded.clone();
+                withheld = true;
             }
         }
         if matches!(self.candidate, FitStatus::Verified { .. }) {
             self.candidate = downgraded;
+            withheld = true;
         }
-        self.findings.push(finding);
+        if withheld {
+            self.findings.push(finding);
+        }
         self
     }
 }
@@ -1114,19 +1122,11 @@ fn aggregate(
         kernel: identity.kernel.clone(),
         version: identity.version.clone(),
     };
+    let placed = plan.placements();
     let touches = |socket: &str, occurrence: &[u64], body: &[u64], copy: bool| {
-        plan.socket_of(occurrence) == Some(socket) || (copy && plan.socket_of(body) == Some(socket))
+        touches(placed, socket, occurrence, body, copy)
     };
-    let applies = |socket: &str, at: &FindingAt| match at {
-        FindingAt::Run | FindingAt::Candidate | FindingAt::Body { .. } => true,
-        FindingAt::Placement { occurrence } => plan.socket_of(occurrence) == Some(socket),
-        FindingAt::Pair {
-            occurrence,
-            body,
-            copy,
-        } => touches(socket, occurrence, body, *copy),
-        FindingAt::Socket { socket: s } => s == socket,
-    };
+    let applies = |socket: &str, at: &FindingAt| applies(placed, socket, at);
     let sockets: Vec<(String, FitStatus)> = plan
         .sockets()
         .into_iter()
@@ -1168,6 +1168,42 @@ fn aggregate(
         findings,
         interferences,
         incomplete: false,
+    }
+}
+
+/// The socket of the placement at `occurrence`.
+pub(crate) fn socket_of<'p>(placements: &'p [Placed], occurrence: &[u64]) -> Option<&'p str> {
+    placements
+        .iter()
+        .find(|p| p.occurrence == occurrence)
+        .map(|p| p.socket.as_str())
+}
+
+/// FV7: a pair of the candidate at `occurrence` and `body` bears on
+/// `socket`: its occurrence is the socket's, or it is a copy pair that
+/// reaches one of the socket's occurrences.
+pub(crate) fn touches(
+    placements: &[Placed],
+    socket: &str,
+    occurrence: &[u64],
+    body: &[u64],
+    copy: bool,
+) -> bool {
+    socket_of(placements, occurrence) == Some(socket)
+        || (copy && socket_of(placements, body) == Some(socket))
+}
+
+/// FV7: a finding `at` applies to `socket`.
+pub(crate) fn applies(placements: &[Placed], socket: &str, at: &FindingAt) -> bool {
+    match at {
+        FindingAt::Run | FindingAt::Candidate | FindingAt::Body { .. } => true,
+        FindingAt::Placement { occurrence } => socket_of(placements, occurrence) == Some(socket),
+        FindingAt::Pair {
+            occurrence,
+            body,
+            copy,
+        } => touches(placements, socket, occurrence, body, *copy),
+        FindingAt::Socket { socket: s } => s == socket,
     }
 }
 

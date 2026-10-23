@@ -118,7 +118,61 @@ fn close_part(schema: &mut Value, part: bool) {
     }
 }
 
-/// Every format's schema, by its name (VN7, VT36).
+/// `schema` with its `format` and `format_version` pinned by `const`, so
+/// a document of one version never validates against another's (FM7,
+/// the review of M7 PR 1b): an additive tightening.
+fn pinned(mut schema: Value, format: &str, version: u32) -> Value {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        for (key, value) in [
+            ("format", json!(format)),
+            ("format_version", json!(version)),
+        ] {
+            if let Some(Value::Object(property)) = properties.get_mut(key) {
+                property.insert("const".into(), value);
+            }
+        }
+    }
+    schema
+}
+
+/// The schema's name for `version` of `format` beside its first:
+/// `fitment.match.v2` (FM7). A component's name may not hold the `/` its
+/// `$id` has.
+pub fn versioned(format: &str, version: u32) -> String {
+    format!("{format}.v{version}")
+}
+
+/// `fitment.match`'s schemas: v1, and v2 beside it (docs/research/m7-fit.md,
+/// FM7), a run's with a fit verifier, closed, from its own types (FC7);
+/// each pinned to its format and version.
+fn match_schemas() -> [(String, Value); 2] {
+    use fitment_core::{MATCH_FORMAT, MATCH_FORMAT_VERSION, MATCH_FORMAT_VERSION_FIT};
+    [
+        (
+            MATCH_FORMAT.to_owned(),
+            pinned(
+                schema_of::<fitment_core::MatchDocument>(MATCH_FORMAT, MATCH_FORMAT_VERSION, true),
+                MATCH_FORMAT,
+                MATCH_FORMAT_VERSION,
+            ),
+        ),
+        (
+            versioned(MATCH_FORMAT, MATCH_FORMAT_VERSION_FIT),
+            pinned(
+                schema_of::<fitment_core::MatchDocumentV2>(
+                    MATCH_FORMAT,
+                    MATCH_FORMAT_VERSION_FIT,
+                    true,
+                ),
+                MATCH_FORMAT,
+                MATCH_FORMAT_VERSION_FIT,
+            ),
+        ),
+    ]
+}
+
+/// Every format's schema, by its name (VN7, VT36): a format's first
+/// version by the format's own name, a later one by [`versioned`].
 pub fn schemas() -> Map<String, Value> {
     let mut schemas = Map::new();
     let mut add = |format: &str, schema: Value| {
@@ -148,14 +202,9 @@ pub fn schemas() -> Map<String, Value> {
             true,
         ),
     );
-    add(
-        fitment_core::MATCH_FORMAT,
-        schema_of::<fitment_core::MatchDocument>(
-            fitment_core::MATCH_FORMAT,
-            fitment_core::MATCH_FORMAT_VERSION,
-            true,
-        ),
-    );
+    for (format, schema) in match_schemas() {
+        add(&format, schema);
+    }
     add(crate::catalog::FORMAT, crate::catalog::schema());
     add(
         crate::catalog::VERIFY_FORMAT,

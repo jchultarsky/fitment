@@ -7,17 +7,29 @@
 //! a placement's free motions ([`freedom`], FC4). Nothing here reads a
 //! file or runs a process: the kernel's numbers come in as [`FitMeasures`],
 //! and only [`decide`] turns them into a [`FitStatus`].
+//!
+//! A verifier answers [`FitVerifier::measure`] with measures, never a
+//! status (FC1): the matcher asks it once per candidate whose every
+//! socket's interface passed (FC2, FT11), and builds the status from the
+//! measures with [`plan`] and [`decide`] itself.
 
 mod decide;
+mod evidence;
 mod freedom;
 mod measures;
 mod plan;
 mod scene;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod testing;
 mod zones;
 
 use serde::Serialize;
 
+use crate::socket::SocketDocument;
+
 pub use decide::{Finding, FindingAt, FitCode, FitOutcome, PairInterference, decide};
+pub use evidence::{FitEvidence, PairEvidence};
 pub use freedom::{FREE_SLIDES_MM, FREE_TURNS_DEG, FreeMotion, Freedom, MotionKind, freedom};
 pub use measures::{
     BodyMeasure, CheckMeasures, FitBox, FitFailure, FitMeasures, LandmarkMeasure, PairMeasure,
@@ -26,6 +38,7 @@ pub use measures::{
 pub use plan::{
     FitCandidate, FitPlan, Pair, PairState, PairValues, PairZone, Placed, PlanInput, plan,
 };
+pub(crate) use scene::faces_of;
 pub use scene::{
     FitScene, FitSceneError, Landmark, LandmarkValue, SceneBody, UnreadLeaf, landmarks,
 };
@@ -53,8 +66,10 @@ pub const SCOPE_NOT_CHECKED: [&str; 8] = [
 ];
 
 /// The verifier a fit is decided for (FC1): the kernel and its exact
-/// version, as a [`FitStatus::Verified`] names them. [`decide`] builds a
-/// `verified` only with the identity its plan was made with.
+/// version, as a [`FitStatus::Verified`] names them, and the helper that
+/// runs it, as `fitment.match` v2's `fit_verifier` states it (FM2).
+/// [`decide`] builds a `verified` only with the identity its plan was made
+/// with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct FitIdentity {
@@ -62,15 +77,50 @@ pub struct FitIdentity {
     pub kernel: String,
     /// Its exact version, such as `8.0.1`.
     pub version: String,
+    /// The binding the helper imports, such as
+    /// `cadquery-ocp-novtk 8.0.1.1.0`; empty when there is none.
+    pub binding: String,
+    /// The helper's Python, such as `3.13`; empty when there is none.
+    pub python: String,
+    /// The helper's protocol (FH6); 0 when there is none.
+    pub protocol: u32,
+    /// The SHA-256 of the helper script; empty when there is none.
+    pub helper_sha256: String,
+    /// The SHA-256 of its lock; empty when there is none.
+    pub lock_sha256: String,
 }
 
 impl FitIdentity {
-    /// The identity of `kernel` at `version`.
+    /// The identity of `kernel` at `version`, with no helper named.
     pub fn new(kernel: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             kernel: kernel.into(),
             version: version.into(),
+            binding: String::new(),
+            python: String::new(),
+            protocol: 0,
+            helper_sha256: String::new(),
+            lock_sha256: String::new(),
         }
+    }
+
+    /// This identity with the helper that runs the kernel (FH3): its
+    /// binding, Python, protocol, and the SHA-256s of its script and lock.
+    #[must_use]
+    pub fn with_helper(
+        mut self,
+        binding: impl Into<String>,
+        python: impl Into<String>,
+        protocol: u32,
+        helper_sha256: impl Into<String>,
+        lock_sha256: impl Into<String>,
+    ) -> Self {
+        self.binding = binding.into();
+        self.python = python.into();
+        self.protocol = protocol;
+        self.helper_sha256 = helper_sha256.into();
+        self.lock_sha256 = lock_sha256.into();
+        self
     }
 }
 
@@ -126,6 +176,20 @@ impl<'a> FitBody<'a> {
 /// The reason given when no fit verifier is configured.
 pub const NO_FIT_VERIFIER: &str = "no fit verifier in this build";
 
+/// The reason a socket whose interface passed gets no fit when another
+/// socket's rejected (FT11): the fit is asked once per candidate, after
+/// every socket's interface passed.
+pub const INTERFACE_REJECTED_ELSEWHERE: &str = "another socket's interface rejected";
+
+/// The reason a socket with an occurrence the matcher could not place gets
+/// no fit (FT2, M4's rule).
+pub const OCCURRENCE_UNPLACED: &str = "an occurrence of the socket could not be placed";
+
+/// The reason the other sockets of such a candidate get none (FT11): the
+/// one request holds every occurrence of every socket.
+pub const OCCURRENCE_UNPLACED_ELSEWHERE: &str =
+    "an occurrence of another socket could not be placed";
+
 /// The reason a socket whose interface failed gets no fit check
 /// (`docs/research/m4-match.md`, VD4).
 pub const INTERFACE_REJECTED: &str = "interface rejected";
@@ -153,6 +217,9 @@ pub const CANDIDATE_REFUSED: &str = "candidate refused";
 pub enum FitStatus {
     /// The body was checked and touches its neighbors only where the socket
     /// declares contact.
+    // FC1: built only by `decide`; no other crate can make one (VT51's
+    // compile-fail doctest is on `FitVerifier`).
+    #[non_exhaustive]
     Verified {
         /// The geometry kernel that performed the check.
         kernel: String,
@@ -207,42 +274,142 @@ impl Interference {
     }
 }
 
-/// What a fit verifier is asked about one socket (M7): where the candidate
-/// stands at each occurrence, in the assembly's root frame.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
+/// What a fit verifier is asked about one candidate (FC1, FT11): its body,
+/// the socket document, and what [`plan`] reads: core's scene and zones,
+/// the candidate as core read it, and its placement at every occurrence of
+/// every socket (FT2). Built only by core, once per candidate whose every
+/// socket's interface passed; the verifier measures what it names and
+/// returns the measures, from which core alone decides (FV1).
+#[derive(Debug, Clone)]
 pub struct FitRequest<'a> {
-    /// The socket, as `socket-1`.
-    pub socket: &'a str,
-    /// The candidate's STEP bytes, when the run has them.
-    pub candidate_step: Option<&'a [u8]>,
-    /// The socket's source assembly, by its SHA-256 (hex).
-    pub assembly_sha256: &'a str,
-    /// `T_k · A`: the candidate's placement at each occurrence.
-    pub placements: Vec<crate::geom::Rigid>,
+    body: FitBody<'a>,
+    document: &'a SocketDocument,
+    input: PlanInput<'a>,
 }
 
-/// Checks a placed candidate's body against the assembly's other solids
-/// (D1, M7). M4 has none: [`NoFitVerifier`] answers `not_checked`.
-pub trait FitVerifier: Sync {
-    /// The fit of the candidate as `request` places it.
-    fn check(&self, request: &FitRequest<'_>) -> FitStatus;
+impl<'a> FitRequest<'a> {
+    pub(crate) fn new(
+        body: FitBody<'a>,
+        document: &'a SocketDocument,
+        input: PlanInput<'a>,
+    ) -> Self {
+        Self {
+            body,
+            document,
+            input,
+        }
+    }
 
-    /// The kernel and version that check, for the document (MF6); `None`
-    /// for no verifier.
-    fn kernel(&self) -> Option<(String, String)> {
-        None
+    /// The candidate's body (FB4).
+    pub fn body(&self) -> &FitBody<'a> {
+        &self.body
+    }
+
+    /// The socket document.
+    pub fn socket_document(&self) -> &'a SocketDocument {
+        self.document
+    }
+
+    /// The scene core read from the socket's assembly (FB1): the bodies the
+    /// `scene` request names.
+    pub fn scene(&self) -> &'a FitScene {
+        self.input.scene
+    }
+
+    /// The candidate as core read it: its landmarks, box and SHA-256 (FB3,
+    /// FB4).
+    pub fn candidate(&self) -> &'a FitCandidate {
+        self.input.candidate
+    }
+
+    /// `T_k · A` at every occurrence of every socket, in socket and
+    /// occurrence order (FT2): the `place` request's placements.
+    pub fn placements(&self) -> &'a [Placed] {
+        self.input.placements
+    }
+
+    /// The verifier the fit is decided for.
+    pub fn identity(&self) -> &FitIdentity {
+        &self.input.identity
+    }
+
+    /// The SHA-256 of the `place` request, which its reply echoes.
+    pub fn place_digest(&self) -> String {
+        self.input.place_digest()
+    }
+
+    /// The plan the kernel's `scene` and `place` replies give (FT3, FT7,
+    /// FT8): the pairs the `check` request asks. Core makes the same plan
+    /// from the same replies when it decides.
+    pub fn plan(&self, scene: &SceneMeasures, place: &PlaceMeasures) -> FitPlan {
+        plan(&self.input, scene, place)
+    }
+
+    pub(crate) fn input(&self) -> &PlanInput<'a> {
+        &self.input
     }
 }
 
-/// No verifier: every fit `not_checked`, [`NO_FIT_VERIFIER`].
+/// Measures a placed candidate's body against the assembly's other solids
+/// (D1, M7). The verifier returns the kernel's numbers, never a status
+/// (FC1): the matcher turns them into one with [`plan`] and [`decide`], so
+/// a `verified` names the verifier's [`identity`](Self::identity) and
+/// nothing else can make one. [`NoFitVerifier`] has no identity: every fit
+/// is `not_checked`, as in 0.3.0.
+///
+/// A [`FitStatus::Verified`] is built only by [`decide`], from a kernel's
+/// measures and with the verifier's [`FitIdentity`] (FC1, M7-36): no
+/// verifier, fake or real, can hand the matcher one, and no other crate
+/// can construct one (VT51). A caller can still take one `decide` made
+/// and write it into a verdict's public fields; the matcher never reads a
+/// fit back: each candidate's is decided afresh from its verifier's
+/// measures. Constructing one does not compile:
+///
+/// ```compile_fail,E0639
+/// let forged = fitment_core::FitStatus::Verified {
+///     kernel: "open_cascade".to_owned(),
+///     version: "8.0.1".to_owned(),
+/// };
+/// ```
+///
+/// A status of another kind can be named; only `verified` cannot:
+///
+/// ```
+/// let fine = fitment_core::FitStatus::NotVerified {
+///     reason: "the fit check timed out".to_owned(),
+/// };
+/// assert!(!matches!(fine, fitment_core::FitStatus::Verified { .. }));
+/// ```
+pub trait FitVerifier: Sync {
+    /// The verifier's identity; `None` for no verifier. Only a verifier
+    /// with one is asked to measure (FC2).
+    fn identity(&self) -> Option<FitIdentity> {
+        None
+    }
+
+    /// The socket's assembly, the bytes its kernel reads: core reads its
+    /// own scene from the same bytes (FB1). `None` for no verifier; a
+    /// verifier with an identity and no assembly, or another assembly than
+    /// the socket's source, has every fit `not_verified`.
+    fn assembly(&self) -> Option<&[u8]> {
+        None
+    }
+
+    /// The kernel's measures of the candidate as `request` places it
+    /// (FH4): the `scene`, `place` and `check` replies, the last for the
+    /// pairs of [`FitRequest::plan`]; or how the helper failed (FV8).
+    fn measure(&self, request: &FitRequest<'_>) -> Result<FitMeasures, FitFailure>;
+}
+
+/// No verifier: no identity, so every fit `not_checked`,
+/// [`NO_FIT_VERIFIER`], and no measures are ever asked.
 #[derive(Debug, Clone, Copy, Default)]
 // A unit with nothing to grow: callers name it.
 #[allow(clippy::exhaustive_structs)]
 pub struct NoFitVerifier;
 
 impl FitVerifier for NoFitVerifier {
-    fn check(&self, _request: &FitRequest<'_>) -> FitStatus {
-        FitStatus::no_verifier()
+    fn measure(&self, _request: &FitRequest<'_>) -> Result<FitMeasures, FitFailure> {
+        Err(FitFailure::Unavailable(NO_FIT_VERIFIER.to_owned()))
     }
 }

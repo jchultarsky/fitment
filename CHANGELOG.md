@@ -8,6 +8,56 @@ Until 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **M7, PR 1b (the matcher, the v2 writer and its schema):** a fit
+  verifier now returns a kernel's measures, never a status, and the
+  matcher decides from them itself (`docs/research/m7-fit.md`, FC1): with a
+  verifier that has an identity, `Matcher` reads the scene and zones from
+  the verifier's assembly once, and asks the fit once per candidate whose
+  every socket's interface passed, with the candidate at every occurrence
+  of every socket (FC2, FT2, FT11), after working out each socket's
+  placement freedom (FC4) and running the original's control once, at the
+  first such candidate (FT9); a placement free in a way FT10 does not
+  excuse is asked no fit (FV6). `fit::plan` and `fit::decide` make the
+  status, which a failing control withholds (FV5). Such a run writes
+  `fitment.match` v2 from its own types (FC7, FM1 to FM5): the verifier's
+  identity, the fit's parameters and its control, each fit's evidence
+  (pairs with their own tolerances and zones, the kernel's numbers in
+  `measured` objects outside the digest), each placement's freedom and its
+  alternatives, and what no fit checks. `SocketResult` gains `freedom` and
+  `alternatives`, `CandidateResult` gains `fit` (a `FitEvidence`) and
+  `fit_incomplete`, `Matcher` gains `fit_identity`, `fit_control` and
+  `fit_incomplete`,
+  `MatchDocument` gains `format_version`; `FitIdentity` gains the helper's
+  binding, Python, protocol and hashes; `MATCH_FORMAT_VERSION_FIT` (2),
+  `INTERFACE_REJECTED_ELSEWHERE`, `OCCURRENCE_UNPLACED` and
+  `OCCURRENCE_UNPLACED_ELSEWHERE` are new, and `MatchDocumentV2` gives
+  v2's schema under `schema`. A new `test-support` feature, which no
+  release build enables, adds `fit::testing`: `MeasuresVerifier`, which
+  answers with given measures, and an exact kernel's measures.
+  `fitment-server`'s OpenAPI document gains `fitment.match.v2`
+  (`https://fitment.dev/schemas/fitment.match/2`) beside v1, closed, each
+  pinning its `format` and `format_version` by `const`, and the API's minor
+  is 6. fitment-core's docs.rs build documents `schema` alone. A run without a verifier that has an identity,
+  which is every run of the CLI and the server in this release, writes
+  v1 as 0.3.0 does, byte for byte.
+
+### Changed
+
+- **M7, PR 1b, breaking for a `FitVerifier` implementor and for code that
+  builds a fit's status:** `FitVerifier::check`, which returned a
+  `FitStatus`, and `FitVerifier::kernel` are gone; a verifier implements
+  `measure` (the kernel's `FitMeasures`, or a `FitFailure`) and, to be
+  asked at all, `identity` and `assembly`. `FitRequest`'s fields are
+  private: core builds it, and it names the body, the socket document,
+  core's scene, the candidate and its placements, and gives the plan its
+  replies ask (`FitRequest::plan`). `FitStatus::Verified` is
+  `#[non_exhaustive]`, so no other crate can make one: only `fit::decide`
+  does, with the verifier's identity; a pattern naming its fields needs
+  `..`. `FitStatus`'s shape, its serialization and `fitment.match` v1's
+  schema are unchanged.
+
 ## [0.3.0] - 2026-10-18
 
 M6: the REST API. `fitment-server` serves the catalog and the matcher

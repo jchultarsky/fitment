@@ -2036,10 +2036,12 @@ async fn a_retained_component_match_runs_again_without_its_assembly() {
     );
 }
 
-/// VT31, SN11, XH7: with the test-support fake verifier answering
-/// `verified`, a match on s01's good bracket ends `succeeded`, `match`,
-/// exit 0, and its document names the fake; with `NoFitVerifier` the best
-/// is an interface match. Neither the OpenAPI document nor `--help` names
+/// VT31, SN11, XH7: with the test-support fake verifier, an exact kernel
+/// of s01's assembly whose measures core decides `verified`
+/// (docs/research/m7-fit.md, FC1), a match on s01's good bracket ends
+/// `succeeded`, `match`, exit 0, and its document is `fitment.match` v2
+/// naming the fake (FM1, FM2); with `NoFitVerifier` the best is an
+/// interface match, in v1. Neither the OpenAPI document nor `--help` names
 /// a way to choose a verifier.
 #[tokio::test]
 async fn the_fit_verifier_alone_makes_a_match() {
@@ -2053,8 +2055,13 @@ async fn the_fit_verifier_alone_makes_a_match() {
         (plain["outcome"].as_str(), plain["exit_code"].as_u64()),
         (Some("interface_match"), Some(4))
     );
+    let v1: Value = serde_json::from_slice(&server.document(&plain).await.body).unwrap();
+    assert_eq!(
+        (&v1["format_version"], &v1["fit_verifier"]),
+        (&json!(1), &Value::Null)
+    );
     server.server().set_fit_verifier(std::sync::Arc::new(
-        fitment_server::matching::VerifiesEverything,
+        fitment_server::matching::VerifiesEverything::new(support::assembly("s01_bolted.stp")),
     ));
     let verified = server.run_match(&body).await;
     assert_eq!(
@@ -2062,7 +2069,10 @@ async fn the_fit_verifier_alone_makes_a_match() {
         (Some("match"), Some(0))
     );
     let doc: Value = serde_json::from_slice(&server.document(&verified).await.body).unwrap();
-    assert_eq!(doc["fit_verifier"], "test-support 1");
+    assert_eq!(doc["format_version"], 2);
+    assert_eq!(doc["fit_verifier"]["kernel"], "test-support");
+    assert_eq!(doc["fit_verifier"]["kernel_version"], "1");
+    assert_eq!(doc["candidates"][0]["fit"]["status"], "verified");
     assert_eq!(doc["summary"]["match"], 1);
     let openapi = String::from_utf8_lossy(fitment_server::OPENAPI);
     assert!(!openapi.contains("test-support") && !openapi.contains("VerifiesEverything"));

@@ -1762,6 +1762,52 @@ M7_PR1A = {
 for rule, tests in M7_PR1A.items():
     RULES[rule] = {"tests": tests}
 RULES["KH14"]["tests"] = RULES["KH14"]["tests"] + [f"{M6_COVER}::m7_deferrals_and_lists_hold"]
+# PR 1b builds the matcher's fit and v2 (section 11, item 1b): the trait's new shape, measures across it and core's
+# own decision (FC1; VT51), one request per candidate at every occurrence of every socket (FC2, FT2, FT11; VT61), a
+# component named by its scene occurrence (FC5), v2's own types beside v1's (FC7, FM1), its envelope, evidence,
+# freedom and alternatives (FM2 to FM4, FT12), its digest (FM5) and its schema (FM7). The control (FT9) and the
+# outcomes it and freedom give (FV5, FV6) are built here and wait for PR 4's cases, as FK8's first list requires.
+FIT_SERVER = "crates/fitment-server/tests"
+M7_PR1B = {
+    "FC1": [f"{FIT_CORE}/verdict.rs::only_a_verified_fit_makes_a_match_through_the_matcher",
+            f"{FIT_CORE}/stored.rs::judge_step_hands_its_bytes_to_the_fit_request",
+            f"{FIT_SERVER}/api.rs::the_fit_verifier_alone_makes_a_match",
+            f"{FIT_CORE}/verdict.rs::the_test_only_verifier_is_never_documented"],
+    "FC2": [f"{FIT_CORE}/matcher.rs::the_fit_is_asked_once_per_candidate_at_every_occurrence",
+            f"{FIT_CORE}/matcher.rs::a_placement_free_to_slide_is_asked_no_fit",
+            f"{FIT_CORE}/matcher.rs::with_no_verifier_nothing_changes",
+            f"{FIT_CORE}/matcher.rs::an_incomplete_control_is_run_again_and_marks_every_candidate",
+            f"{FIT_CORE}/matcher.rs::a_verifier_without_a_name_or_its_assembly_is_unavailable",
+            f"{FIT_CORE}/matcher.rs::an_alert_at_one_socket_leaves_the_others_verified"],
+    "FC5": [f"{FIT_CORE}/matcher.rs::the_fit_is_asked_once_per_candidate_at_every_occurrence",
+            f"{FIT_CORE}/verdict.rs::only_a_verified_fit_makes_a_match_through_the_matcher"],
+    "FC7": [f"{FIT_CORE}/document_v2.rs::v2_is_v1_with_nothing_removed",
+            f"{FIT_CLI}/golden.rs::match_output_matches_the_goldens",
+            f"{FIT_CLI}/golden.rs::match_v2_matches_its_golden"],
+    "FM1": [f"{FIT_CORE}/document_v2.rs::v2_is_v1_with_nothing_removed",
+            f"{FIT_CORE}/matcher.rs::with_no_verifier_nothing_changes",
+            f"{FIT_CLI}/golden.rs::match_v2_matches_its_golden"],
+    "FM2": [f"{FIT_CORE}/document_v2.rs::v2_states_the_verifier_the_fit_and_its_evidence",
+            f"{FIT_CORE}/matcher.rs::the_control_runs_once_at_the_first_interface_pass"],
+    "FM3": [f"{FIT_CORE}/document_v2.rs::v2_states_the_verifier_the_fit_and_its_evidence",
+            f"{FIT_CORE}/document_v2.rs::a_failure_is_not_verified_with_its_code",
+            f"{FIT_CORE}/document_v2.rs::a_not_verified_pair_states_its_own_values_in_the_digest",
+            "crates/fitment-corpus/tests/scorer.rs::the_checker_holds_v2_s_verified_fits_to_the_fit_s_rules"],
+    "FM4": [f"{FIT_CORE}/document_v2.rs::v2_states_the_verifier_the_fit_and_its_evidence",
+            f"{FIT_CORE}/matcher.rs::a_placement_free_to_slide_is_asked_no_fit"],
+    "FM5": [f"{FIT_CORE}/document_v2.rs::v2_s_digest_leaves_out_the_kernel_s_measures",
+            f"{FIT_CORE}/document_v2.rs::a_not_verified_pair_states_its_own_values_in_the_digest"],
+    "FM7": [f"{FIT_SERVER}/openapi.rs::v2_is_its_own_closed_schema",
+            f"{FIT_SERVER}/openapi.rs::every_document_validates_against_its_schema",
+            f"{FIT_SERVER}/openapi.rs::the_openapi_document_is_the_committed_one"],
+    "FT2": [f"{FIT_CORE}/matcher.rs::the_fit_is_asked_once_per_candidate_at_every_occurrence"],
+    "FT11": [f"{FIT_CORE}/matcher.rs::a_socket_that_passed_beside_one_that_failed_gets_no_fit",
+             f"{FIT_CORE}/matcher.rs::the_fit_is_asked_once_per_candidate_at_every_occurrence"],
+    "FT12": [f"{FIT_CORE}/document_v2.rs::v2_states_the_verifier_the_fit_and_its_evidence"],
+}
+for rule, tests in M7_PR1B.items():
+    RULES[rule] = {"tests": tests}
+
 
 
 def coverage(cases):

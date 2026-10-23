@@ -29,8 +29,9 @@ path = "src/main.rs"
 # No runtime build turns it on (SV9).
 schema = ["dep:schemars", "fitment-core/schema", "fitment-catalog/schema"]
 # OP11: the test seams (a fixed clock and ids, hook points, shutdown on
-# stdin's end of file). Never in a release build or the image (VT29).
-test-support = []
+# stdin's end of file), and core's test-only fit verifier (VT31). Never in
+# a release build or the image (VT29).
+test-support = ["fitment-core/test-support"]
 
 [dependencies]
 fitment-core = { workspace = true }

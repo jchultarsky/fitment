@@ -1,0 +1,1803 @@
+{
+  "format": "fitment.match",
+  "format_version": 2,
+  "extractor_version": 6,
+  "socket_rules_version": 7,
+  "signature_version": 2,
+  "match_rules_version": 1,
+  "policy": {
+    "name": "default",
+    "linear_mm": 0.01,
+    "angular_deg": 0.01,
+    "clearance": "strict",
+    "grip": "hard"
+  },
+  "options": {
+    "require_fit": false,
+    "require_reviewed": false
+  },
+  "fit_verifier": {
+    "kernel": "open_cascade",
+    "kernel_version": "8.0.1",
+    "binding": "cadquery-ocp-novtk 8.0.1.1.0",
+    "python": "3.13",
+    "protocol": 1,
+    "helper_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "lock_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "fit_rules_version": 1
+  },
+  "fit": {
+    "tolerance_mm": 0.01,
+    "guard_mm": 1e-6,
+    "volume_resolution_mm3": 1e-6,
+    "tolerance_cap": "t/10",
+    "max_fits": null,
+    "control": [
+      {
+        "socket": "socket-1",
+        "fit": {
+          "status": "verified",
+          "kernel": "open_cascade",
+          "version": "8.0.1",
+          "occurrences": 4,
+          "bodies": 6,
+          "copies": 3,
+          "pairs": [
+            {
+              "occurrence": [
+                1302
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  384
+                ],
+                "product": "PLATE"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "slab",
+                  "requirement": "seat:plane-1186"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1302
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  1028
+                ],
+                "product": "BOLT"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "annulus",
+                  "requirement": "bore:hole-1276"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1313
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  384
+                ],
+                "product": "PLATE"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "slab",
+                  "requirement": "seat:plane-1186"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1313
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  1308
+                ],
+                "product": "BOLT"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "annulus",
+                  "requirement": "bore:hole-1276"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1323
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  384
+                ],
+                "product": "PLATE"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "slab",
+                  "requirement": "seat:plane-1186"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1323
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  1318
+                ],
+                "product": "BOLT"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "annulus",
+                  "requirement": "bore:hole-1276"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1333
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  384
+                ],
+                "product": "PLATE"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "slab",
+                  "requirement": "seat:plane-1186"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1333
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  1328
+                ],
+                "product": "BOLT"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "annulus",
+                  "requirement": "bore:hole-1276"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            }
+          ],
+          "free_turns": [],
+          "scope_not_checked": [
+            "motion",
+            "tolerance_stack_up",
+            "assembly_order",
+            "tool_access",
+            "unmodelled_items",
+            "threads",
+            "new_fasteners",
+            "alternative_placements"
+          ]
+        }
+      }
+    ]
+  },
+  "socket": {
+    "digest": "sha256:2e5d9c280565961928a98f025683ca9260c7946d7e97fffd892b56151781933f",
+    "source": {
+      "sha256": "837411d1028fcace9f80236014dcbef7625bf48f2120703a9f27b79a6a5ca7ed",
+      "bytes": 56247
+    },
+    "target": {
+      "instance": 1032,
+      "product": {
+        "id": "NUT",
+        "instance": 1034,
+        "name": "NUT"
+      }
+    },
+    "selection": {
+      "matched_by": "product_id",
+      "occurrence": null,
+      "part": "NUT"
+    },
+    "sockets": [
+      {
+        "id": "socket-1",
+        "occurrences": 4,
+        "active": 2,
+        "unreviewed": 2,
+        "removed": [],
+        "unverifiable": [],
+        "left_out": []
+      }
+    ]
+  },
+  "summary": {
+    "candidates": 1,
+    "match": 0,
+    "interface_match": 0,
+    "reject": 1,
+    "refused": 0
+  },
+  "candidates": [
+    {
+      "labels": [
+        "m_nut_pinned_15tol.stp"
+      ],
+      "source": {
+        "bytes": 11674,
+        "header": {
+          "implementation_level": "2;1",
+          "originating_system": "Open CASCADE 7.9",
+          "preprocessor_version": "Open CASCADE STEP processor 7.9",
+          "schema": "ap214",
+          "schema_identifiers": [
+            "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }"
+          ]
+        },
+        "kind": "file",
+        "sha256": "ea60d358ba00d31a96d385a7655adc78a6cf4631f1cc9ac3310d09a7d82fd10c"
+      },
+      "product": {
+        "instance": 7,
+        "id": "m_nut_pinned_15tol",
+        "name": "m_nut_pinned_15tol"
+      },
+      "status": "accepted",
+      "refusals": [],
+      "read": {
+        "complete": true,
+        "extractor_version": 6,
+        "max_uncertainty_mm": 1e-7,
+        "max_vertex_offset_mm": 3.566036355096003e-13
+      },
+      "verdict": "reject",
+      "fit": {
+        "status": "not_checked",
+        "reason": "interface rejected",
+        "scope_not_checked": [
+          "motion",
+          "tolerance_stack_up",
+          "assembly_order",
+          "tool_access",
+          "unmodelled_items",
+          "threads",
+          "new_fasteners",
+          "alternative_placements"
+        ]
+      },
+      "flags": [
+        "material_not_compared",
+        "requirements_unreviewed"
+      ],
+      "warnings": [],
+      "properties": {
+        "material": {
+          "reason": "no property fitment maps in either file",
+          "status": "not_compared"
+        }
+      },
+      "reasons": [
+        {
+          "reason": "shortlist",
+          "socket": "socket-1"
+        },
+        {
+          "reason": "requirement_failed",
+          "requirement": "socket-1/seat:plane-1186",
+          "detail": "a candidate edge lies 0.00749999999999984 mm inside contact face #1186 at [1.2537499999994282, -2.1715586999898098, -8.881784197001e-16]",
+          "codes": [
+            "contact_not_covered"
+          ]
+        },
+        {
+          "reason": "requirement_failed",
+          "requirement": "socket-1/bore:hole-1276",
+          "detail": "Ø5.015 where Ø5 is pinned",
+          "codes": [
+            "diameter_out_of_limits:max"
+          ]
+        }
+      ],
+      "sockets": [
+        {
+          "socket": "socket-1",
+          "stage": "shortlist",
+          "verdict": "reject",
+          "fit": {
+            "status": "not_checked",
+            "reason": "interface rejected",
+            "scope_not_checked": [
+              "motion",
+              "tolerance_stack_up",
+              "assembly_order",
+              "tool_access",
+              "unmodelled_items",
+              "threads",
+              "new_fasteners",
+              "alternative_placements"
+            ]
+          },
+          "placement": {
+            "rotation": [
+              [
+                -0.8660254037845695,
+                0.49999999999977346,
+                0.0
+              ],
+              [
+                -0.49999999999977346,
+                -0.8660254037845695,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.9999999999999999
+              ]
+            ],
+            "translation_mm": [
+              111.60254037844562,
+              6.698729810748873,
+              -24.999999999999996
+            ],
+            "seeded_by": {
+              "one_axis": {
+                "axis": [
+                  "bore:hole-1276",
+                  "hole-253"
+                ]
+              }
+            },
+            "tried": 12,
+            "exhausted": false,
+            "chosen": "fewest_failures",
+            "u_mm": 1e-6,
+            "epsilon_mm": 0.009999000000000001,
+            "freedom": null
+          },
+          "alternatives": null,
+          "missing": [
+            {
+              "requirements": [
+                "bore:hole-1276"
+              ],
+              "element": {
+                "kind": "diameter"
+              },
+              "window": {
+                "lo": 4.989999994010001,
+                "hi": 5.010000006009999
+              }
+            }
+          ],
+          "failed": 2,
+          "checks": [
+            {
+              "requirement": "seat:plane-1186",
+              "review": "unreviewed",
+              "result": "failed",
+              "feature": "plane-163",
+              "measures": [
+                {
+                  "quantity": "plane_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "plane_offset_mm",
+                  "at": {},
+                  "found": 8.881784197000999e-16,
+                  "nominal": -8.881784197001e-16,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009998999999999113,
+                  "passed": true
+                },
+                {
+                  "quantity": "covers",
+                  "at": {
+                    "contact_face": 1186
+                  },
+                  "found": false,
+                  "required": true,
+                  "passed": false
+                }
+              ],
+              "failures": [
+                {
+                  "code": "contact_not_covered",
+                  "at": {
+                    "contact_face": 1186
+                  },
+                  "detail": "a candidate edge lies 0.00749999999999984 mm inside contact face #1186 at [1.2537499999994282, -2.1715586999898098, -8.881784197001e-16]"
+                }
+              ]
+            },
+            {
+              "requirement": "bore:hole-1276",
+              "review": "unreviewed",
+              "result": "failed",
+              "feature": "hole-253",
+              "measures": [
+                {
+                  "quantity": "axis_sine",
+                  "at": {},
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "angle",
+                  "band_rad": 0.00017453192519943298,
+                  "min": null,
+                  "max": 0.00017453192431335205,
+                  "margin": 0.00017453192431335205,
+                  "passed": true
+                },
+                {
+                  "quantity": "axis_offset_mm",
+                  "at": {},
+                  "found": 1.7763568394002505e-15,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009998999999998225,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_from_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      4.999999999999999
+                    ]
+                  },
+                  "found": 0.0,
+                  "nominal": 0.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": null,
+                  "max": 0.009999000000000001,
+                  "margin": 0.009999000000000001,
+                  "passed": true
+                },
+                {
+                  "quantity": "wall_to_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      4.999999999999999
+                    ]
+                  },
+                  "found": 5.000000000000001,
+                  "nominal": 4.999999999999999,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 4.9900009999999995,
+                  "max": null,
+                  "margin": 0.009999000000001423,
+                  "passed": true
+                },
+                {
+                  "quantity": "diameter_mm",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      4.999999999999999
+                    ]
+                  },
+                  "found": 5.015,
+                  "nominal": 5.0,
+                  "band": "epsilon",
+                  "band_mm": 0.009999000000000001,
+                  "min": 4.990001,
+                  "max": 5.009999,
+                  "margin": -0.005001000000000033,
+                  "passed": false
+                },
+                {
+                  "quantity": "open_start",
+                  "at": {
+                    "end": "start"
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                },
+                {
+                  "quantity": "open_finish",
+                  "at": {
+                    "end": "finish"
+                  },
+                  "found": true,
+                  "required": true,
+                  "passed": true
+                }
+              ],
+              "failures": [
+                {
+                  "code": "diameter_out_of_limits:max",
+                  "at": {
+                    "span_mm": [
+                      0.0,
+                      4.999999999999999
+                    ]
+                  },
+                  "detail": "Ø5.015 where Ø5 is pinned"
+                }
+              ]
+            }
+          ],
+          "not_checked": []
+        }
+      ]
+    }
+  ],
+  "original": {
+    "labels": [
+      "original"
+    ],
+    "source": {
+      "assembly_sha256": "837411d1028fcace9f80236014dcbef7625bf48f2120703a9f27b79a6a5ca7ed",
+      "definition": 1032,
+      "kind": "component"
+    },
+    "product": {
+      "instance": 1034,
+      "id": "NUT",
+      "name": "NUT"
+    },
+    "status": "accepted",
+    "refusals": [],
+    "read": {
+      "complete": true,
+      "extractor_version": 6,
+      "max_uncertainty_mm": 1e-7,
+      "max_vertex_offset_mm": 1.3788969965844444e-12
+    },
+    "verdict": "match",
+    "fit": {
+      "status": "verified",
+      "kernel": "open_cascade",
+      "version": "8.0.1",
+      "occurrences": 4,
+      "bodies": 6,
+      "copies": 3,
+      "pairs": [
+        {
+          "occurrence": [
+            1302
+          ],
+          "body": {
+            "kind": "neighbour",
+            "path": [
+              384
+            ],
+            "product": "PLATE"
+          },
+          "u_pair_mm": 1e-6,
+          "epsilon_mm": 0.009999000000000001,
+          "threshold_mm": 0.010001,
+          "zones": [
+            {
+              "kind": "slab",
+              "requirement": "seat:plane-1186"
+            }
+          ],
+          "measured": {
+            "common_mm3": 0.0,
+            "residual_mm3": 0.0,
+            "inside_mm3": 0.0,
+            "box_mm": null,
+            "distance_mm": 0.0,
+            "zoned_distance_mm": 0.3,
+            "body_kept_mm3": 1000.0,
+            "body_inside_mm3": 0.0,
+            "non_analytic": false,
+            "alerts": []
+          }
+        },
+        {
+          "occurrence": [
+            1302
+          ],
+          "body": {
+            "kind": "neighbour",
+            "path": [
+              1028
+            ],
+            "product": "BOLT"
+          },
+          "u_pair_mm": 1e-6,
+          "epsilon_mm": 0.009999000000000001,
+          "threshold_mm": 0.010001,
+          "zones": [
+            {
+              "kind": "annulus",
+              "requirement": "bore:hole-1276"
+            }
+          ],
+          "measured": {
+            "common_mm3": 0.0,
+            "residual_mm3": 0.0,
+            "inside_mm3": 0.0,
+            "box_mm": null,
+            "distance_mm": 0.0,
+            "zoned_distance_mm": 0.3,
+            "body_kept_mm3": 1000.0,
+            "body_inside_mm3": 0.0,
+            "non_analytic": false,
+            "alerts": []
+          }
+        },
+        {
+          "occurrence": [
+            1313
+          ],
+          "body": {
+            "kind": "neighbour",
+            "path": [
+              384
+            ],
+            "product": "PLATE"
+          },
+          "u_pair_mm": 1e-6,
+          "epsilon_mm": 0.009999000000000001,
+          "threshold_mm": 0.010001,
+          "zones": [
+            {
+              "kind": "slab",
+              "requirement": "seat:plane-1186"
+            }
+          ],
+          "measured": {
+            "common_mm3": 0.0,
+            "residual_mm3": 0.0,
+            "inside_mm3": 0.0,
+            "box_mm": null,
+            "distance_mm": 0.0,
+            "zoned_distance_mm": 0.3,
+            "body_kept_mm3": 1000.0,
+            "body_inside_mm3": 0.0,
+            "non_analytic": false,
+            "alerts": []
+          }
+        },
+        {
+          "occurrence": [
+            1313
+          ],
+          "body": {
+            "kind": "neighbour",
+            "path": [
+              1308
+            ],
+            "product": "BOLT"
+          },
+          "u_pair_mm": 1e-6,
+          "epsilon_mm": 0.009999000000000001,
+          "threshold_mm": 0.010001,
+          "zones": [
+            {
+              "kind": "annulus",
+              "requirement": "bore:hole-1276"
+            }
+          ],
+          "measured": {
+            "common_mm3": 0.0,
+            "residual_mm3": 0.0,
+            "inside_mm3": 0.0,
+            "box_mm": null,
+            "distance_mm": 0.0,
+            "zoned_distance_mm": 0.3,
+            "body_kept_mm3": 1000.0,
+            "body_inside_mm3": 0.0,
+            "non_analytic": false,
+            "alerts": []
+          }
+        },
+        {
+          "occurrence": [
+            1323
+          ],
+          "body": {
+            "kind": "neighbour",
+            "path": [
+              384
+            ],
+            "product": "PLATE"
+          },
+          "u_pair_mm": 1e-6,
+          "epsilon_mm": 0.009999000000000001,
+          "threshold_mm": 0.010001,
+          "zones": [
+            {
+              "kind": "slab",
+              "requirement": "seat:plane-1186"
+            }
+          ],
+          "measured": {
+            "common_mm3": 0.0,
+            "residual_mm3": 0.0,
+            "inside_mm3": 0.0,
+            "box_mm": null,
+            "distance_mm": 0.0,
+            "zoned_distance_mm": 0.3,
+            "body_kept_mm3": 1000.0,
+            "body_inside_mm3": 0.0,
+            "non_analytic": false,
+            "alerts": []
+          }
+        },
+        {
+          "occurrence": [
+            1323
+          ],
+          "body": {
+            "kind": "neighbour",
+            "path": [
+              1318
+            ],
+            "product": "BOLT"
+          },
+          "u_pair_mm": 1e-6,
+          "epsilon_mm": 0.009999000000000001,
+          "threshold_mm": 0.010001,
+          "zones": [
+            {
+              "kind": "annulus",
+              "requirement": "bore:hole-1276"
+            }
+          ],
+          "measured": {
+            "common_mm3": 0.0,
+            "residual_mm3": 0.0,
+            "inside_mm3": 0.0,
+            "box_mm": null,
+            "distance_mm": 0.0,
+            "zoned_distance_mm": 0.3,
+            "body_kept_mm3": 1000.0,
+            "body_inside_mm3": 0.0,
+            "non_analytic": false,
+            "alerts": []
+          }
+        },
+        {
+          "occurrence": [
+            1333
+          ],
+          "body": {
+            "kind": "neighbour",
+            "path": [
+              384
+            ],
+            "product": "PLATE"
+          },
+          "u_pair_mm": 1e-6,
+          "epsilon_mm": 0.009999000000000001,
+          "threshold_mm": 0.010001,
+          "zones": [
+            {
+              "kind": "slab",
+              "requirement": "seat:plane-1186"
+            }
+          ],
+          "measured": {
+            "common_mm3": 0.0,
+            "residual_mm3": 0.0,
+            "inside_mm3": 0.0,
+            "box_mm": null,
+            "distance_mm": 0.0,
+            "zoned_distance_mm": 0.3,
+            "body_kept_mm3": 1000.0,
+            "body_inside_mm3": 0.0,
+            "non_analytic": false,
+            "alerts": []
+          }
+        },
+        {
+          "occurrence": [
+            1333
+          ],
+          "body": {
+            "kind": "neighbour",
+            "path": [
+              1328
+            ],
+            "product": "BOLT"
+          },
+          "u_pair_mm": 1e-6,
+          "epsilon_mm": 0.009999000000000001,
+          "threshold_mm": 0.010001,
+          "zones": [
+            {
+              "kind": "annulus",
+              "requirement": "bore:hole-1276"
+            }
+          ],
+          "measured": {
+            "common_mm3": 0.0,
+            "residual_mm3": 0.0,
+            "inside_mm3": 0.0,
+            "box_mm": null,
+            "distance_mm": 0.0,
+            "zoned_distance_mm": 0.3,
+            "body_kept_mm3": 1000.0,
+            "body_inside_mm3": 0.0,
+            "non_analytic": false,
+            "alerts": []
+          }
+        }
+      ],
+      "free_turns": [],
+      "scope_not_checked": [
+        "motion",
+        "tolerance_stack_up",
+        "assembly_order",
+        "tool_access",
+        "unmodelled_items",
+        "threads",
+        "new_fasteners",
+        "alternative_placements"
+      ]
+    },
+    "flags": [
+      "thread_not_confirmed",
+      "material_not_compared",
+      "requirements_unreviewed"
+    ],
+    "warnings": [],
+    "properties": {
+      "material": {
+        "reason": "no property fitment maps in either file",
+        "status": "not_compared"
+      }
+    },
+    "reasons": [],
+    "sockets": [
+      {
+        "socket": "socket-1",
+        "stage": "verification",
+        "verdict": "match",
+        "fit": {
+          "status": "verified",
+          "kernel": "open_cascade",
+          "version": "8.0.1",
+          "occurrences": 4,
+          "bodies": 6,
+          "copies": 3,
+          "pairs": [
+            {
+              "occurrence": [
+                1302
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  384
+                ],
+                "product": "PLATE"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "slab",
+                  "requirement": "seat:plane-1186"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1302
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  1028
+                ],
+                "product": "BOLT"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "annulus",
+                  "requirement": "bore:hole-1276"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1313
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  384
+                ],
+                "product": "PLATE"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "slab",
+                  "requirement": "seat:plane-1186"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1313
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  1308
+                ],
+                "product": "BOLT"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "annulus",
+                  "requirement": "bore:hole-1276"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1323
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  384
+                ],
+                "product": "PLATE"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "slab",
+                  "requirement": "seat:plane-1186"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1323
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  1318
+                ],
+                "product": "BOLT"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "annulus",
+                  "requirement": "bore:hole-1276"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1333
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  384
+                ],
+                "product": "PLATE"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "slab",
+                  "requirement": "seat:plane-1186"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            },
+            {
+              "occurrence": [
+                1333
+              ],
+              "body": {
+                "kind": "neighbour",
+                "path": [
+                  1328
+                ],
+                "product": "BOLT"
+              },
+              "u_pair_mm": 1e-6,
+              "epsilon_mm": 0.009999000000000001,
+              "threshold_mm": 0.010001,
+              "zones": [
+                {
+                  "kind": "annulus",
+                  "requirement": "bore:hole-1276"
+                }
+              ],
+              "measured": {
+                "common_mm3": 0.0,
+                "residual_mm3": 0.0,
+                "inside_mm3": 0.0,
+                "box_mm": null,
+                "distance_mm": 0.0,
+                "zoned_distance_mm": 0.3,
+                "body_kept_mm3": 1000.0,
+                "body_inside_mm3": 0.0,
+                "non_analytic": false,
+                "alerts": []
+              }
+            }
+          ],
+          "free_turns": [],
+          "scope_not_checked": [
+            "motion",
+            "tolerance_stack_up",
+            "assembly_order",
+            "tool_access",
+            "unmodelled_items",
+            "threads",
+            "new_fasteners",
+            "alternative_placements"
+          ]
+        },
+        "placement": {
+          "rotation": [
+            [
+              -1.0,
+              1.2246467991473532e-16,
+              0.0
+            ],
+            [
+              -1.2246467991473532e-16,
+              -1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "translation_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "seeded_by": {
+            "one_axis": {
+              "axis": [
+                "bore:hole-1276",
+                "hole-1276"
+              ]
+            }
+          },
+          "tried": 14,
+          "exhausted": false,
+          "chosen": "first_passing",
+          "u_mm": 1e-6,
+          "epsilon_mm": 0.009999000000000001,
+          "freedom": []
+        },
+        "alternatives": [
+          {
+            "rotation": [
+              [
+                -0.5000000000000336,
+                0.8660254037844192,
+                0.0
+              ],
+              [
+                -0.8660254037844192,
+                -0.5000000000000336,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "rotation": [
+              [
+                0.4999999999999832,
+                0.8660254037844484,
+                0.0
+              ],
+              [
+                -0.8660254037844484,
+                0.4999999999999832,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "rotation": [
+              [
+                0.5000000000000335,
+                -0.8660254037844193,
+                0.0
+              ],
+              [
+                0.8660254037844193,
+                0.5000000000000335,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "rotation": [
+              [
+                -0.49999999999998324,
+                -0.8660254037844483,
+                0.0
+              ],
+              [
+                0.8660254037844483,
+                -0.49999999999998324,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.9999999999999999
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              -1.9721522630525295e-31
+            ]
+          },
+          {
+            "rotation": [
+              [
+                -1.0,
+                -1.2246467991473532e-16,
+                0.0
+              ],
+              [
+                1.2246467991473532e-16,
+                -1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "rotation": [
+              [
+                -1.0,
+                1.2246467991473532e-16,
+                0.0
+              ],
+              [
+                1.2246467991473532e-16,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                -1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              -5.000000000000001
+            ]
+          },
+          {
+            "rotation": [
+              [
+                -0.5000000000000336,
+                0.8660254037844192,
+                0.0
+              ],
+              [
+                0.8660254037844192,
+                0.5000000000000336,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                -1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              -5.000000000000001
+            ]
+          },
+          {
+            "rotation": [
+              [
+                0.49999999999998335,
+                0.8660254037844483,
+                0.0
+              ],
+              [
+                0.8660254037844483,
+                -0.49999999999998335,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                -1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              -5.000000000000001
+            ]
+          },
+          {
+            "rotation": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                -1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                -1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              -5.000000000000001
+            ]
+          },
+          {
+            "rotation": [
+              [
+                0.5000000000000335,
+                -0.8660254037844193,
+                0.0
+              ],
+              [
+                -0.8660254037844193,
+                -0.5000000000000335,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                -1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              -5.000000000000001
+            ]
+          },
+          {
+            "rotation": [
+              [
+                -0.49999999999998324,
+                -0.8660254037844483,
+                0.0
+              ],
+              [
+                -0.8660254037844483,
+                0.49999999999998324,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                -0.9999999999999999
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              -5.000000000000001
+            ]
+          },
+          {
+            "rotation": [
+              [
+                -1.0,
+                -1.2246467991473532e-16,
+                0.0
+              ],
+              [
+                -1.2246467991473532e-16,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                -1.0
+              ]
+            ],
+            "translation_mm": [
+              0.0,
+              0.0,
+              -5.000000000000001
+            ]
+          }
+        ],
+        "missing": [],
+        "failed": 0,
+        "checks": [
+          {
+            "requirement": "seat:plane-1186",
+            "review": "unreviewed",
+            "result": "passed",
+            "feature": "plane-1186",
+            "measures": [
+              {
+                "quantity": "plane_sine",
+                "at": {},
+                "found": 0.0,
+                "nominal": 0.0,
+                "band": "angle",
+                "band_rad": 0.00017453192519943298,
+                "min": null,
+                "max": 0.00017453192431335205,
+                "margin": 0.00017453192431335205,
+                "passed": true
+              },
+              {
+                "quantity": "plane_offset_mm",
+                "at": {},
+                "found": 8.881784197001e-16,
+                "nominal": -8.881784197001e-16,
+                "band": "epsilon",
+                "band_mm": 0.009999000000000001,
+                "min": null,
+                "max": 0.009999000000000001,
+                "margin": 0.009998999999999113,
+                "passed": true
+              },
+              {
+                "quantity": "covers",
+                "at": {
+                  "contact_face": 1186
+                },
+                "found": true,
+                "required": true,
+                "passed": true
+              }
+            ],
+            "failures": []
+          },
+          {
+            "requirement": "bore:hole-1276",
+            "review": "unreviewed",
+            "result": "passed",
+            "feature": "hole-1276",
+            "measures": [
+              {
+                "quantity": "axis_sine",
+                "at": {},
+                "found": 0.0,
+                "nominal": 0.0,
+                "band": "angle",
+                "band_rad": 0.00017453192519943298,
+                "min": null,
+                "max": 0.00017453192431335205,
+                "margin": 0.00017453192431335205,
+                "passed": true
+              },
+              {
+                "quantity": "axis_offset_mm",
+                "at": {},
+                "found": 0.0,
+                "nominal": 0.0,
+                "band": "epsilon",
+                "band_mm": 0.009999000000000001,
+                "min": null,
+                "max": 0.009999000000000001,
+                "margin": 0.009999000000000001,
+                "passed": true
+              },
+              {
+                "quantity": "wall_from_mm",
+                "at": {
+                  "span_mm": [
+                    0.0,
+                    4.999999999999999
+                  ]
+                },
+                "found": 0.0,
+                "nominal": 0.0,
+                "band": "epsilon",
+                "band_mm": 0.009999000000000001,
+                "min": null,
+                "max": 0.009999000000000001,
+                "margin": 0.009999000000000001,
+                "passed": true
+              },
+              {
+                "quantity": "wall_to_mm",
+                "at": {
+                  "span_mm": [
+                    0.0,
+                    4.999999999999999
+                  ]
+                },
+                "found": 4.999999999999999,
+                "nominal": 4.999999999999999,
+                "band": "epsilon",
+                "band_mm": 0.009999000000000001,
+                "min": 4.9900009999999995,
+                "max": null,
+                "margin": 0.009998999999999647,
+                "passed": true
+              },
+              {
+                "quantity": "diameter_mm",
+                "at": {
+                  "span_mm": [
+                    0.0,
+                    4.999999999999999
+                  ]
+                },
+                "found": 5.0,
+                "nominal": 5.0,
+                "band": "epsilon",
+                "band_mm": 0.009999000000000001,
+                "min": 4.990001,
+                "max": 5.009999,
+                "margin": 0.009998999999999647,
+                "passed": true
+              },
+              {
+                "quantity": "open_start",
+                "at": {
+                  "end": "start"
+                },
+                "found": true,
+                "required": true,
+                "passed": true
+              },
+              {
+                "quantity": "open_finish",
+                "at": {
+                  "end": "finish"
+                },
+                "found": true,
+                "required": true,
+                "passed": true
+              }
+            ],
+            "failures": []
+          }
+        ],
+        "not_checked": []
+      }
+    ]
+  },
+  "digest": "sha256:211e6f3522fb619bc64ffa7e3addb34f314881ca2825c08c6de05c7ab6dae647"
+}

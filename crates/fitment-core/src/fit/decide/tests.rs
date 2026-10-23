@@ -404,9 +404,27 @@ fn a_failing_control_withholds_verified_only() {
         hitting.socket("socket-1"),
         Some(FitStatus::Interferes { .. })
     ));
+    assert!(
+        !codes(&hitting).contains(&FitCode::OriginalFailsFit),
+        "nothing withheld, no finding"
+    );
     let interfering_control = decide(&plan, &measures);
-    let under = passing.controlled_by(&interfering_control);
+    let under = passing.clone().controlled_by(&interfering_control);
     assert!(under.findings()[0].detail.contains("interferes"));
+    // The PR 1b reviews: a control whose run was incomplete makes every
+    // outcome under it incomplete, withheld or not.
+    let timed_out = FitOutcome::failed(&["socket-1"], &FitFailure::Timeout);
+    assert!(timed_out.incomplete());
+    assert!(passing.clone().controlled_by(&timed_out).incomplete());
+    assert!(
+        decide(&plan, &measures)
+            .controlled_by(&timed_out)
+            .incomplete()
+    );
+    assert!(
+        !passing.controlled_by(&control).incomplete(),
+        "a crash is complete"
+    );
 }
 
 /// FB3: a landmark 2e-6 mm off is `binding_failed`, one 5e-7 mm off is

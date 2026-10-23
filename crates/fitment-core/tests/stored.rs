@@ -5,12 +5,11 @@
 //! back as written; and a matcher's admitted candidates hold whatever level
 //! 2 keeps in every socket, whatever else the index holds.
 
-use std::sync::Mutex;
-
+use fitment_core::fit::testing::MeasuresVerifier;
 use fitment_core::{
-    Admitted, CandidateResult, FeaturesDocument, FitRequest, FitStatus, FitVerifier, IndexTokens,
-    MatchOptions, MatchPolicy, Matcher, NoFitVerifier, PartSignature, ShortlistIndex,
-    SocketDocument, SocketSignature, SocketView, Source, sha256_hex, shortlist,
+    Admitted, CandidateResult, FeaturesDocument, FitStatus, IndexTokens, MatchOptions, MatchPolicy,
+    Matcher, NoFitVerifier, PartSignature, ShortlistIndex, SocketDocument, SocketSignature,
+    SocketView, Source, sha256_hex, shortlist,
 };
 
 const ASSEMBLIES: [(&[u8], &str); 3] = [
@@ -224,25 +223,16 @@ fn a_document_of_another_extractor_is_not_judged() {
     assert_eq!(u64::from(refused.extractor_version), older);
 }
 
-/// Records whether each fit request carried the candidate's bytes.
-struct Recording(Mutex<Vec<bool>>);
-
-impl FitVerifier for Recording {
-    fn check(&self, request: &FitRequest<'_>) -> FitStatus {
-        self.0
-            .lock()
-            .unwrap()
-            .push(request.candidate_step.is_some());
-        FitStatus::no_verifier()
-    }
-}
-
-/// The M5 design review's F5: a file run's fit request keeps the file's
-/// bytes, so M7's verifier can read them; a stored document's has none.
+/// The M5 design review's F5, with M7's one request per candidate
+/// (`docs/research/m7-fit.md`, FC1, FC2): a file run's fit request names
+/// the file's bytes and their SHA-256, so M7's verifier can read them; a
+/// stored document has no bytes, so no fit is asked for it, and its fit
+/// is `not_verified` (FC6 builds the store's reader).
 #[test]
 fn judge_step_hands_its_bytes_to_the_fit_request() {
     let document = &sockets()[0];
-    let verifier = Recording(Mutex::new(Vec::new()));
+    let identity = fitment_core::FitIdentity::new("test", "1");
+    let verifier = MeasuresVerifier::exact(identity, ASSEMBLIES[0].0.to_vec());
     let matcher = Matcher::new(
         document,
         MatchPolicy::default(),
@@ -251,11 +241,26 @@ fn judge_step_hands_its_bytes_to_the_fit_request() {
     )
     .unwrap();
     let bracket = CANDIDATES[0];
-    let _ = matcher.judge_step(bracket);
-    assert_eq!(verifier.0.lock().unwrap().as_slice(), [true]);
+    let from_file = matcher.judge_step(bracket);
+    let asked = verifier.asked();
+    assert_eq!(asked.len(), 2, "the control, then the candidate (FT9)");
+    assert!(asked[0].candidate.starts_with("component "));
+    assert_eq!(asked[1].candidate, sha256_hex(bracket));
+    assert!(matches!(
+        from_file.verdict.fit(),
+        FitStatus::Verified { .. }
+    ));
     let (doc, source) = stored(bracket);
-    let _ = matcher.judge_document(&doc, source);
-    assert_eq!(verifier.0.lock().unwrap().as_slice(), [true, false]);
+    let from_store = matcher.judge_document(&doc, source).unwrap();
+    assert_eq!(
+        verifier.asked().len(),
+        2,
+        "no request for a stored document"
+    );
+    assert!(matches!(
+        from_store.verdict.fit(),
+        FitStatus::NotVerified { .. }
+    ));
 }
 
 /// IX9: tokens read back as written and post every diameter; they are

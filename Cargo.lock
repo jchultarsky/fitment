@@ -403,6 +403,7 @@ dependencies = [
 name = "fitment-core"
 version = "0.3.0"
 dependencies = [
+ "fitment-core",
  "libm",
  "schemars",
  "serde",

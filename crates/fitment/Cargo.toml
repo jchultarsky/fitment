@@ -42,6 +42,9 @@ serde_json = { workspace = true }
 [dev-dependencies]
 # Raw edits of a catalog, in the CLI tests.
 fitment-catalog = { workspace = true, features = ["test-support"] }
+# The test-only fit verifier (docs/research/m7-fit.md, FC1), for v2's
+# golden until the CLI has a verifier of its own (PR 3).
+fitment-core = { workspace = true, features = ["test-support"] }
 # The corpus's scorer (SC1), unpublished and stripped when packaging (SC3).
 fitment-corpus = { workspace = true }
 assert_cmd = { workspace = true }

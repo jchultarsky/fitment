@@ -19,8 +19,14 @@ use crate::verdict::{Check, RejectReason, RequirementId, VerdictKind};
 /// The document's format name.
 pub const MATCH_FORMAT: &str = "fitment.match";
 
-/// Its version: frozen at the first publish (M4-28).
+/// Its version: frozen at the first publish (M4-28). A run without a fit
+/// verifier that has an identity writes it, byte for byte as 0.3.0 does
+/// (`docs/research/m7-fit.md`, FM1).
 pub const MATCH_FORMAT_VERSION: u32 = 1;
+
+/// The version a run with a fit verifier that has an identity writes
+/// (FM1, FC8): v1 with the fit's evidence, from its own types (FC7).
+pub const MATCH_FORMAT_VERSION_FIT: u32 = 2;
 
 /// How many candidates got each verdict (MF6).
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -74,6 +80,7 @@ pub struct MatchDocument {
     digest: String,
     summary: Summary,
     outcome: Outcome,
+    format_version: u32,
 }
 
 impl MatchDocument {
@@ -86,7 +93,9 @@ impl MatchDocument {
 
     /// As `new`, with the original's self-check (VD15) beside the
     /// candidates: in the document as `original`, in neither the summary
-    /// nor the outcome, so the original never makes a run pass.
+    /// nor the outcome, so the original never makes a run pass. With no fit
+    /// verifier that has an identity it is v1, as 0.3.0 writes it; with
+    /// one, v2 (FM1).
     pub fn with_original(
         matcher: &Matcher<'_>,
         results: Vec<(CandidateResult, Vec<String>)>,
@@ -114,36 +123,23 @@ impl MatchDocument {
         } else {
             Outcome::Reject
         };
-        let mut document = Document {
-            format: MATCH_FORMAT,
-            format_version: MATCH_FORMAT_VERSION,
-            extractor_version: crate::EXTRACTOR_VERSION,
-            socket_rules_version: crate::SOCKET_RULES_VERSION,
-            signature_version: SIGNATURE_VERSION,
-            match_rules_version: MATCH_RULES_VERSION,
-            policy: policy(matcher),
-            options: matcher.options(),
-            fit_verifier: matcher
-                .fit_kernel()
-                .map(|(kernel, version)| format!("{kernel} {version}")),
-            socket: socket_part(matcher),
-            summary,
-            candidates: entries
-                .iter()
-                .map(|(r, l)| candidate(matcher, r, l))
-                .collect(),
-            original: original.map(|r| candidate(matcher, r, &["original".to_owned()])),
-            digest: String::new(),
+        let (text, digest, format_version) = match matcher.fit_identity() {
+            None => {
+                let (text, digest) = v1(matcher, &entries, original, summary);
+                (text, digest, MATCH_FORMAT_VERSION)
+            }
+            Some(identity) => {
+                let (text, digest) =
+                    super::document_v2::write(matcher, identity, &entries, original, summary);
+                (text, digest, MATCH_FORMAT_VERSION_FIT)
+            }
         };
-        let digest = digest_of(&document);
-        document.digest.clone_from(&digest);
-        let mut text = serde_json::to_string_pretty(&document).unwrap_or_default();
-        text.push('\n');
         Self {
             text,
             digest,
             summary,
             outcome,
+            format_version,
         }
     }
 
@@ -166,6 +162,48 @@ impl MatchDocument {
     pub fn outcome(&self) -> Outcome {
         self.outcome
     }
+
+    /// Its `format_version`: [`MATCH_FORMAT_VERSION`], or
+    /// [`MATCH_FORMAT_VERSION_FIT`] for a run with a fit verifier that has
+    /// an identity (FM1).
+    pub fn format_version(&self) -> u32 {
+        self.format_version
+    }
+}
+
+/// v1, as 0.3.0 writes it: its text and digest.
+fn v1(
+    matcher: &Matcher<'_>,
+    entries: &[(CandidateResult, Vec<String>)],
+    original: Option<&CandidateResult>,
+    summary: Summary,
+) -> (String, String) {
+    let mut document = Document {
+        format: MATCH_FORMAT,
+        format_version: MATCH_FORMAT_VERSION,
+        extractor_version: crate::EXTRACTOR_VERSION,
+        socket_rules_version: crate::SOCKET_RULES_VERSION,
+        signature_version: SIGNATURE_VERSION,
+        match_rules_version: MATCH_RULES_VERSION,
+        policy: policy(matcher),
+        options: matcher.options(),
+        fit_verifier: matcher
+            .fit_kernel()
+            .map(|(kernel, version)| format!("{kernel} {version}")),
+        socket: socket_part(matcher),
+        summary,
+        candidates: entries
+            .iter()
+            .map(|(r, l)| candidate(matcher, r, l))
+            .collect(),
+        original: original.map(|r| candidate(matcher, r, &["original".to_owned()])),
+        digest: String::new(),
+    };
+    let digest = digest_of(&document);
+    document.digest.clone_from(&digest);
+    let mut text = serde_json::to_string_pretty(&document).unwrap_or_default();
+    text.push('\n');
+    (text, digest)
 }
 
 /// The digest: the compact JSON of the document without its digest and
@@ -189,7 +227,9 @@ fn digest_of(document: &Document) -> String {
 /// by SHA-256 (MF3), components by their assembly's SHA-256 and their
 /// definition (`docs/research/m6-api.md`, CO3); then MF5's order: verdict,
 /// stage reached, failed checks, identity.
-fn merged(results: Vec<(CandidateResult, Vec<String>)>) -> Vec<(CandidateResult, Vec<String>)> {
+pub(super) fn merged(
+    results: Vec<(CandidateResult, Vec<String>)>,
+) -> Vec<(CandidateResult, Vec<String>)> {
     let mut out: Vec<(CandidateResult, Vec<String>)> = Vec::new();
     for (result, labels) in results {
         let key = merge_key(&result);
@@ -283,7 +323,7 @@ struct Document {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
-struct PolicyOut {
+pub(super) struct PolicyOut {
     name: String,
     linear_mm: f64,
     angular_deg: f64,
@@ -291,7 +331,7 @@ struct PolicyOut {
     grip: super::Grip,
 }
 
-fn policy(matcher: &Matcher<'_>) -> PolicyOut {
+pub(super) fn policy(matcher: &Matcher<'_>) -> PolicyOut {
     let p = matcher.policy();
     PolicyOut {
         name: p.tolerance().name().to_owned(),
@@ -304,7 +344,7 @@ fn policy(matcher: &Matcher<'_>) -> PolicyOut {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
-struct SocketPart {
+pub(super) struct SocketPart {
     digest: Option<String>,
     source: SourceOut,
     target: Value,
@@ -347,7 +387,7 @@ struct Unverifiable {
     floor: bool,
 }
 
-fn socket_part(matcher: &Matcher<'_>) -> SocketPart {
+pub(super) fn socket_part(matcher: &Matcher<'_>) -> SocketPart {
     let document: &SocketDocument = matcher.document();
     let extracted = document.extracted();
     let unreviewed = matcher.unreviewed();
@@ -474,20 +514,20 @@ struct SocketOut {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
-struct PlacementOut {
-    rotation: [[f64; 3]; 3],
-    translation_mm: [f64; 3],
-    seeded_by: Seed,
-    tried: usize,
-    exhausted: bool,
-    chosen: Chosen,
-    u_mm: f64,
-    epsilon_mm: f64,
+pub(super) struct PlacementOut {
+    pub(super) rotation: [[f64; 3]; 3],
+    pub(super) translation_mm: [f64; 3],
+    pub(super) seeded_by: Seed,
+    pub(super) tried: usize,
+    pub(super) exhausted: bool,
+    pub(super) chosen: Chosen,
+    pub(super) u_mm: f64,
+    pub(super) epsilon_mm: f64,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
-struct MissingOut {
+pub(super) struct MissingOut {
     requirements: Vec<RequirementId>,
     element: super::MissingElement,
     window: Option<Window>,
@@ -497,7 +537,7 @@ struct MissingOut {
 /// check, its requirement, result and feature alone (M4-19).
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Serialize, Clone)]
-struct CheckOut {
+pub(super) struct CheckOut {
     requirement: String,
     review: ReviewStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -516,6 +556,53 @@ fn feature(evidence: &Evidence) -> Option<String> {
 }
 
 fn socket_out(matcher: &Matcher<'_>, result: &SocketResult, rejected: bool) -> SocketOut {
+    SocketOut {
+        socket: result.socket.clone(),
+        stage: result.stage,
+        verdict: result.verdict.kind(),
+        fit: result.verdict.fit().clone(),
+        placement: placement_out(result),
+        missing: missing_out(result),
+        failed: result.failed(),
+        checks: checks_out(matcher, result, rejected),
+        not_checked: result.not_checked.clone(),
+    }
+}
+
+/// A socket's placement as v1 writes it.
+pub(super) fn placement_out(result: &SocketResult) -> Option<PlacementOut> {
+    result.placement.as_ref().map(|p| PlacementOut {
+        rotation: p.transform.rotation(),
+        translation_mm: p.transform.translation(),
+        seeded_by: p.seed.clone(),
+        tried: result.placements.0,
+        exhausted: result.placements.1,
+        chosen: result.chosen,
+        u_mm: result.u_mm,
+        epsilon_mm: result.epsilon_mm,
+    })
+}
+
+/// What a socket's shortlist found missing, as v1 writes it.
+pub(super) fn missing_out(result: &SocketResult) -> Vec<MissingOut> {
+    result
+        .missing
+        .iter()
+        .map(|m| MissingOut {
+            requirements: m.requirements.clone(),
+            element: m.element.clone(),
+            window: m.window,
+        })
+        .collect()
+}
+
+/// A socket's check records, as v1 writes them: in the socket's
+/// requirement order, removed ones included.
+pub(super) fn checks_out(
+    matcher: &Matcher<'_>,
+    result: &SocketResult,
+    rejected: bool,
+) -> Vec<CheckOut> {
     let document = matcher.document();
     let id = &result.socket;
     let mut checks: Vec<CheckOut> = Vec::new();
@@ -543,34 +630,7 @@ fn socket_out(matcher: &Matcher<'_>, result: &SocketResult, rejected: bool) -> S
             });
         }
     }
-    SocketOut {
-        socket: id.clone(),
-        stage: result.stage,
-        verdict: result.verdict.kind(),
-        fit: result.verdict.fit().clone(),
-        placement: result.placement.as_ref().map(|p| PlacementOut {
-            rotation: p.transform.rotation(),
-            translation_mm: p.transform.translation(),
-            seeded_by: p.seed.clone(),
-            tried: result.placements.0,
-            exhausted: result.placements.1,
-            chosen: result.chosen,
-            u_mm: result.u_mm,
-            epsilon_mm: result.epsilon_mm,
-        }),
-        missing: result
-            .missing
-            .iter()
-            .map(|m| MissingOut {
-                requirements: m.requirements.clone(),
-                element: m.element.clone(),
-                window: m.window,
-            })
-            .collect(),
-        failed: result.failed(),
-        checks,
-        not_checked: result.not_checked.clone(),
-    }
+    checks
 }
 
 fn check_out(requirement: &str, review: ReviewStatus, check: &Check, rejected: bool) -> CheckOut {

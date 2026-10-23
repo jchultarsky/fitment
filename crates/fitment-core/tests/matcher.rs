@@ -4,11 +4,19 @@
 //! `Reject` with the gate's codes (CF2); a part lacking what a socket
 //! demands is rejected at the shortlist, every requirement still checked
 //! (M4-17); and a document that is not reviewed is refused when a review
-//! is required (MF2).
+//! is required (MF2). VT61 (`docs/research/m7-fit.md`, FC2, FT2, FT9,
+//! FT11): with a verifier that has an identity, the fit is asked once per
+//! candidate whose every socket passed, at every occurrence of every
+//! socket, the control once before the first, and never for a placement
+//! the interface leaves free.
 
+use fitment_core::fit::testing::{MeasuresVerifier, interfere};
+use fitment_core::fit::{FitBody, FitCode, MotionKind, Placed};
 use fitment_core::{
-    ComponentRead, FailureCode, MatchOptions, MatchPolicy, Matcher, Part, RejectReason, Rigid,
-    SocketDocument, SocketRefused, Stage, VerdictKind, read_assembly,
+    Clearance, ComponentRead, FailureCode, FitIdentity, FitStatus, Grip, INTERFACE_REJECTED,
+    INTERFACE_REJECTED_ELSEWHERE, MatchDocument, MatchOptions, MatchPolicy, Matcher, Part,
+    RejectReason, ReviewStatus, Rigid, SelectedComponent, SocketDocument, SocketRefused, Stage,
+    TolerancePolicy, VerdictKind, read_assembly,
 };
 
 const ASSEMBLIES: [(&str, &[u8], &[&str]); 4] = [
@@ -202,4 +210,445 @@ fn an_incomplete_candidate_is_flagged() {
             .contains(&fitment_core::CandidateFlag::MaterialNotCompared)
     );
     assert!(result.flags.windows(2).all(|w| w[0] < w[1]));
+}
+
+const S03: &[u8] = include_bytes!("assemblies/s03_dowels.stp");
+const PIN: &str = include_str!("data/p09_pin.stp");
+
+fn exact(bytes: &[u8]) -> MeasuresVerifier {
+    MeasuresVerifier::exact(FitIdentity::new("open_cascade", "8.0.1"), bytes.to_vec())
+}
+
+fn dowels() -> SocketDocument {
+    SocketDocument::extract(S03, Some("DOWEL"), None).unwrap()
+}
+
+/// The placements a request names: (socket, occurrence).
+fn at(placements: &[Placed]) -> Vec<(String, Vec<u64>)> {
+    placements
+        .iter()
+        .map(|p| (p.socket.clone(), p.occurrence.clone()))
+        .collect()
+}
+
+/// VT61, FC2, FT2, FT11, FC5: s03's dowel has three sockets and four
+/// occurrences. The original, judged as a component, is asked once, with
+/// the control before it: each request holds every occurrence of every
+/// socket, the candidate's at `T_k · A` from each socket's own placement,
+/// and names the component by the scene's occurrence of its definition.
+/// A second candidate is asked once more; the control is not asked again.
+#[test]
+fn the_fit_is_asked_once_per_candidate_at_every_occurrence() {
+    let document = dowels();
+    let verifier = exact(S03);
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier,
+    )
+    .unwrap();
+    let original = SelectedComponent::target(S03, &document).unwrap();
+    let result = matcher.judge_component(&original, original.source());
+    let every: Vec<(String, Vec<u64>)> = document
+        .extracted()
+        .unwrap()
+        .sockets
+        .iter()
+        .flat_map(|s| s.occurrences.iter().map(|o| (s.id.clone(), o.clone())))
+        .collect();
+    assert_eq!(every.len(), 4);
+    let asked = verifier.asked();
+    assert_eq!(asked.len(), 2, "the control, then the candidate");
+    for request in &asked {
+        assert_eq!(request.placements, every);
+        assert!(
+            request.candidate.starts_with("component "),
+            "{}",
+            request.candidate
+        );
+        assert!(
+            request.candidate.ends_with("[789]"),
+            "{}",
+            request.candidate
+        );
+    }
+    let evidence = result.fit.as_deref().unwrap();
+    assert_eq!(at(evidence.placements()), every);
+    for socket in &result.sockets {
+        let a = socket.placement.as_ref().unwrap().transform;
+        let expected = Placed::every(&document, &socket.socket, &a).unwrap();
+        let ours: Vec<&Placed> = evidence
+            .placements()
+            .iter()
+            .filter(|p| p.socket == socket.socket)
+            .collect();
+        assert_eq!(ours.len(), expected.len());
+        for (p, e) in ours.iter().zip(&expected) {
+            assert_eq!(p.transform, e.transform, "T_k · A at {:?}", p.occurrence);
+        }
+        assert!(
+            socket.freedom.is_some(),
+            "freedom worked out at every socket"
+        );
+        assert!(matches!(socket.verdict.fit(), FitStatus::Verified { .. }));
+    }
+    assert!(matcher.fit_control().is_some());
+    let pin = matcher.judge_step(PIN.as_bytes());
+    assert_eq!(pin.verdict.kind(), VerdictKind::Match);
+    let asked = verifier.asked();
+    assert_eq!(asked.len(), 3, "one request more, the control not again");
+    assert_eq!(asked[2].candidate, fitment_core::sha256_hex(PIN.as_bytes()));
+}
+
+/// FT11: a candidate whose interface rejects at one socket gets no fit:
+/// a socket that passed beside one that failed records `another socket's
+/// interface rejected`, each that failed `interface rejected`, and nothing
+/// is asked, the control included. A 12 mm pin rejects at the dowels'
+/// sockets but socket-2, whose shaft a review removed.
+#[test]
+fn a_socket_that_passed_beside_one_that_failed_gets_no_fit() {
+    let mut document = dowels();
+    document
+        .decide(
+            "shaft:shaft-729",
+            Some("socket-2"),
+            ReviewStatus::Removed,
+            Some("the pin's length is free there"),
+        )
+        .unwrap();
+    let verifier = exact(S03);
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier,
+    )
+    .unwrap();
+    let short = PIN.replace(",20.)", ",12.)");
+    let result = matcher.judge_step(short.as_bytes());
+    let reasons: Vec<(VerdictKind, String)> = result
+        .sockets
+        .iter()
+        .map(|s| match s.verdict.fit() {
+            FitStatus::NotChecked { reason } => (s.verdict.kind(), reason.clone()),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            (VerdictKind::Reject, INTERFACE_REJECTED.to_owned()),
+            (
+                VerdictKind::InterfaceMatch,
+                INTERFACE_REJECTED_ELSEWHERE.to_owned()
+            ),
+            (VerdictKind::Reject, INTERFACE_REJECTED.to_owned()),
+        ]
+    );
+    assert_eq!(result.verdict.kind(), VerdictKind::Reject);
+    assert!(result.fit.is_none());
+    assert!(result.sockets.iter().all(|s| s.freedom.is_none()));
+    assert_eq!(verifier.asked(), Vec::new());
+    assert!(matcher.fit_control().is_none(), "no interface passed");
+}
+
+/// VT61, FT9: the control runs once, at the first candidate whose
+/// interface passes, before its fit, and not at all while none does; a
+/// document of rejected candidates states no control (`fit.control:
+/// null`).
+#[test]
+fn the_control_runs_once_at_the_first_interface_pass() {
+    let (_, s01, _) = ASSEMBLIES[0];
+    let document = SocketDocument::extract(s01, Some("BRACKET"), None).unwrap();
+    let verifier = exact(s01);
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier,
+    )
+    .unwrap();
+    let small = matcher.judge_step(include_bytes!("candidates/m_bracket_dia_small.stp"));
+    assert_eq!(small.verdict.kind(), VerdictKind::Reject);
+    assert_eq!(verifier.asked(), Vec::new());
+    let none = MatchDocument::new(&matcher, vec![(small, vec!["small".to_owned()])]);
+    let none: serde_json::Value = serde_json::from_str(&none.to_json()).unwrap();
+    assert_eq!(none["format_version"], 2);
+    assert_eq!(none["fit"]["control"], serde_json::Value::Null);
+    let bracket: &[u8] = include_bytes!("candidates/m_bracket.stp");
+    for n in [2, 3] {
+        let result = matcher.judge_step(bracket);
+        assert_eq!(result.verdict.kind(), VerdictKind::Match);
+        let asked = verifier.asked();
+        assert_eq!(asked.len(), n);
+        assert!(
+            asked[0].candidate.starts_with("component "),
+            "the control first"
+        );
+    }
+    let control = matcher.fit_control().unwrap();
+    assert!(matches!(
+        control.outcome().candidate(),
+        FitStatus::Verified { .. }
+    ));
+    assert!(control.free_turns().is_empty(), "FT10 does not apply to it");
+}
+
+/// FT9, FV5: a control that is not verified withholds every candidate's
+/// `verified`, `original_fails_fit` with the control's own code, and a
+/// candidate that interferes still interferes.
+#[test]
+fn a_failing_control_withholds_verified_and_keeps_reject() {
+    let (_, s01, _) = ASSEMBLIES[0];
+    let document = SocketDocument::extract(s01, Some("BRACKET"), None).unwrap();
+    let lug = fitment_core::sha256_hex(include_bytes!("candidates/m_bracket_lug.stp"));
+    let verifier = MeasuresVerifier::new(
+        FitIdentity::new("open_cascade", "8.0.1"),
+        s01.to_vec(),
+        move |request| {
+            let mut measures = fitment_core::fit::testing::exact(request);
+            let into_plate = match request.body() {
+                FitBody::Component { .. } => true,
+                FitBody::Step { sha256, .. } => *sha256 == lug,
+                _ => false,
+            };
+            if into_plate {
+                let plan = request.plan(&measures.scene, &measures.place);
+                let plate = plan.asked().position(|p| p.name.starts_with("PLATE"));
+                assert!(interfere(&mut measures, &plan, plate.unwrap(), 16.0));
+            }
+            Ok(measures)
+        },
+    );
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier,
+    )
+    .unwrap();
+    let bracket = matcher.judge_step(include_bytes!("candidates/m_bracket.stp"));
+    assert_eq!(bracket.verdict.kind(), VerdictKind::InterfaceMatch);
+    let outcome = bracket.fit.as_deref().unwrap().outcome();
+    assert!(
+        outcome
+            .findings()
+            .iter()
+            .any(|f| f.code == FitCode::OriginalFailsFit && f.detail.contains("interferes")),
+        "{:?}",
+        outcome.findings()
+    );
+    let lug = matcher.judge_step(include_bytes!("candidates/m_bracket_lug.stp"));
+    assert_eq!(lug.verdict.kind(), VerdictKind::Reject);
+    assert!(matches!(lug.verdict.fit(), FitStatus::Interferes { .. }));
+}
+
+/// FV6, FC2: under a tolerance of 0.05 mm the dowels' interface leaves the
+/// pin free to slide along its axis: its freedom says so at every socket,
+/// no fit is asked for it (the control only), and every socket is
+/// `placement_not_unique`.
+#[test]
+fn a_placement_free_to_slide_is_asked_no_fit() {
+    let document = dowels();
+    let verifier = exact(S03);
+    let loose = TolerancePolicy::new("loose", 0.05, 0.01).unwrap();
+    let policy = MatchPolicy::new(loose, Clearance::Strict, Grip::Hard);
+    let matcher = Matcher::new(&document, policy, MatchOptions::default(), &verifier).unwrap();
+    let result = matcher.judge_step(PIN.as_bytes());
+    assert_eq!(result.verdict.kind(), VerdictKind::InterfaceMatch);
+    for socket in &result.sockets {
+        let freedom = socket.freedom.as_ref().unwrap();
+        assert!(!freedom.excused(), "{freedom:?}");
+        assert!(freedom.motions.iter().any(|m| m.kind == MotionKind::Slide));
+    }
+    let outcome = result.fit.as_deref().unwrap().outcome();
+    assert_eq!(outcome.code(), Some(FitCode::PlacementNotUnique));
+    assert_eq!(verifier.asked().len(), 1, "the control alone");
+}
+
+/// FC2: with no verifier, or one with no identity, nothing changes from
+/// 0.3.0: no fit evidence, no freedom, no alternatives, every passing
+/// socket `no fit verifier in this build`, and the document is v1.
+#[test]
+fn with_no_verifier_nothing_changes() {
+    let (_, s01, _) = ASSEMBLIES[0];
+    let document = SocketDocument::extract(s01, Some("BRACKET"), None).unwrap();
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &fitment_core::NoFitVerifier,
+    )
+    .unwrap();
+    let result = matcher.judge_step(include_bytes!("candidates/m_bracket.stp"));
+    assert_eq!(result.verdict.kind(), VerdictKind::InterfaceMatch);
+    assert_eq!(result.verdict.fit(), &FitStatus::no_verifier());
+    assert!(result.fit.is_none());
+    let socket = &result.sockets[0];
+    assert!(socket.freedom.is_none() && socket.alternatives.is_none());
+    assert_eq!(matcher.fit_identity(), None);
+    assert!(matcher.fit_control().is_none());
+    let doc = MatchDocument::new(&matcher, vec![(result, vec!["m_bracket.stp".to_owned()])]);
+    assert_eq!(doc.format_version(), fitment_core::MATCH_FORMAT_VERSION);
+}
+
+/// The PR 1b reviews: a control whose run is incomplete (FV8: a timeout
+/// here) is not kept: each candidate whose interface passes runs it again,
+/// and each, its own fit verified, is withheld (`original_fails_fit`) and
+/// incomplete, as is the run (`Matcher::fit_incomplete`).
+#[test]
+fn an_incomplete_control_is_run_again_and_marks_every_candidate() {
+    let (_, s01, _) = ASSEMBLIES[0];
+    let document = SocketDocument::extract(s01, Some("BRACKET"), None).unwrap();
+    let verifier = MeasuresVerifier::new(
+        FitIdentity::new("open_cascade", "8.0.1"),
+        s01.to_vec(),
+        |request| match request.body() {
+            FitBody::Component { .. } => Err(fitment_core::fit::FitFailure::Timeout),
+            _ => Ok(fitment_core::fit::testing::exact(request)),
+        },
+    );
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier,
+    )
+    .unwrap();
+    let bracket: &[u8] = include_bytes!("candidates/m_bracket.stp");
+    let results: Vec<_> = (0..2).map(|_| matcher.judge_step(bracket)).collect();
+    for result in &results {
+        assert_eq!(result.verdict.kind(), VerdictKind::InterfaceMatch);
+        assert!(result.fit_incomplete(), "withheld by an incomplete control");
+        let outcome = result.fit.as_deref().unwrap().outcome();
+        assert!(outcome.findings().iter().any(|f| f.code == FitCode::OriginalFailsFit
+            && f.detail.contains("helper_timeout")));
+    }
+    let asked = verifier.asked();
+    assert_eq!(asked.len(), 4, "the control, then the candidate, twice");
+    assert!(
+        asked[2].candidate.starts_with("component "),
+        "the control again"
+    );
+    assert!(matcher.fit_incomplete(&[]));
+    assert!(matcher.fit_incomplete(&results));
+    let control = matcher.fit_control().unwrap();
+    assert!(control.outcome().incomplete());
+    let complete = exact(s01);
+    let fine = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &complete,
+    )
+    .unwrap();
+    let result = fine.judge_step(bracket);
+    assert!(!result.fit_incomplete() && !fine.fit_incomplete(&[result]));
+}
+
+/// The PR 1b reviews: a verifier with an identity whose kernel or version
+/// is empty, with no assembly, or with another assembly than the socket's
+/// source asks nothing: every passing candidate's fit is `not_verified`,
+/// `helper_unavailable`, an `InterfaceMatch`.
+#[test]
+fn a_verifier_without_a_name_or_its_assembly_is_unavailable() {
+    struct NoAssembly;
+    impl fitment_core::FitVerifier for NoAssembly {
+        fn identity(&self) -> Option<FitIdentity> {
+            Some(FitIdentity::new("open_cascade", "8.0.1"))
+        }
+        fn measure(
+            &self,
+            _: &fitment_core::FitRequest<'_>,
+        ) -> Result<fitment_core::fit::FitMeasures, fitment_core::fit::FitFailure> {
+            panic!("asked with no scene");
+        }
+    }
+    let (_, s01, _) = ASSEMBLIES[0];
+    let (_, s02, _) = ASSEMBLIES[1];
+    let document = SocketDocument::extract(s01, Some("BRACKET"), None).unwrap();
+    let unnamed = MeasuresVerifier::exact(FitIdentity::new("", "8.0.1"), s01.to_vec());
+    let unversioned = MeasuresVerifier::exact(FitIdentity::new("open_cascade", ""), s01.to_vec());
+    let elsewhere = exact(s02);
+    let verifiers: [(&dyn fitment_core::FitVerifier, &str); 4] = [
+        (&unnamed, "names no kernel or version"),
+        (&unversioned, "names no kernel or version"),
+        (&NoAssembly, "holds no assembly"),
+        (&elsewhere, "not the socket's source"),
+    ];
+    for (verifier, why) in verifiers {
+        let matcher = Matcher::new(
+            &document,
+            MatchPolicy::default(),
+            MatchOptions::default(),
+            verifier,
+        )
+        .unwrap();
+        let result = matcher.judge_step(include_bytes!("candidates/m_bracket.stp"));
+        assert_eq!(result.verdict.kind(), VerdictKind::InterfaceMatch, "{why}");
+        let outcome = result.fit.as_deref().unwrap().outcome();
+        assert_eq!(outcome.code(), Some(FitCode::HelperUnavailable), "{why}");
+        assert!(
+            outcome.findings()[0].detail.contains(why),
+            "{:?}",
+            outcome.findings()
+        );
+    }
+    for verifier in [&unnamed, &unversioned, &elsewhere] {
+        assert_eq!(verifier.asked(), Vec::new());
+    }
+}
+
+/// FV7 through the matcher: on s03's dowels, an alert on the pin's pairs
+/// at socket-1's occurrence (no copy) leaves socket-1 `not_verified`,
+/// `kernel_alert`, the other two sockets `verified`, and the candidate,
+/// worst of its sockets, an `InterfaceMatch`.
+#[test]
+fn an_alert_at_one_socket_leaves_the_others_verified() {
+    let document = dowels();
+    let first = document.extracted().unwrap().sockets[0].occurrences[0].clone();
+    let verifier = MeasuresVerifier::new(
+        FitIdentity::new("open_cascade", "8.0.1"),
+        S03.to_vec(),
+        move |request| {
+            let mut measures = fitment_core::fit::testing::exact(request);
+            if matches!(request.body(), FitBody::Step { .. }) {
+                let plan = request.plan(&measures.scene, &measures.place);
+                for (pair, m) in plan.asked().zip(measures.check.pairs.iter_mut()) {
+                    if pair.occurrence == first && !pair.copy {
+                        m.alerts = vec!["BOPAlgo_AlertFaceBuilderUnusedEdges".to_owned()];
+                    }
+                }
+            }
+            Ok(measures)
+        },
+    );
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier,
+    )
+    .unwrap();
+    let result = matcher.judge_step(PIN.as_bytes());
+    let fits: Vec<(&str, VerdictKind, bool)> = result
+        .sockets
+        .iter()
+        .map(|s| {
+            let decided = matches!(s.verdict.fit(), FitStatus::Verified { .. });
+            (s.socket.as_str(), s.verdict.kind(), decided)
+        })
+        .collect();
+    assert_eq!(
+        fits,
+        [
+            ("socket-1", VerdictKind::InterfaceMatch, false),
+            ("socket-2", VerdictKind::Match, true),
+            ("socket-3", VerdictKind::Match, true),
+        ]
+    );
+    assert_eq!(result.verdict.kind(), VerdictKind::InterfaceMatch);
+    let outcome = result.fit.as_deref().unwrap().outcome();
+    assert_eq!(outcome.code(), Some(FitCode::KernelAlert));
 }

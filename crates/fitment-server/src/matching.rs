@@ -37,29 +37,47 @@ pub fn verifier(fit: &Fit) -> Verifier {
 }
 
 /// The kernel and version the verifier names, for `fitment.info` (DC11):
-/// `None` until M7.
+/// `None` until M7's helper.
 pub fn kernel(verifier: &Verifier) -> Option<(String, String)> {
-    verifier.kernel()
+    verifier.identity().map(|i| (i.kernel, i.version))
 }
 
-/// SN11, VT31: a fake verifier, under `test-support` only, that answers
-/// every fit `verified`, so a `Match` is seen through the API. No
-/// configuration names it, and no release build has it.
+/// SN11, VT31: a fake verifier, under `test-support` only, whose kernel
+/// reads the socket's assembly exactly as fitment does and finds nothing
+/// in common (`fitment_core::fit::testing`), so a `Match` is seen through
+/// the API; core still plans and decides from its measures
+/// (docs/research/m7-fit.md, FC1). No configuration names it, and no
+/// release build has it.
 #[cfg(feature = "test-support")]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct VerifiesEverything;
+#[derive(Debug)]
+pub struct VerifiesEverything(fitment_core::fit::testing::MeasuresVerifier);
+
+#[cfg(feature = "test-support")]
+impl VerifiesEverything {
+    /// The fake for a socket of `assembly`'s bytes.
+    pub fn new(assembly: Vec<u8>) -> Self {
+        let identity = fitment_core::FitIdentity::new("test-support", "1");
+        Self(fitment_core::fit::testing::MeasuresVerifier::exact(
+            identity, assembly,
+        ))
+    }
+}
 
 #[cfg(feature = "test-support")]
 impl FitVerifier for VerifiesEverything {
-    fn check(&self, _request: &fitment_core::FitRequest<'_>) -> fitment_core::FitStatus {
-        fitment_core::FitStatus::Verified {
-            kernel: "test-support".into(),
-            version: "1".into(),
-        }
+    fn identity(&self) -> Option<fitment_core::FitIdentity> {
+        self.0.identity()
     }
 
-    fn kernel(&self) -> Option<(String, String)> {
-        Some(("test-support".into(), "1".into()))
+    fn assembly(&self) -> Option<&[u8]> {
+        self.0.assembly()
+    }
+
+    fn measure(
+        &self,
+        request: &fitment_core::FitRequest<'_>,
+    ) -> Result<fitment_core::fit::FitMeasures, fitment_core::fit::FitFailure> {
+        self.0.measure(request)
     }
 }
 

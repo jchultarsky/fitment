@@ -52,21 +52,25 @@ pub use features::{
     UnknownReason, read_part,
 };
 pub use fit::{
-    CANDIDATE_REFUSED, FitRequest, FitStatus, FitVerifier, INTERFACE_REJECTED, Interference,
-    NO_FIT_VERIFIER, NoFitVerifier,
+    CANDIDATE_REFUSED, FitIdentity, FitRequest, FitStatus, FitVerifier, INTERFACE_REJECTED,
+    INTERFACE_REJECTED_ELSEWHERE, Interference, NO_FIT_VERIFIER, NoFitVerifier,
+    OCCURRENCE_UNPLACED, OCCURRENCE_UNPLACED_ELSEWHERE,
 };
 pub use gate::{Refusal, RefusalCode};
 pub use geom::{Dir3, Point3, Rigid, Vec3};
+#[cfg(feature = "schema")]
+pub use matching::MatchDocumentV2;
 pub use matching::{
     Admitted, At, Band, BandWidth, Blocked, CandidateFlag, CandidateResult, CandidateSource,
     CandidateView, Chosen, Clearance, EndSide, Evidence, Failure, FailureCode, GUARD_MM, Grip,
-    IndexSource, IndexTokens, Kept, MATCH_FORMAT, MATCH_FORMAT_VERSION, MATCH_RULES_VERSION,
-    MAX_ANCHOR_PAIRS, MAX_COVERAGE_STEPS, MAX_PLACEMENTS, MAX_SHORTLIST_CHECKS, MatchDocument,
-    MatchOptions, MatchPolicy, Matcher, Measure, MeasureValue, Missing, MissingElement, NotChecked,
-    NotCurrent, OriginalCheck, Outcome, PairToken, PartSignature, Placement, Placements, Posting,
-    Quantity, ReadFacts, SIGNATURE_VERSION, Seed, ShortlistIndex, SigCone, SigPlane, SigStack,
-    SocketRefused, SocketResult, SocketSignature, SocketView, Stage, Summary, Unread, Warning,
-    WarningCode, Window, align, level_one, match_candidates, shortlist, verify,
+    IndexSource, IndexTokens, Kept, MATCH_FORMAT, MATCH_FORMAT_VERSION, MATCH_FORMAT_VERSION_FIT,
+    MATCH_RULES_VERSION, MAX_ANCHOR_PAIRS, MAX_COVERAGE_STEPS, MAX_PLACEMENTS,
+    MAX_SHORTLIST_CHECKS, MatchDocument, MatchOptions, MatchPolicy, Matcher, Measure, MeasureValue,
+    Missing, MissingElement, NotChecked, NotCurrent, OriginalCheck, Outcome, PairToken,
+    PartSignature, Placement, Placements, Posting, Quantity, ReadFacts, SIGNATURE_VERSION, Seed,
+    ShortlistIndex, SigCone, SigPlane, SigStack, SocketRefused, SocketResult, SocketSignature,
+    SocketView, Stage, Summary, Unread, Warning, WarningCode, Window, align, level_one,
+    match_candidates, shortlist, verify,
 };
 pub use properties::{
     Field, MAX_STATED, MAX_STATED_BYTES, Mapped, Meaning, NOT_MAPPED, PROPERTIES_VERSION,

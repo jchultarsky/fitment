@@ -394,3 +394,64 @@ fn a_path_is_compared_on_what_it_ran() {
         .unwrap_err();
     assert!(found.contains("harness"), "{found}");
 }
+
+/// An edit of a document, given its bracket entry's index.
+type Edit = fn(&mut Value, usize);
+
+/// The review of M7 PR 1b (`docs/research/m7-fit.md`, FT9, FC1, FT10, FM1
+/// to FM3, FT12): the checker holds a v2 document's `verified` fits to the
+/// fit's rules. The committed v2 golden passes; each of five edits, its
+/// digest recomputed so only the edit is at fault, fails: a control not
+/// verified, a fit verified by another kernel, no fit verifier, a free
+/// slide under a verified socket, and a verified fit with no pairs.
+#[test]
+fn the_checker_holds_v2_s_verified_fits_to_the_fit_s_rules() {
+    use fitment_corpus::checker::{digest, problems};
+    let golden: Value = serde_json::from_str(include_str!(
+        "../../fitment/tests/golden/match-v2/s01_bolted--BRACKET.json"
+    ))
+    .unwrap();
+    assert_eq!(problems(&golden), Vec::<String>::new());
+    let bracket = |doc: &Value| {
+        doc["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|c| c["labels"][0] == "m_bracket.stp")
+            .unwrap()
+    };
+    let at = bracket(&golden);
+    assert_eq!(golden["candidates"][at]["fit"]["status"], "verified");
+    let edits: [(&str, Edit); 5] = [
+        ("a control not verified", |d, _| {
+            d["fit"]["control"][0]["fit"] =
+                json!({"status": "not_checked", "reason": "x", "scope_not_checked": []});
+        }),
+        ("another kernel", |d, at| {
+            d["candidates"][at]["fit"]["version"] = json!("7.9.0");
+        }),
+        ("no fit verifier", |d, _| d["fit_verifier"] = Value::Null),
+        ("a free slide", |d, at| {
+            d["candidates"][at]["sockets"][0]["placement"]["freedom"] = json!([
+                {"kind": "slide", "about": [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], "axisymmetric": false}
+            ]);
+        }),
+        ("no pairs", |d, at| {
+            d["candidates"][at]["fit"]
+                .as_object_mut()
+                .unwrap()
+                .remove("pairs");
+        }),
+    ];
+    for (what, edit) in edits {
+        let mut doc = golden.clone();
+        edit(&mut doc, at);
+        doc["digest"] = json!(digest(&doc));
+        let found = problems(&doc);
+        assert!(!found.is_empty(), "{what}: no problem found");
+        assert!(
+            found.iter().all(|p| !p.contains("digest")),
+            "{what}: {found:?}"
+        );
+    }
+}

@@ -3,8 +3,10 @@
 //! parts` and `fitment socket` on every committed unit assembly, with
 //! `tests/golden/parts/<case>.json` and `tests/golden/socket/<case>--<part>.json`
 //! for each target its manifest names; `fitment match` on the committed
-//! candidates, with `tests/golden/match/`; and each committed candidate's
-//! level-1 tokens, with `tests/golden/tokens/<stem>.json`.
+//! candidates, with `tests/golden/match/`; `fitment.match` v2, a run's with
+//! a fit verifier, on s01's sockets with the test-only exact kernel, with
+//! `tests/golden/match-v2/`; and each committed candidate's level-1 tokens,
+//! with `tests/golden/tokens/<stem>.json`.
 //!
 //! Goldens freeze bytes; they do not prove them right. Correctness comes
 //! from fitment-core's tests, which check parts against their construction.
@@ -327,6 +329,117 @@ fn match_output_matches_the_goldens() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// FM1 to FM5, FC7 (`docs/research/m7-fit.md`): `fitment.match` v2, as a
+/// run with a fit verifier writes it, for s01's bracket and nut sockets,
+/// their committed candidates and their originals, judged with the
+/// test-only exact kernel, which finds nothing in common, but for the lug,
+/// whose tab it measures 299.4 mm³ into the plate (P2's value): whole
+/// documents, byte for byte, on every OS. The library writes them until the
+/// CLI has a verifier (PR 3).
+#[test]
+fn match_v2_matches_its_golden() {
+    let bless = std::env::var_os("FITMENT_BLESS").is_some_and(|v| v == "1");
+    assert!(
+        !(bless && std::env::var_os("CI").is_some()),
+        "goldens are blessed locally, never in CI"
+    );
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/match-v2");
+    if bless {
+        fs::create_dir_all(&golden).unwrap();
+    }
+    let mut failures = Vec::new();
+    let mut wanted = Vec::new();
+    let bracket = [
+        "m_bracket.stp",
+        "m_bracket_blind.stp",
+        "m_bracket_lug.stp",
+        "m_bracket_thick.stp",
+        "m_bracket_top_pocket.stp",
+    ];
+    for (part, files) in [
+        ("BRACKET", &bracket[..]),
+        ("NUT", &["m_nut_pinned_15tol.stp"][..]),
+    ] {
+        let actual = v2_document(part, files);
+        let name = format!("s01_bolted--{part}");
+        let problems = fitment_corpus::checker::problems(&serde_json::from_str(&actual).unwrap());
+        if !problems.is_empty() {
+            failures.push(format!("match-v2/{name}: {}", problems.join("; ")));
+        }
+        let keys = [
+            "format_version",
+            "extractor_version",
+            "socket_rules_version",
+            "match_rules_version",
+            "signature_version",
+        ];
+        let path = golden.join(format!("{name}.json"));
+        compare(&name, &path, &actual, &keys, bless, &mut failures);
+        wanted.push(name);
+    }
+    for (stem, path) in by_stem(&golden, "json") {
+        if !wanted.contains(&stem) {
+            if bless {
+                fs::remove_file(path).unwrap();
+            } else {
+                failures.push(format!("match-v2/{stem}: golden has no input"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// The v2 document of s01's `part` socket, its original and `files`
+/// judged with the exact kernel, the lug measured into the plate.
+fn v2_document(part: &str, files: &[&str]) -> String {
+    use fitment_core::fit::FitBody;
+    use fitment_core::fit::testing::{MeasuresVerifier, exact, interfere};
+    use fitment_core::{
+        FitIdentity, MatchDocument, MatchOptions, MatchPolicy, Matcher, SelectedComponent,
+        SocketDocument,
+    };
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fitment-core/tests");
+    let assembly = fs::read(tests.join("assemblies/s01_bolted.stp")).unwrap();
+    let lug =
+        fitment_core::sha256_hex(&fs::read(tests.join("candidates/m_bracket_lug.stp")).unwrap());
+    let identity = FitIdentity::new("open_cascade", "8.0.1").with_helper(
+        "cadquery-ocp-novtk 8.0.1.1.0",
+        "3.13",
+        1,
+        "a".repeat(64),
+        "b".repeat(64),
+    );
+    let verifier = MeasuresVerifier::new(identity, assembly.clone(), move |request| {
+        let mut measures = exact(request);
+        if matches!(request.body(), FitBody::Step { sha256, .. } if *sha256 == lug) {
+            let plan = request.plan(&measures.scene, &measures.place);
+            let plate = plan.asked().position(|p| p.name.starts_with("PLATE"));
+            assert!(interfere(&mut measures, &plan, plate.unwrap(), 299.4));
+        }
+        Ok(measures)
+    });
+    let document = SocketDocument::extract(&assembly, Some(part), None).unwrap();
+    let matcher = Matcher::new(
+        &document,
+        MatchPolicy::default(),
+        MatchOptions::default(),
+        &verifier,
+    )
+    .unwrap();
+    let original = SelectedComponent::target(&assembly, &document).unwrap();
+    let original = matcher.judge_component(&original, original.source());
+    let results = files
+        .iter()
+        .map(|f| {
+            let bytes = fs::read(tests.join("candidates").join(f)).unwrap();
+            (matcher.judge_step(&bytes), vec![(*f).to_owned()])
+        })
+        .collect();
+    let doc = MatchDocument::with_original(&matcher, results, Some(&original));
+    assert_eq!(doc.format_version(), fitment_core::MATCH_FORMAT_VERSION_FIT);
+    doc.to_json()
 }
 
 /// M5's RX11: each committed candidate's level-1 tokens, as a catalog

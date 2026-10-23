@@ -7,6 +7,7 @@ mod align;
 mod axial;
 mod candidate;
 mod document;
+mod document_v2;
 mod evidence;
 mod index;
 mod matcher;
@@ -19,8 +20,11 @@ mod verify;
 pub use align::{MAX_ANCHOR_PAIRS, MAX_PLACEMENTS, Placement, Placements, Seed, align};
 pub use candidate::CandidateView;
 pub use document::{
-    MATCH_FORMAT, MATCH_FORMAT_VERSION, MatchDocument, Outcome, Summary, match_candidates,
+    MATCH_FORMAT, MATCH_FORMAT_VERSION, MATCH_FORMAT_VERSION_FIT, MatchDocument, Outcome, Summary,
+    match_candidates,
 };
+#[cfg(feature = "schema")]
+pub use document_v2::MatchDocumentV2;
 pub use evidence::{
     At, Band, BandWidth, EndSide, Evidence, Failure, FailureCode, Measure, MeasureValue, Quantity,
     Warning, WarningCode,

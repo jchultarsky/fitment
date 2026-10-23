@@ -464,4 +464,19 @@ fn the_seams_are_test_support_only() {
         !release.contains("fitment-server feature \"test-support\"\n"),
         "{release}"
     );
+    // M7 (docs/research/m7-fit.md, FC1): core's test-only fit verifier
+    // comes with the seams, never into a release build.
+    let core = tree(&[
+        "-p",
+        "fitment-server",
+        "-e",
+        "normal,features",
+        "-i",
+        "fitment-core",
+    ]);
+    assert!(core.contains("fitment-core"), "{core}");
+    assert!(
+        !core.contains("fitment-core feature \"test-support\""),
+        "{core}"
+    );
 }
