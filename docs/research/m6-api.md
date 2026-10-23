@@ -2197,7 +2197,7 @@ Each PR comes with its tests and two adversarial reviews, as in M4 and M5, and n
         - CONTRIBUTING's `tools/` names the corpus generator, the oracle and the output scripts, and its tests that read files live in the CLI's, the catalog's and the server's `tests/`.
         - Two CHANGELOG paragraphs are rewrapped.
         - The root README, which crates.io shows as `fitment`'s, links to the repository by absolute URLs, so its links work there too.
-      - **`fuzz.yml`'s first run** (PR 8's done-when, which PR 9 left here): not yet run. GitHub dispatches only workflows on the default branch, and `fuzz.yml` reaches main with PR 8. *The coordinator links the run here once the stack (#51 to #56 and this PR) has merged and `fuzz.yml` has been dispatched on main: [run to be linked].*
+      - **`fuzz.yml`'s first run** (PR 8's done-when, which PR 9 left here). Dispatched on main once PR 8 merged (#55), its first run ([39918946167](https://github.com/jchultarsky/fitment/actions/runs/39918946167)) failed before fuzzing: install-action's cargo-fuzz is a musl build, and cargo-fuzz builds for the target it was built for, `x86_64-unknown-linux-musl`, where the address sanitizer cannot link. `fuzz.yml` now names `x86_64-unknown-linux-gnu` (a54f2ff, on PR 9's branch), and its run on that branch is green: [39919677590](https://github.com/jchultarsky/fitment/actions/runs/39919677590), `route` and `body` ten minutes each, no finding.
       - **Left, the user's:**
         1. Publish `fitment-core`, then `fitment-catalog`, then `fitment` from the commit that merges this PR.
         2. Tag that commit `v0.3.0`.
