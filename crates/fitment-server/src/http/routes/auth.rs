@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{StatusCode, Uri};
 use axum::response::Response;
 
@@ -18,6 +18,7 @@ use crate::auth::requests::{
 use crate::auth::{self, DAY_MS, Minted, Role};
 use crate::http::blocking;
 use crate::http::error::{ApiError, ErrorCode};
+use crate::http::extract::Path;
 use crate::http::extract::{self, Admin, ClientAddress, Reader};
 use crate::http::json::{self, Json};
 use crate::http::operations::Role as Needed;

@@ -397,6 +397,8 @@ fn the_seams_are_test_support_only() {
     assert!(!manifest.contains("default ="), "a default feature");
     let lib = std::fs::read_to_string(crate_dir().join("src/lib.rs")).unwrap();
     assert!(lib.contains("#[cfg(feature = \"test-support\")]\npub mod hooks;"));
+    // VT26's harness (PR 8) is a seam too: never in a release build.
+    assert!(lib.contains("#[cfg(feature = \"test-support\")]\npub mod fuzzing;"));
     let ids = std::fs::read_to_string(crate_dir().join("src/ids.rs")).unwrap();
     for item in ["pub fn fix_ids", "pub fn fix_time"] {
         let at = ids.find(item).unwrap();

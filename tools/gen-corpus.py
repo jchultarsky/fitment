@@ -1602,6 +1602,72 @@ for rule, tests in {
     "XH12": [f"{S_FAULT}::jobs_aborted_around_their_commits_are_settled"],
 }.items():
     RULES[rule]["tests"] = RULES[rule]["tests"] + tests
+# PR 8, hardening (section 12, item 8), builds XH14: every operation has a row in VT23's matrix, a golden and a request in
+# VT26's seed corpus (the goldens' requests), and the served OpenAPI document is OPERATIONS. Nothing waits for "M6 PR 8"
+# after it, so M6_PR_NOW rises to 8 (crates/fitment/tests/corpus.rs). Its other work cites rules already built: JS8's
+# enforcement for a stuck core call (a watchdog gives a job up past its stop and jobs.stuck_grace_seconds, its permits and
+# slot released, at most jobs.abandoned_max at once, then the server is unready), VT18 and VT19 in full, VT26's harness,
+# VT14 on the corpus, the weekly soak and full disk (VT10, VT11, soak.rs) and the scale and load legs (VT27, VT28).
+S_SOAK, S_SCALE, S_FUZZ = f"{SERVER}/tests/soak.rs", f"{SERVER}/tests/scale.rs", f"{SERVER}/src/fuzzing.rs"
+M6_PR8 = {
+    "XH14": [f"{S_GOLD}::every_operation_has_a_matrix_row_a_golden_and_a_seed",
+             f"{S_AUTH}::every_operation_answers_each_principal_as_its_role_says",
+             f"{S_GOLD}::the_apis_documents_are_their_goldens",
+             f"{S_FUZZ}::the_route_property_has_its_controls", f"{S_FUZZ}::a_golden_request_reads_as_its_request",
+             f"{S_FUZZ}::the_body_property_holds_on_known_bodies"],
+}
+for rule, tests in M6_PR8.items():
+    assert RULES[rule] == {"deferred": "M6 PR 8"}, rule
+    RULES[rule] = {"tests": tests}
+assert not [r for r, e in RULES.items() if e == {"deferred": "M6 PR 8"}], "a PR 8 rule is still deferred"
+for rule, tests in {
+    "JS8": [f"{S_FAULT}::a_stuck_call_is_given_up_and_its_permits_released",
+            f"{S_FAULT}::a_stop_does_not_wait_for_a_stuck_call"],
+    "OP7": [f"{S_FAULT}::a_stuck_call_is_given_up_and_its_permits_released"],
+    "SD1": [f"{S_FAULT}::a_stop_does_not_wait_for_a_stuck_call"],
+    "HX1": [f"{S_SLOW}::a_trickled_head_is_cut_at_the_header_timeout", f"{S_SLOW}::slow_clients_do_not_delay_a_normal_one"],
+    "HX2": [f"{S_HOST}::a_json_body_past_its_cap_is_refused"],
+    "HX3": [f"{S_SLOW}::a_trickled_body_is_cut_at_the_chunk_wait", f"{S_SLOW}::slow_clients_do_not_delay_a_normal_one"],
+    "UP2": [f"{S_SLOW}::a_trickled_body_is_cut_at_the_chunk_wait", f"{S_SOAK}::a_full_disk_refuses_then_recovers"],
+    "UP4": [f"{S_SOAK}::a_full_disk_refuses_then_recovers"],
+    "OB2": [f"{S_SOAK}::a_full_disk_refuses_then_recovers"],
+    "OB5": [f"{S_SOAK}::a_full_disk_refuses_then_recovers"],
+    "VN6": [f"{S_HOST}::malformed_bodies_are_refused_with_stable_codes"],
+    "ER1": [f"{S_HOST}::malformed_bodies_are_refused_with_stable_codes"],
+    "ER7": [f"{S_HOST}::malformed_bodies_are_refused_with_stable_codes"],
+    "HX5": [f"{S_HOST}::malformed_bodies_are_refused_with_stable_codes"],
+    "JS1": [f"{S_CONC}::many_clients_match_the_corpus_alike", f"{S_SCALE}::a_scaled_catalog_through_the_api"],
+    "JS2": [f"{S_CONC}::many_clients_match_the_corpus_alike", f"{S_SCALE}::a_scaled_catalog_through_the_api"],
+    "JS4": [f"{S_CONC}::many_clients_match_the_corpus_alike"],
+    "JS5": [f"{S_CONC}::many_clients_match_the_corpus_alike"],
+    "CX1": [f"{S_SCALE}::a_scaled_catalog_through_the_api"],
+    "JB6": [f"{S_SOAK}::restarts_at_random_times_keep_every_job"],
+    "JS11": [f"{S_SOAK}::restarts_at_random_times_keep_every_job"],
+    "JS13": [f"{S_SOAK}::restarts_at_random_times_keep_every_job"],
+    "SD4": [f"{S_SOAK}::restarts_at_random_times_keep_every_job"],
+    "SD5": [f"{S_SOAK}::restarts_at_random_times_keep_every_job"],
+    "XH12": [f"{S_SOAK}::restarts_at_random_times_keep_every_job"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
+# The review of PR 8's tests, each of a finding its fix answers: write jobs never given up, a refused job watched again
+# and counted toward the bound, one given-up job an owner, CX6's count kept until a given-up thread returns, and the
+# limits the review found unexceeded.
+for rule, tests in {
+    "JS8": [f"{S_FAULT}::a_stuck_write_job_is_never_given_up", f"{S_FAULT}::a_refused_stuck_job_is_given_up_when_a_place_frees",
+            f"{S_FAULT}::an_owner_has_one_job_given_up_at_a_time"],
+    "JB5": [f"{S_FAULT}::a_stuck_write_job_is_never_given_up"],
+    "OP7": [f"{S_FAULT}::a_refused_stuck_job_is_given_up_when_a_place_frees",
+            f"{S_FAULT}::an_owner_has_one_job_given_up_at_a_time"],
+    "CX6": [f"{S_FAULT}::a_stuck_call_is_given_up_and_its_permits_released"],
+    "HX3": [f"{S_HOST}::an_upload_past_its_minutes_is_cut"],
+    "UP2": [f"{S_HOST}::an_upload_past_its_minutes_is_cut"],
+    "JS5": [f"{S_HOST}::the_write_and_maintenance_queues_are_capped"],
+    "UP3": [f"{S_HOST}::an_upload_lives_its_hours_and_no_longer"],
+    "JB12": [f"{S_HOST}::a_job_is_retained_its_days_and_no_longer"],
+    "OP3": [f"{S_HOST}::an_ingest_past_the_catalogs_pages_fails_storage_full",
+            f"{S_HOST}::an_upload_past_its_minutes_is_cut"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
 # The binary path on the strict gate and the baseline (VT4, VT5), and the coverage gate's new checks (VT30).
 for rule, tests in {
     "KH2": [f"{M6_MATCHING}::the_binary_meets_the_construction"],

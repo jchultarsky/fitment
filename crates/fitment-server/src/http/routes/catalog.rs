@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::Response;
 
@@ -36,6 +36,7 @@ use crate::catalog::StepBytes;
 use crate::catalog::{self, StatusFilter};
 use crate::http::cache;
 use crate::http::error::{ApiError, ErrorCode};
+use crate::http::extract::Path;
 use crate::http::extract::{Admin, Reader, Writer};
 use crate::http::json::{self, Sent};
 use crate::http::{blocking, query};

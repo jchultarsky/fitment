@@ -392,6 +392,7 @@ fn serve(args: &ConfigArgs) -> ExitCode {
     let jobs = &config.jobs;
     let cpu = usize::try_from(jobs.cpu_budget()).unwrap_or(1);
     let query_slots = usize::try_from(jobs.query_slots()).unwrap_or(1);
+    let abandoned = usize::try_from(jobs.abandoned_max).unwrap_or(0);
     let Ok(addr) = config.listen_addr() else {
         return fail(2, "server.listen is not an address");
     };
@@ -403,16 +404,22 @@ fn serve(args: &ConfigArgs) -> ExitCode {
         }
     };
     // SV3: workers for I/O only; compute is bounded by the jobs' permits.
+    // JS8 (PR 8): the threads of jobs given up stay on the blocking pool,
+    // `jobs.abandoned_max` at most, so the pool has room for them.
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(cpu.clamp(1, 4))
-        .max_blocking_threads(64 + query_slots + 2)
+        .max_blocking_threads(64 + query_slots + 2 + abandoned)
         .enable_all()
         .build()
     {
         Ok(runtime) => runtime,
         Err(error) => return fail(1, &format!("cannot start the runtime: {}", error.kind())),
     };
-    runtime.block_on(run(server, addr))
+    let code = runtime.block_on(run(server, addr));
+    // JS8: a stuck call's thread never returns; the exit does not wait for
+    // it (dropping the runtime would, forever).
+    runtime.shutdown_timeout(Duration::from_secs(2));
+    code
 }
 
 async fn run(server: Server, addr: SocketAddr) -> ExitCode {

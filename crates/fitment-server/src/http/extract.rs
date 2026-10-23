@@ -245,3 +245,26 @@ impl FromRequestParts<Arc<Shared>> for ClientAddress {
         std::future::ready(Ok(Self(client_address(shared, parts))))
     }
 }
+
+/// A route's path parameters, as axum's `Path` reads them (HX5), except
+/// that a segment which does not decode (a `%` without two hex digits,
+/// bytes that are not UTF-8) is `400 bad_request` in the error document,
+/// never axum's plain-text rejection (ER1; VT26's first finding, PR 8).
+#[derive(Debug, Clone)]
+pub struct Path<T>(pub T);
+
+impl<S: Send + Sync, T: serde::de::DeserializeOwned + Send> FromRequestParts<S> for Path<T> {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, ApiError> {
+        axum::extract::Path::<T>::from_request_parts(parts, state)
+            .await
+            .map(|axum::extract::Path(value)| Self(value))
+            .map_err(|_| {
+                ApiError::new(
+                    ErrorCode::BadRequest,
+                    "a path segment is not percent-encoded UTF-8",
+                )
+            })
+    }
+}

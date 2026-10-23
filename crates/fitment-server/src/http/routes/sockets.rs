@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
 use serde_json::Value;
@@ -25,6 +25,7 @@ use crate::auth::documents::Page;
 use crate::gate;
 use crate::http::cache::{self, Cache, Served};
 use crate::http::error::{ApiError, ErrorCode};
+use crate::http::extract::Path;
 use crate::http::extract::Reader;
 use crate::http::json::{self, Json, Sent};
 use crate::http::{blocking, db_error, query};

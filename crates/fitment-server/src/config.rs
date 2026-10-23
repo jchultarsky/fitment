@@ -235,6 +235,12 @@ pub struct Jobs {
     pub streams_per_user: u32,
     /// JS10: event streams at once on the server.
     pub streams: u32,
+    /// JS8 (PR 8): how long a job's call may run on after a cancel or its
+    /// deadline set its flag before the job is given up.
+    pub stuck_grace_seconds: u64,
+    /// JS8: the jobs given up at once, whose threads have not returned;
+    /// at this bound the server is unready and gives up no more.
+    pub abandoned_max: u32,
 }
 
 impl Default for Jobs {
@@ -259,6 +265,8 @@ impl Default for Jobs {
             drain_seconds: 25,
             streams_per_user: 8,
             streams: 256,
+            stuck_grace_seconds: 60,
+            abandoned_max: 2,
         }
     }
 }
@@ -466,6 +474,9 @@ pub struct TestSection {
     /// A lease renewed within this many milliseconds is another server's;
     /// 0: SD6's 30 s. A test restarting a killed child sets it small.
     pub lease_stale_ms: i64,
+    /// One of `limits.upload_minutes`' minutes, in milliseconds; 0: 60 s.
+    /// A test exceeding the whole upload's time sets it small (HX3).
+    pub upload_minute_ms: u64,
 }
 
 /// `[metrics]` (OP6): off when empty.
@@ -713,11 +724,13 @@ impl Config {
             self.jobs.streams_per_user,
             self.jobs.streams,
             self.jobs.match_threads,
+            self.jobs.abandoned_max,
         ]
         .contains(&0)
             || self.jobs.memory_mib == 0
             || self.jobs.deadline_extract_minutes == 0
             || self.jobs.sweep_minutes == 0
+            || self.jobs.stuck_grace_seconds == 0
         {
             return Err(value_error(
                 "jobs",
@@ -735,6 +748,20 @@ impl Config {
         }
         self.limits.validate_uploads()?;
         self.auth.validate()
+    }
+
+    /// HX3: how long an upload may take, `limits.upload_minutes` of
+    /// minutes; under `test-support`, a minute is `[test]
+    /// upload_minute_ms` when set (OP11), so a test exceeds it.
+    pub fn upload_time(&self) -> std::time::Duration {
+        #[cfg(feature = "test-support")]
+        let minute = match self.test.upload_minute_ms {
+            0 => 60_000,
+            ms => ms,
+        };
+        #[cfg(not(feature = "test-support"))]
+        let minute = 60_000;
+        std::time::Duration::from_millis(self.limits.upload_minutes.saturating_mul(minute))
     }
 
     /// `server.listen` as an address.

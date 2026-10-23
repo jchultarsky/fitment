@@ -5,6 +5,8 @@ mod support;
 
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use support::{Dirs, TestServer};
@@ -456,5 +458,159 @@ async fn a_client_gone_mid_upload_leaves_nothing() {
     settled(&server).await;
     assert_eq!(server.object_files(), Vec::<String>::new());
     assert_eq!(server.get("/v1/health").await.status, 204);
+    server.stop().await;
+}
+
+/// HX1 (VT18): a head trickled one byte every 500 ms, never finished, is
+/// cut at the header timeout, nothing served; the trickle does not keep
+/// it alive.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_trickled_head_is_cut_at_the_header_timeout() {
+    let mut server = bound(|c| c.server.header_timeout_seconds = 2).await;
+    let addr = server.addr();
+    let (bytes, closed, elapsed) = tokio::task::spawn_blocking(move || {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let mut reading = stream.try_clone().unwrap();
+        let start = Instant::now();
+        #[allow(clippy::disallowed_methods)] // a client's reader, not the server's work
+        let reader = std::thread::spawn(move || {
+            let (bytes, closed) = read_all(&mut reading, Duration::from_secs(15));
+            (bytes, closed, start.elapsed())
+        });
+        let head = b"GET /v1/health HTTP/1.1\r\nHost: x\r\nX-Slow: ";
+        for byte in head.iter().chain(std::iter::repeat(&b'a')).take(40) {
+            if reader.is_finished() || stream.write_all(&[*byte]).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        reader.join().unwrap()
+    })
+    .await
+    .unwrap();
+    let answered = String::from_utf8_lossy(&bytes).contains(" 204 ");
+    assert!(closed, "the connection stayed open");
+    assert!(!answered, "it was served");
+    assert!(
+        elapsed >= Duration::from_millis(1900) && elapsed < Duration::from_secs(12),
+        "{elapsed:?}"
+    );
+    server.stop().await;
+}
+
+/// HX3, UP2 (VT18): an upload's body trickled one byte every 1.5 s, under
+/// a chunk wait of 1 s, is cut `408 upload_too_slow` at the chunk wait,
+/// though bytes keep coming and its throughput window is long; nothing is
+/// kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_trickled_body_is_cut_at_the_chunk_wait() {
+    let mut server = bound(|c| {
+        c.limits.upload_chunk_seconds = 1;
+        c.limits.upload_first_byte_seconds = 1;
+        c.limits.upload_window_seconds = 300;
+    })
+    .await;
+    let (addr, token) = (server.addr(), server.token().to_owned());
+    let started = Instant::now();
+    let reply = tokio::task::spawn_blocking(move || {
+        trickle(addr, &token, 4096, 1, 20, Duration::from_millis(1500))
+    })
+    .await
+    .unwrap();
+    let text = String::from_utf8_lossy(&reply);
+    assert!(text.starts_with("HTTP/1.1 408"), "{text}");
+    assert!(text.contains("upload_too_slow"), "{text}");
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "{:?}",
+        started.elapsed()
+    );
+    settled(&server).await;
+    assert_eq!(server.object_files(), Vec::<String>::new());
+    server.stop().await;
+}
+
+/// One slow client of VT18's 256, until `stop`: a head trickled a byte
+/// every 500 ms (`head`), or a JSON body trickled so, its length declared
+/// and never sent; a connection the server closes is opened again.
+async fn slow_client(addr: std::net::SocketAddr, head: bool, token: String, stop: Arc<AtomicBool>) {
+    use tokio::io::AsyncWriteExt as _;
+    while !stop.load(Ordering::SeqCst) {
+        let Ok(mut stream) = tokio::net::TcpStream::connect(addr).await else {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+        let opening = if head {
+            "GET /v1/health HTTP/1.1\r\nHost: x\r\nX-Slow: ".to_owned()
+        } else {
+            format!(
+                "POST /v1/features HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\n\
+                 Content-Type: application/json\r\nContent-Length: 100000\r\n\r\n{{\"upload\": \""
+            )
+        };
+        if stream.write_all(opening.as_bytes()).await.is_err() {
+            continue;
+        }
+        while !stop.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if stream.write_all(b"a").await.is_err() {
+                break;
+            }
+        }
+    }
+}
+
+/// A match job of `body`, waited for: how long it took.
+async fn timed_match(server: &TestServer, body: &serde_json::Value) -> Duration {
+    let started = Instant::now();
+    let job = server.run_match(body).await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    started.elapsed()
+}
+
+/// HX1, HX3 (VT18): 256 slow clients at once (half trickling heads, half
+/// trickling JSON bodies, each reconnecting when cut) do not delay a
+/// normal client's match job beyond its time alone, doubled, plus 2 s:
+/// the slack stated, since the slow clients hold connections, not
+/// workers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_clients_do_not_delay_a_normal_one() {
+    let mut server = bound(|c| c.auth.rate_burst = 10_000).await;
+    let socket = server.socket_of("s01_bolted", "BRACKET").await;
+    let sha = server.upload(&support::candidate("m_bracket.stp")).await;
+    let body = serde_json::json!({
+        "socket": socket,
+        "candidates": { "files": [{ "upload": format!("sha256:{sha}"), "label": "m_bracket.stp" }] },
+    });
+    let mut alone = Duration::ZERO;
+    for _ in 0..3 {
+        alone = alone.max(timed_match(&server, &body).await);
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let token = server.token().to_owned();
+    let clients: Vec<_> = (0..256)
+        .map(|n| {
+            tokio::spawn(slow_client(
+                server.addr(),
+                n % 2 == 0,
+                token.clone(),
+                Arc::clone(&stop),
+            ))
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let mut loaded = Duration::ZERO;
+    for _ in 0..3 {
+        loaded = loaded.max(timed_match(&server, &body).await);
+    }
+    stop.store(true, Ordering::SeqCst);
+    for client in clients {
+        let _ = client.await;
+    }
+    eprintln!("VT18: a match alone in {alone:?}, beside 256 slow clients in {loaded:?}");
+    assert!(
+        loaded <= alone * 2 + Duration::from_secs(2),
+        "alone {alone:?}, loaded {loaded:?}"
+    );
     server.stop().await;
 }

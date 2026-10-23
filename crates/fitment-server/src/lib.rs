@@ -28,6 +28,8 @@ pub mod assemblies;
 pub mod auth;
 pub mod catalog;
 pub mod config;
+#[cfg(feature = "test-support")]
+pub mod fuzzing;
 pub mod gate;
 #[cfg(feature = "test-support")]
 pub mod hooks;

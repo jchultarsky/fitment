@@ -14,13 +14,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Extension;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 
 use crate::Shared;
 use crate::auth::documents::Page;
 use crate::http::error::{ApiError, ErrorCode};
+use crate::http::extract::Path;
 use crate::http::extract::{Admin, Principal, Reader};
 use crate::http::json::{self, Json};
 use crate::http::operations::Role as Needed;
