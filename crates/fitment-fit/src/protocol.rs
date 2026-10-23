@@ -443,6 +443,8 @@ pub(crate) struct Stress {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allocate_mib: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_allocate_mib: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_seconds: Option<u64>,
 }
 

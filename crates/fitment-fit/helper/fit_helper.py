@@ -416,6 +416,7 @@ TIMEOUT_S, SETUP_S = BOUNDS[1], BOUNDS[2]
 
 UNAVAILABLE = None
 KERNEL = ""
+OOM = (MemoryError,)  # and Open CASCADE's own, once it is imported
 try:
     import site as _site
 
@@ -437,15 +438,17 @@ try:
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.Message import Message, Message_Gravity
     from OCP.ShapeAnalysis import ShapeAnalysis_ShapeTolerance
+    from OCP.Standard import Standard, Standard_OutOfMemory
     from OCP.STEPCAFControl import STEPCAFControl_Reader
     from OCP.STEPControl import STEPControl_Reader
     from OCP.TCollection import TCollection_ExtendedString
     from OCP.TDF import TDF_Label
     from OCP.TDocStd import TDocStd_Document
-    from OCP.TopAbs import TopAbs_FACE, TopAbs_FORWARD, TopAbs_REVERSED, TopAbs_SHAPE, TopAbs_SOLID
+    from OCP.TopAbs import (TopAbs_COMPOUND, TopAbs_COMPSOLID, TopAbs_FACE, TopAbs_FORWARD, TopAbs_REVERSED,
+                            TopAbs_SHAPE, TopAbs_SOLID)
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopLoc import TopLoc_Location
-    from OCP.TopoDS import TopoDS
+    from OCP.TopoDS import TopoDS, TopoDS_Iterator
     from OCP.XCAFDoc import XCAFDoc_DocumentTool
     from OCP.collections import Sequence_TDF_Label
 
@@ -453,6 +456,8 @@ try:
     as_solid = getattr(TopoDS, "Solid_s", None) or TopoDS.Solid
 
     KERNEL = "Open CASCADE " + ".".join(str(OCP.__version__).split(".")[:3])
+    # FY3: memory refused to Open CASCADE (Standard_OutOfMemory) is a resource kill, as Python's is.
+    OOM = (MemoryError, Standard_OutOfMemory)
     messenger = Message.DefaultMessenger_s()
     printers = messenger.Printers()
     for _i in range(printers.Length(), 0, -1):
@@ -525,7 +530,7 @@ def box_of(shape, optimal=False):
     if optimal:
         BRepBndLib.AddOptimal_s(shape, b, False, False)
     else:
-        BRepBndLib.Add_s(shape, b)
+        BRepBndLib.Add_s(shape, b, False)  # the geometry's, never a triangulation's
     if b.IsVoid():
         return None
     lo, hi = b.CornerMin(), b.CornerMax()
@@ -594,14 +599,6 @@ def distance(a, b, alerts: set) -> float:
     if not math.isfinite(value) or value < 0.0:
         raise Alerted("a distance that is not a number")
     return value
-
-
-def box_gap(a, b) -> float:
-    """The distance between two boxes, a bound below the bodies' own."""
-    if a is None or b is None:
-        return 0.0
-    gaps = [max(a["min_mm"][i] - b["max_mm"][i], b["min_mm"][i] - a["max_mm"][i], 0.0) for i in range(3)]
-    return math.sqrt(sum(g * g for g in gaps))
 
 
 def grown_meet(a, a_by, b, b_by) -> bool:
@@ -712,6 +709,22 @@ def faces_by_id(shape, face_id):
     return out, unbound
 
 
+def pieces(shape):
+    """A shape's solids and its other top-level shapes (shells, faces, wires, …), through its compounds."""
+    if shape.ShapeType() == TopAbs_SOLID:
+        return [as_solid(shape)], []
+    if shape.ShapeType() not in (TopAbs_COMPOUND, TopAbs_COMPSOLID):
+        return [], [shape]
+    solids, others = [], []
+    it = TopoDS_Iterator(shape)
+    while it.More():
+        more_solids, more_others = pieces(it.Value())
+        solids += more_solids
+        others += more_others
+        it.Next()
+    return solids, others
+
+
 def write_payload(name: str, data: bytes) -> str:
     """FL6: a payload in this helper's own working directory, for Open CASCADE's file reader."""
     path = os.path.abspath(name)
@@ -762,6 +775,7 @@ class Scene:
 
     def __init__(self, data: bytes, name: str):
         self.solids = []
+        self.others = []  # every top-level shape of a leaf that is not a solid (FB6)
         self.bodies = {}  # core's key -> Solid, for those found
         self.asked = []  # (core's key, Solid or None), in the request's order
         path = write_payload(name, data)
@@ -778,10 +792,10 @@ class Scene:
             tool.GetFreeShapes(free)
             for i in range(1, free.Length() + 1):
                 self.walk(tool, free.Value(i), TopLoc_Location(), face_id)
-        except MemoryError:
+        except OOM:
             raise
         except Exception:  # noqa: BLE001 - a reader that raises read nothing: no body binds (FB2)
-            self.solids = []
+            self.solids, self.others = [], []
         finally:
             os.remove(path)
 
@@ -794,9 +808,16 @@ class Scene:
                 if tool.GetReferredShape_s(component, referred):
                     self.walk(tool, referred, location.Multiplied(tool.GetLocation_s(component)), face_id)
             return
-        shape = tool.GetShape_s(label)
-        for s in explore(shape, TopAbs_SOLID):
-            self.solids.append(Solid(as_solid(s), location, face_id))
+        solids, others = pieces(tool.GetShape_s(label))
+        for s in solids:
+            self.solids.append(Solid(s, location, face_id))
+        for other in others:
+            # FB6: material that is not a solid is reported faceless, claimed by no body; near, unclaimed_body.
+            rows = rows_of(location.Multiplied(other.Location()))
+            if not all(math.isfinite(x) for row in rows for x in row):
+                rows = [[1.0 * (i == j) for j in range(4)] for i in range(3)]
+            self.others.append({"faces": [], "location": rows, "box": box_of(other.Moved(location)),
+                                "non_solid": True})
 
     def bind(self, key, faces, transform):
         """FB2: the one solid whose faces are core's and whose location is core's transform, or None."""
@@ -813,14 +834,13 @@ ORDER = []
 
 
 def hold(sha: str, scene: Scene) -> None:
-    if sha in SCENES:
-        ORDER.remove(sha)
-    elif len(SCENES) >= 2:
-        # FB5: a third replaces the older scene that is not the first loaded (the socket's).
-        old = ORDER.pop(1)
-        del SCENES[old]
+    """FB5: a scene held is replaced in place, keeping its order; a third replaces the older scene that is not
+    the first loaded (the socket's)."""
+    if sha not in SCENES:
+        if len(SCENES) >= 2:
+            del SCENES[ORDER.pop(1)]
+        ORDER.append(sha)
     SCENES[sha] = scene
-    ORDER.append(sha)
 
 
 def scene_op(body, payloads):
@@ -852,7 +872,8 @@ def scene_op(body, payloads):
         out.append({"key": list(key), "found": True, "valid": ok, "volume_mm3": v, "tolerance_mm": t,
                     "box": solid.box(),
                     "landmarks": [landmark_value(solid.faces.get(face), kind) for face, kind in marks]})
-    solids = [{"faces": s.ids, "location": s.rows, "box": s.box()} for s in scene.solids]
+    solids = [{"faces": s.ids, "location": s.rows, "box": s.box(), "non_solid": False} for s in scene.solids]
+    solids += scene.others
     return {"bodies": out, "solids": solids}
 
 
@@ -882,14 +903,17 @@ def read_candidate(data: bytes) -> Candidate:
         if reader.ReadFile(path) != IFSelect_RetDone:
             return c
         reader.TransferRoots()
-        solids = [as_solid(s) for i in range(1, reader.NbShapes() + 1)
-                  for s in explore(reader.Shape(i), TopAbs_SOLID)]
-        if len(solids) == 1:
+        solids, others = [], []
+        for i in range(1, reader.NbShapes() + 1):
+            more_solids, more_others = pieces(reader.Shape(i))
+            solids, others = solids + more_solids, others + more_others
+        # FB4: the candidate is its one solid and nothing else; anything besides it is no candidate.
+        if len(solids) == 1 and not others:
             face_id = binder(reader, data)
             c.shape = solids[0]
             c.faces, _ = faces_by_id(c.shape, face_id)
             c.keep = (reader, face_id)
-    except MemoryError:
+    except OOM:
         raise
     except Exception:  # noqa: BLE001 - a reader that raises read no solid: the candidate is invalid (FT6)
         c = Candidate()
@@ -983,7 +1007,7 @@ def placement(c, occurrence, transform, marks) -> dict:
             # The image is FORWARD; given the face's own orientation in its solid, its normal is outward.
             image = as_face(moving.ModifiedShape(local).Oriented(local.Orientation())) if local is not None else None
             values.append(landmark_value(image, mark_kind))
-    except MemoryError:
+    except OOM:
         raise
     except Exception:  # noqa: BLE001 - a placement the kernel cannot make is none (FB3)
         return nothing
@@ -1071,7 +1095,7 @@ def zones_at(zones, depth_key, body, alerts):
             solid = zone_solid(z["kind"], z["shape"], z[depth_key], body)
             measures.append(zone_measure(solid))
             solids.append(solid)
-        except MemoryError:
+        except OOM:
             raise
         except Exception:  # noqa: BLE001 - FV2: every exception is an alert, never a zero
             alerts.add("helper_exception")
@@ -1134,10 +1158,9 @@ def measure_pair(p, c, scene, raise_here: bool):
             raise Alerted("a pair whose bodies are not both held")
         shape, my_box = mine
         threshold = p["threshold_mm"]
-        apart = box_gap(my_box, body_box)
-        # Boxes that hold each body and do not meet: nothing in common, no boolean needed.
-        common = None if apart > 0.0 else boolean(BOPAlgo_COMMON, shape, [body_shape], alerts)
-        v = 0.0 if common is None else volume(common)
+        # Every pair core asked is measured in full: core culled already, on the hull of both readers' boxes (FT8).
+        common = boolean(BOPAlgo_COMMON, shape, [body_shape], alerts)
+        v = volume(common)
         out["common_mm3"], out["residual_mm3"] = v, v
         if v > 0.0 and zones and len(zones) == len(p["zones"]):
             residual = boolean(BOPAlgo_CUT, common, zones, alerts)
@@ -1149,15 +1172,14 @@ def measure_pair(p, c, scene, raise_here: bool):
             if p["zones"]:
                 raise Alerted("a zone was not built")
             out["residual_box"] = box_of(common)
-        if apart <= threshold:
-            gap = distance(shape, body_shape, alerts)
-            out["distance_mm"] = gap if gap <= threshold else None
+        gap = distance(shape, body_shape, alerts)
+        out["distance_mm"] = gap if gap <= threshold else None
         reach = p["epsilon_mm"] + 2 * threshold + REACH_SLACK_MM
         out["non_analytic"] = (non_analytic_near(shape, body_box, reach + c.tolerance + body_tol)
                                or non_analytic_near(body_shape, my_box, reach + c.tolerance + body_tol))
         if p["zones"] and out["distance_mm"] is not None:
             zoned(p, out, shape, body_shape, zone_body, alerts)
-    except MemoryError:
+    except OOM:
         raise
     except Exception:  # noqa: BLE001 - FV2: every exception or null result is the pair's alert, never a zero
         alerts.add("helper_exception")
@@ -1177,7 +1199,8 @@ def zoned(p, out, shape, body_shape, zone_body, alerts):
     out["body_kept_mm3"], out["body_inside_mm3"] = volume(kept), volume(inside)
     if not any(True for _ in explore(kept, TopAbs_FACE)):
         raise Alerted("the body lies wholly within its zones")
-    out["zoned_distance_mm"] = max(distance(shape, kept, alerts), out["distance_mm"])
+    # As measured: core checks it is never under the distance (FY4).
+    out["zoned_distance_mm"] = distance(shape, kept, alerts)
 
 
 def reach_claims(c, scene, linear_mm, placements):
@@ -1218,10 +1241,14 @@ def check_op(body, payloads):
 
 def stress(body) -> None:
     """VT70 only: memory to take or CPU to burn, so a test sees this helper's own bounds end it."""
-    f = fields(body, (), ("allocate_mib", "cpu_seconds"))
+    f = fields(body, (), ("allocate_mib", "kernel_allocate_mib", "cpu_seconds"))
     if "allocate_mib" in f:
         held = bytearray(positive(f["allocate_mib"]) << 20)
         del held
+    if "kernel_allocate_mib" in f:
+        # Inside Open CASCADE: its allocator raises Standard_OutOfMemory where RLIMIT_AS refuses.
+        held = Standard.Allocate_s(positive(f["kernel_allocate_mib"]) << 20)
+        Standard.Free_s(held)
     if "cpu_seconds" in f:
         until = cpu_used() + positive(f["cpu_seconds"])
         while cpu_used() < until:
@@ -1242,7 +1269,7 @@ def self_test_op(body, payloads):
         b = BRepPrimAPI_MakeBox(gp_Pnt(x, 0, 0), 1, 1, 1).Shape()
         try:
             common, gap = volume(boolean(BOPAlgo_COMMON, a, [b], alerts)), distance(a, b, alerts)
-        except MemoryError:
+        except OOM:
             raise
         except Exception:  # noqa: BLE001 - FV2
             alerts.add("helper_exception")
@@ -1284,7 +1311,7 @@ def answer(raw, header, payloads) -> bool:
     arm(SETUP_S if op == "scene" else TIMEOUT_S)
     try:
         body = OPS[op](f["request"], payloads)
-    except (Refused, MemoryError):
+    except (Refused, *OOM):
         raise
     except Exception as exc:  # noqa: BLE001 - FH5: a request the helper could not answer is refused, never a zero
         raise Refused("helper_exception", f"{type(exc).__name__}: {exc}") from None
@@ -1299,7 +1326,7 @@ def main() -> int:
     while True:
         try:
             raw, header, payloads = read_frame()
-        except MemoryError:
+        except OOM:
             out_of_memory()
         except EOFError:
             return 0  # FL5: fitment's end closes the pipe
@@ -1311,7 +1338,7 @@ def main() -> int:
                 return 0
         except Refused as exc:
             error_frame(header, raw, exc.code, exc.sentence)
-        except MemoryError:
+        except OOM:
             out_of_memory()
 
 

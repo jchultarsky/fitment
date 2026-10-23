@@ -21,7 +21,7 @@ use fitment_core::{
     CandidateResult, FitStatus, FitVerifier, MatchOptions, MatchPolicy, Matcher, Rigid,
     VerdictKind, sha256_hex,
 };
-use fitment_fit::testing::{probe, raise_at_pair, stress};
+use fitment_fit::testing::{Stressed, probe, raise_at_pair, stress};
 use fitment_fit::{
     HelperError, HelperOptions, OcctHelper, OcctSession, SetupCheck, SetupOptions, SetupReport,
     WINDOWS_UNPROVEN, setup,
@@ -230,9 +230,8 @@ fn the_lug_interferes_and_the_bracket_verifies() {
         "s01: measures (control, bracket, control, lug, control, bracket) in {:.3?} s",
         timed.took.lock().unwrap()
     );
-    assert!(verified(&again), "{:?}", findings(&again));
     if refused_here() {
-        for result in [&bracket, &lug] {
+        for result in [&bracket, &lug, &again] {
             assert_eq!(code(result), Some(FitCode::HelperUnavailable));
             assert!(
                 findings(result)
@@ -245,6 +244,7 @@ fn the_lug_interferes_and_the_bracket_verifies() {
         return;
     }
     assert!(verified(&bracket), "{:?}", findings(&bracket));
+    assert!(verified(&again), "{:?}", findings(&again));
     assert_eq!(bracket.verdict.kind(), VerdictKind::Match);
     let FitStatus::Interferes { interferences } = lug.verdict.fit() else {
         panic!("the lug: {:?} {:?}", lug.verdict.fit(), findings(&lug));
@@ -465,7 +465,11 @@ fn the_helper_s_own_bounds_end_it() {
             .with_setup_timeout(Duration::from_secs(120)),
     );
     let started = std::time::Instant::now();
-    let Err(HelperError::Failed(report)) = stress(&cpu, None, Some(60)) else {
+    let burn = Stressed {
+        cpu_seconds: Some(60),
+        ..Stressed::default()
+    };
+    let Err(HelperError::Failed(report)) = stress(&cpu, burn) else {
         panic!("a helper past its CPU limit answered");
     };
     eprintln!(
@@ -475,15 +479,43 @@ fn the_helper_s_own_bounds_end_it() {
     );
     assert_eq!(report.failure, FitFailure::ResourceExhausted, "{report:?}");
     assert!(started.elapsed() < Duration::from_secs(60));
+    // Past RLIMIT_AS in Python (MemoryError) and inside Open CASCADE
+    // (Standard_OutOfMemory, the reviews of PR 2b): each a resource kill,
+    // never an answer or a pair's alert.
     let memory = helper(kernel, options());
-    let taken = stress(&memory, Some(memory.options().memory_mib), None);
-    if cfg!(target_os = "linux") {
-        let Err(HelperError::Failed(report)) = taken else {
-            panic!("a helper past RLIMIT_AS answered");
-        };
-        assert_eq!(report.failure, FitFailure::ResourceExhausted, "{report:?}");
-    } else {
-        assert!(taken.is_ok_and(|t| t.passed()), "macOS: no RLIMIT_AS");
+    let mib = memory.options().memory_mib;
+    for (what, asked) in [
+        (
+            "Python",
+            Stressed {
+                allocate_mib: Some(mib),
+                ..Stressed::default()
+            },
+        ),
+        (
+            "Open CASCADE",
+            Stressed {
+                kernel_allocate_mib: Some(mib),
+                ..Stressed::default()
+            },
+        ),
+    ] {
+        let taken = stress(&memory, asked);
+        if cfg!(target_os = "linux") {
+            let Err(HelperError::Failed(report)) = taken else {
+                panic!("{what}: a helper past RLIMIT_AS answered");
+            };
+            assert_eq!(
+                report.failure,
+                FitFailure::ResourceExhausted,
+                "{what}: {report:?}"
+            );
+        } else {
+            assert!(
+                taken.is_ok_and(|t| t.passed()),
+                "{what}: macOS has no RLIMIT_AS"
+            );
+        }
     }
 }
 
@@ -509,4 +541,70 @@ fn a_helper_outlives_the_thread_that_asked_for_it() {
     assert!(verified(&again), "{:?}", findings(&again));
     assert_eq!(session.spawned(), 1, "the first helper served on");
     let _ = session.identity();
+}
+
+/// A STEP file of a 10 mm box and, beside it, a free 10 mm face at z = 20,
+/// one shape of one product, written by the helper's own Open CASCADE.
+fn box_and_face(kernel: &Kernel) -> Vec<u8> {
+    const WRITE: &str = "
+import site, sys
+site.addsitedir(sys.argv[1])
+from OCP.BRep import BRep_Builder
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+from OCP.TopoDS import TopoDS_Compound
+from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+builder, both = BRep_Builder(), TopoDS_Compound()
+builder.MakeCompound(both)
+builder.Add(both, BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 10, 10, 10).Shape())
+builder.Add(both, BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, 0, 20), gp_Dir(0, 0, 1)), -5, 5, -5, 5).Face())
+writer = STEPControl_Writer()
+writer.Transfer(both, STEPControl_AsIs)
+writer.Write(sys.argv[2])
+";
+    let manifest = &kernel.report.manifest;
+    let out = kernel.report.dir.join("tmp").join("box-and-face.stp");
+    let status = std::process::Command::new(&manifest.interpreter)
+        .args(["-I", "-c", WRITE])
+        .arg(&manifest.site)
+        .arg(&out)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "the file was not written");
+    let bytes = std::fs::read(&out).unwrap();
+    std::fs::remove_file(&out).unwrap();
+    bytes
+}
+
+/// The reviews of PR 2b (FB6, FB4): a leaf's shape that is not a solid (a
+/// free face beside a box) is reported, faceless and with its box, so core
+/// finds it unclaimed when it is near; a candidate holding anything
+/// besides its one solid is no candidate (`valid` false).
+#[test]
+fn a_shape_that_is_not_a_solid_is_reported_and_is_no_candidate() {
+    let kernel = need_kernel!();
+    if refused_here() {
+        return;
+    }
+    let bytes = box_and_face(kernel);
+    let helper = helper(kernel, options());
+    let (scene, _) = probe(&helper, &bytes, &sha256_hex(&bytes), None).unwrap();
+    let solids: Vec<_> = scene.solids.iter().filter(|s| !s.non_solid).collect();
+    let others: Vec<_> = scene.solids.iter().filter(|s| s.non_solid).collect();
+    assert_eq!((solids.len(), others.len()), (1, 1), "{:?}", scene.solids);
+    assert!(others[0].faces.is_empty(), "claimed by no body");
+    let face = others[0].bounds;
+    assert!(face.sound(), "{face:?}");
+    assert!(
+        (face.min_mm[2] - 20.0).abs() < 1e-3 && (face.max_mm[0] - 5.0).abs() < 1e-3,
+        "{face:?}"
+    );
+    let document = s01();
+    let s01_scene = FitScene::of(S01, &document).unwrap();
+    let bracket = s01_scene.bodies().iter().find(|b| b.selected).unwrap();
+    let at = vec![("socket-1".to_owned(), bracket.path.clone(), Rigid::IDENTITY)];
+    let (_, place) = probe(&helper, S01, &sha256_hex(S01), Some((&bytes, &at))).unwrap();
+    assert!(!place.unwrap().valid, "a solid and a face are no one solid");
 }

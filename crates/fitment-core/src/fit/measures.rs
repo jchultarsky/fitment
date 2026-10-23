@@ -127,6 +127,10 @@ pub struct SolidMeasure {
     pub location: [[f64; 4]; 3],
     /// Its box.
     pub bounds: FitBox,
+    /// True for a shape of a leaf that is not a solid (a shell, a face, a
+    /// wire, …), reported with no faces so no body claims it: within reach
+    /// of a placement it is `unclaimed_body` (FB6).
+    pub non_solid: bool,
 }
 
 /// The `scene` reply (FH4).

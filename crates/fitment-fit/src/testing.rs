@@ -506,21 +506,30 @@ pub fn raise_at_pair(session: &OcctSession<'_>, index: usize) {
     crate::session::raise_at_pair(session, index);
 }
 
+/// What [`stress`] asks a helper to do besides its self-test (VT70).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(clippy::exhaustive_structs)] // test support, built by the tests
+pub struct Stressed {
+    /// MiB of memory to take in Python.
+    pub allocate_mib: Option<u64>,
+    /// MiB of memory to take through Open CASCADE's own allocator.
+    pub kernel_allocate_mib: Option<u64>,
+    /// Seconds of CPU to burn.
+    pub cpu_seconds: Option<u64>,
+}
+
 /// VT70: the self-test of a helper of `helper`, asking it besides to take
-/// `allocate_mib` MiB of memory or burn `cpu_seconds` of CPU, so that its
-/// own bounds (FY3) end it.
+/// memory (in Python, or inside Open CASCADE) or burn CPU, as `asked`
+/// says, so that its own bounds (FY3) end it.
 ///
 /// # Errors
 ///
 /// The helper's failure, as a session reports it.
-pub fn stress(
-    helper: &OcctHelper,
-    allocate_mib: Option<u64>,
-    cpu_seconds: Option<u64>,
-) -> Result<crate::SelfTest, crate::HelperError> {
+pub fn stress(helper: &OcctHelper, asked: Stressed) -> Result<crate::SelfTest, crate::HelperError> {
     helper.self_test_with(Some(crate::protocol::Stress {
-        allocate_mib,
-        cpu_seconds,
+        allocate_mib: asked.allocate_mib,
+        kernel_allocate_mib: asked.kernel_allocate_mib,
+        cpu_seconds: asked.cpu_seconds,
     }))
 }
 

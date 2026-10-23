@@ -16,7 +16,7 @@ pub const SCRIPT_BYTES: &[u8] = include_bytes!("../helper/fit_helper.py");
 pub const LOCK_BYTES: &[u8] = include_bytes!("../helper/fit_helper.py.lock");
 
 /// The script's SHA-256.
-pub const SCRIPT_SHA256: &str = "07e3a5a206762caa95346201d8c223c9204d7f0470a2cf25215979c1f91539f2";
+pub const SCRIPT_SHA256: &str = "5f0247e20a44a254d2c7318b60f6caab94f9e1733827cef448e729439184ac6e";
 
 /// The lock's SHA-256.
 pub const LOCK_SHA256: &str = "6363b6fdbdbf0eb87ae8a4929b13cc241744e67866b566a0b6262848cab5d432";

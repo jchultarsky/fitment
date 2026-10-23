@@ -128,7 +128,7 @@ fn a_reply_is_decoded_strictly() {
             b["bodies"][0]["volume_mm3"] = json!(-1.0);
         }),
         ("an unsorted solid", |b| {
-            b["solids"] = json!([{"faces": [3, 1], "location": [[1,0,0,0],[0,1,0,0],[0,0,1,0]], "box": null}]);
+            b["solids"] = json!([{"faces": [3, 1], "location": [[1,0,0,0],[0,1,0,0],[0,0,1,0]], "box": null, "non_solid": false}]);
         }),
     ];
     for (what, edit) in cases {

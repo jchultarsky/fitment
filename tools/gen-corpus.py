@@ -1922,6 +1922,16 @@ for rule, tests in {
     "FV8": [f"{FIT_KERN}::the_helper_s_own_bounds_end_it"],
 }.items():
     RULES[rule]["tests"] = RULES[rule]["tests"] + tests
+# The two reviews of PR 2b: the spawner never spawns on the caller, setup's uv is never left running and its cache
+# must outlast the run, hello's bounds are at least one, and a candidate is its one solid and nothing else.
+for rule, tests in {
+    "FL5": [f"{FIT}/src/process.rs::a_spawner_without_its_thread_never_spawns_on_the_caller"],
+    "FL2": [f"{FIT}/src/setup.rs::a_cache_that_would_not_last_is_refused",
+            f"{FIT}/src/setup.rs::uv_s_ends_are_reported_and_it_is_never_left_running"],
+    "FY3": [f"{FIT}/src/session.rs::hello_s_bounds_are_at_least_one"],
+    "FB4": [f"{FIT_KERN}::a_shape_that_is_not_a_solid_is_reported_and_is_no_candidate"],
+}.items():
+    RULES[rule]["tests"] = RULES[rule]["tests"] + tests
 assert not [r for r, e in RULES.items() if e.get("deferred") == "M7 PR 2b"], "an M7 rule still waits for PR 2b"
 
 

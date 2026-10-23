@@ -99,6 +99,7 @@ impl Rig {
                 faces: body.faces.clone(),
                 location: location(&body.transform),
                 bounds,
+                non_solid: false,
             });
         }
         let mut place = PlaceMeasures {
@@ -605,6 +606,7 @@ fn an_unclaimed_solid_within_reach_is_reported() {
         faces: vec![999_999],
         location: location(&Rigid::IDENTITY),
         bounds: near,
+        non_solid: false,
     });
     assert_eq!(
         codes(&decide(&plan, &measures)),
@@ -620,8 +622,45 @@ fn an_unclaimed_solid_within_reach_is_reported() {
             min_mm: [1000.0; 3],
             max_mm: [1001.0; 3],
         },
+        non_solid: false,
     });
     assert_eq!(codes(&decide(&plan, &measures)), [FitCode::BindingFailed]);
+}
+
+/// The reviews of PR 2b (FB6): a leaf's shape that is not a solid (a shell,
+/// a face) is no leaf's solid and no body's: within reach of a placement
+/// it is `unclaimed_body`, and with no box it is within reach of
+/// everything; far away it is counted. It never counts as a leaf's solid,
+/// even with a body's faces.
+#[test]
+fn a_shape_that_is_not_a_solid_is_unclaimed_near() {
+    let rig = Rig::s01();
+    let (plan, mut measures) = rig.clean();
+    let near = measures.place.placements[0].bounds;
+    let shape = |bounds| SolidMeasure {
+        faces: Vec::new(),
+        location: location(&Rigid::IDENTITY),
+        bounds,
+        non_solid: true,
+    };
+    measures.scene.solids.push(shape(near));
+    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::UnclaimedBody]);
+    let (plan, mut measures) = rig.clean();
+    measures.scene.solids.push(shape(FitBox {
+        min_mm: [f64::NAN; 3],
+        max_mm: [f64::NAN; 3],
+    }));
+    assert_eq!(codes(&decide(&plan, &measures)), [FitCode::UnclaimedBody]);
+    let (plan, mut measures) = rig.clean();
+    measures.scene.solids.push(shape(FitBox {
+        min_mm: [1000.0; 3],
+        max_mm: [1001.0; 3],
+    }));
+    assert!(verified(decide(&plan, &measures).candidate()));
+    // A leaf's own solid reported as not one: its leaf has no solid.
+    let (plan, mut measures) = rig.clean();
+    measures.scene.solids[0].non_solid = true;
+    assert!(codes(&decide(&plan, &measures)).contains(&FitCode::BindingFailed));
 }
 
 /// FT8: a body the helper finds within reach that the plan does not pair

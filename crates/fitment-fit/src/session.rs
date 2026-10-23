@@ -156,11 +156,17 @@ pub struct HelperReport {
 /// Windows is refused: no fit is verified there.
 pub const WINDOWS_UNPROVEN: &str = "the fit kernel is not yet proven on Windows: no fit is verified there until the weekly Windows corpus run is green (M7-50)";
 
-/// M7-50's rule, from the platform tag the helper states (`sysconfig`'s:
-/// `win-amd64`, `win32`, `win-arm64` on Windows): the refusal, if its
-/// platform is not proven.
+/// M7-50's rule: the refusal, if the helper runs on Windows, by this
+/// build's own target or by the platform tag the helper states
+/// (`sysconfig`'s: `win-amd64`, `win32`, `win-arm64`), so neither alone can
+/// let an unproven kernel through.
 pub(crate) fn platform_refusal(platform: &str) -> Option<&'static str> {
-    platform.starts_with("win").then_some(WINDOWS_UNPROVEN)
+    refused_on(cfg!(windows), platform)
+}
+
+/// M7-50's rule for a build on Windows or not.
+fn refused_on(windows: bool, platform: &str) -> Option<&'static str> {
+    (windows || platform.starts_with("win")).then_some(WINDOWS_UNPROVEN)
 }
 
 /// One case of the self-test (FU4): what the kernel measured, what it
@@ -494,8 +500,8 @@ impl OcctHelper {
             site: manifest.site.to_string_lossy().into_owned(),
             timeout_seconds: seconds(self.options.timeout),
             setup_timeout_seconds: seconds(self.options.setup_timeout),
-            memory_mib: self.options.memory_mib,
-            max_checks: self.options.max_checks,
+            memory_mib: hello_bounds(&self.options).0,
+            max_checks: hello_bounds(&self.options).1,
         };
         let wait = Wait::new(self.options.setup_timeout, cancel);
         let request = protocol::hello(self.nonces.next(), &body)?;
@@ -677,6 +683,12 @@ fn report(failed: &Failed, process: Option<&Process>) -> HelperReport {
         stderr: process.map(Process::stderr).unwrap_or_default(),
         handshake: failed.handshake.as_deref().cloned(),
     }
+}
+
+/// The memory and the checks `hello` states, each at least one, however
+/// the options were built (the reviews of PR 2b).
+fn hello_bounds(options: &HelperOptions) -> (u64, u32) {
+    (options.memory_mib.max(1), options.max_checks.max(1))
 }
 
 /// A deadline in whole seconds, at least one, for the helper's own bounds
@@ -1135,13 +1147,34 @@ mod tests {
     /// the sentence every fit there records; Linux's and macOS's are not.
     #[test]
     fn only_windows_is_refused() {
-        for tag in ["win-amd64", "win32", "win-arm64"] {
-            assert_eq!(platform_refusal(tag), Some(WINDOWS_UNPROVEN), "{tag}");
+        for windows in [false, true] {
+            for tag in ["win-amd64", "win32", "win-arm64"] {
+                assert_eq!(refused_on(windows, tag), Some(WINDOWS_UNPROVEN), "{tag}");
+            }
+            for tag in ["linux-x86_64", "linux-aarch64", "macosx-11.0-arm64", "fake"] {
+                // A build on Windows refuses whatever tag its helper states.
+                let expected = windows.then_some(WINDOWS_UNPROVEN);
+                assert_eq!(refused_on(windows, tag), expected, "{tag} {windows}");
+            }
         }
-        for tag in ["linux-x86_64", "linux-aarch64", "macosx-11.0-arm64", "fake"] {
-            assert_eq!(platform_refusal(tag), None, "{tag}");
-        }
+        assert_eq!(
+            platform_refusal("linux-x86_64"),
+            cfg!(windows).then_some(WINDOWS_UNPROVEN)
+        );
         assert!(WINDOWS_UNPROVEN.contains("M7-50"));
+    }
+
+    /// The reviews of PR 2b: the bounds `hello` states are never 0, however
+    /// the options were built.
+    #[test]
+    fn hello_s_bounds_are_at_least_one() {
+        let zero = HelperOptions {
+            memory_mib: 0,
+            max_checks: 0,
+            ..HelperOptions::default()
+        };
+        assert_eq!(hello_bounds(&zero), (1, 1));
+        assert_eq!(hello_bounds(&HelperOptions::default()), (4096, 256));
     }
 
     /// FL4, FY3: the bounds `hello` states are whole seconds, at least one.

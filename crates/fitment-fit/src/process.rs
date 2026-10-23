@@ -406,26 +406,33 @@ pub(crate) struct Spawner {
 }
 
 impl Spawner {
-    /// `spawn`, from the spawner's thread; from this one if no thread can
-    /// be started.
+    /// `spawn`, from the spawner's thread. Never from the calling thread,
+    /// which would bring Linux's early kill back: if the spawner's thread
+    /// cannot start, or has ended, the spawn fails (`helper_unavailable`, or
+    /// `helper_protocol` once a session has had a helper), and the next
+    /// spawn starts a new thread.
     pub fn spawn(&self, spawn: Spawn) -> std::io::Result<Process> {
         let (back, answer) = mpsc::channel();
-        let sent = {
+        {
             let mut to = self.to.lock().unwrap_or_else(PoisonError::into_inner);
             if to.is_none() {
-                *to = Self::thread();
+                *to = Some(Self::thread()?);
             }
-            to.as_ref()
-                .is_some_and(|to| to.send((spawn.clone(), back)).is_ok())
-        };
-        match sent.then(|| answer.recv().ok()).flatten() {
-            Some(spawned) => spawned,
-            None => Process::spawn(spawn),
+            let sent = to.as_ref().is_some_and(|to| to.send((spawn, back)).is_ok());
+            if !sent {
+                *to = None;
+                return Err(Self::ended());
+            }
         }
+        answer.recv().unwrap_or_else(|_| Err(Self::ended()))
+    }
+
+    fn ended() -> std::io::Error {
+        std::io::Error::other("the helpers' spawner thread has ended")
     }
 
     /// The thread, which ends when the spawner is dropped.
-    fn thread() -> Option<Sender<Spawning>> {
+    fn thread() -> std::io::Result<Sender<Spawning>> {
         let (to, from) = mpsc::channel::<Spawning>();
         thread::Builder::new()
             .name("fitment-fit-spawner".to_owned())
@@ -433,9 +440,18 @@ impl Spawner {
                 for (spawn, back) in from {
                     let _ = back.send(Process::spawn(spawn));
                 }
-            })
-            .ok()?;
-        Some(to)
+            })?;
+        Ok(to)
+    }
+
+    /// A spawner whose thread has ended, for the tests.
+    #[cfg(all(test, unix))]
+    fn ended_thread() -> Self {
+        let (to, from) = mpsc::channel::<Spawning>();
+        drop(from);
+        Self {
+            to: Mutex::new(Some(to)),
+        }
     }
 }
 
@@ -531,6 +547,35 @@ mod tests {
     fn a_deadline_too_far_never_panics() {
         let far = Wait::new(Duration::MAX, None);
         assert!(far.deadline > Instant::now() + Duration::from_secs(3600));
+    }
+
+    /// The reviews of PR 2b: a spawner whose thread has ended fails the
+    /// spawn, and never spawns from the calling thread (on Linux the
+    /// helper's `PR_SET_PDEATHSIG` would kill it when that thread ends); the
+    /// next spawn starts a thread of its own again.
+    #[cfg(unix)]
+    #[test]
+    fn a_spawner_without_its_thread_never_spawns_on_the_caller() {
+        let dir = std::env::temp_dir().join(format!("fitment-fit-spawner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("spawned");
+        let spawn = Spawn {
+            program: PathBuf::from("/bin/sh"),
+            args: vec![
+                OsString::from("-c"),
+                OsString::from(format!("touch '{}'", marker.display())),
+            ],
+            dir: dir.clone(),
+            own_group: false,
+        };
+        let spawner = Spawner::ended_thread();
+        let error = spawner.spawn(spawn.clone()).unwrap_err();
+        assert!(error.to_string().contains("spawner"), "{error}");
+        thread::sleep(Duration::from_millis(200));
+        assert!(!marker.exists(), "spawned from the calling thread");
+        let mut again = spawner.spawn(spawn).unwrap();
+        again.end_finish(Instant::now() + Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

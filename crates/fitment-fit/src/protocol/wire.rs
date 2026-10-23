@@ -374,6 +374,8 @@ pub(crate) struct WireSolid {
     pub location: Rows,
     #[serde(rename = "box", deserialize_with = "nullable")]
     pub bounds: Option<WireBox>,
+    /// A leaf's shape that is not a solid (FB6).
+    pub non_solid: bool,
 }
 
 impl WireSolid {
@@ -382,6 +384,7 @@ impl WireSolid {
             faces: m.faces.clone(),
             location: m.location,
             bounds: WireBox::of(&m.bounds),
+            non_solid: m.non_solid,
         }
     }
 
@@ -390,6 +393,7 @@ impl WireSolid {
         m.faces = self.faces;
         m.location = self.location.map(|row| row.map(zero));
         m.bounds = WireBox::measure(self.bounds);
+        m.non_solid = self.non_solid;
         m
     }
 }
