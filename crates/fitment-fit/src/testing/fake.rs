@@ -271,6 +271,7 @@ impl Fake {
                 "unavailable",
                 json!("libGL.so.1: cannot open shared object file: No such file or directory"),
             ),
+            Scenario::WindowsPlatform => ("platform", json!("win-amd64")),
             _ => return hello,
         };
         hello[key] = value;

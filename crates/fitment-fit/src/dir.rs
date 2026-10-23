@@ -675,6 +675,7 @@ pub(crate) fn not_private(mode: u32, owner: u32, me: Option<u32>) -> Option<&'st
 /// P4 on Unix: `path` is not writable by another user, and owned by `me`
 /// or root when `me` is given. On Windows the fit directory's ACLs are
 /// not read: the trust boundary is the user's account (FY5).
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn private(path: &Path, me: Option<u32>) -> Result<(), PrepareError> {
     #[cfg(unix)]
     {
@@ -698,6 +699,7 @@ fn private(path: &Path, me: Option<u32>) -> Result<(), PrepareError> {
 }
 
 /// The owner of `path` (Unix; 0 elsewhere).
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn owner_of(path: &Path) -> std::io::Result<u32> {
     #[cfg(unix)]
     {

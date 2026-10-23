@@ -583,6 +583,27 @@ pub(crate) struct CheckReply {
     pub reach: Vec<WireReach>,
 }
 
+/// FU4's self-test cases, in the order the helper measures them.
+pub(crate) const SELF_TEST_CASES: [&str; 3] = ["touching", "overlapping", "apart"];
+
+/// One case of the self-test: the Common of two unit boxes and their
+/// distance, as the kernel measured them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SelfTestCase {
+    pub name: String,
+    pub common_mm3: f64,
+    pub distance_mm: f64,
+    pub alerts: Vec<String>,
+}
+
+/// The `selftest` reply (FU4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SelfTestReply {
+    pub cases: Vec<SelfTestCase>,
+}
+
 /// An `error` frame's body (FH5): the helper could not parse a request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

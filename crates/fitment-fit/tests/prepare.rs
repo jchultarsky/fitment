@@ -3,8 +3,9 @@
 //! interpreter or site or another binding, a tampered script or lock, a
 //! symbolic link and an unwritable `tmp/` are each refused with their
 //! sentence, before every spawn; a helper is spawned from the manifest
-//! alone, with nothing inherited. `embedded_hashes_are_the_files` (FG2)
-//! comes with the embedded script, in PR 2b.
+//! alone, with nothing inherited. The embedded script and lock are the
+//! files, with their stated SHA-256s (FG2), and the helper's pin is the
+//! oracle's (FH6).
 
 mod common;
 
@@ -14,8 +15,8 @@ use common::{S01, code, fast, judge, root, s01};
 use fitment_core::fit::FitCode;
 use fitment_fit::testing::{FAKE_PYTHON, Fake, Replaying, Scenario};
 use fitment_fit::{
-    FitDir, HelperError, HelperFiles, LOCK, MANIFEST, Manifest, OcctHelper, OcctSession,
-    PrepareError, SCRIPT, TMP,
+    BINDING, FitDir, HelperError, HelperFiles, LOCK, LOCK_BYTES, LOCK_SHA256, MANIFEST, Manifest,
+    OcctHelper, OcctSession, PYTHON, PrepareError, SCRIPT, SCRIPT_BYTES, SCRIPT_SHA256, TMP,
 };
 use serde_json::Value;
 
@@ -32,6 +33,8 @@ fn main() {
         the_crate_is_pure_rust_on_four_crates,
         a_fit_directory_other_users_can_write_is_refused,
         stale_helper_directories_never_block_a_spawn,
+        embedded_hashes_are_the_files,
+        the_helper_s_pin_is_the_oracle_s,
     ];
 }
 
@@ -362,7 +365,9 @@ fn the_crate_is_pure_rust_on_four_crates() {
         ["fitment-core", "serde", "serde_json", "thiserror"]
     );
     assert_eq!(section("lints"), ["workspace"]);
-    assert!(manifest.contains(r#"include = ["src/**", "helper/**", "README.md", "LICENSE"]"#));
+    assert!(manifest.contains(
+        "include = [\n  \"src/**\",\n  \"helper/fit_helper.py\",\n  \"helper/fit_helper.py.lock\",\n  \"README.md\",\n  \"LICENSE\",\n]"
+    ));
     let workspace = std::fs::read_to_string(here.join("../../Cargo.toml")).unwrap();
     assert!(workspace.contains("[workspace.lints.rust]\nunsafe_code = \"forbid\""));
 }
@@ -460,4 +465,61 @@ fn stale_helper_directories_never_block_a_spawn() {
         assert!(!old.exists(), "swept");
         assert!(young.exists(), "kept");
     }
+}
+
+/// FG2: the script and lock this build embeds are `helper/`'s files byte
+/// for byte, with no carriage return (so every OS's checkout hashes the
+/// same), and the SHA-256s stated beside them are theirs: a stale constant
+/// fails here. The script pins the binding and Python this build needs,
+/// and its lock holds that binding.
+fn embedded_hashes_are_the_files() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("helper");
+    let script = std::fs::read(dir.join(SCRIPT)).unwrap();
+    let lock = std::fs::read(dir.join(LOCK)).unwrap();
+    assert_eq!(script, SCRIPT_BYTES, "the embedded script is the file");
+    assert_eq!(lock, LOCK_BYTES, "the embedded lock is the file");
+    assert_eq!(fitment_core::sha256_hex(&script), SCRIPT_SHA256);
+    assert_eq!(fitment_core::sha256_hex(&lock), LOCK_SHA256);
+    let embedded = HelperFiles::embedded();
+    assert_eq!(
+        (embedded.script_sha256(), embedded.lock_sha256()),
+        (SCRIPT_SHA256, LOCK_SHA256)
+    );
+    assert!(
+        !script.contains(&b'\r') && !lock.contains(&b'\r'),
+        "LF only"
+    );
+    let text = String::from_utf8(script).unwrap();
+    let (name, version) = BINDING.split_once(' ').unwrap();
+    assert!(
+        text.contains(&format!("# dependencies = [\"{name}=={version}\"]")),
+        "the script pins {BINDING}"
+    );
+    assert!(text.contains(&format!("# requires-python = \"=={PYTHON}.*\"")));
+    let lock = String::from_utf8(lock).unwrap();
+    assert!(lock.contains(&format!("name = \"{name}\"\nversion = \"{version}\"")));
+    assert!(lock.contains(&format!("requires-python = \"=={PYTHON}.*\"")));
+}
+
+/// The `cadquery-ocp-novtk` a uv script's `dependencies` line pins.
+fn pin(script: &str) -> String {
+    let line = script
+        .lines()
+        .find(|l| l.starts_with("# dependencies = "))
+        .unwrap_or_else(|| panic!("no dependencies line"));
+    let at = line
+        .find("cadquery-ocp-novtk==")
+        .expect("cadquery-ocp-novtk pinned");
+    line[at..].split(['"', ',']).next().unwrap().to_owned()
+}
+
+/// FH6, decision 11: the helper's pin and the oracle's
+/// (`tools/verify-occt.py`) name the same `cadquery-ocp-novtk`, as CI's
+/// pin grep checks too.
+fn the_helper_s_pin_is_the_oracle_s() {
+    let oracle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/verify-occt.py");
+    let oracle = std::fs::read_to_string(oracle).unwrap();
+    let helper = std::str::from_utf8(SCRIPT_BYTES).unwrap();
+    assert_eq!(pin(helper), pin(&oracle));
+    assert_eq!(pin(helper), BINDING.replace(' ', "=="));
 }

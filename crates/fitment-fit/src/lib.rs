@@ -9,12 +9,14 @@
 )]
 
 mod dir;
+mod embedded;
 mod exit;
 pub mod frame;
 mod nonce;
 mod process;
 mod protocol;
 mod session;
+mod setup;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod testing;
@@ -23,10 +25,12 @@ pub use dir::{
     FitDir, HelperFiles, LOCK, MANIFEST, MANIFEST_FORMAT, MANIFEST_FORMAT_VERSION, Manifest,
     PrepareError, SCRIPT, TMP,
 };
+pub use embedded::{LOCK_BYTES, LOCK_SHA256, SCRIPT_BYTES, SCRIPT_SHA256};
 pub use session::{
-    Handshake, HelperError, HelperOptions, HelperReport, Limit, OcctHelper, OcctSession,
-    SessionError,
+    Handshake, HelperError, HelperOptions, HelperReport, Limit, OcctHelper, OcctSession, SelfTest,
+    SelfTestCase, SessionError, WINDOWS_UNPROVEN,
 };
+pub use setup::{SetupCheck, SetupError, SetupOptions, SetupReport, setup};
 
 /// The helper's protocol (FH6, FC8): it rises with any change to a frame
 /// or an operation.

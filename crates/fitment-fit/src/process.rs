@@ -392,6 +392,53 @@ fn named(role: &str, pid: u32) -> thread::Builder {
     thread::Builder::new().name(format!("fitment-fit-{role}-{pid}"))
 }
 
+/// A spawn handed to the spawner thread, and where its process goes.
+type Spawning = (Spawn, Sender<std::io::Result<Process>>);
+
+/// FL5: every helper of a checked helper is spawned from one thread that
+/// lives as long as the checked helper does. On Linux the helper asks for
+/// `PR_SET_PDEATHSIG`, which follows the *thread* that spawned it, not the
+/// process: spawned from a judging thread, it would be killed when that
+/// thread ended, while another thread still had it from the pool.
+#[derive(Debug, Default)]
+pub(crate) struct Spawner {
+    to: Mutex<Option<Sender<Spawning>>>,
+}
+
+impl Spawner {
+    /// `spawn`, from the spawner's thread; from this one if no thread can
+    /// be started.
+    pub fn spawn(&self, spawn: Spawn) -> std::io::Result<Process> {
+        let (back, answer) = mpsc::channel();
+        let sent = {
+            let mut to = self.to.lock().unwrap_or_else(PoisonError::into_inner);
+            if to.is_none() {
+                *to = Self::thread();
+            }
+            to.as_ref()
+                .is_some_and(|to| to.send((spawn.clone(), back)).is_ok())
+        };
+        match sent.then(|| answer.recv().ok()).flatten() {
+            Some(spawned) => spawned,
+            None => Process::spawn(spawn),
+        }
+    }
+
+    /// The thread, which ends when the spawner is dropped.
+    fn thread() -> Option<Sender<Spawning>> {
+        let (to, from) = mpsc::channel::<Spawning>();
+        thread::Builder::new()
+            .name("fitment-fit-spawner".to_owned())
+            .spawn(move || {
+                for (spawn, back) in from {
+                    let _ = back.send(Process::spawn(spawn));
+                }
+            })
+            .ok()?;
+        Some(to)
+    }
+}
+
 /// The writer thread: each frame it is handed, written whole; it ends,
 /// closing the helper's stdin, when the sender is dropped or a write
 /// fails.

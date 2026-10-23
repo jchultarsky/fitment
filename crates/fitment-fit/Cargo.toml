@@ -13,10 +13,17 @@ homepage.workspace = true
 # script as text; no Open CASCADE and no binding of any kind (D1).
 publish.workspace = true
 readme = "README.md"
-# FG1: its packaged files. `helper/` (the script and its lock, FG2) is
-# inside the package so that `include_bytes!` survives `cargo package`;
-# tests/ re-executes its own binaries and never ships.
-include = ["src/**", "helper/**", "README.md", "LICENSE"]
+# FG1: its packaged files. The helper's script and its lock (FG2) are
+# inside the package so that `include_bytes!` survives `cargo package`,
+# named one by one so nothing else in helper/ ever ships; tests/
+# re-executes its own binaries and never ships.
+include = [
+  "src/**",
+  "helper/fit_helper.py",
+  "helper/fit_helper.py.lock",
+  "README.md",
+  "LICENSE",
+]
 keywords = ["step", "cad", "open-cascade", "interchangeability"]
 categories = ["science"]
 

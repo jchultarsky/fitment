@@ -14,7 +14,7 @@ use common::{BRACKET, S01, code, fast, findings, judge, root, s01, short, verifi
 use fitment_core::fit::{FitCode, FitFailure};
 use fitment_core::{CandidateResult, VerdictKind};
 use fitment_fit::testing::{Death, Fake, Replaying, Scenario, Stage, write_probe};
-use fitment_fit::{HelperError, HelperOptions, HelperReport, OcctSession};
+use fitment_fit::{HelperError, HelperOptions, HelperReport, OcctSession, WINDOWS_UNPROVEN};
 
 fn main() {
     fitment_fit::harness![
@@ -27,6 +27,7 @@ fn main() {
         measures_out_of_their_ranges_never_verify,
         the_handshake_refuses_another_helper,
         a_missing_library_is_named,
+        windows_is_refused_until_its_corpus_run_is_green,
         kernel_noise_reaches_the_log_and_never_a_frame,
         a_crash_is_retried_once_in_a_fresh_helper,
         a_crash_retry_beside_a_busy_helper_takes_the_crashed_one_s_place,
@@ -311,6 +312,41 @@ fn a_missing_library_is_named() {
         findings(&result)
             .iter()
             .any(|f| f.detail.contains("libGL.so.1"))
+    );
+}
+
+/// M7-50, on every OS: a helper whose handshake holds but whose platform is
+/// Windows (`win-amd64`) is refused with M7-50's sentence until the weekly
+/// Windows corpus run (VT77) is green: its check fails with the handshake
+/// it gave (for `fitment fit setup` to print), it is killed and reaped,
+/// and every fit through it is `helper_unavailable`, never `verified`.
+fn windows_is_refused_until_its_corpus_run_is_green() {
+    let root = root("m7-50");
+    let fake = Fake::install(&root, Scenario::WindowsPlatform);
+    let Err(HelperError::Failed(report)) = fake.helper(fast()).check() else {
+        panic!("a Windows helper was accepted");
+    };
+    assert_eq!(
+        report.failure,
+        FitFailure::Unavailable(WINDOWS_UNPROVEN.to_owned())
+    );
+    let handshake = report.handshake.as_ref().expect("the handshake that held");
+    assert_eq!(handshake.platform, "win-amd64");
+    assert_eq!(Some(handshake.pid), report.pid);
+    assert!(report.status.is_some(), "killed and reaped: {report:?}");
+    ends(
+        "m7-50",
+        Scenario::WindowsPlatform,
+        FitCode::HelperUnavailable,
+        false,
+    );
+    let (result, _, _) = through("m7-50", Scenario::WindowsPlatform, fast());
+    assert!(
+        findings(&result)
+            .iter()
+            .any(|f| f.detail == WINDOWS_UNPROVEN),
+        "{:?}",
+        findings(&result)
     );
 }
 
