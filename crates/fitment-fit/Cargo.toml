@@ -1,0 +1,60 @@
+[package]
+name = "fitment-fit"
+description = "The fitment fit verifier's process and protocol: drives an Open CASCADE helper process and hands fitment-core its measures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# FG1 (docs/research/m7-fit.md): published from 0.4.0 in lockstep with the
+# others. It holds the protocol, the session and, from PR 2b, the helper's
+# script as text; no Open CASCADE and no binding of any kind (D1).
+publish.workspace = true
+readme = "README.md"
+# FG1: its packaged files. `helper/` (the script and its lock, FG2) is
+# inside the package so that `include_bytes!` survives `cargo package`;
+# tests/ re-executes its own binaries and never ships.
+include = ["src/**", "helper/**", "README.md", "LICENSE"]
+keywords = ["step", "cad", "open-cascade", "interchangeability"]
+categories = ["science"]
+
+[features]
+# VT78: the fake helper's mechanics, the tests' harness and a verifier
+# that hands the fake an exact kernel's replies (`testing`). No release
+# build enables it; the workspace's tests and the fuzz target do.
+test-support = ["fitment-core/test-support"]
+
+# FG1: these four and nothing else; tools/check-core.sh checks the normal
+# graph, and deny/sync.toml keeps any async runtime out of it.
+[dependencies]
+fitment-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+fitment-fit = { path = ".", features = ["test-support"] }
+
+# VT55 to VT57, VT78: each test binary is its own harness, so that it can
+# be re-executed as a fake helper speaking FH's frames on its stdout with
+# nothing of a test runner's output before them (testing::harness).
+[[test]]
+name = "adversarial"
+harness = false
+
+[[test]]
+name = "process"
+harness = false
+
+[[test]]
+name = "prepare"
+harness = false
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+# `test-support`'s `testing` is never documented as API.
+rustdoc-args = ["--cfg", "docsrs"]

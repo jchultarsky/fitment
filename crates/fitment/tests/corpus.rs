@@ -395,9 +395,9 @@ const M7: &str = "docs/research/m7-fit.md";
 /// for one after [`M7_PR_NOW`], and none for PR 7, the release.
 const M7_PRS: [&str; 9] = ["1a", "1b", "2a", "2b", "3", "4", "5a", "5b", "6"];
 
-/// The M7 PR this tree builds: PR 1b, the matcher, the v2 writer and its
-/// schema.
-const M7_PR_NOW: &str = "1b";
+/// The M7 PR this tree builds: PR 2a, fitment-fit's process and protocol
+/// with the fake helper.
+const M7_PR_NOW: &str = "2a";
 
 /// FK8's first list: the rules that can end a fit, each needing a case
 /// that cites it or a fake-helper test in `crates/fitment-fit/tests` that
@@ -656,11 +656,11 @@ fn m6_deferrals_and_lists_hold() {
 #[test]
 fn m7_deferrals_and_lists_hold() {
     let m7 = vec!["FT4".to_owned(), "FL1".to_owned(), "FC3".to_owned()];
-    for reason in ["M7 PR 2a", "M7 PR 2b", "M7 PR 4", "M7 PR 6"] {
+    for reason in ["M7 PR 2b", "M7 PR 3", "M7 PR 4", "M7 PR 6"] {
         assert!(m7_deferral("FT4", reason, &m7), "{reason}");
     }
     for reason in [
-        "M7 PR 1a", "M7 PR 1b", "M7 PR 7", "M7 PR 9", "M7 PR", "M7 PR 2", "M6 PR 4",
+        "M7 PR 1a", "M7 PR 1b", "M7 PR 2a", "M7 PR 7", "M7 PR 9", "M7 PR", "M7 PR 2", "M6 PR 4",
     ] {
         assert!(!m7_deferral("FT4", reason, &m7), "{reason}");
     }
@@ -685,7 +685,7 @@ fn m7_deferrals_and_lists_hold() {
         1,
         "a reason beside a test"
     );
-    let now = serde_json::json!({ "cases": [], "deferred": "M7 PR 1b" });
+    let now = serde_json::json!({ "cases": [], "deferred": "M7 PR 2a" });
     assert_eq!(
         rule_problems("FC3", &now, &root, &m7).len(),
         1,
@@ -883,8 +883,34 @@ fn is_test(file: &Path, name: &str) -> bool {
 
 /// True if `text` has a test function `name`: `fn` or `async fn` under
 /// `#[test]`, `#[tokio::test]` or `#[tokio::test(...)]` among the
-/// attribute and doc-comment lines right above it (M6-41).
+/// attribute and doc-comment lines right above it (M6-41), or a `fn` its
+/// own harness runs (fitment-fit's process tests, VT78: a test binary
+/// that is also a fake helper has no libtest before its frames).
 fn is_test_in(text: &str, name: &str) -> bool {
+    is_attributed_test_in(text, name) || is_harnessed_in(text, name)
+}
+
+/// VT78: `name` is a line of the file's `fitment_fit::harness![…];` list,
+/// and a function of the file.
+fn is_harnessed_in(text: &str, name: &str) -> bool {
+    let Some(start) = text.find("fitment_fit::harness![") else {
+        return false;
+    };
+    let listed = text[start..]
+        .split("];")
+        .next()
+        .unwrap_or_default()
+        .lines()
+        .skip(1)
+        .any(|l| l.trim().trim_end_matches(',') == name);
+    listed
+        && text
+            .lines()
+            .any(|l| l.trim_start().starts_with(&format!("fn {name}(")))
+}
+
+/// [`is_test_in`]'s first half: a function under a test attribute.
+fn is_attributed_test_in(text: &str, name: &str) -> bool {
     let lines: Vec<&str> = text.lines().collect();
     let attribute = |line: &&str| {
         let line = line.trim();
@@ -911,7 +937,8 @@ fn is_test_in(text: &str, name: &str) -> bool {
 }
 
 /// VT30's control for M6-41: a test is found as written, `#[test]` or
-/// tokio's, sync or async, and a function under no test attribute is not.
+/// tokio's, sync or async, or listed by fitment-fit's own harness (VT78),
+/// and a function under no test attribute and in no such list is not.
 #[test]
 fn a_test_is_found_as_written() {
     let found = [
@@ -920,6 +947,14 @@ fn a_test_is_found_as_written() {
         (
             "#[tokio::test(flavor = \"multi_thread\")]\n/// Docs.\nasync fn c() {}",
             "c",
+        ),
+        (
+            "fn main() {\n    fitment_fit::harness![\n        i,\n        j\n    ];\n}\n/// Docs.\nfn i() {}\nfn j() {}",
+            "i",
+        ),
+        (
+            "fn main() {\n    fitment_fit::harness![\n        i,\n        j\n    ];\n}\nfn i() {}\nfn j() {}",
+            "j",
         ),
     ];
     for (text, name) in found {
@@ -937,6 +972,20 @@ fn a_test_is_found_as_written() {
             "helper",
         ),
         ("#[test]\nfn a() {}\n\n/// Docs.\nfn helper() {}", "helper"),
+        // Listed and not defined, defined and not listed, or listed in
+        // another harness.
+        (
+            "fn main() {\n    fitment_fit::harness![\n        k,\n    ];\n}",
+            "k",
+        ),
+        (
+            "fn main() {\n    fitment_fit::harness![\n        k,\n    ];\n}\nfn k() {}\nfn l() {}",
+            "l",
+        ),
+        (
+            "fn main() {\n    harness![\n        m,\n    ];\n}\nfn m() {}",
+            "m",
+        ),
     ];
     for (text, name) in not_found {
         assert!(!is_test_in(text, name), "{text}");

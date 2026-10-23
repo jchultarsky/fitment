@@ -1,5 +1,6 @@
-# VT26 (docs/research/m6-api.md, M6-42): the API's two fuzz targets, run
-# by `cargo fuzz` on a nightly toolchain in `.github/workflows/fuzz.yml`.
+# VT26 (docs/research/m6-api.md, M6-42): the API's two fuzz targets, and
+# VT75 (docs/research/m7-fit.md): the fit helper's frames, run by
+# `cargo fuzz` on a nightly toolchain in `.github/workflows/fuzz.yml`.
 # Its own workspace, so the repository's (stable, MSRV 1.85) never builds
 # it and its lock stays apart.
 [package]
@@ -16,6 +17,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 fitment-server = { path = "../crates/fitment-server", features = ["test-support"] }
 fitment-catalog = { path = "../crates/fitment-catalog" }
+fitment-fit = { path = "../crates/fitment-fit", features = ["test-support"] }
 
 [workspace]
 members = ["."]
@@ -32,6 +34,14 @@ bench = false
 [[bin]]
 name = "body"
 path = "fuzz_targets/body.rs"
+test = false
+doc = false
+bench = false
+
+# The frames target: the fit helper's frame reader and reply decoders (VT75).
+[[bin]]
+name = "fit_frames"
+path = "fuzz_targets/fit_frames.rs"
 test = false
 doc = false
 bench = false

@@ -6,8 +6,11 @@ name: Fuzz
 # refusals, every error a fitment.error document. `body` decodes every
 # request type's body: an accepted one, written again, is the same value.
 # Both are seeded with VT6's golden requests (XH14: every operation has
-# one). Weekly, and on request; a crash fails the run with its input
-# uploaded, and becomes a VT19 or VT20 case.
+# one). VT75 (docs/research/m7-fit.md): `fit_frames` sends arbitrary bytes
+# through fitment-fit's frame reader and every reply decoder: no panic, no
+# allocation past FH1's caps, every rejection a protocol error; it starts
+# from nothing. Weekly, and on request; a crash fails the run with its
+# input uploaded, and becomes a VT19 or VT20 case, or a VT55 one.
 on:
   schedule:
     - cron: "37 4 * * 1"
@@ -28,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [route, body]
+        target: [route, body, fit_frames]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
@@ -44,6 +47,7 @@ jobs:
       - name: Seed with VT6's golden requests
         run: |
           mkdir -p "$RUNNER_TEMP/seeds"
+          if [ "${{ matrix.target }}" = fit_frames ]; then exit 0; fi
           for file in crates/fitment-server/tests/golden/api/*/*.request; do
             name="$(basename "$(dirname "$file")")-$(basename "$file")"
             if [ "${{ matrix.target }}" = route ]; then
