@@ -289,11 +289,16 @@ fn the_helper_is_spawned_from_the_manifest_with_nothing_inherited() {
     // which std passes on and cannot close without `unsafe`; fitment adds
     // none of its own.
     let inherited = open_fds();
-    // A file this process holds open is not the helper's.
+    // A file this process holds open is not the helper's. A spare file is
+    // opened first, so the held one never takes descriptor 3, the number
+    // the helper's own listing of /dev/fd takes (the test, run alone).
+    let spare = std::fs::File::open(fake.dir.join(MANIFEST)).unwrap();
     let held = std::fs::File::open(fake.dir.join(MANIFEST)).unwrap();
     let held_fd = held_fd(&held);
+    assert!(held_fd != 3 || cfg!(not(unix)), "the held file took 3");
     let handshake = helper.check().unwrap();
     drop(held);
+    drop(spare);
     let report: Value = serde_json::from_str(
         &fake
             .read_state(&format!("report-{}.json", handshake.pid))
