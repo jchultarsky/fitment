@@ -1,0 +1,13 @@
+cadquery-ocp-novtk 8.0.1.1.0; OCP.__version__ 8.0.1.1
+as1-ac-214.stp: 18 solids, 0 invalid, tolerance max 1e-07, median 1e-07, over 0.001 mm: 0
+as1-ec-214.stp: 18 solids, 0 invalid, tolerance max 1e-07, median 1e-07, over 0.001 mm: 0
+as1-md-214.stp: 18 solids, 0 invalid, tolerance max 1e-05, median 1e-05, over 0.001 mm: 0
+as1-tc-214.stp: 18 solids, 0 invalid, tolerance max 1e-07, median 1e-07, over 0.001 mm: 0
+as1-ug-214.stp: 18 solids, 0 invalid, tolerance max 1e-05, median 1e-05, over 0.001 mm: 0
+as1_pe.stp: 12 solids, 0 invalid, tolerance max 1e-07, median 1e-07, over 0.001 mm: 0
+clevis21.stp: 1 solids, 0 invalid, tolerance max 1e-05, median 1e-05, over 0.001 mm: 0
+gear.stp: 1 solids, 0 invalid, tolerance max 1e-05, median 1e-05, over 0.001 mm: 0
+moon_buggy_asm.stp: 19 solids, 0 invalid, tolerance max 1e-05, median 1e-07, over 0.001 mm: 0
+vaccase_asm_solid.stp: 14 solids, 0 invalid, tolerance max 0.00291, median 1e-07, over 0.001 mm: 2
+valve.stp: 1 solids, 0 invalid, tolerance max 1e-05, median 1e-05, over 0.001 mm: 0
+weldment_asm_solid.stp: 108 solids, 0 invalid, tolerance max 0.0582, median 1e-07, over 0.001 mm: 1

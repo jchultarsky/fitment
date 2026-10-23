@@ -1,0 +1,18 @@
+== (a) a 10 mm box B with every sub-shape tolerance set to tol; C overlaps it by e from above
+tol 1e-07 overlap 5e-05: Common 0.0018 (exact 0.0018) alert=False; distance 0
+tol 1e-07 overlap 0.0005: Common 0.018 (exact 0.018) alert=False; distance 0
+tol 1e-07 overlap 0.002: Common 0.072 (exact 0.072) alert=False; distance 0
+tol 0.0001 overlap 5e-05: Common 0 (exact 0.0018) alert=False; distance 0
+tol 0.0001 overlap 0.0005: Common 0.018 (exact 0.018) alert=False; distance 0
+tol 0.0001 overlap 0.002: Common 0.072 (exact 0.072) alert=False; distance 0
+tol 0.001 overlap 5e-05: Common 0 (exact 0.0018) alert=False; distance 0
+tol 0.001 overlap 0.0005: Common 0 (exact 0.018) alert=False; distance 0
+tol 0.001 overlap 0.002: Common 0 (exact 0.072) alert=True; distance 0
+== (b) a boss 0.04 mm into a cited plate face, by the pair's uncertainty u
+u 1e-07: as first designed (delta 0.01): interferes; as revised (eps 0.009999): interferes (residual 0.03 mm3)
+u 0.004: as first designed (delta 0.01): interferes; as revised (eps 0.006): interferes (residual 0.034 mm3)
+u 0.0099: as first designed (delta 0.01): interferes; as revised (eps 0.0001): interferes (residual 0.0399 mm3)
+u 0.01: as first designed (delta 0.01): interferes; as revised (eps 0): not_verified (uncertainty_above_tolerance)
+u 0.058: as first designed (delta 0.058): verified; as revised (eps -0.048): not_verified (uncertainty_above_tolerance)
+== (c) a zone's volume is the same wherever it is placed
+slab at the face 200, the same slab 5 mm deep 200

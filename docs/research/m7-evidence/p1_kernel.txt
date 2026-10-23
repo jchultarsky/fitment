@@ -1,0 +1,62 @@
+== 1. two 10 mm boxes, the second at x = 10 - e (overlap e) or 10 + g (gap g)
+frame | case | Common volume | expected | flags | distance
+identity | overlap 1e-3 | 0.1 | 0.1 | warn=False err=False | 0 (inner False)
+identity | overlap 1e-4 | 0.01 | 0.01 | warn=False err=False | 0 (inner False)
+identity | overlap 1e-5 | 0.001 | 0.001 | warn=False err=False | 0 (inner False)
+identity | overlap 1e-6 | 0.0001 | 0.0001 | warn=False err=False | 0 (inner False)
+identity | overlap 1e-7 | 0 | 1e-05 | warn=False err=False | 0 (inner False)
+identity | overlap 1e-8 | 0 | 1e-06 | warn=False err=False | 0 (inner False)
+identity | touch | 0 | 0 | warn=False err=False | 0 (inner False)
+identity | gap 1e-7 | 0 | 0 | warn=False err=False | 0 (inner False)
+identity | gap 1e-5 | 0 | 0 | warn=False err=False | 1e-05 (inner False)
+identity | gap 0.005 | 0 | 0 | warn=False err=False | 0.005 (inner False)
+identity | gap 0.02 | 0 | 0 | warn=False err=False | 0.02 (inner False)
+skew | overlap 1e-3 | 0.1 | 0.1 | warn=False err=False | 0 (inner False)
+skew | overlap 1e-4 | 0.01 | 0.01 | warn=False err=False | 0 (inner False)
+skew | overlap 1e-5 | 0.001 | 0.001 | warn=False err=False | 8.88e-16 (inner False)
+skew | overlap 1e-6 | 0.0001 | 0.0001 | warn=False err=False | 8.88e-16 (inner False)
+skew | overlap 1e-7 | 0 | 1e-05 | warn=False err=False | 8.88e-16 (inner False)
+skew | overlap 1e-8 | 0 | 1e-06 | warn=False err=False | 0 (inner False)
+skew | touch | 0 | 0 | warn=False err=False | 0 (inner False)
+skew | gap 1e-7 | 0 | 0 | warn=False err=False | 8.88e-16 (inner False)
+skew | gap 1e-5 | 0 | 0 | warn=False err=False | 1e-05 (inner False)
+skew | gap 0.005 | 0 | 0 | warn=False err=False | 0.005 (inner False)
+skew | gap 0.02 | 0 | 0 | warn=False err=False | 0.02 (inner False)
+== 2. containment: a 2 mm box inside a 10 mm box, 4 mm from every face
+Common volume 8 (expected 8); warn=False err=False; distance 0, inner solution True
+== 3. a shaft in a hole (a 20 mm block with a bore of radius R, a cylinder of radius r on its axis)
+clearance 0.3: Common 0 (expected 0); warn=False err=False; distance 0.3
+clearance 0.005: Common 0 (expected 0); warn=False err=False; distance 0.005
+line to line: Common 0 (expected 0); warn=False err=False; distance 0
+interference 0.5: Common 86.3938 (expected 86.3938); warn=False err=False; distance 0
+interference 1e-6: Common 0.000188496 (expected 0.000188496); warn=False err=False; distance 7.34788e-16
+== 4. determinism: one Common, 20 times, serial and parallel; volumes as float.hex
+parallel=False: 1 distinct default volume(s) ['0x1.e2cb44d844f50p+5']; 1 distinct Eps volume(s) ['0x1.e2cb44d7293dep+5']
+parallel=True: 1 distinct default volume(s) ['0x1.e2cb44d844f50p+5']; 1 distinct Eps volume(s) ['0x1.e2cb44d7293dep+5']
+== 5. a face thickened into a zone solid (BRepOffsetAPI_MakeThickSolid / MakeOffsetShape thickening)
+box face 0: thickened by 0.01: done=True volume=0.0 (area x 0.01 = 1)
+box face 1: thickened by 0.01: done=True volume=0.0 (area x 0.01 = 1)
+box face 2: thickened by 0.01: done=True volume=0.0 (area x 0.01 = 1)
+box face 3: thickened by 0.01: done=True volume=0.0 (area x 0.01 = 1)
+box face 4: thickened by 0.01: done=True volume=0.0 (area x 0.01 = 1)
+box face 5: thickened by 0.01: done=True volume=0.0 (area x 0.01 = 1)
+cylinder face 0: thickened by 0.01: done=True volume=189.75429067192593 (area x 0.01 = 1.88496)
+cylinder face 1: thickened by 0.01: done=True volume=0.0 (area x 0.01 = 0.282743)
+cylinder face 2: thickened by 0.01: done=True volume=0.0 (area x 0.01 = 0.282743)
+== 6. ../../../corpus/out/m_bracket_lug.stp: its solid offset outward by 0.01 mm
+18 faces, join GeomAbs_JoinType.GeomAbs_Arc: done=True in 0.005 s valid=True volume 31283.1 -> 31392.8
+18 faces, join GeomAbs_JoinType.GeomAbs_Intersection: done=True in 0.003 s valid=True volume 31283.1 -> 31393.8
+distance to its copy 100 mm away: 87 in 0.006 s
+== 4. determinism: one Common, 20 times, serial and parallel; volumes as float.hex
+parallel=False: 1 distinct default volume(s) ['0x1.d784da4b3c3f8p+14']; 1 distinct Eps volume(s) ['0x1.d784da4b3c32bp+14']
+parallel=True: 1 distinct default volume(s) ['0x1.d784da4b3c3f8p+14']; 1 distinct Eps volume(s) ['0x1.d784da4b3c32bp+14']
+== 6. ../../../corpus/out/m_bracket.stp: its solid offset outward by 0.01 mm
+11 faces, join GeomAbs_JoinType.GeomAbs_Arc: done=True in 0.002 s valid=True volume 30503.1 -> 30608.8
+11 faces, join GeomAbs_JoinType.GeomAbs_Intersection: done=True in 0.002 s valid=True volume 30503.1 -> 30608.9
+distance to its copy 100 mm away: 92 in 0.056 s
+== 4. determinism: one Common, 20 times, serial and parallel; volumes as float.hex
+parallel=False: 1 distinct default volume(s) ['0x1.cc5b0a4b3c3fap+14']; 1 distinct Eps volume(s) ['0x1.cc5b0a4b3c3eap+14']
+parallel=True: 1 distinct default volume(s) ['0x1.cc5b0a4b3c3fap+14']; 1 distinct Eps volume(s) ['0x1.cc5b0a4b3c3eap+14']
+== bound methods (OCP 8.0.1.1)
+BRepAlgoAPI_Common: Arguments, Build, Check, CheckInverted, DSFiller, FuzzyValue, Generated, Glue, HasDeleted, HasGenerated, HasHistory, HasModified, History, IsDeleted, IsDone, Modified, NonDestructive, Operation, RunParallel, SectionEdges, SetArguments, SetCheckInverted, SetFuzzyValue, SetGlue, SetNonDestructive, SetOperation, SetRunParallel, SetToFillHistory, SetTools, SetUseOBB, Shape, Shape1, Shape2, SimplifyResult, Tools
+BOPAlgo_BOP: AddArgument, AddError, AddTool, AddWarning, Allocator, Arguments, BuildBOP, CheckInverted, Clear, ClearWarnings, Context, DumpErrors, DumpWarnings, FuzzyValue, Generated, GetParallelMode_s, GetReport, Glue, HasDeleted, HasError, HasErrors, HasGenerated, HasHistory, HasModified, HasWarning, HasWarnings, History, Images, IsDeleted, Modified, NonDestructive, Operation, Origins, PDS, PPaveFiller, Perform, PerformWithFiller, RunParallel, SetArguments, SetCheckInverted, SetFuzzyValue, SetGlue, SetNonDestructive, SetOperation, SetParallelMode_s, SetRunParallel, SetToFillHistory, SetTools, SetUseOBB, Shape, ShapesSD, Tools, UseOBB

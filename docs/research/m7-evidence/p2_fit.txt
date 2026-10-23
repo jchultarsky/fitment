@@ -1,0 +1,203 @@
+== originals at their own occurrences (FT9)
+verified      s01_bolted BOLT (interface: interface_match): 12 pairs, 0.13 s, max tolerance 1e-07, largest residual 0
+verified      s01_bolted BRACKET (interface: interface_match): 5 pairs, 0.11 s, max tolerance 1e-07, largest residual 0
+verified      s01_bolted NUT (interface: interface_match): 8 pairs, 0.14 s, max tolerance 1e-07, largest residual 0
+verified      s01_bolted PLATE (interface: interface_match): 9 pairs, 0.10 s, max tolerance 1e-07, largest residual 0
+verified      s02_cbore BASE (interface: interface_match): 2 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+verified      s02_cbore BLOCK (interface: interface_match): 2 pairs, 0.03 s, max tolerance 1e-07, largest residual 0
+verified      s02_cbore SCREW (interface: interface_match): 2 pairs, 0.04 s, max tolerance 1e-07, largest residual 0
+verified      s03_dowels DOWEL (interface: interface_match): 8 pairs, 0.11 s, max tolerance 1e-07, largest residual 0
+verified      s03_dowels PLATE (interface: interface_match): 5 pairs, 0.06 s, max tolerance 1e-07, largest residual 0
+verified      s04_bearing BEARING (interface: interface_match): 2 pairs, 0.08 s, max tolerance 1e-07, largest residual 0
+verified      s04_bearing HOUSING (interface: interface_match): 2 pairs, 0.04 s, max tolerance 1e-07, largest residual 0
+verified      s05_stack B (interface: interface_match): 3 pairs, 0.03 s, max tolerance 1e-07, largest residual 0
+verified      s05_stack BOLT (interface: interface_match): 6 pairs, 0.03 s, max tolerance 1e-07, largest residual 0
+verified      s05_stack M (interface: interface_match): 3 pairs, 0.03 s, max tolerance 1e-07, largest residual 0
+verified      s05_stack NUT (interface: interface_match): 2 pairs, 0.05 s, max tolerance 1e-07, largest residual 0
+verified      s05_stack T (interface: interface_match): 3 pairs, 0.03 s, max tolerance 1e-07, largest residual 0
+verified      s05_stack WASHER (interface: interface_match): 5 pairs, 0.08 s, max tolerance 1e-07, largest residual 0
+verified      s06_open_holes BRACKET_ROW (interface: interface_match): 1 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+verified      s07_twice BRACKET (interface: interface_match): 10 pairs, 0.25 s, max tolerance 1e-07, largest residual 0
+verified      s07b_one_missing BRACKET (interface: interface_match): 9 pairs, 0.21 s, max tolerance 1e-07, largest residual 0
+verified      s08x_nested BRACKET (interface: interface_match): 10 pairs, 0.23 s, max tolerance 1e-07, largest residual 0
+verified      s10_mapped BASE (interface: interface_match): 2 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+verified      s10_mapped BLOCK (interface: interface_match): 2 pairs, 0.03 s, max tolerance 1e-07, largest residual 0
+verified      s10_mapped SCREW (interface: interface_match): 2 pairs, 0.04 s, max tolerance 1e-07, largest residual 0
+interferes    s11_unread_neighbour BOLT (interface: reject): 12 pairs, 0.65 s, max tolerance 1e-07, largest residual 44.5; [([1025], 'NUT', 44.473007322581196, 44.473007322581196), ([1305], 'NUT', 44.4730073225805, 44.4730073225805), ([1315], 'NUT', 44.473007322581395, 44.473007322581395), ([1325], 'NUT', 44.47300732258084, 44.47300732258084)]
+not_verified  s11_unread_neighbour BRACKET (interface: reject): 5 pairs, 0.88 s, max tolerance 1e-07, largest residual 0; [([748], 'conservation', 'BOLT', 8.063377618366111e-05), ([748], 'conservation', 'BOLT', 8.063378442549845e-05), ([748], 'conservation', 'BOLT', 8.063377618366111e-05), ([748], 'conservation', 'BOLT', 8.063377618366111e-05)]
+verified      s12_undecided_target ANGLED (interface: reject): 1 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+verified      s13_unknown_outline BLOCK (interface: reject): 2 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+verified      s13_unknown_outline PLATE (interface: reject): 1 pairs, 0.03 s, max tolerance 1e-07, largest residual 0
+interferes    s14_clash BLOCK (interface: reject): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 500; [([196], 'CLASH', 499.9999999999999, 499.9999999999999)]
+verified      s15_mirror_part BLOCK (interface: interface_match): 3 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+verified      s15_mirror_part MIRROR (interface: interface_match): 3 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+verified      s16_offaxis PIN (interface: interface_match): 2 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s16_offaxis PLATE (interface: interface_match): 2 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s17_slot PIN (interface: interface_match): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s17_slot PLATE (interface: reject): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s18_csink PLATE (interface: interface_match): 2 pairs, 0.08 s, max tolerance 1e-07, largest residual 0
+verified      s18_csink SCREW (interface: reject): 2 pairs, 0.05 s, max tolerance 1e-07, largest residual 0
+verified      s19_boss COVER (interface: interface_match): 1 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+verified      s19_boss HOUSING (interface: interface_match): 1 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+interferes    s20_near PLATE (interface: interface_match): 2 pairs, 0.01 s, max tolerance 1e-07, largest residual 16; [([200], 'INTO', 16.0004, 20.000000000000004)]
+verified      s21_self_rod BLOCK10 (interface: interface_match): 0 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s22_mirror_intent BLOCK (interface: interface_match): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s40_cone_step PIN (interface: interface_match): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s40_cone_step PLATE (interface: interface_match): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s41_cone_head PLATE (interface: interface_match): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s41_cone_head SCREW (interface: interface_match): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s42_chamfer PLATE (interface: interface_match): 2 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s43_nearest_blocked BLOCK (interface: interface_match): 0 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s43_nearest_blocked DISC (interface: reject): 0 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s44_spanned BLOCK (interface: interface_match): 1 pairs, 0.01 s, max tolerance 1e-07, largest residual 0
+verified      s45_hexbar PLATE (interface: interface_match): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s46_flush_pin TOP (interface: interface_match): 2 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+not_verified  s47_rod_on_flat PLATE (interface: reject): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0; ['undeclared proximity', ([196], 'ROD', 3.6739403974420594e-16)]
+verified      s48_dshaft BUSHING (interface: interface_match): 2 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+not_verified  s48_dshaft DSHAFT (interface: reject): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0; ['undeclared proximity', ([379], 'BUSHING', 0.0)]
+verified      s49_ring BLOCK (interface: interface_match): 1 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+verified      s49_ring SPACER (interface: interface_match): 1 pairs, 0.03 s, max tolerance 1e-07, largest residual 0
+verified      s49_ring TUBE (interface: interface_match): 2 pairs, 0.09 s, max tolerance 1e-07, largest residual 0
+verified      s50_cap CAP (interface: reject): 1 pairs, 0.07 s, max tolerance 1e-07, largest residual 0
+verified      s50_cap TUBE (interface: interface_match): 1 pairs, 0.09 s, max tolerance 1e-07, largest residual 0
+verified      s51_wall PIN (interface: interface_match): 1 pairs, 0.01 s, max tolerance 1e-07, largest residual 0
+verified      s51_wall PLATE (interface: interface_match): 1 pairs, 0.01 s, max tolerance 1e-07, largest residual 0
+verified      s52_skew PIN (interface: reject): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s52_skew PLATE (interface: reject): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s53_flange FLANGE (interface: interface_match): 1 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+verified      s53_flange PLATE (interface: interface_match): 1 pairs, 0.01 s, max tolerance 1e-07, largest residual 0
+verified      s54_stepped BLOCK (interface: reject): 2 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+verified      s54_stepped PIN (interface: interface_match): 2 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+skip s55_tiles BLOCK: 7,440 faces (as the socket oracle skips it)
+skip s55_tiles PLATE: 7,440 faces (as the socket oracle skips it)
+verified      s56_far_lean PLATE (interface: interface_match): 0 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+verified      s57_tilted_disc BLOCK (interface: interface_match): 1 pairs, 0.00 s, max tolerance 1e-07, largest residual 0
+not_verified  s58_csink_tilted PLATE (interface: reject): 1 pairs, 0.07 s, max tolerance 1e-07, largest residual 0; ['undeclared proximity', ([260], 'SCREW', 1.1092338529735226e-15)]
+verified      s60_two_cones PLATE (interface: interface_match): 2 pairs, 0.14 s, max tolerance 1e-07, largest residual 0
+verified      s64_sleeve_post BASE (interface: reject): 1 pairs, 0.02 s, max tolerance 1e-07, largest residual 0
+== match cases: the candidate at fitment's placements (FT2, FT3)
+verified      m_base02 (fits, interface_match): 2 pairs, 0.02 s
+interferes    m_base02_post (does_not_fit, reject): 2 pairs, 0.01 s; [([245], 'SCREW', 14.137166941189367, 78.93251542129478)]
+interferes    m_base02_short (does_not_fit, reject): 2 pairs, 0.01 s; [([245], 'SCREW', 9.739102128579233, 74.61282552282863)]
+verified      m_bearing04 (fits, interface_match): 2 pairs, 0.08 s
+verified      m_bearing04_outer (does_not_fit, reject): 2 pairs, 0.09 s
+verified      m_block02 (fits, interface_match): 2 pairs, 0.03 s
+verified      m_block02_cb_deep (does_not_fit, reject): 2 pairs, 0.01 s
+interferes    m_block02_membrane (does_not_fit, reject): 2 pairs, 0.02 s; [([498], 'SCREW', 265.75019432839963, 266.1934287239487)]
+verified      m_bolt (fits, interface_match): 12 pairs, 0.12 s
+verified      m_bolt_longer (fits, interface_match): 12 pairs, 0.12 s
+verified      m_bolt_short (does_not_fit, reject): 12 pairs, 0.12 s
+interferes    m_bolt_thick (does_not_fit, reject): 12 pairs, 0.06 s; [([1028], 'PLATE', 10.441643011283404, 10.445795573186075), ([1028], 'BRACKET', 8.34619170755525, 8.356636458590998), ([1028], 'NUT', 33.96699433253599, 78.1078473498763), ([1308], 'PLATE', 10.441643011283603, 10.445795573186416), ([1308], 'BRACKET', 8.346191707555505, 8.35663645859131), ([1308], 'NUT', 33.96699433253602, 78.10784734987628), ([1318], 'PLATE', 10.441643011283375, 10.445795573186075), ([1318], 'BRACKET', 8.34619170755525, 8.356636458591055), ([1318], 'NUT', 33.96699433253602, 78.1078473498763), ([1328], 'PLATE', 10.441643011283546, 10.445795573186473), ([1328], 'BRACKET', 8.346191707555505, 8.356636458591339), ([1328], 'NUT', 33.966994332536046, 78.10784734987628)]
+verified      m_bracket (fits, interface_match): 5 pairs, 0.10 s
+interferes    m_bracket_blind (does_not_fit, reject): 5 pairs, 0.08 s; [([748], 'BOLT', 56.54866776461627, 56.54866776461627)]
+verified      m_bracket_centre_10 (does_not_fit, reject): 5 pairs, 0.10 s
+verified      m_bracket_centre_none (fits, interface_match): 5 pairs, 0.10 s
+interferes    m_bracket_decoy (does_not_fit, reject): 5 pairs, 0.08 s; [([748], 'BOLT', 226.19467105846633, 226.19467105846627)]
+not_verified  m_bracket_dia_clear_id (edge, reject): 5 pairs, 0.10 s; ['undeclared proximity', ([748], 'BOLT', 0.009999999999989568)]
+not_verified  m_bracket_dia_clear_skew (edge, reject): 5 pairs, 0.10 s; ['undeclared proximity', ([748], 'BOLT', 0.009999999994739994)]
+not_verified  m_bracket_dia_clear_tilt (edge, reject): 5 pairs, 0.10 s; ['undeclared proximity', ([748], 'BOLT', 0.009999999995520164)]
+not_verified  m_bracket_dia_clear_var (edge, reject): 5 pairs, 0.10 s; ['undeclared proximity', ([748], 'BOLT', 0.009999999992722053)]
+verified      m_bracket_dia_large (fits_functional, reject): 5 pairs, 0.10 s
+interferes    m_bracket_dia_small (does_not_fit, reject): 5 pairs, 0.09 s; [([748], 'BOLT', 7.476990515543591, 7.476990515543491)]
+verified      m_bracket_face_hole (does_not_fit, reject): 5 pairs, 0.11 s
+verified      m_bracket_inside_tol (fits, interface_match): 5 pairs, 0.15 s
+verified      m_bracket_larger (fits, interface_match): 5 pairs, 0.10 s
+interferes    m_bracket_lug (collides, interface_match): 5 pairs, 0.09 s; [([748], 'PLATE', 299.40006, 300.00000000000006)]
+interferes    m_bracket_missing_hole (does_not_fit, reject): 5 pairs, 0.09 s; [([748], 'BOLT', 226.19467105846522, 226.1946710584652)]
+verified      m_bracket_pcurves (fits, interface_match): 5 pairs, 0.10 s
+not_verified  m_bracket_shift_05 (does_not_fit, reject): 4 pairs, 0.08 s; a boolean reported warnings: ['BOPAlgo_AlertFaceBuilderUnusedEdges']
+verified      m_bracket_shift_15tol (fn_rule, reject): 5 pairs, 0.19 s
+verified      m_bracket_shift_tol_id (edge, reject): 5 pairs, 0.19 s
+verified      m_bracket_shift_tol_skew (edge, reject): 5 pairs, 0.20 s
+verified      m_bracket_shift_tol_tilt (edge, reject): 5 pairs, 0.22 s
+verified      m_bracket_shift_tol_var (edge, reject): 5 pairs, 0.22 s
+verified      m_bracket_side_hole (fits, interface_match): 5 pairs, 0.11 s
+verified      m_bracket_split (fits, interface_match): 5 pairs, 0.13 s
+verified      m_bracket_spot (does_not_fit, reject): 5 pairs, 0.09 s
+interferes    m_bracket_thick (fn_rule, reject): 5 pairs, 0.09 s; [([748], 'PLATE', 1868.3183162472894, 1906.4433707760697)]
+verified      m_bracket_thin_15tol (fn_rule, reject): 5 pairs, 0.07 s
+verified      m_bracket_tilt_inch (fits, interface_match): 5 pairs, 0.10 s
+verified      m_bracket_top_pocket (fn_rule, reject): 5 pairs, 0.11 s
+verified      m_cover19 (fits, interface_match): 1 pairs, 0.02 s
+interferes    m_cover19_long (collides, interface_match): 1 pairs, 0.00 s; [([241], 'HOUSING', 56.548667763596484, 56.548667763596484)]
+interferes    m_cover19_wide (does_not_fit, reject): 1 pairs, 0.01 s; [([241], 'HOUSING', 4.751954365065444, 4.7614763663010535)]
+verified      m_housing (fits, interface_match): 1 pairs, 0.02 s
+verified      m_housing04 (fits, interface_match): 2 pairs, 0.04 s
+verified      m_housing04_seat (does_not_fit, reject): 2 pairs, 0.03 s
+interferes    m_housing_bar (does_not_fit, reject): 1 pairs, 0.02 s; [([455], 'COVER', 37.56817361003611, 37.56817361003611)]
+verified      m_housing_cross (fn_rule, reject): 1 pairs, 0.04 s
+interferes    m_housing_dome (does_not_fit, reject): 1 pairs, 0.00 s; [([455], 'COVER', 565.4866776461622, 565.4866776461622)]
+interferes    m_housing_lip (does_not_fit, reject): 1 pairs, 0.02 s; [([455], 'COVER', 1450.9160052312427, 1464.9115158876966)]
+interferes    m_housing_post (does_not_fit, reject): 1 pairs, 0.00 s; [([455], 'COVER', 50.26548245753113, 50.26548245753113)]
+interferes    m_housing_spike (does_not_fit, reject): 1 pairs, 0.00 s; [([455], 'COVER', 565.4866776461622, 565.4866776461622)]
+verified      m_mirror15 (fits, interface_match): 3 pairs, 0.02 s
+verified      m_nut (fits, interface_match): 8 pairs, 0.14 s
+interferes    m_nut_bar (does_not_fit, reject): 8 pairs, 0.26 s; [([1302], 'BOLT', 21.08384405281908, 64.38292196662113), ([1313], 'BOLT', 21.083844052819078, 64.38292196662114), ([1323], 'BOLT', 21.08384405281904, 64.38292196662117), ([1333], 'BOLT', 21.08384405281909, 64.38292196662118)]
+interferes    m_nut_bridge (collides, interface_match): 8 pairs, 0.12 s; [([1302], 'BOLT', 5.972105317519098, 49.169004304323465), ([1313], 'BOLT', 5.972105317519105, 49.169004304323494), ([1323], 'BOLT', 5.972105317519104, 49.169004304323494), ([1333], 'BOLT', 5.972105317519134, 49.16900430432355)]
+verified      m_nut_clearance (does_not_fit, reject): 8 pairs, 0.13 s
+interferes    m_nut_ext (does_not_fit, reject): 8 pairs, 0.09 s; [([1302], 'BOLT', 79.24047836654611, 123.30751165339967), ([1313], 'BOLT', 79.24047836654611, 123.30751165339969), ([1323], 'BOLT', 79.24047836654611, 123.30751165339966), ([1333], 'BOLT', 79.24047836654611, 123.30751165339967)]
+not_verified  m_nut_ext_lip (does_not_fit, reject): 1 pairs, 0.05 s; a boolean reported warnings: ['BOPAlgo_AlertFaceBuilderUnusedEdges']
+interferes    m_nut_lip (does_not_fit, reject): 8 pairs, 0.31 s; [([1302], 'PLATE', 27.093010847931655, 27.229649605339027), ([1302], 'BOLT', 7.06858347056061, 50.26548245734854), ([1313], 'PLATE', 27.093010847932153, 27.229649605339524), ([1313], 'BOLT', 7.068583470559695, 50.26548245734862), ([1323], 'PLATE', 27.09301084793213, 27.229649605339485), ([1323], 'BOLT', 7.06858347055911, 50.26548245734692), ([1333], 'PLATE', 27.093010847932273, 27.229649605339628), ([1333], 'BOLT', 7.068583470559701, 50.265482457348554)]
+interferes    m_nut_long (does_not_fit, reject): 8 pairs, 0.08 s; [([1302], 'BOLT', 17.192374436149922, 60.475658581605515), ([1313], 'BOLT', 17.192374436149926, 60.47565858160554), ([1323], 'BOLT', 17.19237443614992, 60.47565858160557), ([1333], 'BOLT', 17.192374436149926, 60.47565858160557)]
+verified      m_nut_pinned_15tol (does_not_fit, reject): 8 pairs, 0.13 s
+verified      m_nut_pinned_tol_id (edge, reject): 8 pairs, 0.13 s
+verified      m_nut_pinned_tol_skew (edge, reject): 8 pairs, 0.14 s
+verified      m_nut_pinned_tol_tilt (edge, reject): 8 pairs, 0.13 s
+verified      m_nut_pinned_tol_var (edge, reject): 8 pairs, 0.13 s
+verified      m_plate01 (fits, interface_match): 9 pairs, 0.10 s
+interferes    m_plate01_blind (does_not_fit, reject): 9 pairs, 0.09 s; [([384], 'BOLT', 141.37166941231638, 141.37166941231638)]
+not_verified  m_plate01_thin (fn_rule, reject): 5 pairs, 0.04 s; ['undeclared proximity', ([384], 'BOLT', 2.862705634393883e-11), ([384], 'BOLT', 2.4238389074678414e-11)]
+verified      m_plate03 (fits, interface_match): 5 pairs, 0.05 s
+not_verified  m_plate03_pin_shift_tol (edge, reject): 5 pairs, 0.05 s; [([717], 'below_resolution', 'DOWEL', 4.5179579617421187e-07)]
+verified      m_plate03_press_15tol (does_not_fit, reject): 5 pairs, 0.05 s
+verified      m_plate16 (fits, interface_match): 2 pairs, 0.00 s
+interferes    m_plate16_635 (fits_functional, reject): 2 pairs, 0.00 s; [([278], 'PIN', 0.3105725800530737, 0.3105725800530737)]
+verified      m_plate18 (fits, interface_match): 2 pairs, 0.11 s
+interferes    m_plate18_82 (does_not_fit, reject): 2 pairs, 0.14 s; [([264], 'SCREW', 110.91054516448732, 112.72872199138253)]
+verified      m_plate18_angle_15atol (does_not_fit, reject): 2 pairs, 0.26 s
+interferes    m_plate18_boss (does_not_fit, reject): 2 pairs, 0.15 s; [([264], 'SCREW', 110.91054516448732, 112.72872199138432), ([264], 'NUT', 200.352111000504, 200.87596457401526)]
+interferes    m_plate18_cbore (does_not_fit, reject): 2 pairs, 0.14 s; [([264], 'SCREW', 110.91054516448732, 112.72872199138435)]
+interferes    m_plate18_finger (does_not_fit, reject): 2 pairs, 0.08 s; [([264], 'SCREW', 110.91054516444068, 112.72872199119618)]
+interferes    m_plate18_small_rim (does_not_fit, reject): 2 pairs, 0.15 s; [([264], 'SCREW', 110.91054516448732, 112.72872199138253)]
+skip m_review_s01_grip_kept_hole: a reviewed or edited socket
+skip m_review_s01_hole_waived: a reviewed or edited socket
+skip m_review_s02_grip_kept_seat: a reviewed or edited socket
+skip m_review_s02_post_waived: a reviewed or edited socket
+verified      m_s07b_bracket (fits, interface_match): 9 pairs, 0.21 s
+verified      m_s07b_dia_64 (fn_rule, reject): 9 pairs, 0.17 s
+verified      m_s21_block (fits, interface_match): 0 pairs, 0.00 s
+verified      m_s21_dia_1002 (fn_rule, reject): 0 pairs, 0.00 s
+verified      m_s59_block (fits, interface_match): 4 pairs, 0.05 s
+interferes    m_s59_mirror (does_not_fit, reject): 4 pairs, 0.05 s; [([578], 'STOP', 5.0635287161237565, 5.3333333331679)]
+interferes    m_s59_mirror_tilt (does_not_fit, reject): 4 pairs, 0.05 s; [([578], 'STOP', 5.06352871616093, 5.333333333206027)]
+skip m_s61_bracket: a reviewed or edited socket
+skip m_s62_bracket: a reviewed or edited socket
+verified      m_screw02 (fits, interface_match): 2 pairs, 0.04 s
+interferes    m_screw02_head (does_not_fit, reject): 1 pairs, 0.01 s; [([615], 'BLOCK', 20.923007072918622, 20.923007072918836)]
+verified      m_screw02_shank (does_not_fit, reject): 1 pairs, 0.02 s
+verified      m_tube50 (fits, interface_match): 1 pairs, 0.09 s
+not_verified  m_tube50_tau_edge_id (edge, reject): 1 pairs, 0.05 s; ['undeclared proximity', ([138], 'CAP', 0.009999999999998318)]
+not_verified  m_tube50_tau_edge_skew (edge, reject): 1 pairs, 0.05 s; ['undeclared proximity', ([138], 'CAP', 0.010000000000584208)]
+not_verified  m_tube50_tau_edge_tilt (edge, reject): 1 pairs, 0.05 s; ['undeclared proximity', ([138], 'CAP', 0.009999999999578462)]
+not_verified  m_tube50_tau_edge_var (edge, reject): 1 pairs, 0.05 s; ['undeclared proximity', ([138], 'CAP', 0.009999999998775877)]
+verified      m_washer05 (fits, interface_match): 5 pairs, 0.06 s
+interferes    m_washer05_thick (fn_rule, reject): 5 pairs, 0.04 s; [([782], 'T', 7.099764123536437, 7.888539153461345), ([782], 'copy [788]', 7.283549335815173, 8.092742675636497), ([788], 'copy [782]', 7.283549335815074, 8.092742675636456)]
+== tally
+   3 interface passed / collides / interferes
+  28 interface passed / fits / verified
+  27 interface rejected / does_not_fit / interferes
+   2 interface rejected / does_not_fit / not_verified
+  12 interface rejected / does_not_fit / verified
+   9 interface rejected / edge / not_verified
+   8 interface rejected / edge / verified
+   1 interface rejected / fits_functional / interferes
+   1 interface rejected / fits_functional / verified
+   2 interface rejected / fn_rule / interferes
+   1 interface rejected / fn_rule / not_verified
+   6 interface rejected / fn_rule / verified
+   1 original / interface_match / interferes
+  56 original / interface_match / verified
+   2 original / reject / interferes
+   4 original / reject / not_verified
+  11 original / reject / verified
+kernel calls: 1214 commons 4.6 s, 668 cuts 2.9 s, 1010 distances 5.1 s

@@ -1,0 +1,13 @@
+s01_bolted.stp: 4 solid entities, 0 found by their own #id; 10 XCAF leaves, 0 with a face that does not bind, 10 distinct (faces, transform) keys
+s10_mapped.stp: 3 solid entities, 0 found by their own #id; 3 XCAF leaves, 0 with a face that does not bind, 3 distinct (faces, transform) keys
+s05_stack.stp: 6 solid entities, 0 found by their own #id; 7 XCAF leaves, 0 with a face that does not bind, 7 distinct (faces, transform) keys
+s21_self_rod.stp: 1 solid entities, 0 found by their own #id; 2 XCAF leaves, 0 with a face that does not bind, 2 distinct (faces, transform) keys
+as1-ac-214.stp: 5 solid entities, 0 found by their own #id; 18 XCAF leaves, 0 with a face that does not bind, 18 distinct (faces, transform) keys
+as1-ec-214.stp: 5 solid entities, 0 found by their own #id; 18 XCAF leaves, 0 with a face that does not bind, 18 distinct (faces, transform) keys
+as1-md-214.stp: 5 solid entities, 0 found by their own #id; 18 XCAF leaves, 0 with a face that does not bind, 18 distinct (faces, transform) keys
+as1-tc-214.stp: 5 solid entities, 0 found by their own #id; 18 XCAF leaves, 0 with a face that does not bind, 18 distinct (faces, transform) keys
+as1-ug-214.stp: 5 solid entities, 0 found by their own #id; 18 XCAF leaves, 0 with a face that does not bind, 18 distinct (faces, transform) keys
+as1_pe.stp: 5 solid entities, 0 found by their own #id; 12 XCAF leaves, 0 with a face that does not bind, 12 distinct (faces, transform) keys
+moon_buggy_asm.stp: 12 solid entities, 0 found by their own #id; 19 XCAF leaves, 0 with a face that does not bind, 19 distinct (faces, transform) keys
+weldment_asm_solid.stp: 33 solid entities, 0 found by their own #id; 108 XCAF leaves, 0 with a face that does not bind, 108 distinct (faces, transform) keys
+vaccase_asm_solid.stp: 8 solid entities, 0 found by their own #id; 14 XCAF leaves, 0 with a face that does not bind, 14 distinct (faces, transform) keys
