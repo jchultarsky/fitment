@@ -1120,18 +1120,7 @@ impl TestServer {
     /// uploading hundreds of files) is waited out as its `Retry-After`
     /// says; tests of the limit itself send their own requests.
     pub async fn upload(&self, bytes: &[u8]) -> String {
-        let mut reply = self.send(put_upload(bytes)).await;
-        for _ in 0..30 {
-            if reply.status != 429 {
-                break;
-            }
-            let wait = reply
-                .header("retry-after")
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(1);
-            tokio::time::sleep(Duration::from_secs(wait.max(1))).await;
-            reply = self.send(put_upload(bytes)).await;
-        }
+        let reply = self.patient(put_upload(bytes)).await;
         assert!(
             reply.status.is_success(),
             "{}",
@@ -1187,12 +1176,35 @@ impl TestServer {
         self.get(&format!("/v1/jobs/{id}/document")).await
     }
 
+    /// Sends `call` as [`TestServer::send`], waiting out AU7's `429
+    /// rate_limited` as its `Retry-After` says: the harness's own helpers,
+    /// which a fast runner can drive past 50 a second after a burst of
+    /// 100; tests of the limit itself send their own requests.
+    pub async fn patient(&self, call: Call) -> Reply {
+        let mut reply = self.send(call.clone()).await;
+        for _ in 0..30 {
+            if reply.status != 429 || !reply.body.windows(12).any(|w| w == b"rate_limited") {
+                break;
+            }
+            let wait = reply
+                .header("retry-after")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(1);
+            tokio::time::sleep(Duration::from_secs(wait.max(1))).await;
+            reply = self.send(call.clone()).await;
+        }
+        reply
+    }
+
     /// Waits for job `id` to end, polling with `?wait=` (JB11), at most
     /// `limit`: the job.
     pub async fn finished_job(&self, id: &str, limit: Duration) -> serde_json::Value {
         let start = Instant::now();
         loop {
-            let job = self.get(&format!("/v1/jobs/{id}?wait=5")).await.json();
+            let job = self
+                .patient(Call::get(&format!("/v1/jobs/{id}?wait=5")))
+                .await
+                .json();
             let state = job["state"].as_str().unwrap_or("").to_owned();
             if !["queued", "running", "cancelling"].contains(&state.as_str()) {
                 return job;
@@ -1407,7 +1419,7 @@ impl TestServer {
                 .push(serde_json::json!({ "upload": format!("sha256:{sha}"), "file_name": name }));
         }
         let body = serde_json::json!({ "files": listed });
-        let reply = self.send(waiting("/v1/catalog/entries", &body)).await;
+        let reply = self.patient(waiting("/v1/catalog/entries", &body)).await;
         assert!(
             reply.status.is_success(),
             "{}",
@@ -1420,7 +1432,7 @@ impl TestServer {
     /// A job submitted with `body` at `path` (`POST`), not waited for: the
     /// job as answered.
     pub async fn submit(&self, path: &str, body: &serde_json::Value) -> serde_json::Value {
-        let reply = self.send(Call::json(Method::POST, path, body)).await;
+        let reply = self.patient(Call::json(Method::POST, path, body)).await;
         assert!(
             reply.status.is_success(),
             "{path}: {}",
