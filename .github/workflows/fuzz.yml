@@ -56,8 +56,11 @@ jobs:
               sed '1,/^$/d' "$file" > "$RUNNER_TEMP/seeds/$name"
             fi
           done
-      # rust-toolchain.toml pins stable; `+nightly` outranks it.
-      - run: cargo +nightly fuzz run ${{ matrix.target }} "$RUNNER_TEMP/seeds" -- -max_total_time=600 -rss_limit_mb=4096 -timeout=60
+      # rust-toolchain.toml pins stable; `+nightly` outranks it. The target
+      # is named: install-action's cargo-fuzz is a musl build, which would
+      # build for musl, where the address sanitizer cannot link (the first
+      # run, 2026-10-23).
+      - run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} "$RUNNER_TEMP/seeds" -- -max_total_time=600 -rss_limit_mb=4096 -timeout=60
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
