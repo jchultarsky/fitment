@@ -1,0 +1,3 @@
+DELETE /v1/catalog/entries/junk
+authorization: Bearer <root's admin token>
+

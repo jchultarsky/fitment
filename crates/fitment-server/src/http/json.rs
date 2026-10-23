@@ -164,13 +164,26 @@ pub fn bytes(
     body: Bytes,
 ) -> Response {
     let digest = repr_digest(&body);
+    bytes_digested(status, content_type, format, body, &digest)
+}
+
+/// [`bytes`] with `Repr-Digest` given, computed where the body was built:
+/// a large body is never hashed on the runtime's workers (the review of
+/// PR 7b).
+pub fn bytes_digested(
+    status: StatusCode,
+    content_type: &'static str,
+    format: Option<(&str, u32)>,
+    body: Bytes,
+    digest: &str,
+) -> Response {
     let mut response = (status, Body::from(body)).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     if let Some(value) = format.and_then(|(f, v)| HeaderValue::from_str(&format!("{f}/{v}")).ok()) {
         headers.insert("fitment-format", value);
     }
-    if let Ok(value) = HeaderValue::from_str(&digest) {
+    if let Ok(value) = HeaderValue::from_str(digest) {
         headers.insert("repr-digest", value);
     }
     response

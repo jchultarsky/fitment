@@ -1,0 +1,21 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:v6OspiVTgqJKfFy3zKS5En5L8kL+DhrQ8rweIpRo9d4=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/invalid_reference",
+  "title": "A reference is malformed",
+  "status": 400,
+  "detail": "a catalog entry is named ID, ID@rN or sha256: and 12 to 64 hex digits",
+  "code": "invalid_reference",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

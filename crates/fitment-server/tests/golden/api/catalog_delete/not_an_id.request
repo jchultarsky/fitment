@@ -1,0 +1,3 @@
+DELETE /v1/catalog/entries/sha256:1f021de7913c
+authorization: Bearer <root's admin token>
+

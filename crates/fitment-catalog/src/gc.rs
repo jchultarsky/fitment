@@ -144,6 +144,34 @@ impl Catalog {
         vacuum: bool,
         observer: &dyn Observer,
     ) -> Result<Collected, Error> {
+        let collected = self.gc_collect_observed(versions, observer)?;
+        if collected.cancelled {
+            return Ok(collected);
+        }
+        self.conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        if vacuum {
+            self.vacuum()?;
+        }
+        Ok(collected)
+    }
+
+    /// [`Catalog::gc_observed`]'s collection alone (`docs/research/
+    /// m6-api.md`, CX6): the older versions' rows, orphan blobs and old
+    /// temporary files, with neither the WAL's truncation nor `VACUUM`,
+    /// so a server truncates where readers' waits cannot hold its writer
+    /// and runs [`Catalog::vacuum`] under its own barrier. The observer is
+    /// asked last where `gc_observed` asks before its truncation, so a
+    /// cancel there is [`Collected::cancelled`] too.
+    ///
+    /// # Errors
+    ///
+    /// As [`Catalog::gc`].
+    pub fn gc_collect_observed(
+        &mut self,
+        versions: bool,
+        observer: &dyn Observer,
+    ) -> Result<Collected, Error> {
         self.layout
             .check_links(self.fs.as_ref())
             .map_err(|linked| Error::Linked(linked.0))?;
@@ -196,16 +224,20 @@ impl Catalog {
         }
         collected.temporaries = self.old_temporaries(&mut failed)?;
         collected.failed = failed;
-        if observer.cancelled() {
-            collected.cancelled = true;
-            return Ok(collected);
-        }
-        self.conn
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-        if vacuum {
-            self.conn.execute_batch("VACUUM")?;
-        }
+        collected.cancelled = observer.cancelled();
         Ok(collected)
+    }
+
+    /// SZ4: `VACUUM`, which rewrites the database whole and needs free
+    /// space about its size; `gc --vacuum`'s last step.
+    ///
+    /// # Errors
+    ///
+    /// The database's: it fails whole without the space, or while another
+    /// connection writes.
+    pub fn vacuum(&self) -> Result<(), Error> {
+        self.conn.execute_batch("VACUUM")?;
+        Ok(())
     }
 
     /// ST7: temporary files over an hour old, removed. The age decides only

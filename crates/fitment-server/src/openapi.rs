@@ -33,8 +33,9 @@ use crate::jobs::documents::{
     EVENT_FORMAT, EventDocument, FORMAT_VERSION as JOB_FORMAT_VERSION, JOB_FORMAT, JobDocument,
 };
 use crate::jobs::request::{
-    AssemblyRequest, FeaturesRequest, ImportRequest, MatchRequest, PinRequest, ReviewRequest,
-    SocketRequest,
+    AssemblyRequest, DeleteRequest, FeaturesRequest, GcRequest, ImportRequest, IngestRequest,
+    MatchRequest, PinRequest, PruneRequest, ReindexRequest, ReplaceRequest, ReviewRequest,
+    SocketRequest, VerifyRequest,
 };
 use crate::uploads::{UPLOAD_FORMAT, UPLOAD_FORMAT_VERSION, UPLOAD_TYPES, UploadDocument};
 
@@ -157,6 +158,11 @@ pub fn schemas() -> Map<String, Value> {
     );
     add(crate::catalog::FORMAT, crate::catalog::schema());
     add(
+        crate::catalog::VERIFY_FORMAT,
+        crate::catalog::verify_schema(),
+    );
+    add(crate::catalog::GC_FORMAT, crate::catalog::gc_schema());
+    add(
         INFO_FORMAT,
         schema_of::<Info>(INFO_FORMAT, INFO_FORMAT_VERSION, false),
     );
@@ -214,80 +220,40 @@ pub fn request_schemas() -> Map<String, Value> {
         }
         schemas.insert(name.to_owned(), schema);
     };
-    let generator = || {
-        SchemaSettings::draft2020_12()
-            .for_deserialize()
-            .into_generator()
-    };
-    add(
-        "LoginRequest",
-        generator()
-            .into_root_schema_for::<LoginRequest>()
-            .to_value(),
-    );
-    add(
-        "PasswordRequest",
-        generator()
-            .into_root_schema_for::<PasswordRequest>()
-            .to_value(),
-    );
-    add(
-        "MintRequest",
-        generator().into_root_schema_for::<MintRequest>().to_value(),
-    );
-    add(
-        "CreateUserRequest",
-        generator()
-            .into_root_schema_for::<CreateUserRequest>()
-            .to_value(),
-    );
-    add(
-        "UpdateUserRequest",
-        generator()
-            .into_root_schema_for::<UpdateUserRequest>()
-            .to_value(),
-    );
-    add(
-        "FeaturesRequest",
-        generator()
-            .into_root_schema_for::<FeaturesRequest>()
-            .to_value(),
-    );
-    add(
-        "AssemblyRequest",
-        generator()
-            .into_root_schema_for::<AssemblyRequest>()
-            .to_value(),
-    );
-    add(
-        "SocketRequest",
-        generator()
-            .into_root_schema_for::<SocketRequest>()
-            .to_value(),
-    );
-    add(
-        "PinRequest",
-        generator().into_root_schema_for::<PinRequest>().to_value(),
-    );
-    add(
-        "ImportRequest",
-        generator()
-            .into_root_schema_for::<ImportRequest>()
-            .to_value(),
-    );
-    add(
-        "ReviewRequest",
-        generator()
-            .into_root_schema_for::<ReviewRequest>()
-            .to_value(),
-    );
-    add(
-        "MatchRequest",
-        generator()
-            .into_root_schema_for::<MatchRequest>()
-            .to_value(),
-    );
+    let requests: [(&str, Value); 19] = [
+        ("LoginRequest", root::<LoginRequest>()),
+        ("PasswordRequest", root::<PasswordRequest>()),
+        ("MintRequest", root::<MintRequest>()),
+        ("CreateUserRequest", root::<CreateUserRequest>()),
+        ("UpdateUserRequest", root::<UpdateUserRequest>()),
+        ("FeaturesRequest", root::<FeaturesRequest>()),
+        ("AssemblyRequest", root::<AssemblyRequest>()),
+        ("SocketRequest", root::<SocketRequest>()),
+        ("PinRequest", root::<PinRequest>()),
+        ("ImportRequest", root::<ImportRequest>()),
+        ("ReviewRequest", root::<ReviewRequest>()),
+        ("MatchRequest", root::<MatchRequest>()),
+        ("IngestRequest", root::<IngestRequest>()),
+        ("ReplaceRequest", root::<ReplaceRequest>()),
+        ("ReindexRequest", root::<ReindexRequest>()),
+        ("VerifyRequest", root::<VerifyRequest>()),
+        ("GcRequest", root::<GcRequest>()),
+        ("PruneRequest", root::<PruneRequest>()),
+        ("DeleteRequest", root::<DeleteRequest>()),
+    ];
+    for (name, schema) in requests {
+        add(name, schema);
+    }
     schemas
+}
+
+/// A request body's schema as read (`for_deserialize`), whole.
+fn root<T: JsonSchema>() -> Value {
+    SchemaSettings::draft2020_12()
+        .for_deserialize()
+        .into_generator()
+        .into_root_schema_for::<T>()
+        .to_value()
 }
 
 /// What a query parameter means (VN3, AU8).
@@ -296,7 +262,13 @@ fn parameter(op: &str, name: &str) -> Value {
         "after" if op == "jobs_events" => {
             "the seq of the last persisted event read: replay after it (JB8)"
         }
+        "after" if op == "catalog_list" => {
+            "the cursor of the page to start after: the previous page's Link holds it (VN3)"
+        }
         "after" => "the cursor of the page to start after: the previous page's `next` holds it",
+        "limit" if op == "catalog_list" => {
+            "entries per page: 100 by default, at most limits.page_max; `all`, the whole list, the CLI's bytes (VN3, HX8)"
+        }
         "limit" => "items per page: 100 by default, at most limits.page_max",
         "owner" => "an admin's: the user whose items to list (AU8)",
         "kind" => "only jobs of this kind (JB1)",
@@ -305,6 +277,7 @@ fn parameter(op: &str, name: &str) -> Value {
         "assembly" => "only the lines of this assembly, sha256:HEX",
         "socket" => "only the runs of this socket line, sk_…, or of one revision, sk_…@rN",
         "offset" => "the index of the first candidate of the page, in the document's order (DC12)",
+        "status" => "only entries of this status: indexed, quarantined, stale or all (CL3)",
         _ => "",
     };
     json!({ "name": name, "in": "query", "required": false, "description": description,
@@ -325,6 +298,9 @@ fn parameters(op: &Operation) -> Vec<Value> {
                     Some("sha256: and the bytes' 64 hex digits, either case (HX5)")
                 }
                 "socket" => Some("sk_ and 20 hex digits, and @rN for one revision (RA4, RA5)"),
+                "entry" => Some(
+                    "a catalog reference: ID, ID@rN or sha256: and 12 to 64 hex digits (ID7, RA2)",
+                ),
                 "id" if op.path.starts_with("/v1/jobs") => {
                     Some("j_ and 26 base32 characters (M6-55)")
                 }

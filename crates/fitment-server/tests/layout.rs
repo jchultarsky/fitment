@@ -174,8 +174,10 @@ fn only_main_reads_arguments_and_exits() {
     }
 }
 
-/// SV4: `catalog.rs` is the only module naming `fitment_catalog`, and
-/// `matching.rs` the only one naming a `Matcher` or a `MatchDocument`.
+/// SV4: `catalog.rs` is the only module naming `fitment_catalog`, read as
+/// the module with its submodules under `catalog/` (as SV6 reads
+/// `state::db`; PR 7's As-built note), and `matching.rs` the only one
+/// naming a `Matcher` or a `MatchDocument`.
 #[test]
 fn only_catalog_rs_names_the_catalog_crate() {
     // As tools/check-core.sh's `\bfitment_catalog\b`: a metric named
@@ -197,7 +199,13 @@ fn only_catalog_rs_names_the_catalog_crate() {
         })
         .map(|(name, _)| name)
         .collect();
-    assert_eq!(crate_named, set(&["catalog.rs"]));
+    assert!(crate_named.contains("catalog.rs"), "{crate_named:?}");
+    assert!(
+        crate_named
+            .iter()
+            .all(|n| n == "catalog.rs" || n.starts_with("catalog/")),
+        "{crate_named:?}"
+    );
     for name in naming("Matcher").into_iter().chain(naming("MatchDocument")) {
         assert!(
             name == "matching.rs" || name == "openapi.rs",

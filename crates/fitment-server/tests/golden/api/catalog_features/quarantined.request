@@ -1,0 +1,3 @@
+GET /v1/catalog/entries/junk/features
+authorization: Bearer <ada's reader token>
+

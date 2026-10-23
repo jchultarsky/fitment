@@ -1,0 +1,25 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:JbeCRvtu8BB5/iEejn3/sJYfRAetPELv5pcxK53BUQs=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/revision_not_current",
+  "title": "The revision is not the current one",
+  "status": 409,
+  "detail": "m_block02 is at r2, not r1: nothing was changed",
+  "code": "revision_not_current",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "asked": 1,
+    "current": 2,
+    "id": "m_block02"
+  },
+  "request_id": "r_00000000000000000000000004"
+}

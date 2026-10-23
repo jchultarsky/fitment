@@ -1,0 +1,6 @@
+POST /v1/catalog/reindex
+authorization: Bearer <root's admin token>
+content-type: application/json
+prefer: wait=30
+
+{}

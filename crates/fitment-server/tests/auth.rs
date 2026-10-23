@@ -185,6 +185,64 @@ async fn seed_owned(world: &mut World) {
     }
 }
 
+/// The catalog's routes (PR 7): an entry `matrix-<who>` per principal and
+/// `matrix-other`, ingested through the library, so each principal's
+/// delete or replace has a target of its own.
+fn seed_catalog(world: &World) {
+    let mut catalog = fitment_catalog::Catalog::open(
+        &world.server.dirs.catalog,
+        fitment_catalog::Options::default(),
+    )
+    .unwrap();
+    let names: Vec<String> = WHO
+        .iter()
+        .map(|w| format!("{w:?}").to_ascii_lowercase())
+        .chain(["other".to_owned()])
+        .collect();
+    let bytes: Vec<Vec<u8>> = names
+        .iter()
+        .map(|n| format!("matrix {n}").into_bytes())
+        .collect();
+    let ids: Vec<String> = names.iter().map(|n| format!("matrix-{n}")).collect();
+    let inputs: Vec<fitment_catalog::Input<'_>> = bytes
+        .iter()
+        .zip(&ids)
+        .map(|(b, id)| {
+            fitment_catalog::Input::new(b, id, "matrix.stp")
+                .with_id(fitment_catalog::Id::parse(id).unwrap())
+        })
+        .collect();
+    let run = catalog
+        .ingest_inputs(&inputs, None, &fitment_catalog::NoObserver)
+        .unwrap();
+    assert!(run.lines.iter().all(|l| l.revision.is_some()), "{run:?}");
+}
+
+/// The requests of the catalog's routes (PR 7): each principal its own
+/// entry to change, every one the same to read.
+fn catalog_request(op: &Operation, world: &World, who: Who) -> Call {
+    let username = format!("{who:?}").to_ascii_lowercase();
+    let entry = format!("matrix-{username}");
+    let upload = world
+        .uploads
+        .get(&who)
+        .unwrap_or(&world.other_upload)
+        .clone();
+    let file = json!({ "upload": format!("sha256:{upload}"), "file_name": "matrix.stp" });
+    match op.id {
+        "catalog_info" | "catalog_list" => Call::get(op.path),
+        "catalog_get" | "catalog_features" | "catalog_step" => {
+            Call::get(&op.path.replace("{entry}", "matrix-other"))
+        }
+        "catalog_delete" => Call::new(Method::DELETE, &op.path.replace("{entry}", &entry)),
+        "catalog_delete_many" => Call::json(Method::POST, op.path, &json!({ "ids": [entry] })),
+        "catalog_replace" => Call::json(Method::PUT, &op.path.replace("{entry}", &entry), &file),
+        "catalog_ingest" => Call::json(Method::POST, op.path, &json!({ "files": [file] })),
+        "catalog_prune" => Call::json(Method::POST, op.path, &json!({ "revisions": true })),
+        _ => Call::json(Method::POST, op.path, &json!({})),
+    }
+}
+
 /// True for an operation whose target is a PR 5 resource.
 fn needs_owned(op: &str) -> bool {
     op.starts_with("assemblies_")
@@ -321,6 +379,7 @@ fn request(op: &Operation, world: &World, who: Who, owner: bool) -> Call {
             )
         }
         id if needs_owned(id) || id == "features_create" => owned_request(op, world, who, owner),
+        id if id.starts_with("catalog_") => catalog_request(op, world, who),
         other => panic!("VT23 has no row for the operation {other} (XH14)"),
     };
     match who {
@@ -452,6 +511,9 @@ async fn every_operation_answers_each_principal_as_its_role_says() {
         if needs_owned(op.id) {
             seed_owned(&mut world).await;
         }
+        if op.id.starts_with("catalog_") {
+            seed_catalog(&world);
+        }
         if op.id == "login" {
             let seams = world.server.server().seams();
             let phc = fitment_server::auth::password::hash(PASSWORD, seams.auth.pepper()).unwrap();
@@ -501,6 +563,47 @@ async fn every_operation_answers_each_principal_as_its_role_says() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// VT23, AU5, M6-60: a field that raises its operation's role: an
+/// exhaustive catalog match needs the writer role, `403 forbidden` below
+/// it before any job exists; a writer's is accepted, and a full run is a
+/// reader's.
+#[tokio::test]
+async fn a_field_raises_the_role_as_au5_says() {
+    let mut world = world(false);
+    seed_owned(&mut world).await;
+    for op in &OPERATIONS {
+        for (field, role) in op.role_fields {
+            if *field == "owner" {
+                continue;
+            }
+            assert_eq!(
+                (op.id, *field, *role),
+                (
+                    "matches_create",
+                    "candidates.catalog.selection",
+                    Needed::Writer
+                )
+            );
+        }
+    }
+    for (who, selection, status) in [
+        (Who::Reader, "exhaustive", 403),
+        (Who::WriterAsReader, "exhaustive", 403),
+        (Who::Writer, "exhaustive", 202),
+        (Who::Admin, "exhaustive", 202),
+        (Who::Reader, "full", 202),
+    ] {
+        let o = &world.owned[&who];
+        let body = json!({ "socket": o.revision, "candidates": { "catalog": { "selection": selection } } });
+        let call = Call::json(Method::POST, "/v1/matches", &body).bearer(&world.tokens[&who]);
+        let reply = world.server.send(call).await;
+        assert_eq!(reply.status.as_u16(), status, "{who:?} {selection}");
+        if status == 403 {
+            assert_eq!(reply.code(), "forbidden");
+        }
+    }
 }
 
 /// VT23, AU8: a token of another user is `404` to its non-owner, the

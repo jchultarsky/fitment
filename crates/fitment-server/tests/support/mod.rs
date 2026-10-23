@@ -76,7 +76,14 @@ impl Dirs {
             listen: Some("127.0.0.1:0".into()),
             ..Flags::default()
         };
-        Config::from_sources(&flags, &std::collections::BTreeMap::new()).unwrap()
+        let mut config = Config::from_sources(&flags, &std::collections::BTreeMap::new()).unwrap();
+        // JS2's budget fixed, not the machine's parallelism: on CI's 4-vCPU
+        // runners a paused match of `match_threads` (4) held every permit,
+        // and a test's next job waited for ever. Every test now sees the
+        // same permits on every machine; a test that needs others sets its
+        // own.
+        config.jobs.cpu = 8;
+        config
     }
 
     /// The paths XH13's scan refuses in a response.
@@ -598,6 +605,11 @@ impl Process {
                 command.env_remove(name);
             }
         }
+        // The same fixed budget as `Dirs::config` (JS2), whatever the
+        // machine, unless the test's file sets its own.
+        if !config_toml.contains("cpu") {
+            command.env("FITMENT_SERVER__JOBS__CPU", "8");
+        }
         let mut child = command.spawn().expect("spawn fitment-server");
         let stdin = child.stdin.take();
         let stderr = collect(child.stderr.take().unwrap());
@@ -1103,9 +1115,23 @@ pub fn waiting(path: &str, body: &serde_json::Value) -> Call {
 }
 
 impl TestServer {
-    /// Uploads `bytes` as the harness's admin; their SHA-256.
+    /// Uploads `bytes` as the harness's admin; their SHA-256. A `429`
+    /// (AU7's 50 a second past a burst of 100, which a fast runner reaches
+    /// uploading hundreds of files) is waited out as its `Retry-After`
+    /// says; tests of the limit itself send their own requests.
     pub async fn upload(&self, bytes: &[u8]) -> String {
-        let reply = self.send(put_upload(bytes)).await;
+        let mut reply = self.send(put_upload(bytes)).await;
+        for _ in 0..30 {
+            if reply.status != 429 {
+                break;
+            }
+            let wait = reply
+                .header("retry-after")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(1);
+            tokio::time::sleep(Duration::from_secs(wait.max(1))).await;
+            reply = self.send(put_upload(bytes)).await;
+        }
         assert!(
             reply.status.is_success(),
             "{}",
@@ -1277,4 +1303,129 @@ pub fn cli(dir: &Path, args: &[&str]) -> (Option<i32>, Vec<u8>, String) {
         output.stdout,
         String::from_utf8_lossy(&output.stderr).into_owned(),
     )
+}
+
+/// A catalog made stale as an older build left it (VT32; M5's
+/// `reindex.rs`): every features row, tokens row and posting rewritten as
+/// extractor version `ev` wrote them, their preimage hashes recomputed, so
+/// a reindex reads them as an older build's and writes this build's.
+pub fn stale_catalog(catalog: &Path, ev: u32) {
+    use fitment_catalog::hex::Sha256Hex;
+    use fitment_catalog::preimage::{self, Status};
+    type Row = (String, String, Option<String>, Vec<u8>);
+    let conn = rusqlite::Connection::open(catalog.join("catalog.db")).unwrap();
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         DROP TRIGGER IF EXISTS features_immutable;
+         DROP TRIGGER IF EXISTS tokens_immutable;",
+    )
+    .unwrap();
+    let rows: Vec<Row> = conn
+        .prepare("SELECT sha256, status, part_digest, doc FROM features")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let current = fitment_core::EXTRACTOR_VERSION;
+    for (sha, status, digest, doc) in rows {
+        let key = Sha256Hex::parse(&sha).unwrap();
+        let digest = digest.map(|d| Sha256Hex::parse(&d).unwrap());
+        let status = Status::parse(&status).unwrap();
+        let doc = String::from_utf8(doc)
+            .unwrap()
+            .replacen(
+                &format!("\"extractor_version\":{current}"),
+                &format!("\"extractor_version\":{ev}"),
+                1,
+            )
+            .into_bytes();
+        let hash = preimage::features(&key, ev, status, digest.as_ref(), &doc);
+        conn.execute(
+            "UPDATE features SET extractor_version = ?1, doc = ?2, doc_sha256 = ?3
+             WHERE sha256 = ?4",
+            rusqlite::params![ev, doc, hash.as_str(), sha],
+        )
+        .unwrap();
+    }
+    let rows: Vec<(String, u32, Vec<u8>)> = conn
+        .prepare("SELECT sha256, signature_version, tokens FROM tokens")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for (sha, sv, tokens) in rows {
+        let hash = preimage::tokens(&Sha256Hex::parse(&sha).unwrap(), ev, sv, &tokens);
+        conn.execute(
+            "UPDATE tokens SET extractor_version = ?1, tokens_sha256 = ?2 WHERE sha256 = ?3",
+            rusqlite::params![ev, hash.as_str(), sha],
+        )
+        .unwrap();
+    }
+    conn.execute("UPDATE posting SET extractor_version = ?1", [ev])
+        .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS features_immutable BEFORE UPDATE ON features
+         BEGIN SELECT RAISE(ABORT, 'features rows are insert-only'); END;
+         CREATE TRIGGER IF NOT EXISTS tokens_immutable BEFORE UPDATE ON tokens
+         BEGIN SELECT RAISE(ABORT, 'tokens rows are insert-only'); END;",
+    )
+    .unwrap();
+}
+
+/// `count` files that are no STEP file, each its own bytes: quarantined
+/// entries, quick to ingest, for the tests that need many (several of
+/// DB3's batches of 64).
+pub fn junk_files(count: usize) -> Vec<(Vec<u8>, String)> {
+    (0..count)
+        .map(|n| {
+            (
+                format!("junk {n:04}\n").into_bytes(),
+                format!("junk{n:04}.stp"),
+            )
+        })
+        .collect()
+}
+
+/// `fitment catalog verify -C <the server's catalog>` (XH12's fourth
+/// invariant): its exit code, 0 when consistent.
+pub fn verified(catalog: &Path) -> Option<i32> {
+    let dir = catalog.parent().unwrap_or(catalog);
+    let shown = catalog.display().to_string();
+    cli(dir, &["catalog", "verify", "-C", &shown]).0
+}
+
+impl TestServer {
+    /// Uploads `files` and ingests them in one job, as the harness's
+    /// admin, waiting: the job.
+    pub async fn ingest(&self, files: &[(Vec<u8>, String)]) -> serde_json::Value {
+        let mut listed = Vec::with_capacity(files.len());
+        for (bytes, name) in files {
+            let sha = self.upload(bytes).await;
+            listed
+                .push(serde_json::json!({ "upload": format!("sha256:{sha}"), "file_name": name }));
+        }
+        let body = serde_json::json!({ "files": listed });
+        let reply = self.send(waiting("/v1/catalog/entries", &body)).await;
+        assert!(
+            reply.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&reply.body)
+        );
+        let id = reply.json()["id"].as_str().unwrap().to_owned();
+        self.finished_job(&id, Duration::from_secs(300)).await
+    }
+
+    /// A job submitted with `body` at `path` (`POST`), not waited for: the
+    /// job as answered.
+    pub async fn submit(&self, path: &str, body: &serde_json::Value) -> serde_json::Value {
+        let reply = self.send(Call::json(Method::POST, path, body)).await;
+        assert!(
+            reply.status.is_success(),
+            "{path}: {}",
+            String::from_utf8_lossy(&reply.body)
+        );
+        reply.json()
+    }
 }

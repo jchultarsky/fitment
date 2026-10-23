@@ -1,0 +1,35 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: "sha256:de9570d4cf96a8b0d4c80f92404a97cd44a5a97140b72633f683e9dca20d09eb"
+fitment-exit-code: 3
+fitment-format: fitment.features/1
+repr-digest: sha-256=:3pVw1M+WqLDUyA+SQEqXzUSlqXFAtyYz9oPp3KINCes=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.features",
+  "format_version": 1,
+  "extractor_version": 6,
+  "extraction": {
+    "identity_mm": 1e-6,
+    "parallel_sine": 1e-9,
+    "vertex_side_mm": 0.001,
+    "lever_min_mm": 1.0,
+    "sweep_rad": 1e-9,
+    "walk_max": 8,
+    "gate_slack_mm": 1e-6,
+    "gate_slack_rel": 1e-6,
+    "range_mm": 1000000.0
+  },
+  "header": null,
+  "status": "refused",
+  "refusals": [
+    {
+      "code": "unparseable",
+      "instance": null,
+      "message": "the file is not ISO 10303-21: syntax error at line 1, column 1: expected ISO-10303-21, found 'not'"
+    }
+  ],
+  "part": null
+}

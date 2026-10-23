@@ -29,6 +29,17 @@ pub(crate) struct Entry {
     pub cpu: u32,
     /// Its memory estimate, in MiB (JS3).
     pub memory_mib: u32,
+    /// Whose memory is estimated again from the catalog at dispatch (JS3).
+    pub catalog: Option<Reestimate>,
+}
+
+/// JS3: a job whose memory the catalog decides, at dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Reestimate {
+    /// A catalog match: its selection and named count.
+    Match(String, usize),
+    /// A reindex or a deep verify: the catalog's largest file.
+    LargestFile,
 }
 
 /// Why a submission was refused for load (JS5).
@@ -200,10 +211,14 @@ impl Sched {
         self.live.contains_key(&key) || self.lanes.iter().any(|lane| lane.contains(key))
     }
 
-    /// The jobs each lane may start now (JS4).
-    pub fn picks(&mut self) -> Vec<Entry> {
+    /// The jobs each lane may start now (JS4); under the WAL barrier, no
+    /// query (CX6).
+    pub fn picks(&mut self, barrier: bool) -> Vec<Entry> {
         let mut out = Vec::new();
-        for lane in &mut self.lanes {
+        for (i, lane) in self.lanes.iter_mut().enumerate() {
+            if barrier && i == Lane::Query.index() {
+                continue;
+            }
             while let Some(entry) = lane.pick() {
                 out.push(entry);
             }
@@ -248,6 +263,7 @@ mod tests {
             kind: Kind::Features,
             cpu: 1,
             memory_mib: 1,
+            catalog: None,
         }
     }
 
@@ -269,16 +285,16 @@ mod tests {
         for (key, owner) in [(1, 10), (2, 10), (3, 10), (4, 20), (5, 30)] {
             sched.push(entry(key, owner));
         }
-        let first: Vec<i64> = sched.picks().iter().map(|e| e.key).collect();
+        let first: Vec<i64> = sched.picks(false).iter().map(|e| e.key).collect();
         assert_eq!(first, [1, 4, 5]);
         sched.done(&entry(4, 20));
-        let next: Vec<i64> = sched.picks().iter().map(|e| e.key).collect();
+        let next: Vec<i64> = sched.picks(false).iter().map(|e| e.key).collect();
         assert_eq!(next, [2]);
         sched.done(&entry(5, 30));
         // Owner 10 has two running: its third waits.
-        assert!(sched.picks().is_empty());
+        assert!(sched.picks(false).is_empty());
         sched.done(&entry(1, 10));
-        assert_eq!(sched.picks()[0].key, 3);
+        assert_eq!(sched.picks(false)[0].key, 3);
     }
 
     /// JS5: a lane's cap and an owner's, reservations counted.

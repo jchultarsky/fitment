@@ -1,0 +1,50 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: W/"j5.succeeded"
+fitment-format: fitment.job/1
+location: /v1/jobs/j_00000000000000000000000005
+preference-applied: wait=30
+repr-digest: sha-256=:BO0tDJexYKSygKuKW1SPNi/uqdlkIpUrFT09dVFkf/c=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.job",
+  "format_version": 1,
+  "id": "j_00000000000000000000000005",
+  "kind": "catalog_gc",
+  "owner": "u_00000000000000000000000001",
+  "state": "succeeded",
+  "attempt": 1,
+  "request": {
+    "vacuum": false,
+    "versions": true
+  },
+  "request_sha256": "7493d8cd300fd28235d0b901304585e6d34300511c694a4df97c1af1765084cc",
+  "queue_position": null,
+  "progress": null,
+  "cancel_requested": false,
+  "exit_code": 0,
+  "outcome": "unchanged",
+  "result": null,
+  "document": {
+    "href": "/v1/jobs/j_00000000000000000000000005/document",
+    "format": "fitment.gc",
+    "sha256": "224fdb29b99b00157732f0aec1fbe83fe4c029a27b2ea53e2c8904d0c18c98f6",
+    "bytes": 204
+  },
+  "error": null,
+  "notes": [
+    {
+      "code": "summary",
+      "message": "0 orphan files removed, 0 temporary files removed, 0 rows of older versions removed"
+    }
+  ],
+  "pinned": false,
+  "times": {
+    "created": "2026-09-21T14:13:20Z",
+    "started": "2026-09-21T14:13:20Z",
+    "finished": "2026-09-21T14:13:20Z",
+    "expires": "2026-10-21T14:13:20Z"
+  }
+}

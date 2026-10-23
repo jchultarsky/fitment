@@ -58,6 +58,11 @@ pub(crate) async fn serve(
     let (lost_tx, mut lost) = tokio::sync::oneshot::channel::<()>();
     let lease = tokio::spawn(renew(Arc::clone(&shared), lost_tx));
     let sweep = tokio::spawn(sweep(Arc::clone(&shared)));
+    let daily = shared
+        .config
+        .jobs
+        .catalog_gc_minute()
+        .map(|minute| tokio::spawn(daily_gc(Arc::clone(&shared), minute)));
     // SD3 (9): the dispatcher starts on the jobs recovery queued again.
     shared.jobs.kick(&shared);
     let metrics = match metrics_listener(&shared).await {
@@ -112,6 +117,9 @@ pub(crate) async fn serve(
     tokio::join!(requests, shared.jobs.drain(drain));
     lease.abort();
     sweep.abort();
+    if let Some(daily) = daily {
+        daily.abort();
+    }
     if let Some(metrics) = metrics {
         metrics.abort();
     }
@@ -335,6 +343,22 @@ async fn sweep(shared: Arc<Shared>) {
             ),
             Ok(Err(error)) => tracing::warn!(error = %error, "the store could not be swept"),
             Err(_) => tracing::warn!("the store's sweep failed"),
+        }
+    }
+}
+
+/// JS9, M6-56: the daily catalog gc, at `jobs.catalog_gc_at` (UTC), a
+/// write-lane job of the `system` user, queued once a day unless one is
+/// queued or running.
+async fn daily_gc(shared: Arc<Shared>, minute: u32) {
+    loop {
+        let wait = crate::jobs::until_minute(shared.ids.now_ms(), minute);
+        tokio::time::sleep(Duration::from_millis(wait)).await;
+        let queuing = Arc::clone(&shared);
+        match tokio::task::spawn_blocking(move || crate::jobs::queue_daily_gc(&queuing)).await {
+            Ok(Ok(_)) => shared.jobs.kick(&shared),
+            Ok(Err(error)) => tracing::warn!(error = %error, "the daily gc could not be queued"),
+            Err(_) => tracing::warn!("queueing the daily gc failed"),
         }
     }
 }

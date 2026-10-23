@@ -46,6 +46,27 @@ pub enum Unnamed {
     /// A content reference where only ids are taken (`delete`, ID7).
     #[error("{0}: delete takes ids, not content references")]
     NotAnId(String),
+    /// A change made on condition of a generation the catalog is no
+    /// longer at (`docs/research/m6-api.md`, RA7: an `If-Match` naming
+    /// another generation's entity tag); nothing changed.
+    #[error("the catalog is at generation {generation}, not {asked}")]
+    Changed {
+        /// The generation the change was made on condition of.
+        asked: i64,
+        /// The generation the catalog is at.
+        generation: i64,
+    },
+}
+
+/// RA7 (`docs/research/m6-api.md`): a change's condition, checked on
+/// `conn`, inside the change's transaction where it has one: the catalog
+/// is at generation `at`, if one is given.
+fn at_generation(conn: &Connection, at: Option<i64>) -> Result<Option<Unnamed>, Error> {
+    let Some(asked) = at else {
+        return Ok(None);
+    };
+    let generation = schema::generation(conn)?;
+    Ok((generation != asked).then_some(Unnamed::Changed { asked, generation }))
 }
 
 /// What `replace` did.
@@ -270,12 +291,37 @@ impl Catalog {
         max_bytes: Option<u64>,
         observer: &dyn Observer,
     ) -> Result<Result<Replaced, NotReplaced>, Error> {
+        self.replace_input_at(reference, input, max_bytes, None, observer)
+    }
+
+    /// [`Catalog::replace_input`] on condition that the catalog is at
+    /// generation `at`, if one is given (`docs/research/m6-api.md`, RA7),
+    /// checked once the reference names an entry it may replace, before
+    /// the file is read and again in the transaction: at
+    /// another, nothing changes and the refusal is
+    /// [`NotReplaced::Unnamed`] with [`Unnamed::Changed`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Catalog::replace_input`].
+    pub fn replace_input_at(
+        &mut self,
+        reference: &Reference,
+        input: &Input<'_>,
+        max_bytes: Option<u64>,
+        at: Option<i64>,
+        observer: &dyn Observer,
+    ) -> Result<Result<Replaced, NotReplaced>, Error> {
         // ID9 first: a reference that names no entry it may replace is
         // refused before the file is read; the transaction checks again.
+        // Then the condition, as RFC 9110 orders them (13.2.2).
         let named = match live_entry(&self.conn, reference)? {
             Ok(named) => named,
             Err(unnamed) => return Ok(Err(NotReplaced::Unnamed(unnamed))),
         };
+        if let Some(changed) = at_generation(&self.conn, at)? {
+            return Ok(Err(NotReplaced::Unnamed(changed)));
+        }
         if observer.cancelled() {
             return Err(Error::Cancelled);
         }
@@ -340,7 +386,7 @@ impl Catalog {
         // The old content stays held by its kept revision: nothing is
         // released. A refusal after the put leaves the new file unnamed,
         // and the inline gc unlinks it (CR4: nothing changed).
-        let outcome = self.replace_in(reference, &prepared);
+        let outcome = self.replace_in(reference, &prepared, at);
         if likely && !matches!(outcome, Ok(Ok(Replaced::Replaced { .. }))) {
             let size = u64::try_from(prepared.bytes.len()).unwrap_or(u64::MAX);
             let _ = self.unlink(&[(prepared.sha256.clone(), size)]);
@@ -352,6 +398,7 @@ impl Catalog {
         &mut self,
         reference: &Reference,
         p: &Prepared,
+        at: Option<i64>,
     ) -> Result<Result<Replaced, NotReplaced>, Error> {
         let blobs = crate::blobs::Blobs {
             layout: &self.layout,
@@ -364,6 +411,9 @@ impl Catalog {
             Ok(named) => named,
             Err(unnamed) => return Ok(Err(NotReplaced::Unnamed(unnamed))),
         };
+        if let Some(changed) = at_generation(&tx, at)? {
+            return Ok(Err(NotReplaced::Unnamed(changed)));
+        }
         if named.sha256 == p.sha256 {
             let same = Replaced::Unchanged {
                 id: named.id,
@@ -435,6 +485,23 @@ impl Catalog {
         &mut self,
         references: &[Reference],
     ) -> Result<Result<Deletion, Vec<Unnamed>>, Error> {
+        self.delete_at(references, None)
+    }
+
+    /// [`Catalog::delete`] on condition that the catalog is at generation
+    /// `at`, if one is given (`docs/research/m6-api.md`, RA7), checked in
+    /// its transaction once every reference names a live entry: at
+    /// another, nothing changes and the refusal is [`Unnamed::Changed`]
+    /// alone.
+    ///
+    /// # Errors
+    ///
+    /// As [`Catalog::delete`].
+    pub fn delete_at(
+        &mut self,
+        references: &[Reference],
+        at: Option<i64>,
+    ) -> Result<Result<Deletion, Vec<Unnamed>>, Error> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -453,6 +520,10 @@ impl Catalog {
         }
         if !unnamed.is_empty() {
             return Ok(Err(unnamed));
+        }
+        // The condition after the references, as RFC 9110 orders them.
+        if let Some(changed) = at_generation(&tx, at)? {
+            return Ok(Err(vec![changed]));
         }
         if named.is_empty() {
             return Ok(Ok(Deletion {

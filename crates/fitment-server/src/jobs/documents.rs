@@ -351,8 +351,25 @@ pub fn stopped(kind: Kind) -> Stopped {
 /// `interrupted`, `job_interrupted`, retryable as [`retryable`] says, its
 /// key released either way (JB9).
 pub fn interrupted(row: &JobRow) -> End {
+    interrupted_at(row, None)
+}
+
+/// [`interrupted`], a write job's details giving the catalog's generation
+/// when it started (recorded at dispatch) and when recovery ran (JB6), so
+/// a client reads what changed between them.
+pub fn interrupted_at(row: &JobRow, recovery: Option<i64>) -> End {
     let mut details = serde_json::Map::new();
     details.insert("attempt".into(), row.attempt.into());
+    if !row.kind.pure() {
+        details.insert(
+            "generation_at_start".into(),
+            row.catalog_generation.map_or(Value::Null, Value::from),
+        );
+        details.insert(
+            "generation_at_recovery".into(),
+            recovery.map_or(Value::Null, Value::from),
+        );
+    }
     failed(
         State::Interrupted,
         None,

@@ -459,6 +459,22 @@ fn mapped(input: &Input<'_>) -> bool {
     input.id.is_none() && !is_exact(&stored_name(input.file_name))
 }
 
+/// CA1, ID4: the order [`Catalog::ingest_inputs`] takes `inputs` in, as
+/// indexes into them: the run's `k`th line is the line of
+/// `inputs[order[k]]`, one line per input, so a caller ties each line to
+/// its own input however many share a label (`docs/research/m6-api.md`,
+/// RA8). A run that stopped early gives the first lines only.
+pub fn ingest_order(inputs: &[Input<'_>]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..inputs.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (a, b) = (&inputs[a], &inputs[b]);
+        mapped(a)
+            .cmp(&mapped(b))
+            .then_with(|| a.input.as_bytes().cmp(b.input.as_bytes()))
+    });
+    order
+}
+
 impl Catalog {
     /// `fitment catalog ingest`: each file of `inputs`, under `id` if given
     /// (then exactly one file), in ID4's order, in batches (DB3). Each path
@@ -537,12 +553,10 @@ impl Catalog {
         max_bytes: Option<u64>,
         observer: &dyn Observer,
     ) -> Result<Ingest, Error> {
-        let mut ordered: Vec<&Input<'_>> = inputs.iter().collect();
-        ordered.sort_by(|a, b| {
-            mapped(a)
-                .cmp(&mapped(b))
-                .then_with(|| a.input.as_bytes().cmp(b.input.as_bytes()))
-        });
+        let ordered: Vec<&Input<'_>> = ingest_order(inputs)
+            .into_iter()
+            .map(|at| &inputs[at])
+            .collect();
         let cap = max_bytes.unwrap_or(self.options.max_bytes);
         Ok(self.ingest_in_order(&ordered, cap, observer))
     }

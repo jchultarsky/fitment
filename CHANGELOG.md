@@ -182,6 +182,64 @@ Until 1.0, minor versions may contain breaking changes.
   `CatalogDocument::page`) and a size cap per call (`max_bytes` on
   `ingest_inputs` and `replace_input`). All
   additions; the catalog's schema is unchanged.
+- **M6, PR 7b (the catalog through the API, and the exit's catalog
+  half):** `fitment-server` serves the catalog it opened, shared by every
+  user. `GET /v1/catalog` states its generation, counts and flags; `GET
+  /v1/catalog/entries` lists it a page at a time (the next page in `Link`)
+  or whole with `limit=all`, built in one snapshot, at most
+  `limits.list_all_concurrency` at once; `GET /v1/catalog/entries/{ref}`,
+  `…/features` and `…/step` are `fitment catalog get` in its forms, a
+  step above 1 MiB checked in one pass and streamed in a second; one user
+  holds at most half the read slots and one whole listing (`429
+  too_many_streams`, `details.per_user`).
+  `DELETE /v1/catalog/entries/{ref}` and `POST /v1/catalog/delete` delete
+  in the request, at most two at once, on a writer that waits at most
+  `catalog.delete_busy_ms`. Ingest (`POST /v1/catalog/entries`, each file an
+  upload named by the client, with its own id if given), replace (`PUT`),
+  reindex, prune, gc and verify are jobs: `catalog_ingest`,
+  `catalog_replace`, `catalog_reindex`, `catalog_prune` and `catalog_gc` on
+  the write lane's one writer, `catalog_verify` on the maintenance lane
+  under `jobs.deadline_verify_minutes`; each document is the CLI's
+  `--format json` bytes and each exit code the CLI's. A cancel keeps what an
+  ingest's, a reindex's or a gc's committed batches did, its document
+  listing exactly that; a replace or a prune is one transaction and cannot
+  be stopped once running; a write job a stop or a crash cuts short is
+  `interrupted` with the catalog's generation when it started (and at
+  recovery). Ingests and reindexes persist each committed file's change
+  and each batch as job events. `POST /v1/matches` takes `candidates.catalog`
+  (`full`, `exhaustive` or `{"ids": […]}`), as `fitment match --catalog`
+  runs it in one snapshot of a pooled reader; an exhaustive run needs the
+  writer role and is refused `too_large` past
+  `limits.max_catalog_candidates`; a stale, empty or blocked catalog
+  refuses the run with its code; `fitment.run` states the run's generation
+  and what it searched. Catalog views carry the ETag
+  `"<instance>.g<generation>.<build>"` (`GET /v1/catalog`'s with its
+  state folded in), `If-None-Match` answers `304` and a page under an
+  `If-Match` of another generation `412 precondition_failed`; a delete or
+  a replace of an entry under `If-Match` is made only if the catalog is
+  still at the tag's generation, else `412`, nothing changed. A stale
+  catalog gets a reindex job at start (`jobs.reindex_on_start`, on by
+  default), and `jobs.catalog_gc_at`
+  (`HH:MM` UTC, off by default) queues a daily gc, both owned by the
+  `system` user, whose jobs an admin lists. Past
+  `catalog.wal_barrier_mib` of log that readers pin, query dispatch pauses
+  for at most `catalog.barrier_max_seconds` so the log can be truncated, and
+  a gc with `vacuum` takes that barrier around `VACUUM` or fails
+  `catalog_busy`; a gc truncates the log on a reader, so a pinned log never
+  holds its writer. Request catalog reads take the read slots
+  (`limits.read_concurrency`), and
+  `/v1/info`'s too. The API's minor is 5. `fitment-catalog` gains
+  `Catalog::check_schema`, which reads an open catalog's schema through its
+  connection; `ingest_order`, the order `ingest_inputs` takes its inputs
+  in; `Catalog::open_blob`, a stored file checked in one pass and read in
+  a second; `gc_collect_observed` and `vacuum`, gc's steps apart;
+  `delete_at` and `replace_input_at` with `Unnamed::Changed`, changes on
+  condition of a generation; `Catalog::page_size` and
+  `Snapshot::largest_blob`: all additions, `fitment catalog`'s output
+  unchanged. Through the built server, the corpus ingested and every
+  catalog run of the exit set under three policies give the
+  CLI's bytes on the server's catalog, and `fitment catalog verify --deep`
+  is clean after.
 
 ### Changed
 

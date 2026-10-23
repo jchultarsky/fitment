@@ -1,0 +1,23 @@
+412
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:Vn3EsBt9B9LaRpWD+sNLMSulybjBK4kcVOjuYbdTRTQ=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/precondition_failed",
+  "title": "A precondition failed",
+  "status": 412,
+  "detail": "the catalog is at another generation than If-Match names: start the list again",
+  "code": "precondition_failed",
+  "class": "usage",
+  "exit_code": null,
+  "retryable": false,
+  "details": {
+    "etag": "\"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.g2.a084b73cb5e5\""
+  },
+  "request_id": "r_00000000000000000000000004"
+}

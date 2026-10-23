@@ -1,0 +1,24 @@
+403
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:XcrGQpCeZS5wgKdxlDiFqNifcH2xOWKrlzR3FCFR5yc=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/forbidden",
+  "title": "The role is too low",
+  "status": 403,
+  "detail": "this needs the writer role; the token's effective role is reader",
+  "code": "forbidden",
+  "class": "auth",
+  "exit_code": null,
+  "retryable": false,
+  "details": {
+    "required": "writer",
+    "role": "reader"
+  },
+  "request_id": "r_00000000000000000000000004"
+}

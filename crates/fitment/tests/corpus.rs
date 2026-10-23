@@ -476,11 +476,10 @@ fn every_rule_has_a_case_a_test_or_a_reason() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// The M6 PR this tree builds: a deferral names a later one. PR 7 lands
-/// in two parts; after 7a (the catalog's library and CLI) this stays 6,
-/// since the rules 7b builds still wait for "M6 PR 7", and rises to 7 with
-/// 7b, when none may.
-const M6_PR_NOW: u32 = 6;
+/// The M6 PR this tree builds: a deferral names a later one. PR 7 landed
+/// in two parts; with 7b (the catalog through the API) it is 7, and no
+/// rule waits for "M6 PR 7".
+const M6_PR_NOW: u32 = 7;
 
 /// The last M6 PR a rule may wait for: PR 9, M6's exit, removes the
 /// allowance (section 12; PR 10 is the release).
@@ -519,17 +518,17 @@ fn m6_list_problems(id: &str, tests: &[&str], deferred: bool) -> Vec<String> {
 #[test]
 fn m6_deferrals_and_lists_hold() {
     let m6 = vec!["UP2".to_owned()];
-    assert!(m6_deferral("UP2", "M6 PR 7", &m6));
+    assert!(m6_deferral("UP2", "M6 PR 8", &m6));
     assert!(m6_deferral("UP2", "M6 PR 9", &m6));
-    assert!(!m6_deferral("UP2", "M6 PR 6", &m6), "a deferral to this PR");
+    assert!(!m6_deferral("UP2", "M6 PR 7", &m6), "a deferral to this PR");
     assert!(
-        !m6_deferral("UP2", "M6 PR 5", &m6),
+        !m6_deferral("UP2", "M6 PR 6", &m6),
         "a deferral to an earlier PR"
     );
     for reason in ["M6 PR 1", "M6 PR 0", "M6 PR 10", "M6 PR", "M5 PR 4"] {
         assert!(!m6_deferral("UP2", reason, &m6), "{reason}");
     }
-    assert!(!m6_deferral("ST1", "M6 PR 7", &m6));
+    assert!(!m6_deferral("ST1", "M6 PR 8", &m6));
     let hostile = "crates/fitment-server/tests/hostile.rs::a_body_past_the_cap";
     let elsewhere = "crates/fitment-server/tests/api.rs::a_body_past_the_cap";
     assert_eq!(m6_list_problems("UP2", &[], false).len(), 1);

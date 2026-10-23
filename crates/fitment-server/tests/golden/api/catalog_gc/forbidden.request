@@ -1,0 +1,6 @@
+POST /v1/catalog/gc
+authorization: Bearer <ada's reader token>
+content-type: application/json
+prefer: wait=30
+
+{}

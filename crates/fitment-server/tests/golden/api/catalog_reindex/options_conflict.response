@@ -1,0 +1,21 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:DV08fXd1gUq5DmDnwG8ObLQg8SD1HIHHA6gro8YMZUw=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/options_conflict",
+  "title": "Two options exclude each other",
+  "status": 400,
+  "detail": "refs and all exclude each other, as REF and --all do",
+  "code": "options_conflict",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

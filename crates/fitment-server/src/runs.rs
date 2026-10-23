@@ -91,6 +91,36 @@ pub struct RunFacts {
     pub options: RunOptions,
     /// The build's versions that ran it (SV5).
     pub versions: RunVersions,
+    /// A catalog run's damaged rows, not judged (QR4).
+    #[serde(default)]
+    pub corrupt: Vec<String>,
+    /// A catalog run's generation and counts (M6-25, CM8); absent for a
+    /// file run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<CatalogFacts>,
+}
+
+/// What a catalog run searched (M6-25, DC10, CM8): recorded with the run,
+/// not in the document, which stays `fitment.match` v1 (M5-2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CatalogFacts {
+    /// The snapshot's generation (QR2).
+    pub generation: i64,
+    /// Live entries.
+    pub entries: usize,
+    /// Indexed: searched by a full run.
+    pub searched: usize,
+    /// Quarantined: never searched by a full run (CR8).
+    pub quarantined_not_searched: usize,
+    /// Level 1's survivors, in a full run.
+    pub level_one_kept: Option<usize>,
+    /// The entries a named run named.
+    pub named: Option<usize>,
+    /// The candidates judged.
+    pub judged: usize,
+    /// The judgments made, one per group of equal parts (QR6).
+    pub distinct_judgments: usize,
 }
 
 /// One candidate's place in its document (DC12): its bytes' range and
@@ -288,10 +318,48 @@ pub struct RunSocket {
     pub unreviewed: Option<usize>,
 }
 
+/// `fitment.run`'s candidates: a file run's, or a catalog run's (DC10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum RunCandidates {
+    /// Files and components.
+    Files(FileCandidates),
+    /// The catalog (SN10, M6-25).
+    Catalog(CatalogCandidates),
+}
+
+/// `fitment.run`'s candidates of a catalog run (DC10): its selection, and
+/// once it ran, its snapshot's generation and CM8's counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CatalogCandidates {
+    /// `catalog`.
+    pub kind: &'static str,
+    /// `full`, `exhaustive` or `named`.
+    pub selection: String,
+    /// The snapshot's generation, once it ran.
+    pub generation: Option<i64>,
+    /// Live entries.
+    pub entries: Option<usize>,
+    /// Indexed: searched by a full run.
+    pub searched: Option<usize>,
+    /// Quarantined: not searched by a full run (CR8).
+    pub quarantined_not_searched: Option<usize>,
+    /// Level 1's survivors, in a full run.
+    pub level_one_kept: Option<usize>,
+    /// The entries a named run named.
+    pub named: Option<usize>,
+    /// The candidates judged.
+    pub judged: Option<usize>,
+    /// The judgments made, one per group of equal parts (QR6).
+    pub distinct_judgments: Option<usize>,
+}
+
 /// `fitment.run`'s candidates of a file run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct RunCandidates {
+pub struct FileCandidates {
     /// `files`.
     pub kind: &'static str,
     /// The files and components asked for.
@@ -443,6 +511,8 @@ pub struct Asked {
     pub options: RunOptions,
     /// The original's assembly, when asked.
     pub original: Option<String>,
+    /// A catalog run's selection's name and its named references' count.
+    pub catalog: Option<(String, usize)>,
 }
 
 /// `fitment.run` of `row` (DC10): `summary` and `outcome` only for a run
@@ -454,6 +524,7 @@ pub fn run(row: &JobRow, asked: Asked) -> RunDocument {
         .as_deref()
         .and_then(|r| serde_json::from_str(r).ok());
     let succeeded = row.state == State::Succeeded;
+    let candidates = candidates(&asked, facts.as_ref());
     let mut socket = asked.socket;
     if let Some(f) = &facts {
         socket.sha256 = Some(f.socket_sha256.clone());
@@ -475,12 +546,7 @@ pub fn run(row: &JobRow, asked: Asked) -> RunDocument {
         format_version: RUN_FORMAT_VERSION,
         id: row.id.clone(),
         socket,
-        candidates: RunCandidates {
-            kind: "files",
-            files: asked.files,
-            components: asked.components,
-            distinct: facts.as_ref().map(|f| f.distinct),
-        },
+        candidates,
         policy: facts.as_ref().map_or(asked.policy, |f| f.policy.clone()),
         options: facts.as_ref().map_or(asked.options, |f| f.options.clone()),
         original: asked.original.map(|assembly| RunOriginal {
@@ -494,7 +560,10 @@ pub fn run(row: &JobRow, asked: Asked) -> RunDocument {
         exit_code: row.exit,
         complete: succeeded,
         problems: RunProblems {
-            corrupt: Vec::new(),
+            corrupt: facts
+                .as_ref()
+                .map(|f| f.corrupt.clone())
+                .unwrap_or_default(),
             bugs: facts.as_ref().map(|f| f.bugs.clone()).unwrap_or_default(),
             original: facts.as_ref().and_then(|f| f.original.clone()),
             incomplete_summary: facts
@@ -504,6 +573,31 @@ pub fn run(row: &JobRow, asked: Asked) -> RunDocument {
         },
         document,
     }
+}
+
+/// `fitment.run`'s candidates of `asked`, completed by the run's facts.
+fn candidates(asked: &Asked, facts: Option<&RunFacts>) -> RunCandidates {
+    let Some((selection, named)) = &asked.catalog else {
+        return RunCandidates::Files(FileCandidates {
+            kind: "files",
+            files: asked.files,
+            components: asked.components,
+            distinct: facts.map(|f| f.distinct),
+        });
+    };
+    let catalog = facts.and_then(|f| f.catalog.as_ref());
+    RunCandidates::Catalog(CatalogCandidates {
+        kind: "catalog",
+        selection: selection.clone(),
+        generation: catalog.map(|c| c.generation),
+        entries: catalog.map(|c| c.entries),
+        searched: catalog.map(|c| c.searched),
+        quarantined_not_searched: catalog.map(|c| c.quarantined_not_searched),
+        level_one_kept: catalog.and_then(|c| c.level_one_kept),
+        named: (selection == "named").then_some(*named),
+        judged: catalog.map(|c| c.judged),
+        distinct_judgments: catalog.map(|c| c.distinct_judgments),
+    })
 }
 
 /// DC12's page, written by hand around the document's own bytes of each

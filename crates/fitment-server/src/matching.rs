@@ -257,6 +257,10 @@ pub enum MatchNote {
     OriginalExhausted(String),
     /// The original fails its own socket here (VD15): a fitment bug.
     OriginalFails(String),
+    /// A catalog entry whose stored rows failed QR4: not judged.
+    CatalogCorrupt(String),
+    /// CM8's line: what the catalog run searched, and what it did not.
+    CatalogSearched(String),
 }
 
 /// A file candidate, once (MF3): its upload's SHA-256 and every label it
@@ -610,6 +614,111 @@ pub fn judge<E>(
         original.as_ref(),
         original_problem,
     )))
+}
+
+/// What a catalog match judges besides its catalog (JS6, SN10): the
+/// socket gated again at dispatch, the policy and options, the verifier,
+/// and the original (VD15).
+pub struct CatalogJudging<'a> {
+    /// The socket, read and gated again at dispatch (JB2).
+    pub document: &'a SocketDocument,
+    /// DC7.
+    pub policy: MatchPolicy,
+    /// `require_fit` and `require_reviewed`.
+    pub options: MatchOptions,
+    /// The server's fit verifier (SV8, SN11).
+    pub verifier: &'a (dyn FitVerifier + Send + Sync),
+    /// The original, as a file match's.
+    pub original: Option<Result<&'a SelectedComponent, ()>>,
+}
+
+/// How a catalog match's judging ended.
+pub enum CatalogJudged {
+    /// MF2 refused the socket after all: a broken invariant (JB2).
+    Refused(GateError),
+    /// QR1 refused the run, JS12 bounded it, or its flag stopped it:
+    /// nothing judged is kept (SN7, section 7.13).
+    NotRun(crate::catalog::Searched),
+    /// The run's result and what the catalog judged (DC10).
+    Done(Box<MatchRun>, Box<crate::catalog::Matched>),
+}
+
+/// Where a catalog match searches (JS6, CX1, JS12, QR8): the server's
+/// catalog, the selection, the exhaustive cap, the threads its permits
+/// give, and the job's observer (CA2).
+pub struct CatalogSearch<'a> {
+    /// The catalog (RA1).
+    pub dir: &'a crate::catalog::CatalogDir,
+    /// What it judges.
+    pub selection: &'a crate::catalog::Selection,
+    /// JS12's `limits.max_catalog_candidates`.
+    pub cap: u64,
+    /// QR8: the job's CPU permits, which change no byte.
+    pub jobs: usize,
+    /// The job's stop flag and progress.
+    pub watch: &'a crate::catalog::Watch<'a>,
+}
+
+/// JS6, SN1, SN10: a catalog match, as `fitment match S --catalog DIR`
+/// runs it: the matcher of the gated socket, the original first (an M4
+/// usage error before the catalog is read), then the catalog's run with
+/// this matcher in one snapshot `catalog.rs` opens (SV4: the matcher stays
+/// here, the catalog there); its bugs, damaged rows and candidates noted
+/// in the CLI's order, CM8's line (`searched`), then the document
+/// `MatchDocument::with_original` writes. Blocking.
+///
+/// # Errors
+///
+/// The catalog's, mapped (CX7).
+pub fn judge_catalog(
+    judging: CatalogJudging<'_>,
+    search: &CatalogSearch<'_>,
+    searched: &dyn Fn(&crate::catalog::Matched) -> String,
+) -> Result<CatalogJudged, crate::http::error::ApiError> {
+    let fit: &dyn FitVerifier = judging.verifier;
+    let matcher = match Matcher::new(judging.document, judging.policy, judging.options, fit) {
+        Ok(matcher) => matcher,
+        Err(refused) => return Ok(CatalogJudged::Refused(gate_error(refused))),
+    };
+    let mut collected = Collected::default();
+    let (original, original_problem) =
+        judge_original(&matcher, judging.original, &mut collected.notes);
+    let ran = crate::catalog::search(
+        search.dir,
+        search.selection,
+        search.cap,
+        |snapshot, chosen| {
+            snapshot.match_catalog_observed(&matcher, chosen, search.jobs, search.watch)
+        },
+    )?;
+    let mut found = match ran {
+        crate::catalog::Searched::Ran(found) => found,
+        other => return Ok(CatalogJudged::NotRun(other)),
+    };
+    for id in &found.bugs {
+        collected.notes.push(MatchNote::JudgingFailed(id.clone()));
+        collected.bugs.push(id.clone());
+    }
+    for id in &found.corrupt {
+        collected.notes.push(MatchNote::CatalogCorrupt(id.clone()));
+    }
+    for (result, labels) in std::mem::take(&mut found.results) {
+        let label = labels.first().cloned().unwrap_or_default();
+        if reported(&label, &result, &mut collected.notes) {
+            collected.shortlist |= result.shortlist_unsound();
+            collected.bugs.push(label);
+        }
+        collected.results.push((result, labels));
+    }
+    collected
+        .notes
+        .push(MatchNote::CatalogSearched(searched(&found)));
+    let mut run = finish(&matcher, collected, original.as_ref(), original_problem);
+    if !found.corrupt.is_empty() {
+        // QR4: a damaged row not judged fails the run, its document kept.
+        run.exit = 1;
+    }
+    Ok(CatalogJudged::Done(Box::new(run), found))
 }
 
 /// The document and the run's facts (DC10), its exit code by core (CO2).

@@ -1,0 +1,21 @@
+410
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:2pPk2mmfG+9q+B4WpH3R3A4tyz3Ud2RLCwqm8EkOjJc=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/derived_rows_gone",
+  "title": "The revision's derived rows are gone",
+  "status": 410,
+  "detail": "m_block02 r1 is not current: its stored document is gone (its bytes: …/step)",
+  "code": "derived_rows_gone",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {},
+  "request_id": "r_00000000000000000000000004"
+}

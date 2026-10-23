@@ -2,6 +2,7 @@
 
 mod assemblies;
 mod auth;
+mod catalog;
 mod features;
 pub(crate) mod jobs;
 mod matches;
@@ -53,6 +54,19 @@ pub(super) fn handler(op: &Operation) -> MethodRouter<Arc<Shared>> {
         "uploads_get" => on(filter, uploads::get),
         "uploads_list" => on(filter, uploads::list),
         "uploads_delete" => on(filter, uploads::delete),
+        "catalog_info" => on(filter, catalog::info),
+        "catalog_list" => on(filter, catalog::list),
+        "catalog_ingest" => on(filter, catalog::ingest),
+        "catalog_get" => on(filter, catalog::get),
+        "catalog_features" => on(filter, catalog::features),
+        "catalog_step" => on(filter, catalog::step),
+        "catalog_replace" => on(filter, catalog::replace),
+        "catalog_delete" => on(filter, catalog::delete),
+        "catalog_delete_many" => on(filter, catalog::delete_many),
+        "catalog_reindex" => on(filter, catalog::reindex),
+        "catalog_verify" => on(filter, catalog::verify),
+        "catalog_gc" => on(filter, catalog::gc),
+        "catalog_prune" => on(filter, catalog::prune),
         "assemblies_create" => on(filter, assemblies::create),
         "assemblies_list" => on(filter, assemblies::list),
         "assemblies_get" => on(filter, assemblies::get),
@@ -127,6 +141,17 @@ pub(super) async fn owner(
     caller: &Principal,
     params: &std::collections::BTreeMap<String, String>,
 ) -> Result<(i64, String), ApiError> {
+    owner_of(shared, caller, params, false).await
+}
+
+/// [`owner`], where `system` lets an admin name the `system` user, whose
+/// jobs nobody submitted (M6-56: `reindex_on_start`, the daily gc).
+pub(super) async fn owner_of(
+    shared: &Arc<Shared>,
+    caller: &Principal,
+    params: &std::collections::BTreeMap<String, String>,
+    system: bool,
+) -> Result<(i64, String), ApiError> {
     match params.get("owner") {
         Some(id) if *id != caller.user.id => {
             if !caller.effective.permits(Needed::Admin) {
@@ -134,12 +159,21 @@ pub(super) async fn owner(
             }
             let (reading, id) = (Arc::clone(shared), id.clone());
             let extra = format!("&owner={id}");
-            let found =
-                blocking(move || reading.db.person_by_id(&id).map_err(|e| db_error(&e))).await?;
-            let user = found.ok_or_else(|| {
+            let found = blocking(move || {
+                if let Some(user) = reading.db.person_by_id(&id).map_err(|e| db_error(&e))? {
+                    return Ok(Some(user.key));
+                }
+                let is_system = system && reading.db.system_user().map_err(|e| db_error(&e))? == id;
+                if is_system {
+                    return reading.db.system_key().map(Some).map_err(|e| db_error(&e));
+                }
+                Ok(None)
+            })
+            .await?;
+            let key = found.ok_or_else(|| {
                 ApiError::new(ErrorCode::NotFound, "no user of that id is yours to see")
             })?;
-            Ok((user.key, extra))
+            Ok((key, extra))
         }
         Some(id) => Ok((caller.user.key, format!("&owner={id}"))),
         None => Ok((caller.user.key, String::new())),

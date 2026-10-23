@@ -1,0 +1,23 @@
+400
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:TJqfIzk3Hp6J4mEbNpkWSw60gqcDyIg8HyenAcQQoiM=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/invalid_parameter",
+  "title": "A parameter is out of range",
+  "status": 400,
+  "detail": "prune what? {\"revisions\": true} releases the bytes of superseded revisions",
+  "code": "invalid_parameter",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "parameter": "revisions"
+  },
+  "request_id": "r_00000000000000000000000004"
+}

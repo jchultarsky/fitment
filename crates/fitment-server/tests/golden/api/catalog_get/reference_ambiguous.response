@@ -1,0 +1,26 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:l73+rNfqwct63iR8x0VVoWgvsXcylpabceICeYQCuWE=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/reference_ambiguous",
+  "title": "The reference names several entries",
+  "status": 409,
+  "detail": "the content reference names several entries: give more hex digits, or an id",
+  "code": "reference_ambiguous",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "matches": [
+      "twin",
+      "m_block02"
+    ]
+  },
+  "request_id": "r_00000000000000000000000004"
+}

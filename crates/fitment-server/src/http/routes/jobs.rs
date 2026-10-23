@@ -472,7 +472,7 @@ pub(super) async fn list(
         let (ms, id) = after.split_once(' ').ok_or_else(|| bad("after"))?;
         Some((ms.parse::<i64>().map_err(|_| bad("after"))?, id.to_owned()))
     };
-    let (owner, mut extra) = super::owner(&shared, &caller, &params).await?;
+    let (owner, mut extra) = super::owner_of(&shared, &caller, &params, true).await?;
     for (name, value) in [("kind", params.get("kind")), ("state", params.get("state"))] {
         if let Some(value) = value {
             let _ = write!(extra, "&{name}={value}");
@@ -699,6 +699,14 @@ pub(super) async fn cancel(
             }
             shared.jobs.flag(row.key, Stop::Cancel);
             row
+        }
+        // JB5: a running replace or prune is one transaction, which runs
+        // to its end (the review of PR 7b's wording).
+        Cancelled::Finished(row) if row.state == JobState::Running => {
+            return Err(ApiError::new(
+                ErrorCode::JobFinished,
+                "the job is one transaction that cannot be stopped once running: it runs to its end",
+            ));
         }
         Cancelled::Finished(_) => {
             return Err(ApiError::new(

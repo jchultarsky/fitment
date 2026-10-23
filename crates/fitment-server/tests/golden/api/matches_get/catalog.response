@@ -1,0 +1,77 @@
+200
+cache-control: no-cache
+content-type: application/json
+fitment-format: fitment.run/1
+repr-digest: sha-256=:1ErNmiXR2mXK34XnGPUA1N8WwyrguwJeYyg0nrOVe/k=:
+x-request-id: r_0000000000000000000000000a
+
+{
+  "format": "fitment.run",
+  "format_version": 1,
+  "id": "j_00000000000000000000000009",
+  "socket": {
+    "ref": "sk_4c08cde1bddb3df26f3b@r1",
+    "upload": null,
+    "sha256": "3af767af3c3bcf21aee48b878302fb860eb3eca3b00bc731c50146617496f56d",
+    "digest": "sha256:abc9400418756a7d1bb7425ab13b2275b792566731948fb023941e017b52c489",
+    "assembly": "sha256:2b19eec602abd26780ffecf813b3f8a8c9198c7c3fb497fe8ccc99726ed9959a",
+    "how": "extract",
+    "verified": true,
+    "unreviewed": 4
+  },
+  "candidates": {
+    "kind": "catalog",
+    "selection": "full",
+    "generation": 2,
+    "entries": 3,
+    "searched": 2,
+    "quarantined_not_searched": 1,
+    "level_one_kept": 2,
+    "named": null,
+    "judged": 2,
+    "distinct_judgments": 2
+  },
+  "policy": {
+    "name": "default",
+    "linear_mm": 0.01,
+    "angular_deg": 0.01,
+    "clearance": "strict",
+    "grip": "hard"
+  },
+  "options": {
+    "require_fit": false,
+    "require_reviewed": false,
+    "require_reviewed_by": null
+  },
+  "original": null,
+  "versions": {
+    "extractor_version": 6,
+    "socket_rules_version": 7,
+    "signature_version": 2,
+    "match_rules_version": 1,
+    "server": "0.2.0"
+  },
+  "fit_verifier": null,
+  "summary": {
+    "candidates": 2,
+    "match": 0,
+    "interface_match": 1,
+    "reject": 1,
+    "refused": 0
+  },
+  "outcome": "interface_match",
+  "exit_code": 4,
+  "complete": true,
+  "problems": {
+    "corrupt": [],
+    "bugs": [],
+    "original": null,
+    "incomplete_summary": null
+  },
+  "document": {
+    "href": "/v1/matches/j_00000000000000000000000009/document",
+    "sha256": "c5dd31af3e30586f824d36aabab7b233de1000c039fb42e2d4b6570f7098094b",
+    "bytes": 24811,
+    "digest": "sha256:ddd2fb8e113ad14f8008ac73298fd9c3c7babe5a0adf1ce0783d94a518a3d09c"
+  }
+}

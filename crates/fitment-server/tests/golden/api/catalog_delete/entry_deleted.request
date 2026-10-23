@@ -1,0 +1,3 @@
+DELETE /v1/catalog/entries/m_block02_cb_deep
+authorization: Bearer <root's admin token>
+

@@ -59,7 +59,7 @@ pub use fs::{Content, Fs, FsRead, FsWrite, Point, StdFs};
 pub use gc::Collected;
 pub use hex::{NotHex, Sha256Hex};
 pub use ids::{BadReference, Id, Reference};
-pub use ingest::{Counts, Ingest, Ingested, Input, InputBytes, Outcome, Summary};
+pub use ingest::{Counts, Ingest, Ingested, Input, InputBytes, Outcome, Summary, ingest_order};
 pub use observe::{NoObserver, Observer, Progress};
 pub use preimage::Status;
 pub use query::{CatalogRun, NotRun, Selection};
@@ -510,6 +510,39 @@ impl Catalog {
     /// The catalog's directory.
     pub fn root(&self) -> &Path {
         self.layout.root()
+    }
+
+    /// The schema of the database this catalog holds open, read through
+    /// its connection, the log's pages included, which
+    /// [`Catalog::inspect`]'s header does not see (`docs/research/
+    /// m6-api.md`, CX1): a server keeping catalogs open checks it before
+    /// each use, so a catalog another build migrated meanwhile is refused
+    /// as [`Error::Newer`] is at open (VT33).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Newer`] for a newer schema, [`Error::NotACatalog`] for a
+    /// database that is no longer a catalog; the database's.
+    pub fn check_schema(&self) -> Result<(), Error> {
+        match schema::kind(&self.conn)? {
+            schema::Kind::Newer(found) => Err(Error::Newer {
+                found,
+                ours: schema::SCHEMA_VERSION,
+            }),
+            schema::Kind::Foreign => Err(Error::NotACatalog(self.root().to_owned())),
+            _ => Ok(()),
+        }
+    }
+
+    /// The database's page size in bytes (`PRAGMA page_size`), what a
+    /// [`Checkpoint`]'s pages count (`docs/research/m6-api.md`, CX6).
+    ///
+    /// # Errors
+    ///
+    /// The database's.
+    pub fn page_size(&self) -> Result<u64, Error> {
+        let bytes: i64 = self.conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        u64::try_from(bytes).map_err(|_| Error::Corrupt("the page size"))
     }
 
     /// The generation as it stands (DB8).

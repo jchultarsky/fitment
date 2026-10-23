@@ -1,0 +1,23 @@
+409
+cache-control: no-store
+content-type: application/problem+json
+fitment-format: fitment.error/1
+repr-digest: sha-256=:e/nXKVRcZLRmlGbLYZYzUNbiiwvxjQ2qq5Htq28ToPc=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.error",
+  "format_version": 1,
+  "type": "https://fitment.dev/errors/entry_deleted",
+  "title": "The entry is deleted",
+  "status": 409,
+  "detail": "m_block02_cb_deep is deleted",
+  "code": "entry_deleted",
+  "class": "usage",
+  "exit_code": 2,
+  "retryable": false,
+  "details": {
+    "id": "m_block02_cb_deep"
+  },
+  "request_id": "r_00000000000000000000000004"
+}

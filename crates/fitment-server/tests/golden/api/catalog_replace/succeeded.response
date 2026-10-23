@@ -1,0 +1,53 @@
+200
+cache-control: no-cache
+content-type: application/json
+etag: W/"j5.succeeded"
+fitment-format: fitment.job/1
+location: /v1/jobs/j_00000000000000000000000005
+preference-applied: wait=30
+repr-digest: sha-256=:DuP9xzH3v0q61NfHrL7KenAK+UQ3wAzAyCEZNta0Bi4=:
+x-request-id: r_00000000000000000000000004
+
+{
+  "format": "fitment.job",
+  "format_version": 1,
+  "id": "j_00000000000000000000000005",
+  "kind": "catalog_replace",
+  "owner": "u_00000000000000000000000001",
+  "state": "succeeded",
+  "attempt": 1,
+  "request": {
+    "entry": "m_block02",
+    "file_name": "p01_through.stp",
+    "input": "p01_through.stp",
+    "max_mib": null,
+    "upload": "sha256:e0382a9dd3495268bd9e66fc09851fc1c91ee91b2186e0a1f70d4f584a6b9945"
+  },
+  "request_sha256": "afd2c0c8a82c02f511d4926aac079d6fbecab6d6eff77149805ba84c834bbb25",
+  "queue_position": null,
+  "progress": null,
+  "cancel_requested": false,
+  "exit_code": 0,
+  "outcome": null,
+  "result": null,
+  "document": {
+    "href": "/v1/jobs/j_00000000000000000000000005/document",
+    "format": "fitment.catalog",
+    "sha256": "e0b540e35443b837a49657bdcf53a8bdb37e36816745694a1d0069ae71fe530c",
+    "bytes": 1253
+  },
+  "error": null,
+  "notes": [
+    {
+      "code": "summary",
+      "message": "m_block02 replaced: r1 is now r2"
+    }
+  ],
+  "pinned": false,
+  "times": {
+    "created": "2026-09-21T14:13:20Z",
+    "started": "2026-09-21T14:13:20Z",
+    "finished": "2026-09-21T14:13:20Z",
+    "expires": "2026-10-21T14:13:20Z"
+  }
+}

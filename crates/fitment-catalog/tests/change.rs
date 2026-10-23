@@ -289,3 +289,144 @@ fn gc_vacuums_on_request() {
     assert!(pages(&catalog) < before);
     assert_eq!(catalog.verify(false, false).unwrap(), Vec::new());
 }
+
+/// RA7 (`docs/research/m6-api.md`, the review of PR 7b): a delete or a
+/// replace made on condition of a generation the catalog is no longer at
+/// changes nothing and says so, after its references are checked; at its
+/// generation it is made.
+#[test]
+fn conditional_changes_are_made_only_at_their_generation() {
+    let (mut catalog, _, thick, _) = setup("conditional");
+    let at = catalog.generation().unwrap();
+    let refused = catalog.delete_at(&[reference("a")], Some(at - 1)).unwrap();
+    assert_eq!(
+        refused,
+        Err(vec![Unnamed::Changed {
+            asked: at - 1,
+            generation: at
+        }])
+    );
+    let unknown = catalog
+        .delete_at(&[reference("nope")], Some(at - 1))
+        .unwrap();
+    assert!(matches!(
+        unknown.as_ref().map_err(Vec::as_slice),
+        Err([Unnamed::Name(_)])
+    ));
+    assert_eq!(catalog.generation().unwrap(), at, "nothing changed");
+    let bytes = fs::read(&thick).unwrap();
+    let input = fitment_catalog::Input::new(&bytes, "thick.stp", "thick.stp");
+    let observer = fitment_catalog::NoObserver;
+    let stale = catalog
+        .replace_input_at(&reference("BRKT"), &input, None, Some(at - 1), &observer)
+        .unwrap();
+    assert!(matches!(
+        stale,
+        Err(NotReplaced::Unnamed(Unnamed::Changed { .. }))
+    ));
+    assert_eq!(catalog.generation().unwrap(), at, "nothing changed");
+    let made = catalog
+        .replace_input_at(&reference("BRKT"), &input, None, Some(at), &observer)
+        .unwrap();
+    assert!(matches!(made, Ok(Replaced::Replaced { .. })));
+    let now = catalog.generation().unwrap();
+    assert!(
+        catalog
+            .delete_at(&[reference("a")], Some(now))
+            .unwrap()
+            .is_ok()
+    );
+    invariants(catalog.root());
+}
+
+/// CX6 (the review of PR 7b): gc's collection alone leaves the log as it
+/// was, and `vacuum` then runs on its own; `gc` is the two with the
+/// truncation between, as before, nothing left to collect.
+#[test]
+fn gc_collects_without_truncating_and_vacuums_apart() {
+    let (mut catalog, _, _, _) = setup("gc-apart");
+    catalog.delete(&[reference("a")]).unwrap().unwrap();
+    let before = catalog.checkpoint_passive().unwrap();
+    let collected = catalog
+        .gc_collect_observed(false, &fitment_catalog::NoObserver)
+        .unwrap();
+    assert!(!collected.cancelled);
+    let after = catalog.checkpoint_passive().unwrap();
+    assert!(after.log_pages >= before.log_pages, "no truncation");
+    catalog.vacuum().unwrap();
+    assert_eq!(catalog.gc(false, true).unwrap().unlinked, Vec::new());
+    invariants(catalog.root());
+}
+
+/// ST11, OB3 (the review of PR 7b): a blob opened for a stream is hashed
+/// in one pass, then read in a second that fails, `InvalidData`, at its
+/// end if the file changed between them; a missing or altered file is
+/// refused before the second pass.
+#[test]
+fn a_streamed_blob_is_checked_in_both_passes() {
+    let (mut catalog, bracket, _, _) = setup("stream");
+    let content = sha(&bracket);
+    let bytes = fs::read(&bracket).unwrap();
+    let read_all = |reader: &mut Box<dyn fitment_catalog::FsRead>| {
+        let mut out = Vec::new();
+        let mut buf = [0_u8; 1000];
+        loop {
+            match reader.read_chunk(&mut buf) {
+                Ok(0) => return Ok(out),
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Err(e) => return Err(e),
+            }
+        }
+    };
+    let snapshot = catalog.snapshot().unwrap();
+    drop(snapshot);
+    let (length, mut reader) = catalog.open_blob(&content).unwrap();
+    assert_eq!(length, u64::try_from(bytes.len()).unwrap());
+    assert_eq!(read_all(&mut reader).unwrap(), bytes);
+    let path = catalog.blob_path(&content);
+    let (_, mut reader) = catalog.open_blob(&content).unwrap();
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    fs::set_permissions(&path, permissions).unwrap();
+    let mut altered = bytes.clone();
+    altered[10] ^= 1;
+    fs::write(&path, &altered).unwrap();
+    let error = read_all(&mut reader).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(matches!(
+        catalog.open_blob(&content).map(drop),
+        Err(fitment_catalog::BadBlob::Damaged)
+    ));
+    fs::remove_file(&path).unwrap();
+    assert!(matches!(
+        catalog.open_blob(&content).map(drop),
+        Err(fitment_catalog::BadBlob::Missing)
+    ));
+}
+
+/// CA1, ID4 (the review of PR 7b): `ingest_order` is the order
+/// `ingest_inputs` takes its inputs in, so a caller ties each line to its
+/// own input, two inputs of one label included.
+#[test]
+fn ingest_order_ties_each_line_to_its_input() {
+    let dir = scratch("order");
+    let mut catalog = catalog(&dir);
+    let block = fs::read(common::core_tests().join("candidates/m_block02.stp")).unwrap();
+    let bracket = fs::read(common::core_tests().join("candidates/m_bracket.stp")).unwrap();
+    let junk = b"not STEP".to_vec();
+    let inputs = [
+        fitment_catalog::Input::new(&junk, "same", "z.stp"),
+        fitment_catalog::Input::new(&block, "same", "b.stp"),
+        fitment_catalog::Input::new(&bracket, "same", "B.stp"),
+    ];
+    let order = fitment_catalog::ingest_order(&inputs);
+    let run = catalog
+        .ingest_inputs(&inputs, None, &fitment_catalog::NoObserver)
+        .unwrap();
+    assert_eq!(run.lines.len(), inputs.len());
+    for (line, at) in run.lines.iter().zip(&order) {
+        let expected = [&junk, &block, &bracket][*at];
+        assert_eq!(line.sha256, Some(Sha256Hex::of(expected)), "{order:?}");
+    }
+}

@@ -37,20 +37,27 @@ use crate::runs::{self, RunFacts, RunOptions, RunVersions, SummaryFacts};
 use crate::state::{DbError, End, JobRow, Rows};
 
 /// What a match judges, read and checked (JB2, CO5, SN9).
-struct Prepared {
-    job: MatchJob,
-    document: SocketDocument,
-    options: MatchOptions,
+pub(super) struct Prepared {
+    pub(super) job: MatchJob,
+    pub(super) document: SocketDocument,
+    pub(super) options: MatchOptions,
     components: Vec<ComponentInput>,
-    original: Option<Result<SelectedComponent, ()>>,
+    pub(super) original: Option<Result<SelectedComponent, ()>>,
     /// The options as applied, the floor as it stands now (SN3).
     applied: RunOptions,
     /// The build's socket versions the gate held the socket to (MF11).
-    build: (u32, u32),
+    pub(super) build: (u32, u32),
+}
+
+/// What a catalog run adds to its record (M6-25, DC10): its snapshot's
+/// generation and counts, and the rows it could not judge (QR4).
+pub(super) struct CatalogExtra {
+    pub(super) facts: runs::CatalogFacts,
+    pub(super) corrupt: Vec<String>,
 }
 
 /// A judging's progress (JB8): counts only, never a verdict (M6-51).
-fn judging(done: u64, total: u64) -> Progress {
+pub(super) fn judging(done: u64, total: u64) -> Progress {
     Progress {
         phase: "judging",
         done,
@@ -74,6 +81,9 @@ pub(crate) fn run(shared: &Shared, row: &JobRow, control: &Control) -> Result<Ra
     };
     let verifier = shared.verifier();
     let window = usize::try_from(shared.jobs.window(row)).unwrap_or(1);
+    if prepared.job.catalog.is_some() {
+        return super::catalog_match::run(shared, row, control, &prepared, policy, window);
+    }
     let judge_hook = |point: &str| hook(shared, point);
     let judging_of = Judging {
         document: &prepared.document,
@@ -109,11 +119,16 @@ pub(crate) fn run(shared: &Shared, row: &JobRow, control: &Control) -> Result<Ra
             let ending = gate::end(&error, gate::build(shared), row.kind);
             halted(shared, row, control, &ending)
         }
-        Judged::Done(done) => store(shared, row, control, &prepared, &done),
+        Judged::Done(done) => store(shared, row, control, &prepared, &done, None),
     }
 }
 
-fn halted(shared: &Shared, row: &JobRow, control: &Control, ending: &End) -> Result<Ran, DbError> {
+pub(super) fn halted(
+    shared: &Shared,
+    row: &JobRow,
+    control: &Control,
+    ending: &End,
+) -> Result<Ran, DbError> {
     let finished = run::end(shared, row, control, ending, None, &Rows::None)?;
     run::conclude(shared, row, control, finished)
 }
@@ -339,11 +354,11 @@ fn component_error(kind: Kind, error: &ComponentError) -> End {
 /// failing its own socket, a pass after a shortlist drop, or another
 /// fitment bug or an unreadable original (`run_incomplete`); its details
 /// the bugs' labels and the original's problem.
-fn bug_error(done: &MatchRun) -> (ErrorCode, String) {
+fn bug_error(done: &MatchRun, corrupt: &[String]) -> (ErrorCode, String) {
     let code = bug_code(done.original.as_ref(), done.shortlist_unsound);
     let mut details = Map::new();
     details.insert("bugs".into(), Value::from(done.bugs.clone()));
-    details.insert("corrupt".into(), Value::Array(Vec::new()));
+    details.insert("corrupt".into(), Value::from(corrupt.to_vec()));
     details.insert(
         "original".into(),
         done.original
@@ -382,13 +397,15 @@ fn unverified(shared: &Shared, row: &JobRow, job: &MatchJob) -> Result<bool, DbE
 
 /// The document and its index stored (DC1, DC12), then the job's end: the
 /// state and exit code the CLI's would be (JB3, JB4), `outcome` for a
-/// success only (M6-59), the notes (JB10) and the run's facts (DC10).
-fn store(
+/// success only (M6-59), the notes (JB10) and the run's facts (DC10), a
+/// catalog run's generation and counts among them (M6-25).
+pub(super) fn store(
     shared: &Shared,
     row: &JobRow,
     control: &Control,
     prepared: &Prepared,
     done: &MatchRun,
+    catalog: Option<&CatalogExtra>,
 ) -> Result<Ran, DbError> {
     let job = &prepared.job;
     let staged = |json: &str| run::stage(shared, row.kind, json);
@@ -441,12 +458,14 @@ fn store(
         original_judged: done.original_judged,
         options: prepared.applied.clone(),
         versions: RunVersions::of(prepared.build),
+        corrupt: catalog.map(|c| c.corrupt.clone()).unwrap_or_default(),
+        catalog: catalog.map(|c| c.facts.clone()),
     };
     let ending = End {
         exit: Some(done.exit),
         outcome: (state == State::Succeeded).then(|| done.outcome.to_owned()),
         error: (done.exit == 1).then(|| {
-            let (code, details) = bug_error(done);
+            let (code, details) = bug_error(done, &facts.corrupt);
             (code.name().to_owned(), details)
         }),
         document: Some((
