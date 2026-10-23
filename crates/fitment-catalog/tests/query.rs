@@ -501,11 +501,25 @@ fn jobs_change_no_byte() {
     assert_eq!(documents[0], documents[1]);
 }
 
-/// A verifier that panics on every part.
-struct Panics;
+/// A verifier that panics whenever it is asked: with an identity, it is
+/// asked for the original's control at the first part whose interface
+/// passes (docs/research/m7-fit.md, FT9), and again at the next, since a
+/// control that panicked never ran.
+struct Panics(Vec<u8>);
 
 impl fitment_core::FitVerifier for Panics {
-    fn check(&self, _: &fitment_core::FitRequest<'_>) -> fitment_core::FitStatus {
+    fn identity(&self) -> Option<fitment_core::FitIdentity> {
+        Some(fitment_core::FitIdentity::new("panics", "1"))
+    }
+
+    fn assembly(&self) -> Option<&[u8]> {
+        Some(&self.0)
+    }
+
+    fn measure(
+        &self,
+        _: &fitment_core::FitRequest<'_>,
+    ) -> Result<fitment_core::fit::FitMeasures, fitment_core::fit::FitFailure> {
         panic!("a fit verifier's bug");
     }
 }
@@ -516,11 +530,13 @@ impl fitment_core::FitVerifier for Panics {
 fn a_panicking_judgment_is_a_bug_not_damage() {
     let (mut catalog, _) = committed("panics");
     let document = socket("s01_bolted", "BRACKET");
+    let assembly = fs::read(core_tests().join("assemblies/s01_bolted.stp")).unwrap();
+    let panics = Panics(assembly);
     let matcher = Matcher::new(
         &document,
         MatchPolicy::default(),
         MatchOptions::default(),
-        &Panics,
+        &panics,
     )
     .unwrap();
     let snapshot = catalog.snapshot().unwrap();

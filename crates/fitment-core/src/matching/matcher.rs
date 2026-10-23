@@ -3,7 +3,11 @@
 //! Per socket: the shortlist, alignment, then verification at the first
 //! placement that passes every requirement M4 can verify, or at the one
 //! passing most (AL10); the candidate's verdict is the worst of its
-//! sockets' (VD2, VR17).
+//! sockets' (VD2, VR17). With a fit verifier that has an identity, the fit
+//! is asked once per candidate whose every socket passed
+//! (`docs/research/m7-fit.md`, FC2, FT11), in [`fitting`].
+
+mod fitting;
 
 use serde::Serialize;
 
@@ -15,7 +19,9 @@ use super::verify::{Budget, check};
 use super::{CandidateView, MatchOptions, MatchPolicy, SocketSignature, SocketView};
 use crate::assembly::{SelectedComponent, Source};
 use crate::features::{FeaturesDocument, Part, ProductRef, Status};
-use crate::fit::{FitRequest, FitStatus, FitVerifier, INTERFACE_REJECTED};
+use crate::fit::{
+    FitEvidence, FitStatus, FitVerifier, Freedom, INTERFACE_REJECTED, OCCURRENCE_UNPLACED,
+};
 use crate::gate::{Refusal, RefusalCode};
 use crate::geom::Rigid;
 use crate::socket::{Flag, Requirement, Requires, ReviewStatus, SocketDocument};
@@ -140,6 +146,14 @@ pub struct SocketResult {
     pub not_checked: Vec<NotChecked>,
     /// How many placements alignment built, and whether a bound stopped it.
     pub placements: (usize, bool),
+    /// The placement's free motions (FC4, FM4), worked out when a verifier
+    /// with an identity is asked for the candidate's fit; `None` otherwise.
+    pub freedom: Option<Freedom>,
+    /// Every other placement alignment built at which every requirement
+    /// passed, for which no fit is asked (FM3, FT12), in alignment's order;
+    /// listed when the verifier has an identity and the interface passed
+    /// here, `None` otherwise.
+    pub alternatives: Option<Vec<Rigid>>,
 }
 
 impl SocketResult {
@@ -273,9 +287,20 @@ pub struct CandidateResult {
     pub warnings: Vec<Warning>,
     /// Each socket's, in the document's order; none for a refused file.
     pub sockets: Vec<SocketResult>,
+    /// The fit's evidence (FM3), when a verifier with an identity was
+    /// asked, or would have been but for a placement not unique (FV6) or a
+    /// helper's failure (FV8); `None` otherwise, as in 0.3.0.
+    pub fit: Option<Box<FitEvidence>>,
 }
 
 impl CandidateResult {
+    /// FV8: the fit's run depends on the machine (a timeout, a resource
+    /// kill, a cancel, a protocol failure or an unreadable store), so a run
+    /// that holds this result never claims to be complete.
+    pub fn fit_incomplete(&self) -> bool {
+        self.fit.as_ref().is_some_and(|e| e.outcome().incomplete())
+    }
+
     /// Its stage (EV5): its least advanced socket's; `None` if refused.
     pub fn stage(&self) -> Option<Stage> {
         self.sockets.iter().map(|s| s.stage).min()
@@ -401,6 +426,9 @@ pub struct Matcher<'a> {
     policy: MatchPolicy,
     options: MatchOptions,
     fit: &'a dyn FitVerifier,
+    /// The fit's scene, zones and control, for a verifier with an
+    /// identity (FC2, FT9).
+    fitting: Option<fitting::Fitting>,
     /// False to skip the shortlist (KH9's cross-check).
     shortlist: bool,
 }
@@ -479,12 +507,16 @@ impl<'a> Matcher<'a> {
                 first: unreviewed,
             });
         }
+        let fitting = fit
+            .identity()
+            .map(|identity| fitting::Fitting::new(identity, fit.assembly(), document));
         Ok(Self {
             document,
             sockets,
             policy,
             options,
             fit,
+            fitting,
             shortlist: true,
         })
     }
@@ -513,9 +545,23 @@ impl<'a> Matcher<'a> {
         self.options
     }
 
-    /// The fit verifier's kernel and version, if it names one (MF6).
+    /// The fit verifier's kernel and version, if it has an identity (MF6).
     pub fn fit_kernel(&self) -> Option<(String, String)> {
-        self.fit.kernel()
+        self.fit_identity()
+            .map(|i| (i.kernel.clone(), i.version.clone()))
+    }
+
+    /// The fit verifier's identity, if it has one (FC1): a run with one
+    /// writes `fitment.match` v2 (FM1).
+    pub fn fit_identity(&self) -> Option<&crate::fit::FitIdentity> {
+        self.fitting.as_ref().map(fitting::Fitting::identity)
+    }
+
+    /// The original's own fit, the control (FT9): `None` with no verifier
+    /// that has an identity, or before a candidate's interface passed at
+    /// every socket.
+    pub fn fit_control(&self) -> Option<&FitEvidence> {
+        self.fitting.as_ref().and_then(fitting::Fitting::control)
     }
 
     /// Level 1 for every socket of the document under this matcher's own
@@ -614,9 +660,16 @@ impl<'a> Matcher<'a> {
         source: Source,
         step: Option<&[u8]>,
     ) -> CandidateResult {
+        let body = match step {
+            Some(bytes) => fitting::Body::Step {
+                bytes,
+                sha256: source.sha256.clone(),
+            },
+            None => fitting::Body::None,
+        };
         let source = CandidateSource::File(source);
         match document.part() {
-            Some(part) => self.judge(part, source, step),
+            Some(part) => self.judge(part, source, &body),
             None => CandidateResult {
                 source,
                 product: None,
@@ -627,6 +680,7 @@ impl<'a> Matcher<'a> {
                 flags: self.review_flags(vec![CandidateFlag::MaterialNotCompared]),
                 warnings: Vec::new(),
                 sockets: Vec::new(),
+                fit: None,
             },
         }
     }
@@ -634,7 +688,7 @@ impl<'a> Matcher<'a> {
     /// One candidate part, read once (CF1), against every socket; `source`
     /// says where it came from.
     pub fn judge_part(&self, part: &Part, source: CandidateSource) -> CandidateResult {
-        self.judge(part, source, None)
+        self.judge(part, source, &fitting::Body::None)
     }
 
     /// CO5 (`docs/research/m6-api.md`): a component of an assembly, read
@@ -655,7 +709,11 @@ impl<'a> Matcher<'a> {
                     && *definition == component.definition()
         );
         if theirs {
-            return self.judge(component.part(), source, None);
+            return self.judge(
+                component.part(),
+                source,
+                &fitting::Body::Component(component),
+            );
         }
         let refusals = vec![Refusal::new(
             RefusalCode::Internal,
@@ -672,16 +730,27 @@ impl<'a> Matcher<'a> {
             flags: self.review_flags(vec![CandidateFlag::MaterialNotCompared]),
             warnings: Vec::new(),
             sockets: Vec::new(),
+            fit: None,
         }
     }
 
-    fn judge(&self, part: &Part, source: CandidateSource, step: Option<&[u8]>) -> CandidateResult {
+    fn judge(
+        &self,
+        part: &Part,
+        source: CandidateSource,
+        body: &fitting::Body<'_>,
+    ) -> CandidateResult {
         let view = CandidateView::of(part);
-        let sockets: Vec<SocketResult> = self
+        let mut sockets: Vec<SocketResult> = self
             .sockets
             .iter()
-            .map(|ready| self.judge_socket(ready, &view, step))
+            .map(|ready| self.judge_socket(ready, &view))
             .collect();
+        let fit = self
+            .fitting
+            .as_ref()
+            .and_then(|fitting| self.fit_candidate(fitting, part, &view, body, &mut sockets))
+            .map(Box::new);
         let named: Vec<(String, Verdict)> = sockets
             .iter()
             .map(|s| (s.socket.clone(), s.verdict.clone()))
@@ -705,6 +774,7 @@ impl<'a> Matcher<'a> {
             flags: self.flags(part, &sockets),
             warnings: Vec::new(),
             sockets,
+            fit,
         }
     }
 
@@ -775,16 +845,11 @@ impl<'a> Matcher<'a> {
             checks,
             placements: (1, false),
         };
-        Some(self.result(ready, &cand, judged, None))
+        Some(self.result(ready, &cand, judged, fitting::ALONE))
     }
 
     /// One socket: the shortlist, alignment, the search and the checks.
-    fn judge_socket(
-        &self,
-        ready: &Ready<'_>,
-        cand: &CandidateView<'_>,
-        step: Option<&[u8]>,
-    ) -> SocketResult {
+    fn judge_socket(&self, ready: &Ready<'_>, cand: &CandidateView<'_>) -> SocketResult {
         let view = &ready.view;
         let kept: Option<Result<Kept, Vec<Missing>>> = self
             .shortlist
@@ -810,11 +875,12 @@ impl<'a> Matcher<'a> {
             checks: self.unplaced(view, cand, &placements),
             placements: built,
         };
+        let pending = crate::fit::INTERFACE_REJECTED_ELSEWHERE;
         let mut result = if !searching {
             // Nothing to place: what is active fails every candidate.
-            self.result(ready, cand, unplaced(Stage::Verification), step)
+            self.result(ready, cand, unplaced(Stage::Verification), pending)
         } else if placements.ordered.is_empty() {
-            let mut r = self.result(ready, cand, unplaced(Stage::Alignment), step);
+            let mut r = self.result(ready, cand, unplaced(Stage::Alignment), pending);
             r.verdict = r.verdict.rejecting(RejectReason::NoPlacement {
                 socket: view.socket().id.clone(),
                 unanchored: placements.unanchored.clone(),
@@ -822,6 +888,9 @@ impl<'a> Matcher<'a> {
             r
         } else {
             let (placement, chosen, checks) = self.search(view, cand, &placements);
+            let passed = !checks.is_empty() && checks.iter().all(|(_, c)| c.passed());
+            let alternatives = (self.fitting.is_some() && passed)
+                .then(|| self.alternatives(view, cand, &placements, &placement));
             let judged = Judged {
                 dropped,
                 stage: Stage::Verification,
@@ -830,7 +899,9 @@ impl<'a> Matcher<'a> {
                 checks,
                 placements: built,
             };
-            self.result(ready, cand, judged, step)
+            let mut r = self.result(ready, cand, judged, pending);
+            r.alternatives = alternatives;
+            r
         };
         if let Some(Err(missing)) = kept {
             result.stage = Stage::Shortlist;
@@ -843,14 +914,16 @@ impl<'a> Matcher<'a> {
     }
 
     /// The socket's result from its checks: `decide` over every active
-    /// requirement, with the fit the verifier gives where the interface
-    /// passed, and none attempted where it failed (VD4, M4-26).
+    /// requirement, with no fit attempted where the interface failed (VD4,
+    /// M4-26). Where it passed: with no verifier that has an identity, M4's
+    /// `not_checked`, unchanged from 0.3.0; with one, `pending` until the
+    /// candidate's one fit is asked (FC2, FT11).
     fn result(
         &self,
         ready: &Ready<'_>,
         cand: &CandidateView<'_>,
         judged: Judged,
-        step: Option<&[u8]>,
+        pending: &str,
     ) -> SocketResult {
         let view = &ready.view;
         let ids: Vec<RequirementId> = view
@@ -879,18 +952,17 @@ impl<'a> Matcher<'a> {
                 .collect();
             // Every occurrence placed, or no verifier is asked: a fit seen
             // at fewer occurrences than the socket has proves nothing, and
-            // one never attempted is not checked (VD4).
-            let fit = if placements.len() == view.socket().occurrences.len() {
-                self.fit.check(&FitRequest {
-                    socket: &view.socket().id,
-                    candidate_step: step,
-                    assembly_sha256: &self.document.source().sha256,
-                    placements,
-                })
-            } else {
+            // one never attempted is not checked (VD4, FT2).
+            let fit = if placements.len() != view.socket().occurrences.len() {
                 FitStatus::NotChecked {
-                    reason: "an occurrence of the socket could not be placed".to_owned(),
+                    reason: OCCURRENCE_UNPLACED.to_owned(),
                 }
+            } else if self.fitting.is_some() {
+                FitStatus::NotChecked {
+                    reason: pending.to_owned(),
+                }
+            } else {
+                FitStatus::no_verifier()
             };
             verdict = decide(&ids, checks.clone(), fit);
         }
@@ -926,6 +998,8 @@ impl<'a> Matcher<'a> {
             checks,
             not_checked,
             placements,
+            freedom: None,
+            alternatives: None,
         }
     }
 
@@ -1020,6 +1094,36 @@ impl<'a> Matcher<'a> {
         (at.clone(), how, checks)
     }
 
+    /// FM3: every placement of `placements` other than `chosen` at which
+    /// every active requirement passes, each transform once, in
+    /// alignment's order: the placements the interface also passes at, for
+    /// which no fit is asked (FT12). Each is checked under its own bound,
+    /// so listing them never changes the chosen placement's checks.
+    fn alternatives(
+        &self,
+        view: &SocketView<'_>,
+        cand: &CandidateView<'_>,
+        placements: &Placements,
+        chosen: &Placement,
+    ) -> Vec<Rigid> {
+        let mut out: Vec<Rigid> = Vec::new();
+        for placement in &placements.ordered {
+            let at = placement.transform;
+            if at == chosen.transform || out.contains(&at) {
+                continue;
+            }
+            let mut budget = Budget::new();
+            let passes = view
+                .active()
+                .iter()
+                .all(|r| check(view, r, cand, placement, &self.policy, &mut budget).passed());
+            if passes {
+                out.push(at);
+            }
+        }
+        out
+    }
+
     /// KH3: no placement. A requirement no candidate feature could anchor,
     /// or any other M4 can verify, fails with `no_placement`; the rest fail
     /// as every candidate does (verified at the identity, which they fail
@@ -1087,6 +1191,8 @@ mod tests {
                 .collect(),
             not_checked: Vec::new(),
             placements: (0, false),
+            freedom: None,
+            alternatives: None,
         }
     }
 
@@ -1101,6 +1207,7 @@ mod tests {
             flags: Vec::new(),
             warnings: Vec::new(),
             sockets,
+            fit: None,
         }
     }
 

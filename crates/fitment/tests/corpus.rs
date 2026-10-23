@@ -387,7 +387,7 @@ const M6_FAULT: [&str; 16] = [
 ];
 
 /// M7's design, open: its rules may wait for the PR of its section 11
-/// that builds them (`"M7 PR 1b"`, FK8) until PR 6, M7's exit, removes
+/// that builds them (`"M7 PR 2a"`, FK8) until PR 6, M7's exit, removes
 /// this allowance.
 const M7: &str = "docs/research/m7-fit.md";
 
@@ -395,8 +395,9 @@ const M7: &str = "docs/research/m7-fit.md";
 /// for one after [`M7_PR_NOW`], and none for PR 7, the release.
 const M7_PRS: [&str; 9] = ["1a", "1b", "2a", "2b", "3", "4", "5a", "5b", "6"];
 
-/// The M7 PR this tree builds: PR 1a, the pure fit module.
-const M7_PR_NOW: &str = "1a";
+/// The M7 PR this tree builds: PR 1b, the matcher, the v2 writer and its
+/// schema.
+const M7_PR_NOW: &str = "1b";
 
 /// FK8's first list: the rules that can end a fit, each needing a case
 /// that cites it or a fake-helper test in `crates/fitment-fit/tests` that
@@ -422,7 +423,7 @@ const M7_PROCESS_FILES: [&str; 4] = [
 ];
 
 /// True for a deferral M7's open design allows: one of its own rules,
-/// waiting for a later PR that builds it (`M7 PR 1b`, after this one and
+/// waiting for a later PR that builds it (`M7 PR 2a`, after this one and
 /// at most the exit's).
 fn m7_deferral(id: &str, reason: &str, m7: &[String]) -> bool {
     let at = |pr: &str| M7_PRS.iter().position(|p| *p == pr);
@@ -655,11 +656,11 @@ fn m6_deferrals_and_lists_hold() {
 #[test]
 fn m7_deferrals_and_lists_hold() {
     let m7 = vec!["FT4".to_owned(), "FL1".to_owned(), "FC3".to_owned()];
-    for reason in ["M7 PR 1b", "M7 PR 2a", "M7 PR 4", "M7 PR 6"] {
+    for reason in ["M7 PR 2a", "M7 PR 2b", "M7 PR 4", "M7 PR 6"] {
         assert!(m7_deferral("FT4", reason, &m7), "{reason}");
     }
     for reason in [
-        "M7 PR 1a", "M7 PR 7", "M7 PR 9", "M7 PR", "M7 PR 2", "M6 PR 4",
+        "M7 PR 1a", "M7 PR 1b", "M7 PR 7", "M7 PR 9", "M7 PR", "M7 PR 2", "M6 PR 4",
     ] {
         assert!(!m7_deferral("FT4", reason, &m7), "{reason}");
     }
@@ -684,7 +685,7 @@ fn m7_deferrals_and_lists_hold() {
         1,
         "a reason beside a test"
     );
-    let now = serde_json::json!({ "cases": [], "deferred": "M7 PR 1a" });
+    let now = serde_json::json!({ "cases": [], "deferred": "M7 PR 1b" });
     assert_eq!(
         rule_problems("FC3", &now, &root, &m7).len(),
         1,

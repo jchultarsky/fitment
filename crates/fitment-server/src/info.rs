@@ -22,7 +22,7 @@ pub const API_MAJOR: u32 = 1;
 
 /// The API's minor version, raised with each addition within v1 (VN1);
 /// the OpenAPI document's `info.version` is `1.<minor>` (VN7).
-pub const API_MINOR: u32 = 5;
+pub const API_MINOR: u32 = 6;
 
 /// The OpenAPI document's `info.version`.
 pub fn api_version() -> String {

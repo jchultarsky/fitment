@@ -3,7 +3,10 @@
 //! measure's result from its margin and limits, each check's from its
 //! measures and failures, each socket's verdict from its checks, stage and
 //! fit, each candidate's from its sockets and fit, the records and flags
-//! the envelope implies, the summary, MF5's order and the digest.
+//! the envelope implies, the summary, MF5's order and the digest. Both
+//! versions: v1, and v2, a run's with a fit verifier
+//! (`docs/research/m7-fit.md`, FM1), whose digest leaves out every
+//! `measured` object too (FM5).
 
 use std::collections::BTreeSet;
 
@@ -12,8 +15,10 @@ use serde_json::Value;
 /// Every problem found; none for a sound document.
 pub fn problems(doc: &Value) -> Vec<String> {
     let mut out = Vec::new();
-    if doc["format"] != "fitment.match" || doc["format_version"] != 1 {
-        out.push("not a fitment.match v1 document".to_owned());
+    if doc["format"] != "fitment.match"
+        || !(doc["format_version"] == 1 || doc["format_version"] == 2)
+    {
+        out.push("not a fitment.match v1 or v2 document".to_owned());
     }
     let mut counts = [0_u64; 4];
     let mut keys = Vec::new();
@@ -57,8 +62,11 @@ pub fn problems(doc: &Value) -> Vec<String> {
     out
 }
 
-/// MF7: the digest of the document without it and without labels.
+/// MF7: the digest of the document without it and without labels; for
+/// v2 (FM5), without the original's labels and every `measured` object
+/// too.
 pub fn digest(doc: &Value) -> String {
+    let v2 = doc["format_version"] == 2;
     let mut bare = doc.clone();
     if let Some(map) = bare.as_object_mut() {
         map.remove("digest");
@@ -72,11 +80,31 @@ pub fn digest(doc: &Value) -> String {
                 entry.remove("labels");
             }
         }
+        if v2 {
+            if let Some(Value::Object(original)) = map.get_mut("original") {
+                original.remove("labels");
+            }
+        }
+    }
+    if v2 {
+        strip_measured(&mut bare);
     }
     format!(
         "sha256:{}",
         fitment_core::sha256_hex(bare.to_string().as_bytes())
     )
+}
+
+/// FM5: every `measured` object of `value`, removed.
+fn strip_measured(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("measured");
+            map.values_mut().for_each(strip_measured);
+        }
+        Value::Array(items) => items.iter_mut().for_each(strip_measured),
+        _ => {}
+    }
 }
 
 fn s(v: &Value) -> &str {

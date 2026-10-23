@@ -237,10 +237,17 @@ fn every_document_validates_against_its_schema() {
         let Some(format) = document["format"].as_str() else {
             continue;
         };
-        let Some(schema) = schemas.get(format) else {
+        // FM7: a later version by its own schema, the first by the format's.
+        let format = match document["format_version"].as_u64() {
+            Some(v) if v > 1 => {
+                fitment_server::openapi::versioned(format, u32::try_from(v).unwrap_or(0))
+            }
+            _ => format.to_owned(),
+        };
+        let Some(schema) = schemas.get(&format) else {
             continue;
         };
-        *checked.entry(format.to_owned()).or_default() += 1;
+        *checked.entry(format.clone()).or_default() += 1;
         for problem in schema::validate(schema, &document) {
             failures.push(format!("{name}: {problem}"));
         }
@@ -253,6 +260,7 @@ fn every_document_validates_against_its_schema() {
         "fitment.parts",
         "fitment.socket",
         "fitment.match",
+        "fitment.match.v2",
         "fitment.catalog",
         "fitment.upload",
         "fitment.page",
@@ -294,6 +302,39 @@ fn an_edited_document_fails_its_schema() {
     assert!(
         !schema::validate(schema, &retyped).is_empty(),
         "a wrong type passed"
+    );
+}
+
+/// FM7 (docs/research/m7-fit.md): `fitment.match` v2 is its own closed
+/// schema beside v1's: a v2 golden validates against v2's and not v1's, a
+/// v1 golden not against v2's, and a field v2 does not write fails it.
+#[test]
+fn v2_is_its_own_closed_schema() {
+    let schemas = schemas();
+    let (v1, v2) = (&schemas["fitment.match"], &schemas["fitment.match.v2"]);
+    assert_eq!(v2["$id"], "https://fitment.dev/schemas/fitment.match/2");
+    assert_eq!(v1["$id"], "https://fitment.dev/schemas/fitment.match/1");
+    let golden = root().join("crates/fitment/tests/golden");
+    let read = |path: &str| -> Value {
+        serde_json::from_str(&fs::read_to_string(golden.join(path)).unwrap()).unwrap()
+    };
+    let fit = read("match-v2/s01_bolted--BRACKET.json");
+    let plain = read("match/s01_bolted--BRACKET.json");
+    assert_eq!(schema::validate(v2, &fit), Vec::<String>::new());
+    assert_eq!(schema::validate(v1, &plain), Vec::<String>::new());
+    assert!(
+        !schema::validate(v1, &fit).is_empty(),
+        "v2 passed v1's schema"
+    );
+    assert!(
+        !schema::validate(v2, &plain).is_empty(),
+        "v1 passed v2's schema"
+    );
+    let mut added = fit;
+    added["fit"]["unexpected"] = Value::Bool(true);
+    assert!(
+        !schema::validate(v2, &added).is_empty(),
+        "an unknown field passed"
     );
 }
 

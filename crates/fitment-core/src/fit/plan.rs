@@ -365,14 +365,6 @@ impl FitPlan {
         out
     }
 
-    /// The socket of the placement at `occurrence`.
-    pub(crate) fn socket_of(&self, occurrence: &[u64]) -> Option<&str> {
-        self.placements
-            .iter()
-            .find(|p| p.occurrence == occurrence)
-            .map(|p| p.socket.as_str())
-    }
-
     /// The scene body at `path`.
     pub(crate) fn body(&self, path: &[u64]) -> Option<&SceneBody> {
         self.bodies.iter().find(|b| b.path == path)

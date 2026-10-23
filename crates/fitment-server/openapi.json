@@ -7144,6 +7144,2975 @@
         "title": "MatchDocument",
         "type": "object"
       },
+      "fitment.match.v2": {
+        "$defs": {
+          "At": {
+            "additionalProperties": false,
+            "description": "Where in a requirement a measure or failure applies; whichever fields\napply are set, and only they are written.",
+            "properties": {
+              "at_mm": {
+                "description": "A station.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "contact_face": {
+                "description": "A seat's contact face, by the target's `#id`.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "end": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EndSide"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "An end."
+              },
+              "segment": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "A candidate segment."
+              },
+              "span_mm": {
+                "description": "A span, in the requirement's stations.",
+                "items": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": [
+                  "array",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "AtV2": {
+            "description": "Where a reason a fit is not verified applies (FV9), with its code.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "$ref": "#/$defs/FitCode"
+                  },
+                  "kind": {
+                    "const": "run",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "code"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "$ref": "#/$defs/FitCode"
+                  },
+                  "kind": {
+                    "const": "candidate",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "code"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "$ref": "#/$defs/FitCode"
+                  },
+                  "kind": {
+                    "const": "body",
+                    "type": "string"
+                  },
+                  "path": {
+                    "items": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "code",
+                  "path"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "$ref": "#/$defs/FitCode"
+                  },
+                  "kind": {
+                    "const": "placement",
+                    "type": "string"
+                  },
+                  "occurrence": {
+                    "items": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "code",
+                  "occurrence"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "$ref": "#/$defs/BodyV2"
+                  },
+                  "code": {
+                    "$ref": "#/$defs/FitCode"
+                  },
+                  "kind": {
+                    "const": "pair",
+                    "type": "string"
+                  },
+                  "occurrence": {
+                    "items": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "code",
+                  "occurrence",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "$ref": "#/$defs/FitCode"
+                  },
+                  "kind": {
+                    "const": "socket",
+                    "type": "string"
+                  },
+                  "socket": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "code",
+                  "socket"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Band": {
+            "description": "Which band a rule compared within (EV2).",
+            "oneOf": [
+              {
+                "const": "epsilon",
+                "description": "VR3's ε: the tolerance less the parts' own uncertainty.",
+                "type": "string"
+              },
+              {
+                "const": "tau",
+                "description": "M3's τ.",
+                "type": "string"
+              },
+              {
+                "const": "tau_guard",
+                "description": "VR4's τ + u.",
+                "type": "string"
+              },
+              {
+                "const": "angle",
+                "description": "The angular tolerance less its guard.",
+                "type": "string"
+              }
+            ]
+          },
+          "BodyKind": {
+            "enum": [
+              "neighbour",
+              "copy"
+            ],
+            "type": "string"
+          },
+          "BodyV2": {
+            "additionalProperties": false,
+            "description": "The other body of a pair: a neighbour, or the candidate's copy at\nanother occurrence (FT3).",
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/BodyKind"
+              },
+              "path": {
+                "items": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "product": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "path",
+              "product"
+            ],
+            "type": "object"
+          },
+          "CandidateFlag": {
+            "description": "A flag a candidate's verdict carries (VD12): a closed list whose names\nnever change meaning.",
+            "oneOf": [
+              {
+                "const": "thread_not_confirmed",
+                "description": "A passed requirement is a thread or press fit no rule confirms.",
+                "type": "string"
+              },
+              {
+                "const": "material_not_compared",
+                "description": "No material is compared (section 14): on every verdict.",
+                "type": "string"
+              },
+              {
+                "const": "candidate_incomplete",
+                "description": "The candidate's features are not complete (VD11).",
+                "type": "string"
+              },
+              {
+                "const": "requirements_removed",
+                "description": "A socket has requirements removed in review.",
+                "type": "string"
+              },
+              {
+                "const": "requirements_unreviewed",
+                "description": "A socket has requirements no one reviewed.",
+                "type": "string"
+              },
+              {
+                "const": "larger_than_original",
+                "description": "Under D6 functional, a clearance passed that strict would not.",
+                "type": "string"
+              }
+            ]
+          },
+          "CandidateV2": {
+            "additionalProperties": false,
+            "properties": {
+              "fit": {
+                "$ref": "#/$defs/FitV2"
+              },
+              "flags": {
+                "items": {
+                  "$ref": "#/$defs/CandidateFlag"
+                },
+                "type": "array"
+              },
+              "labels": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "product": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ProductRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "properties": true,
+              "read": true,
+              "reasons": {
+                "items": {
+                  "$ref": "#/$defs/RejectReason"
+                },
+                "type": "array"
+              },
+              "refusals": {
+                "items": {
+                  "$ref": "#/$defs/Refusal"
+                },
+                "type": "array"
+              },
+              "sockets": {
+                "items": {
+                  "$ref": "#/$defs/SocketV2"
+                },
+                "type": "array"
+              },
+              "source": true,
+              "status": {
+                "$ref": "#/$defs/Status"
+              },
+              "verdict": {
+                "$ref": "#/$defs/VerdictKind"
+              },
+              "warnings": {
+                "items": {
+                  "$ref": "#/$defs/Warning"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "labels",
+              "source",
+              "product",
+              "status",
+              "refusals",
+              "read",
+              "verdict",
+              "fit",
+              "flags",
+              "warnings",
+              "properties",
+              "reasons",
+              "sockets"
+            ],
+            "type": "object"
+          },
+          "CheckOut": {
+            "additionalProperties": false,
+            "description": "One check record (EV1): in full, or, for a rejected candidate's passed\ncheck, its requirement, result and feature alone (M4-19).",
+            "properties": {
+              "failures": {
+                "items": {
+                  "$ref": "#/$defs/Failure"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "feature": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measures": {
+                "items": {
+                  "$ref": "#/$defs/Measure"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requirement": {
+                "type": "string"
+              },
+              "result": {
+                "type": "string"
+              },
+              "review": {
+                "$ref": "#/$defs/ReviewStatus"
+              }
+            },
+            "required": [
+              "requirement",
+              "review",
+              "result",
+              "feature"
+            ],
+            "type": "object"
+          },
+          "Chosen": {
+            "description": "How the verified placement was chosen (EV4).",
+            "oneOf": [
+              {
+                "const": "first_passing",
+                "description": "The first placement passing every requirement M4 can verify.",
+                "type": "string"
+              },
+              {
+                "const": "fewest_failures",
+                "description": "None passed: the one passing most, the first of those.",
+                "type": "string"
+              },
+              {
+                "const": "given",
+                "description": "The caller gave it (AL14).",
+                "type": "string"
+              },
+              {
+                "const": "none",
+                "description": "Nothing was placed.",
+                "type": "string"
+              }
+            ]
+          },
+          "Clearance": {
+            "description": "D6: how a clearance span's diameter is bounded.",
+            "oneOf": [
+              {
+                "const": "strict",
+                "description": "No larger than the original's (the default).",
+                "type": "string"
+              },
+              {
+                "const": "functional",
+                "description": "Any larger: only the occupant's clear diameter bounds it.",
+                "type": "string"
+              }
+            ]
+          },
+          "ControlV2": {
+            "additionalProperties": false,
+            "description": "FT9: the original's fit at one socket.",
+            "properties": {
+              "fit": {
+                "$ref": "#/$defs/FitV2"
+              },
+              "socket": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "socket",
+              "fit"
+            ],
+            "type": "object"
+          },
+          "EndSide": {
+            "description": "Which end of a stack.",
+            "oneOf": [
+              {
+                "const": "start",
+                "description": "The end at the lowest station.",
+                "type": "string"
+              },
+              {
+                "const": "finish",
+                "description": "The end at the highest.",
+                "type": "string"
+              }
+            ]
+          },
+          "Failure": {
+            "additionalProperties": false,
+            "description": "One failure of a check (EV3).",
+            "properties": {
+              "at": {
+                "$ref": "#/$defs/At",
+                "description": "Where."
+              },
+              "code": {
+                "$ref": "#/$defs/FailureCode",
+                "description": "What failed."
+              },
+              "detail": {
+                "description": "A sentence for people, from the values.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "at",
+              "detail"
+            ],
+            "type": "object"
+          },
+          "FailureCode": {
+            "description": "Why a check failed (section 8.5): a closed list whose names never\nchange meaning.",
+            "oneOf": [
+              {
+                "const": "unverifiable",
+                "description": "No candidate can pass it (VR14, VD5); the detail gives the reason.",
+                "type": "string"
+              },
+              {
+                "const": "floor_above_tolerance",
+                "description": "The tolerance leaves no room above the parts' uncertainty (VD6).",
+                "type": "string"
+              },
+              {
+                "const": "no_placement",
+                "description": "No anchor matched (KH3).",
+                "type": "string"
+              },
+              {
+                "const": "alignment_exhausted",
+                "description": "The placements' bound was reached (AL11).",
+                "type": "string"
+              },
+              {
+                "const": "coverage_exhausted",
+                "description": "The coverage steps' bound was reached (AL11).",
+                "type": "string"
+              },
+              {
+                "const": "no_feature",
+                "description": "No candidate feature on the axis or plane.",
+                "type": "string"
+              },
+              {
+                "const": "axis_offset",
+                "description": "A feature off the axis beyond tolerance.",
+                "type": "string"
+              },
+              {
+                "const": "axis_angle",
+                "description": "A feature at an angle beyond tolerance.",
+                "type": "string"
+              },
+              {
+                "const": "diameter_out_of_limits:min",
+                "description": "A diameter below its least.",
+                "type": "string"
+              },
+              {
+                "const": "diameter_out_of_limits:max",
+                "description": "A diameter above its greatest.",
+                "type": "string"
+              },
+              {
+                "const": "diameter_out_of_limits:profile",
+                "description": "A zone's profile off the original's.",
+                "type": "string"
+              },
+              {
+                "const": "wall_missing",
+                "description": "No usable wall over part of a span.",
+                "type": "string"
+              },
+              {
+                "const": "end_not_open",
+                "description": "An end required open is not.",
+                "type": "string"
+              },
+              {
+                "const": "wall_opening",
+                "description": "A span crosses a wall opening that is no cross hole (CF8).",
+                "type": "string"
+              },
+              {
+                "const": "core_intruded",
+                "description": "A face may meet a required core (VR22).",
+                "type": "string"
+              },
+              {
+                "const": "contact_not_covered",
+                "description": "A seat's region is not covered.",
+                "type": "string"
+              },
+              {
+                "const": "unknown_outline",
+                "description": "The candidate face there has an unknown outline.",
+                "type": "string"
+              },
+              {
+                "const": "candidate_feature_unknown",
+                "description": "The only candidate feature there is one M2 left unknown.",
+                "type": "string"
+              },
+              {
+                "const": "seat_missing",
+                "description": "A grip's seat has no plane.",
+                "type": "string"
+              },
+              {
+                "const": "grip_length",
+                "description": "A grip's separation differs.",
+                "type": "string"
+              },
+              {
+                "const": "cone_mismatch:apex",
+                "description": "A cone's apex.",
+                "type": "string"
+              },
+              {
+                "const": "cone_mismatch:angle",
+                "description": "A cone's angle.",
+                "type": "string"
+              },
+              {
+                "const": "cone_mismatch:range",
+                "description": "A cone's radial range.",
+                "type": "string"
+              },
+              {
+                "const": "cone_mismatch:sense",
+                "description": "A cone's sense.",
+                "type": "string"
+              }
+            ]
+          },
+          "FeatureId": {
+            "pattern": "^(solid|plane|cylinder|cone|torus|other|hole|shaft)-(0|[1-9][0-9]*)$",
+            "type": "string"
+          },
+          "FindingsMeasured": {
+            "additionalProperties": false,
+            "description": "Each reason's sentence with its values, in the order found: outside\nthe digest, since a value may be the kernel's.",
+            "properties": {
+              "findings": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "findings"
+            ],
+            "type": "object"
+          },
+          "FitCode": {
+            "description": "FV9: every reason a fit is not verified, a closed list.",
+            "oneOf": [
+              {
+                "const": "uncertainty_above_tolerance",
+                "description": "A pair's stated uncertainty leaves no tolerance (FT7).",
+                "type": "string"
+              },
+              {
+                "const": "placement_not_unique",
+                "description": "The interface leaves the placement free (FT10, FV6).",
+                "type": "string"
+              },
+              {
+                "const": "kernel_alert",
+                "description": "The kernel warned or failed, or the helper raised (FV2).",
+                "type": "string"
+              },
+              {
+                "const": "below_resolution",
+                "description": "A residual above 0 and under the volume resolution (FV3).",
+                "type": "string"
+              },
+              {
+                "const": "proximity",
+                "description": "A body within the threshold outside every zone (FT5, FV4).",
+                "type": "string"
+              },
+              {
+                "const": "unsupported_geometry",
+                "description": "A face within reach that is not analytic (FT5, FV4).",
+                "type": "string"
+              },
+              {
+                "const": "original_fails_fit",
+                "description": "The original fails its own fit check (FT9, FV5).",
+                "type": "string"
+              },
+              {
+                "const": "invalid_body",
+                "description": "A body is not a valid solid with volume (FT6).",
+                "type": "string"
+              },
+              {
+                "const": "tolerance_too_large",
+                "description": "A body's shape tolerance is above t/10 (FT6).",
+                "type": "string"
+              },
+              {
+                "const": "binding_failed",
+                "description": "The kernel's reading is not fitment's (FB2 to FB4, FB6, FZ9).",
+                "type": "string"
+              },
+              {
+                "const": "unclaimed_body",
+                "description": "A solid no body names lies within reach (FB6).",
+                "type": "string"
+              },
+              {
+                "const": "untested_body",
+                "description": "A body the kernel finds within reach was not tested (FT8).",
+                "type": "string"
+              },
+              {
+                "const": "zone_unbuilt",
+                "description": "A zone has no closed form, or was built off it (FZ7).",
+                "type": "string"
+              },
+              {
+                "const": "conservation",
+                "description": "A cut lost or gained volume (FY4).",
+                "type": "string"
+              },
+              {
+                "const": "stored_bytes_unreadable",
+                "description": "A stored candidate's bytes could not be read (FC6).",
+                "type": "string"
+              },
+              {
+                "const": "helper_timeout",
+                "description": "The check missed its deadline (FV8).",
+                "type": "string"
+              },
+              {
+                "const": "resource_exhausted",
+                "description": "A resource limit ended the helper (FV8).",
+                "type": "string"
+              },
+              {
+                "const": "cancelled",
+                "description": "The job was cancelled (FV8).",
+                "type": "string"
+              },
+              {
+                "const": "kernel_crashed",
+                "description": "The kernel crashed twice (FV8).",
+                "type": "string"
+              },
+              {
+                "const": "helper_protocol",
+                "description": "The helper broke the protocol (FV8).",
+                "type": "string"
+              },
+              {
+                "const": "helper_unavailable",
+                "description": "No checked helper can run (FH3, FV8).",
+                "type": "string"
+              }
+            ]
+          },
+          "FitParameters": {
+            "additionalProperties": false,
+            "description": "FM2: the fit's parameters, and the control per socket, or `null` when\nno candidate's interface passed (FT9).",
+            "properties": {
+              "control": {
+                "items": {
+                  "$ref": "#/$defs/ControlV2"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "guard_mm": {
+                "format": "double",
+                "type": "number"
+              },
+              "max_fits": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "tolerance_cap": {
+                "type": "string"
+              },
+              "tolerance_mm": {
+                "format": "double",
+                "type": "number"
+              },
+              "volume_resolution_mm3": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "tolerance_mm",
+              "guard_mm",
+              "volume_resolution_mm3",
+              "tolerance_cap",
+              "max_fits",
+              "control"
+            ],
+            "type": "object"
+          },
+          "FitV2": {
+            "description": "FM3: a fit, by status, with its evidence; every fit states what no\nfit checks (FT12).",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bodies": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "copies": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "free_turns": {
+                    "items": {
+                      "$ref": "#/$defs/TurnV2"
+                    },
+                    "type": "array"
+                  },
+                  "kernel": {
+                    "type": "string"
+                  },
+                  "occurrences": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "pairs": {
+                    "items": {
+                      "$ref": "#/$defs/PairV2"
+                    },
+                    "type": "array"
+                  },
+                  "scope_not_checked": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "status": {
+                    "const": "verified",
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "kernel",
+                  "version",
+                  "occurrences",
+                  "bodies",
+                  "copies",
+                  "pairs",
+                  "free_turns",
+                  "scope_not_checked"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "interferences": {
+                    "items": {
+                      "$ref": "#/$defs/PairV2"
+                    },
+                    "type": "array"
+                  },
+                  "scope_not_checked": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "status": {
+                    "const": "interferes",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "interferences",
+                  "scope_not_checked"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "at": {
+                    "items": {
+                      "$ref": "#/$defs/AtV2"
+                    },
+                    "type": "array"
+                  },
+                  "code": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/FitCode"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "measured": {
+                    "$ref": "#/$defs/FindingsMeasured"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "scope_not_checked": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "status": {
+                    "const": "not_verified",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "code",
+                  "reason",
+                  "at",
+                  "measured",
+                  "scope_not_checked"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  },
+                  "scope_not_checked": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "status": {
+                    "const": "not_checked",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "reason",
+                  "scope_not_checked"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Grip": {
+            "description": "D7: how a grip binds. M4 offers `Hard` only (M4-8); M7 adds a warning.",
+            "oneOf": [
+              {
+                "const": "hard",
+                "description": "A grip is a requirement like any other.",
+                "type": "string"
+              }
+            ]
+          },
+          "MatchOptions": {
+            "additionalProperties": false,
+            "description": "What a run asks beyond the policy.",
+            "properties": {
+              "require_fit": {
+                "type": "boolean"
+              },
+              "require_reviewed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "require_fit",
+              "require_reviewed"
+            ],
+            "type": "object"
+          },
+          "Measure": {
+            "anyOf": [
+              {
+                "description": "A number between limits.",
+                "oneOf": [
+                  {
+                    "description": "In millimetres.",
+                    "properties": {
+                      "band_mm": {
+                        "format": "double",
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "band_mm"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "description": "In radians.",
+                    "properties": {
+                      "band_rad": {
+                        "format": "double",
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "band_rad"
+                    ],
+                    "type": "object"
+                  }
+                ],
+                "properties": {
+                  "band": {
+                    "$ref": "#/$defs/Band",
+                    "description": "The band the rule used."
+                  },
+                  "found": {
+                    "description": "The candidate's value.",
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "margin": {
+                    "description": "The distance from `found` to the nearer limit, positive inside.",
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "max": {
+                    "description": "The effective upper limit.",
+                    "format": "double",
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "min": {
+                    "description": "The effective lower limit; `None` when unbounded.",
+                    "format": "double",
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "nominal": {
+                    "description": "The socket's.",
+                    "format": "double",
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "found",
+                  "nominal",
+                  "band",
+                  "min",
+                  "max",
+                  "margin"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A fact required or not.",
+                "properties": {
+                  "found": {
+                    "description": "What was found.",
+                    "type": "boolean"
+                  },
+                  "required": {
+                    "description": "What the socket requires.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "found",
+                  "required"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "One comparison and its outcome (EV2).",
+            "properties": {
+              "at": {
+                "$ref": "#/$defs/At"
+              },
+              "passed": {
+                "type": "boolean"
+              },
+              "quantity": {
+                "$ref": "#/$defs/Quantity"
+              }
+            },
+            "required": [
+              "quantity",
+              "at",
+              "passed"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "MissingElement": {
+            "description": "What kind of element was not found.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "No stack of the sense with a diameter in a span's window.",
+                "properties": {
+                  "kind": {
+                    "const": "diameter",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "No stack with the openings required.",
+                "properties": {
+                  "kind": {
+                    "const": "openings",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "No stack long enough.",
+                "properties": {
+                  "kind": {
+                    "const": "extent",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "No plane with the area required.",
+                "properties": {
+                  "kind": {
+                    "const": "plane",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "No cone of the angle, sense and range.",
+                "properties": {
+                  "kind": {
+                    "const": "cone",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "No pair of witnesses in the relation the requirements' are.",
+                "properties": {
+                  "kind": {
+                    "const": "pair",
+                    "type": "string"
+                  },
+                  "with": {
+                    "description": "The other requirements of the pair.",
+                    "items": {
+                      "$ref": "#/$defs/RequirementId"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "with"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Too few distinct witnesses for distinct requirements (SL5).",
+                "properties": {
+                  "kind": {
+                    "const": "distinct",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "MissingOut": {
+            "additionalProperties": false,
+            "properties": {
+              "element": {
+                "$ref": "#/$defs/MissingElement"
+              },
+              "requirements": {
+                "items": {
+                  "$ref": "#/$defs/RequirementId"
+                },
+                "type": "array"
+              },
+              "window": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Window"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "requirements",
+              "element",
+              "window"
+            ],
+            "type": "object"
+          },
+          "MotionKind": {
+            "description": "A free motion's kind (FM4).",
+            "oneOf": [
+              {
+                "const": "turn",
+                "description": "A turn about a line.",
+                "type": "string"
+              },
+              {
+                "const": "slide",
+                "description": "A slide along a direction.",
+                "type": "string"
+              }
+            ]
+          },
+          "MotionV2": {
+            "additionalProperties": false,
+            "description": "One free motion (FM4): a turn about a line or a slide along one, in\nthe socket's frame, and whether the candidate is axisymmetric about it.",
+            "properties": {
+              "about": {
+                "items": {
+                  "items": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "axisymmetric": {
+                "type": "boolean"
+              },
+              "kind": {
+                "$ref": "#/$defs/MotionKind"
+              }
+            },
+            "required": [
+              "kind",
+              "about",
+              "axisymmetric"
+            ],
+            "type": "object"
+          },
+          "NotChecked": {
+            "description": "What M4 does not check in a socket (EV1, M4-11, VR16).",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "Removed in review, with the reviewer's note.",
+                "properties": {
+                  "note": {
+                    "description": "Why.",
+                    "type": "string"
+                  },
+                  "requirement": {
+                    "$ref": "#/$defs/RequirementId",
+                    "description": "The requirement."
+                  },
+                  "what": {
+                    "const": "removed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "what",
+                  "requirement",
+                  "note"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A shaft's room before a blind hole's floor (I4): information.",
+                "properties": {
+                  "mm": {
+                    "description": "The room, in mm.",
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "requirement": {
+                    "$ref": "#/$defs/RequirementId",
+                    "description": "The requirement."
+                  },
+                  "what": {
+                    "const": "max_extra_mm",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "what",
+                  "requirement",
+                  "mm"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "PairMeasured": {
+            "additionalProperties": false,
+            "description": "The kernel's measures of one pair (FT4, FT5, FY4): outside the digest.",
+            "properties": {
+              "alerts": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "body_inside_mm3": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "body_kept_mm3": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "box_mm": {
+                "items": {
+                  "items": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "common_mm3": {
+                "format": "double",
+                "type": "number"
+              },
+              "distance_mm": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "inside_mm3": {
+                "format": "double",
+                "type": "number"
+              },
+              "non_analytic": {
+                "type": "boolean"
+              },
+              "residual_mm3": {
+                "format": "double",
+                "type": "number"
+              },
+              "zoned_distance_mm": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "common_mm3",
+              "residual_mm3",
+              "inside_mm3",
+              "box_mm",
+              "distance_mm",
+              "zoned_distance_mm",
+              "body_kept_mm3",
+              "body_inside_mm3",
+              "non_analytic",
+              "alerts"
+            ],
+            "type": "object"
+          },
+          "PairV2": {
+            "additionalProperties": false,
+            "description": "One pair (FM3): the other body, the pair's own tolerances (FT7) and\nzones, and the kernel's measures, outside the digest.",
+            "properties": {
+              "body": {
+                "$ref": "#/$defs/BodyV2"
+              },
+              "epsilon_mm": {
+                "format": "double",
+                "type": "number"
+              },
+              "measured": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/PairMeasured"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "occurrence": {
+                "items": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "threshold_mm": {
+                "format": "double",
+                "type": "number"
+              },
+              "u_pair_mm": {
+                "format": "double",
+                "type": "number"
+              },
+              "zones": {
+                "items": {
+                  "$ref": "#/$defs/ZoneV2"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "occurrence",
+              "body",
+              "u_pair_mm",
+              "epsilon_mm",
+              "threshold_mm",
+              "zones",
+              "measured"
+            ],
+            "type": "object"
+          },
+          "PlacementV2": {
+            "additionalProperties": false,
+            "description": "FM4: v1's placement with its free motions; `freedom` is `null` where\nit was not worked out (FC2: only once every socket's interface passed).",
+            "properties": {
+              "chosen": {
+                "$ref": "#/$defs/Chosen"
+              },
+              "epsilon_mm": {
+                "format": "double",
+                "type": "number"
+              },
+              "exhausted": {
+                "type": "boolean"
+              },
+              "freedom": {
+                "items": {
+                  "$ref": "#/$defs/MotionV2"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "rotation": {
+                "items": {
+                  "items": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "seeded_by": {
+                "$ref": "#/$defs/Seed"
+              },
+              "translation_mm": {
+                "items": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "tried": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "u_mm": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "rotation",
+              "translation_mm",
+              "seeded_by",
+              "tried",
+              "exhausted",
+              "chosen",
+              "u_mm",
+              "epsilon_mm",
+              "freedom"
+            ],
+            "type": "object"
+          },
+          "PolicyOut": {
+            "additionalProperties": false,
+            "properties": {
+              "angular_deg": {
+                "format": "double",
+                "type": "number"
+              },
+              "clearance": {
+                "$ref": "#/$defs/Clearance"
+              },
+              "grip": {
+                "$ref": "#/$defs/Grip"
+              },
+              "linear_mm": {
+                "format": "double",
+                "type": "number"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "linear_mm",
+              "angular_deg",
+              "clearance",
+              "grip"
+            ],
+            "type": "object"
+          },
+          "ProductRef": {
+            "additionalProperties": false,
+            "description": "A `product`, as the file states it.",
+            "properties": {
+              "id": {
+                "description": "Its `id`, usually a part number.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "instance": {
+                "description": "The `product`'s `#id`.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "description": "Its `name`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "instance",
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "Quantity": {
+            "description": "What a measure compares (EV2): a closed list whose names never change\nmeaning.",
+            "oneOf": [
+              {
+                "const": "axis_offset_mm",
+                "description": "A candidate axis's distance from the requirement's.",
+                "type": "string"
+              },
+              {
+                "const": "axis_sine",
+                "description": "The sine of the angle between the two axes.",
+                "type": "string"
+              },
+              {
+                "const": "diameter_mm",
+                "description": "A diameter against a pinned value or a strict maximum.",
+                "type": "string"
+              },
+              {
+                "const": "clear_margin_mm",
+                "description": "A clearance span's radial margin beyond the clear diameter.",
+                "type": "string"
+              },
+              {
+                "const": "profile_offset_mm",
+                "description": "A zone's profile against the original's.",
+                "type": "string"
+              },
+              {
+                "const": "core_distance_mm",
+                "description": "A face's least distance from a required core (VR22).",
+                "type": "string"
+              },
+              {
+                "const": "wall_from_mm",
+                "description": "Where a usable wall starts, along the requirement's axis.",
+                "type": "string"
+              },
+              {
+                "const": "wall_to_mm",
+                "description": "Where it ends.",
+                "type": "string"
+              },
+              {
+                "const": "plane_offset_mm",
+                "description": "A plane's offset from a seat's.",
+                "type": "string"
+              },
+              {
+                "const": "plane_sine",
+                "description": "The sine of the angle between a plane's normal and a seat's.",
+                "type": "string"
+              },
+              {
+                "const": "grip_length_mm",
+                "description": "A grip's separation.",
+                "type": "string"
+              },
+              {
+                "const": "apex_offset_mm",
+                "description": "A cone's apex from the conical seat's.",
+                "type": "string"
+              },
+              {
+                "const": "cone_angle_rad",
+                "description": "A cone's included angle.",
+                "type": "string"
+              },
+              {
+                "const": "cone_range_mm",
+                "description": "A cone's radial range against the seat's.",
+                "type": "string"
+              },
+              {
+                "const": "covers",
+                "description": "Whether a seat's region is covered.",
+                "type": "string"
+              },
+              {
+                "const": "open_start",
+                "description": "Whether the start of a hole is open.",
+                "type": "string"
+              },
+              {
+                "const": "open_finish",
+                "description": "Whether its finish is.",
+                "type": "string"
+              },
+              {
+                "const": "wall_opening",
+                "description": "Whether a span crosses a wall opening that is no cross hole.",
+                "type": "string"
+              }
+            ]
+          },
+          "Refusal": {
+            "additionalProperties": false,
+            "description": "One reason a file is refused.",
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/RefusalCode",
+                "description": "What failed."
+              },
+              "instance": {
+                "description": "The innermost `#id` at fault, if there is one.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "For people: what failed, then any detail stepq gave. It may change\nbetween versions; the code does not.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "instance",
+              "message"
+            ],
+            "type": "object"
+          },
+          "RefusalCode": {
+            "description": "Why a file is not canonical.\n\nThe machine names are the `snake_case` of the variants, for example\n`several_solids`. They never change meaning: a new check gets a new\ncode. The variants are in the order the checks run, which is the order\nrefusals are reported in.",
+            "oneOf": [
+              {
+                "const": "unparseable",
+                "description": "The bytes are not ISO 10303-21.",
+                "type": "string"
+              },
+              {
+                "const": "dangling_reference",
+                "description": "An instance refers to an `#id` that is not defined.",
+                "type": "string"
+              },
+              {
+                "const": "several_data_sections",
+                "description": "The file does not have exactly one data section.",
+                "type": "string"
+              },
+              {
+                "const": "schema_unrecognized",
+                "description": "The file does not name AP203, AP214 or AP242.",
+                "type": "string"
+              },
+              {
+                "const": "assembly",
+                "description": "The file is an assembly; `features` reads one part.",
+                "type": "string"
+              },
+              {
+                "const": "no_definition",
+                "description": "The file holds no product definition.",
+                "type": "string"
+              },
+              {
+                "const": "several_definitions",
+                "description": "The file holds more than one product definition and no assembly.",
+                "type": "string"
+              },
+              {
+                "const": "shape_incomplete",
+                "description": "A link that may hold more of the part's shape was not followed.",
+                "type": "string"
+              },
+              {
+                "const": "no_solid",
+                "description": "The part's shape holds no B-rep solid.",
+                "type": "string"
+              },
+              {
+                "const": "several_solids",
+                "description": "The part's shape holds more than one solid.",
+                "type": "string"
+              },
+              {
+                "const": "unread_shape_item",
+                "description": "The part's shape holds something other than the solid and curve or\npoint sets: a surface model, a tessellated item, an unknown item.",
+                "type": "string"
+              },
+              {
+                "const": "solid_placement_unreadable",
+                "description": "The map that places the solid in the part's frame cannot be read.",
+                "type": "string"
+              },
+              {
+                "const": "topology_unsupported",
+                "description": "The solid's topology is valid STEP that is not read.",
+                "type": "string"
+              },
+              {
+                "const": "topology_malformed",
+                "description": "The solid's topology contradicts the schema.",
+                "type": "string"
+              },
+              {
+                "const": "solid_not_closed",
+                "description": "An edge of the solid is not used exactly twice, in opposite\ndirections.",
+                "type": "string"
+              },
+              {
+                "const": "shell_disconnected",
+                "description": "A shell of the solid is not one connected piece.",
+                "type": "string"
+              },
+              {
+                "const": "units_unreadable",
+                "description": "The solid's contexts or their units cannot be read.",
+                "type": "string"
+              },
+              {
+                "const": "length_unit_unreadable",
+                "description": "The length unit cannot be read.",
+                "type": "string"
+              },
+              {
+                "const": "angle_unit_unreadable",
+                "description": "The plane angle unit cannot be read.",
+                "type": "string"
+              },
+              {
+                "const": "uncertainty_unreadable",
+                "description": "An uncertainty cannot be read.",
+                "type": "string"
+              },
+              {
+                "const": "uncertainty_missing",
+                "description": "No length uncertainty is stated.",
+                "type": "string"
+              },
+              {
+                "const": "geometry_unreadable",
+                "description": "A supported surface, curve or point cannot be read.",
+                "type": "string"
+              },
+              {
+                "const": "vertex_off_surface",
+                "description": "A vertex does not lie on its face's surface.",
+                "type": "string"
+              },
+              {
+                "const": "vertex_off_curve",
+                "description": "An edge's end vertex does not lie on its curve.",
+                "type": "string"
+              },
+              {
+                "const": "face_orientation",
+                "description": "A face's stated sense disagrees with the direction its loops run.",
+                "type": "string"
+              },
+              {
+                "const": "out_of_range",
+                "description": "A value is not finite or too large to be read reliably.",
+                "type": "string"
+              },
+              {
+                "const": "contradiction",
+                "description": "The file states two things that cannot both be true.",
+                "type": "string"
+              },
+              {
+                "const": "internal",
+                "description": "Extraction found its own invariant broken: a fitment bug, not a\nproperty of the input.",
+                "type": "string"
+              },
+              {
+                "const": "not_an_assembly",
+                "description": "The file has no assembly usage: `socket` reads an assembly (check 31).",
+                "type": "string"
+              },
+              {
+                "const": "no_root",
+                "description": "No definition is a root of the product structure (check 32).",
+                "type": "string"
+              },
+              {
+                "const": "several_roots",
+                "description": "More than one definition is a root: two unrelated frames, or an\norphan (check 32).",
+                "type": "string"
+              },
+              {
+                "const": "placement_unreadable",
+                "description": "A usage, or an occurrence composed from usages, cannot be placed\n(check 33).",
+                "type": "string"
+              },
+              {
+                "const": "too_many_occurrences",
+                "description": "More occurrences than fitment reads under one root (check 34).",
+                "type": "string"
+              },
+              {
+                "const": "assembly_shape_item",
+                "description": "An assembly's own shape holds more than curve and point sets, or\ncannot be read whole (check 35).",
+                "type": "string"
+              },
+              {
+                "const": "component_refused",
+                "description": "A component (a leaf definition) is not a canonical part (check 36).",
+                "type": "string"
+              },
+              {
+                "const": "solid_frame_unplaced",
+                "description": "An occurrence places a representation its part's solid is not\nlisted from, so its features would be placed in an unknown frame\n(check 37).",
+                "type": "string"
+              },
+              {
+                "const": "solid_shared",
+                "description": "A component's solid is the solid of another definition too: each\nwould be read in full, once per definition (check 36).",
+                "type": "string"
+              },
+              {
+                "const": "too_many_relations",
+                "description": "More candidate pairs than fitment examines for one socket (check\n39).",
+                "type": "string"
+              }
+            ]
+          },
+          "RejectReason": {
+            "description": "Why a candidate was rejected.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "The socket has no requirements, so nothing could be verified.",
+                "properties": {
+                  "reason": {
+                    "const": "no_requirements",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The socket lists the same requirement twice.",
+                "properties": {
+                  "reason": {
+                    "const": "duplicate_requirement",
+                    "type": "string"
+                  },
+                  "requirement": {
+                    "$ref": "#/$defs/RequirementId",
+                    "description": "The repeated requirement."
+                  }
+                },
+                "required": [
+                  "reason",
+                  "requirement"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A requirement was never checked.",
+                "properties": {
+                  "reason": {
+                    "const": "missing_check",
+                    "type": "string"
+                  },
+                  "requirement": {
+                    "$ref": "#/$defs/RequirementId",
+                    "description": "The unchecked requirement."
+                  }
+                },
+                "required": [
+                  "reason",
+                  "requirement"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A requirement was checked more than once, so its result is ambiguous.",
+                "properties": {
+                  "reason": {
+                    "const": "duplicate_check",
+                    "type": "string"
+                  },
+                  "requirement": {
+                    "$ref": "#/$defs/RequirementId",
+                    "description": "The requirement checked more than once."
+                  }
+                },
+                "required": [
+                  "reason",
+                  "requirement"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A check names a requirement the socket does not have.",
+                "properties": {
+                  "reason": {
+                    "const": "unknown_requirement",
+                    "type": "string"
+                  },
+                  "requirement": {
+                    "$ref": "#/$defs/RequirementId",
+                    "description": "The unknown requirement."
+                  }
+                },
+                "required": [
+                  "reason",
+                  "requirement"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A requirement was checked and not verified.",
+                "properties": {
+                  "codes": {
+                    "description": "Its failures' codes, sorted.",
+                    "items": {
+                      "$ref": "#/$defs/FailureCode"
+                    },
+                    "type": "array"
+                  },
+                  "detail": {
+                    "description": "What was expected and what was found.",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "const": "requirement_failed",
+                    "type": "string"
+                  },
+                  "requirement": {
+                    "$ref": "#/$defs/RequirementId",
+                    "description": "The failed requirement."
+                  }
+                },
+                "required": [
+                  "reason",
+                  "requirement",
+                  "detail",
+                  "codes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "M2's gate refused the candidate's file: no socket was checked\n(VD10).",
+                "properties": {
+                  "codes": {
+                    "description": "The gate's refusals.",
+                    "items": {
+                      "$ref": "#/$defs/RefusalCode"
+                    },
+                    "type": "array"
+                  },
+                  "reason": {
+                    "const": "candidate_refused",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "codes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The candidate's body interferes with a neighbor.",
+                "properties": {
+                  "reason": {
+                    "const": "body_interferes",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The shortlist found what a socket demands missing (M4-17): the\nchecks were still made, for the evidence.",
+                "properties": {
+                  "reason": {
+                    "const": "shortlist",
+                    "type": "string"
+                  },
+                  "socket": {
+                    "description": "The socket.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "socket"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "No placement of the candidate was found in a socket (KH3).",
+                "properties": {
+                  "reason": {
+                    "const": "no_placement",
+                    "type": "string"
+                  },
+                  "socket": {
+                    "description": "The socket.",
+                    "type": "string"
+                  },
+                  "unanchored": {
+                    "description": "The requirements no candidate feature could anchor.",
+                    "items": {
+                      "$ref": "#/$defs/RequirementId"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "socket",
+                  "unanchored"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The socket document has no socket to judge against (VD2).",
+                "properties": {
+                  "reason": {
+                    "const": "no_sockets",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Removed": {
+            "additionalProperties": false,
+            "properties": {
+              "note": {
+                "type": "string"
+              },
+              "requirement": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "requirement",
+              "note"
+            ],
+            "type": "object"
+          },
+          "RequirementId": {
+            "description": "Identifies one requirement of a socket.",
+            "type": "string"
+          },
+          "ReviewStatus": {
+            "description": "A review decision.",
+            "oneOf": [
+              {
+                "const": "unreviewed",
+                "description": "Not reviewed: matched like `kept`.",
+                "type": "string"
+              },
+              {
+                "const": "kept",
+                "description": "Reviewed and kept.",
+                "type": "string"
+              },
+              {
+                "const": "removed",
+                "description": "Removed from matching, with a note.",
+                "type": "string"
+              }
+            ]
+          },
+          "Seed": {
+            "description": "What a placement was built from.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "Two socket lines and the candidate stacks on them (AL5, AL6).",
+                "properties": {
+                  "axis_pair": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "a": {
+                        "description": "The first line's requirement and stack.",
+                        "maxItems": 2,
+                        "minItems": 2,
+                        "prefixItems": [
+                          {
+                            "$ref": "#/$defs/RequirementId"
+                          },
+                          {
+                            "$ref": "#/$defs/FeatureId"
+                          }
+                        ],
+                        "type": "array"
+                      },
+                      "b": {
+                        "description": "The second's.",
+                        "maxItems": 2,
+                        "minItems": 2,
+                        "prefixItems": [
+                          {
+                            "$ref": "#/$defs/RequirementId"
+                          },
+                          {
+                            "$ref": "#/$defs/FeatureId"
+                          }
+                        ],
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "a",
+                      "b"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "axis_pair"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "One socket line and the stack on it (AL8).",
+                "properties": {
+                  "one_axis": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "axis": {
+                        "description": "The line's requirement and stack.",
+                        "maxItems": 2,
+                        "minItems": 2,
+                        "prefixItems": [
+                          {
+                            "$ref": "#/$defs/RequirementId"
+                          },
+                          {
+                            "$ref": "#/$defs/FeatureId"
+                          }
+                        ],
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "axis"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "one_axis"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A conical seat and the cone on it (AL9).",
+                "properties": {
+                  "cone": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cone": {
+                        "description": "The seat and the cone.",
+                        "maxItems": 2,
+                        "minItems": 2,
+                        "prefixItems": [
+                          {
+                            "$ref": "#/$defs/RequirementId"
+                          },
+                          {
+                            "$ref": "#/$defs/FeatureId"
+                          }
+                        ],
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "cone"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "cone"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A seat and a candidate plane, by a landmark of each (AL9).",
+                "properties": {
+                  "landmark": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "plane": {
+                        "$ref": "#/$defs/FeatureId",
+                        "description": "The plane."
+                      },
+                      "seat": {
+                        "$ref": "#/$defs/RequirementId",
+                        "description": "The seat."
+                      }
+                    },
+                    "required": [
+                      "seat",
+                      "plane"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "landmark"
+                ],
+                "type": "object"
+              },
+              {
+                "const": "given",
+                "description": "The caller gave it (AL14): the construction's, or the identity for\nthe original.",
+                "type": "string"
+              }
+            ]
+          },
+          "SocketPart": {
+            "additionalProperties": false,
+            "properties": {
+              "digest": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "selection": true,
+              "sockets": {
+                "items": {
+                  "$ref": "#/$defs/SocketSummary"
+                },
+                "type": "array"
+              },
+              "source": {
+                "$ref": "#/$defs/SourceOut"
+              },
+              "target": true
+            },
+            "required": [
+              "digest",
+              "source",
+              "target",
+              "selection",
+              "sockets"
+            ],
+            "type": "object"
+          },
+          "SocketSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "left_out": {
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "occurrences": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "removed": {
+                "items": {
+                  "$ref": "#/$defs/Removed"
+                },
+                "type": "array"
+              },
+              "unreviewed": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unverifiable": {
+                "items": {
+                  "$ref": "#/$defs/Unverifiable"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "id",
+              "occurrences",
+              "active",
+              "unreviewed",
+              "removed",
+              "unverifiable",
+              "left_out"
+            ],
+            "type": "object"
+          },
+          "SocketV2": {
+            "additionalProperties": false,
+            "properties": {
+              "alternatives": {
+                "items": {
+                  "$ref": "#/$defs/TransformV2"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "checks": {
+                "items": {
+                  "$ref": "#/$defs/CheckOut"
+                },
+                "type": "array"
+              },
+              "failed": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "fit": {
+                "$ref": "#/$defs/FitV2"
+              },
+              "missing": {
+                "items": {
+                  "$ref": "#/$defs/MissingOut"
+                },
+                "type": "array"
+              },
+              "not_checked": {
+                "items": {
+                  "$ref": "#/$defs/NotChecked"
+                },
+                "type": "array"
+              },
+              "placement": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/PlacementV2"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "socket": {
+                "type": "string"
+              },
+              "stage": {
+                "$ref": "#/$defs/Stage"
+              },
+              "verdict": {
+                "$ref": "#/$defs/VerdictKind"
+              }
+            },
+            "required": [
+              "socket",
+              "stage",
+              "verdict",
+              "fit",
+              "placement",
+              "alternatives",
+              "missing",
+              "failed",
+              "checks",
+              "not_checked"
+            ],
+            "type": "object"
+          },
+          "SourceOut": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "Stage": {
+            "description": "How far one socket's judgment went (MF5).",
+            "oneOf": [
+              {
+                "const": "shortlist",
+                "description": "The shortlist dropped it; alignment and verification ran anyway,\nfor the evidence (M4-17).",
+                "type": "string"
+              },
+              {
+                "const": "alignment",
+                "description": "No placement was found.",
+                "type": "string"
+              },
+              {
+                "const": "verification",
+                "description": "It was placed and verified.",
+                "type": "string"
+              }
+            ]
+          },
+          "Status": {
+            "description": "Whether a document holds a part or the reasons it was refused.",
+            "oneOf": [
+              {
+                "const": "accepted",
+                "description": "The file is a canonical part; [`FeaturesDocument::part`] holds it.",
+                "type": "string"
+              },
+              {
+                "const": "refused",
+                "description": "The file is not a canonical part; [`FeaturesDocument::refusals`]\nsays why.",
+                "type": "string"
+              }
+            ]
+          },
+          "Summary": {
+            "additionalProperties": false,
+            "description": "How many candidates got each verdict (MF6).",
+            "properties": {
+              "candidates": {
+                "description": "Distinct candidates.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "interface_match": {
+                "description": "`InterfaceMatch`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "match": {
+                "description": "`Match`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refused": {
+                "description": "Refused by M2's gate.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reject": {
+                "description": "`Reject`, refused ones included.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "candidates",
+              "match",
+              "interface_match",
+              "reject",
+              "refused"
+            ],
+            "type": "object"
+          },
+          "TransformV2": {
+            "additionalProperties": false,
+            "description": "FM3: an alternative placement, as a transform.",
+            "properties": {
+              "rotation": {
+                "items": {
+                  "items": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "translation_mm": {
+                "items": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              }
+            },
+            "required": [
+              "rotation",
+              "translation_mm"
+            ],
+            "type": "object"
+          },
+          "TurnV2": {
+            "additionalProperties": false,
+            "description": "An excused free turn (FT10): its socket and line, in the socket's\nframe.",
+            "properties": {
+              "about": {
+                "items": {
+                  "items": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "axisymmetric": {
+                "type": "boolean"
+              },
+              "socket": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "socket",
+              "about",
+              "axisymmetric"
+            ],
+            "type": "object"
+          },
+          "Unverifiable": {
+            "additionalProperties": false,
+            "properties": {
+              "floor": {
+                "description": "True when the floor fails it for the target's own u (VD6); false\nwhen no geometry can pass it (VD5).",
+                "type": "boolean"
+              },
+              "requirement": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "requirement",
+              "floor"
+            ],
+            "type": "object"
+          },
+          "VerdictKind": {
+            "description": "What a verdict says about a candidate.",
+            "oneOf": [
+              {
+                "const": "match",
+                "description": "Every requirement and the body fit are verified.",
+                "type": "string"
+              },
+              {
+                "const": "interface_match",
+                "description": "Every requirement is verified; the body fit was not checked or could\nnot be verified.",
+                "type": "string"
+              },
+              {
+                "const": "reject",
+                "description": "The candidate does not fit, or the evidence was incomplete.",
+                "type": "string"
+              }
+            ]
+          },
+          "VerifierV2": {
+            "additionalProperties": false,
+            "description": "FM2: the verifier's identity.",
+            "properties": {
+              "binding": {
+                "type": "string"
+              },
+              "fit_rules_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "helper_sha256": {
+                "type": "string"
+              },
+              "kernel": {
+                "type": "string"
+              },
+              "kernel_version": {
+                "type": "string"
+              },
+              "lock_sha256": {
+                "type": "string"
+              },
+              "protocol": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "python": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kernel",
+              "kernel_version",
+              "binding",
+              "python",
+              "protocol",
+              "helper_sha256",
+              "lock_sha256",
+              "fit_rules_version"
+            ],
+            "type": "object"
+          },
+          "Warning": {
+            "additionalProperties": false,
+            "description": "One warning, with the measure behind it.",
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/WarningCode",
+                "description": "Which."
+              },
+              "measure": {
+                "$ref": "#/$defs/Measure",
+                "description": "What was measured."
+              }
+            },
+            "required": [
+              "code",
+              "measure"
+            ],
+            "type": "object"
+          },
+          "WarningCode": {
+            "description": "A warning a passing check carries (VD12, VD13): reserved in M4.",
+            "oneOf": [
+              {
+                "const": "grip_differs",
+                "description": "M7's D7 warning: a grip's separation differs.",
+                "type": "string"
+              }
+            ]
+          },
+          "Window": {
+            "additionalProperties": false,
+            "description": "A closed interval, either end unbounded (SG6).",
+            "properties": {
+              "hi": {
+                "description": "Its greatest.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "lo": {
+                "description": "Its least value; `None` for none.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "lo",
+              "hi"
+            ],
+            "type": "object"
+          },
+          "ZoneKind": {
+            "description": "The kind of a zone (FZ2 to FZ4).",
+            "oneOf": [
+              {
+                "const": "slab",
+                "description": "A seat contact's neighbour face, swept either side of its plane\n(FZ2).",
+                "type": "string"
+              },
+              {
+                "const": "annulus",
+                "description": "An interference, line-to-line or unread-occupant span's annulus\nabout its axis (FZ3).",
+                "type": "string"
+              },
+              {
+                "const": "shell",
+                "description": "A conical seat's shell about its cone (FZ4).",
+                "type": "string"
+              }
+            ]
+          },
+          "ZoneV2": {
+            "additionalProperties": false,
+            "description": "A zone of a pair: its kind and the requirement that declares it.",
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/ZoneKind"
+              },
+              "requirement": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "requirement"
+            ],
+            "type": "object"
+          }
+        },
+        "$id": "https://fitment.dev/schemas/fitment.match/2",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/$defs/CandidateV2"
+            },
+            "type": "array"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "extractor_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fit": {
+            "$ref": "#/$defs/FitParameters"
+          },
+          "fit_verifier": {
+            "$ref": "#/$defs/VerifierV2"
+          },
+          "format": {
+            "type": "string"
+          },
+          "format_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "match_rules_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "options": {
+            "$ref": "#/$defs/MatchOptions"
+          },
+          "original": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CandidateV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy": {
+            "$ref": "#/$defs/PolicyOut"
+          },
+          "signature_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "socket": {
+            "$ref": "#/$defs/SocketPart"
+          },
+          "socket_rules_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "summary": {
+            "$ref": "#/$defs/Summary"
+          }
+        },
+        "required": [
+          "format",
+          "format_version",
+          "extractor_version",
+          "socket_rules_version",
+          "signature_version",
+          "match_rules_version",
+          "policy",
+          "options",
+          "fit_verifier",
+          "fit",
+          "socket",
+          "summary",
+          "candidates",
+          "digest"
+        ],
+        "title": "MatchDocumentV2",
+        "type": "object"
+      },
       "fitment.page": {
         "$id": "https://fitment.dev/schemas/fitment.page/1",
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -11339,7 +14308,7 @@
     },
     "summary": "fitment's REST API: jobs over the catalog and the matcher",
     "title": "fitment-server",
-    "version": "1.5",
+    "version": "1.6",
     "x-fitment-error-codes": [
       "bad_request",
       "invalid_parameter",

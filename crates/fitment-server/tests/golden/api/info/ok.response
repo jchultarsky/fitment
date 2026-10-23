@@ -2,7 +2,7 @@
 cache-control: no-store
 content-type: application/json
 fitment-format: fitment.info/1
-repr-digest: sha-256=:CBaY7P777hCiWQytajnkJZxUzYz9s8WUVNESmjsFwBY=:
+repr-digest: sha-256=:+aN3dOtPP0R8qefp709zTAxZqbnV10ji7k2Kj+aAeWA=:
 x-request-id: r_00000000000000000000000004
 
 {
@@ -14,7 +14,7 @@ x-request-id: r_00000000000000000000000004
   },
   "api": {
     "major": 1,
-    "minor": 5
+    "minor": 6
   },
   "versions": {
     "extractor_version": 6,

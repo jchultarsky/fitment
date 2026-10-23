@@ -118,7 +118,15 @@ fn close_part(schema: &mut Value, part: bool) {
     }
 }
 
-/// Every format's schema, by its name (VN7, VT36).
+/// The schema's name for `version` of `format` beside its first:
+/// `fitment.match.v2` (FM7). A component's name may not hold the `/` its
+/// `$id` has.
+pub fn versioned(format: &str, version: u32) -> String {
+    format!("{format}.v{version}")
+}
+
+/// Every format's schema, by its name (VN7, VT36): a format's first
+/// version by the format's own name, a later one by [`versioned`].
 pub fn schemas() -> Map<String, Value> {
     let mut schemas = Map::new();
     let mut add = |format: &str, schema: Value| {
@@ -153,6 +161,19 @@ pub fn schemas() -> Map<String, Value> {
         schema_of::<fitment_core::MatchDocument>(
             fitment_core::MATCH_FORMAT,
             fitment_core::MATCH_FORMAT_VERSION,
+            true,
+        ),
+    );
+    // docs/research/m7-fit.md, FM7: v2, a run's with a fit verifier, beside
+    // v1 and as closed, from its own types (FC7).
+    add(
+        &versioned(
+            fitment_core::MATCH_FORMAT,
+            fitment_core::MATCH_FORMAT_VERSION_FIT,
+        ),
+        schema_of::<fitment_core::MatchDocumentV2>(
+            fitment_core::MATCH_FORMAT,
+            fitment_core::MATCH_FORMAT_VERSION_FIT,
             true,
         ),
     );

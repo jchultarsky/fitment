@@ -31,6 +31,14 @@ schemars = { workspace = true, optional = true }
 
 [features]
 schema = ["dep:schemars"]
+# The test-only fit verifier and an exact kernel's measures
+# (docs/research/m7-fit.md, FC1): `fit::testing`. No release build enables
+# it; the workspace's tests do.
+test-support = []
+
+[dev-dependencies]
+# The integration tests use `fit::testing`.
+fitment-core = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true
