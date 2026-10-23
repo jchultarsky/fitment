@@ -120,6 +120,10 @@ async fn a_busy_renewal_is_retried() {
         s.set_lease_renewal(std::time::Duration::from_millis(100));
     })
     .await;
+    // The harness's token is minted (offline, on server.db) before the
+    // lock is held: minted afterwards, it raced the renewal still being
+    // retried and met `database is locked` on CI's Windows runner.
+    let _ = server.token();
     let path = server.dirs.state.join("server.db");
     let holder = std::thread::spawn(move || {
         let conn = rusqlite::Connection::open(path).unwrap();
