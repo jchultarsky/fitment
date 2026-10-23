@@ -430,12 +430,25 @@ fn a_killed_helper_leaves_no_process() {
     let document = s01();
     let session = OcctSession::open(&helper, S01.to_vec(), &document).unwrap();
     let result = judge(&session, BRACKET);
-    let expected = if refused_here() {
-        FitCode::HelperUnavailable
+    // A 1 ms deadline ends the request in its write (FV8's protocol
+    // failure, the write deadline: CI's macOS) or its read (a timeout): both
+    // leave the run incomplete, and either way the helper is killed.
+    let expected: &[FitCode] = if refused_here() {
+        &[FitCode::HelperUnavailable]
     } else {
-        FitCode::HelperTimeout
+        &[FitCode::HelperTimeout, FitCode::HelperProtocol]
     };
-    assert_eq!(code(&result), Some(expected), "{:?}", findings(&result));
+    assert!(
+        code(&result).is_some_and(|c| expected.contains(&c)),
+        "{:?}",
+        findings(&result)
+    );
+    if !refused_here() {
+        assert!(
+            result.fit_incomplete(),
+            "a deadline leaves the run incomplete"
+        );
+    }
     let reports = session.take_reports();
     assert_ne!(reports.len(), 0, "a helper was spawned and ended");
     for report in reports {
