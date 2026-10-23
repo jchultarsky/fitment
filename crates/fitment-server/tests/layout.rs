@@ -359,7 +359,7 @@ fn the_image_is_built_as_op8_says() {
         .filter(|l| !l.trim_start().starts_with('#'))
         .collect();
     let text = lines.join("\n");
-    assert!(text.contains("FROM rust:1.85-bookworm@sha256:"));
+    assert!(text.contains("FROM rust:1.87-bookworm@sha256:"));
     assert!(text.contains("FROM gcr.io/distroless/cc-debian12:nonroot@sha256:"));
     assert!(text.contains("cargo build --release --locked -p fitment-server -p fitment"));
     assert!(
