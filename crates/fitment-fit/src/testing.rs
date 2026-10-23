@@ -189,7 +189,9 @@ pub enum Scenario {
     /// (0500, Unix only), as a user might between a run's check of a
     /// helper and its first fit; then serves.
     LocksTmp,
-    /// Its second helper crashes at its first `place`, once (T1).
+    /// Its second helper crashes at its first `place`, once; its first
+    /// holds each `place` after its first until the second has started
+    /// (T1).
     CrashSecondHelperOnce,
     /// After its second `check` reply, sends 64 frames of 1 MiB nobody
     /// asked for, counting each one written (P5).
