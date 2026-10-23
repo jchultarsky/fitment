@@ -29,6 +29,9 @@ use fitment_core::{FitIdentity, FitRequest, FitVerifier};
 pub use fake::fake_main;
 pub use harness::{Test, harness};
 
+/// How many frames a `Floods` fake wrote, from its state directory.
+pub const FLOOD_COUNT: &str = "flood-count";
+
 /// VT78: a test file's `main`: `fitment_fit::harness![test_a, test_b]`
 /// runs the functions named as tests ([`harness()`]), after becoming a fake
 /// helper if the binary was started as one. The coverage test finds each
@@ -160,16 +163,30 @@ pub enum Scenario {
     ExtraPair,
     /// A `check` reply naming a pair not asked.
     PairNotAsked,
-    /// A `place` reply to a `scene` request.
-    WrongOp,
-    /// An `error` frame for `scene`.
-    ErrorFrame,
-    /// A `scene` reply with another nonce.
-    WrongNonce,
-    /// A `scene` reply with another request header's SHA-256.
-    WrongRequestSha256,
-    /// A `scene` reply with another digest of the request.
-    WrongDigest,
+    /// A reply of another operation at the stage.
+    WrongOp(Stage),
+    /// An `error` frame at the stage.
+    ErrorFrame(Stage),
+    /// An `error` frame at `scene` whose code and sentence hold escapes,
+    /// a newline, a forged log line and 100,000 characters (L3).
+    HostileErrorFrame,
+    /// A reply at the stage with another nonce.
+    WrongNonce(Stage),
+    /// A reply at the stage with another request header's SHA-256.
+    WrongRequestSha256(Stage),
+    /// A reply at the stage with another digest of the request.
+    WrongDigest(Stage),
+    /// Answers each `place` and `check` after its first with the reply,
+    /// byte for byte, it sent to the earlier one: a real earlier request's
+    /// nonce and digests (T1).
+    StaleReply,
+    /// Crashes at `check` (T1).
+    CrashAtCheck,
+    /// Its second helper crashes at its first `place`, once (T1).
+    CrashSecondHelperOnce,
+    /// After its second `check` reply, sends 64 frames of 1 MiB nobody
+    /// asked for, counting each one written (P5).
+    Floods,
     /// A `scene` reply with a negative volume.
     NegativeVolume,
     /// A `check` reply whose residual is above its Common.
@@ -199,28 +216,66 @@ pub enum Scenario {
     ImportError,
 }
 
+/// Where a fake breaks a reply's envelope (T1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Stage {
+    /// The `scene` reply.
+    Scene,
+    /// The `place` reply.
+    Place,
+    /// The `check` reply.
+    Check,
+}
+
+impl Stage {
+    /// Every stage.
+    pub const ALL: [Self; 3] = [Self::Scene, Self::Place, Self::Check];
+
+    /// Its operation.
+    pub fn op(self) -> &'static str {
+        match self {
+            Self::Scene => "scene",
+            Self::Place => "place",
+            Self::Check => "check",
+        }
+    }
+}
+
 impl Scenario {
     /// Its name in a fake script.
     pub fn name(self) -> String {
-        match self {
-            Self::Dies(death) => format!("dies-{}", death.signal().to_ascii_lowercase()),
-            other => format!("{other:?}"),
-        }
+        format!("{self:?}")
     }
 
     /// The scenario named `name`.
     pub fn named(name: &str) -> Option<Self> {
-        if let Some(signal) = name.strip_prefix("dies-") {
-            return Death::ALL
-                .into_iter()
-                .find(|d| d.signal().eq_ignore_ascii_case(signal))
-                .map(Self::Dies);
-        }
-        ALL.into_iter().find(|s| s.name() == name)
+        all().into_iter().find(|s| s.name() == name)
+    }
+
+    /// Every scenario that breaks an envelope at `stage`.
+    pub fn envelope_breaks(stage: Stage) -> [Self; 5] {
+        [
+            Self::WrongOp(stage),
+            Self::ErrorFrame(stage),
+            Self::WrongNonce(stage),
+            Self::WrongRequestSha256(stage),
+            Self::WrongDigest(stage),
+        ]
     }
 }
 
-/// Every scenario but the deaths.
+/// Every scenario.
+fn all() -> Vec<Scenario> {
+    let mut all = ALL.to_vec();
+    all.extend(Death::ALL.map(Scenario::Dies));
+    for stage in Stage::ALL {
+        all.extend(Scenario::envelope_breaks(stage));
+    }
+    all
+}
+
+/// Every scenario but the deaths and the envelope's breaks.
 const ALL: [Scenario; 42] = [
     Scenario::Replay,
     Scenario::NoiseOnStderr,
@@ -246,11 +301,6 @@ const ALL: [Scenario; 42] = [
     Scenario::MissingPair,
     Scenario::ExtraPair,
     Scenario::PairNotAsked,
-    Scenario::WrongOp,
-    Scenario::ErrorFrame,
-    Scenario::WrongNonce,
-    Scenario::WrongRequestSha256,
-    Scenario::WrongDigest,
     Scenario::NegativeVolume,
     Scenario::ResidualAboveCommon,
     Scenario::ConservationMiss,
@@ -264,6 +314,11 @@ const ALL: [Scenario; 42] = [
     Scenario::OtherSite,
     Scenario::OtherPython,
     Scenario::ImportError,
+    Scenario::HostileErrorFrame,
+    Scenario::StaleReply,
+    Scenario::CrashAtCheck,
+    Scenario::CrashSecondHelperOnce,
+    Scenario::Floods,
 ];
 
 /// The marker a fake script starts with.
@@ -308,8 +363,8 @@ impl Fake {
         let fit = FitDir::create(&dir).expect("the fit directory");
         fit.install(&files).expect("the helper's files");
         let interpreter = std::env::current_exe().expect("the test binary");
-        fit.write_manifest(&Manifest::new(interpreter, site, FAKE_PYTHON, &files))
-            .expect("the manifest");
+        let manifest = Manifest::new(interpreter, site, FAKE_PYTHON, &files).expect("the manifest");
+        fit.write_manifest(&manifest).expect("the manifest");
         Self { dir, files, state }
     }
 
@@ -433,6 +488,17 @@ impl FitVerifier for Replaying<'_, '_> {
 /// The failure the fit would record.
 pub fn write_probe(helper: &OcctHelper, bytes: usize, within: Duration) -> Result<(), FitFailure> {
     crate::session::write_probe(helper, bytes, within)
+}
+
+/// The number the next helper directory of this process tries (P3).
+pub fn next_helper_dir() -> u64 {
+    crate::dir::next_helper_dir()
+}
+
+/// The review of PR 2a (P1): the next request `session` serves panics
+/// while its helper is taken.
+pub fn panic_in_next_serve(session: &OcctSession<'_>) {
+    crate::session::panic_in_next_serve(session);
 }
 
 /// VT75: arbitrary bytes through the frame reader, as either side reads

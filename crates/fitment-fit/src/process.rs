@@ -14,7 +14,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -31,6 +31,14 @@ const CANCEL_EVERY: Duration = Duration::from_millis(100);
 /// How long a helper that closed its channel has to exit before it is
 /// killed.
 const GRACE: Duration = Duration::from_secs(2);
+
+/// A deadline too far for `Instant` is this far instead.
+const FAR: Duration = Duration::from_secs(365 * 24 * 3600);
+
+/// How long a report waits for the stderr drain to read what a reaped
+/// helper left in its pipe (the review of PR 2a): bounded, since a child
+/// of the helper may hold the pipe open.
+const DRAIN: Duration = Duration::from_millis(500);
 
 /// What to spawn (FL2): the program, its arguments, its working
 /// directory, and whether it gets a process group of its own.
@@ -50,11 +58,15 @@ pub(crate) struct Wait<'a> {
 }
 
 impl<'a> Wait<'a> {
+    /// `within` from now; a span past what `Instant` holds waits a year,
+    /// never panics (the review of PR 2a, P1).
     pub fn new(within: Duration, cancel: Option<&'a AtomicBool>) -> Self {
-        Self {
-            deadline: Instant::now() + within,
-            cancel,
-        }
+        let now = Instant::now();
+        let deadline = now
+            .checked_add(within)
+            .or_else(|| now.checked_add(FAR))
+            .unwrap_or(now);
+        Self { deadline, cancel }
     }
 
     fn cancelled(&self) -> bool {
@@ -99,8 +111,11 @@ pub(crate) struct Process {
     written: Receiver<std::io::Result<()>>,
     frames: Receiver<Result<Frame, FrameError>>,
     stderr: Arc<Mutex<Ring>>,
+    drain: Option<thread::JoinHandle<()>>,
     status: Option<ExitStatus>,
     dir: PathBuf,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    own_group: bool,
 }
 
 impl Process {
@@ -121,27 +136,44 @@ impl Process {
         if let Some(root) = std::env::var_os("SYSTEMROOT") {
             command.env("SYSTEMROOT", root);
         }
-        #[cfg(unix)]
         if spawn.own_group {
             // FL5: in the server, a terminal's signals never reach it.
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
+            #[cfg(windows)]
+            {
+                // CREATE_NEW_PROCESS_GROUP: a console's Ctrl-C passes it by.
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0000_0200);
+            }
         }
-        #[cfg(not(unix))]
-        let _ = spawn.own_group;
         let mut child = command.spawn()?;
         let pid = child.id();
-        let (Some(stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::other("a pipe was not opened"));
+        // The review of PR 2a (L1): a thread that cannot start leaves no
+        // child behind.
+        let threads = (|| {
+            let (Some(stdin), Some(stdout), Some(stderr)) =
+                (child.stdin.take(), child.stdout.take(), child.stderr.take())
+            else {
+                return Err(std::io::Error::other("a pipe was not opened"));
+            };
+            let (writer, written) = write_thread(pid, stdin)?;
+            let frames = read_thread(pid, stdout)?;
+            let ring = Arc::new(Mutex::new(Ring::default()));
+            let drain = drain_thread(pid, stderr, Arc::clone(&ring))?;
+            Ok((writer, written, frames, ring, drain))
+        })();
+        let (writer, written, frames, ring, drain) = match threads {
+            Ok(threads) => threads,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
         };
-        let (writer, written) = write_thread(pid, stdin)?;
-        let frames = read_thread(pid, stdout)?;
-        let ring = Arc::new(Mutex::new(Ring::default()));
-        drain_thread(pid, stderr, Arc::clone(&ring))?;
         Ok(Self {
             child,
             pid,
@@ -149,9 +181,24 @@ impl Process {
             written,
             frames,
             stderr: ring,
+            drain: Some(drain),
             status: None,
             dir: spawn.dir,
+            own_group: spawn.own_group,
         })
+    }
+
+    /// The review of PR 2a (P5): a frame the helper sent unasked, or its
+    /// end, while it sat idle; `None` if it sent nothing.
+    pub fn unasked(&self) -> Option<String> {
+        match self.frames.try_recv() {
+            Ok(Ok(_)) => Some("the helper sent a frame no request asked for".to_owned()),
+            Ok(Err(e)) => Some(format!("the helper's channel broke while idle: {e}")),
+            Err(TryRecvError::Disconnected) => {
+                Some("the helper's channel closed while idle".to_owned())
+            }
+            Err(TryRecvError::Empty) => None,
+        }
     }
 
     /// The child's process id.
@@ -200,11 +247,42 @@ impl Process {
         }
     }
 
-    /// Kills the child, if it runs, and reaps it.
+    /// Kills the child, if it runs, and its process group if it has one of
+    /// its own (Unix), and reaps it; then gives the stderr drain a moment
+    /// to read what the helper left (bounded).
     pub fn kill(&mut self) {
         if self.status.is_none() {
+            #[cfg(unix)]
+            if self.own_group {
+                // The review of PR 2a (L2): std kills one process; the
+                // group, the helper's children with it, by kill(1) on its
+                // negative pgid, which is the helper's pid.
+                let _ = Command::new(KILL)
+                    .args(["-s", "KILL", "--", &format!("-{}", self.pid)])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
             let _ = self.child.kill();
             self.status = self.child.wait().ok();
+        }
+        self.settle_stderr();
+    }
+
+    /// Waits, at most [`DRAIN`], for the stderr drain to finish.
+    fn settle_stderr(&mut self) {
+        let until = Instant::now() + DRAIN;
+        while self.drain.as_ref().is_some_and(|d| !d.is_finished()) && Instant::now() < until {
+            thread::sleep(Duration::from_millis(5));
+        }
+        if self
+            .drain
+            .as_ref()
+            .is_some_and(thread::JoinHandle::is_finished)
+        {
+            if let Some(drain) = self.drain.take() {
+                let _ = drain.join();
+            }
         }
     }
 
@@ -283,7 +361,7 @@ impl Process {
 
     fn remove_dir(&mut self) {
         if !self.dir.as_os_str().is_empty() {
-            let _ = std::fs::remove_dir_all(&self.dir);
+            remove_dir(&self.dir);
             self.dir = PathBuf::new();
         }
     }
@@ -334,13 +412,34 @@ fn write_thread(pid: u32, mut stdin: ChildStdin) -> std::io::Result<Writer> {
     Ok((to, written))
 }
 
+/// The kill(1) a process group is killed with (Unix).
+#[cfg(unix)]
+const KILL: &str = "/bin/kill";
+
+/// Removes a helper's directory; on Windows, retried for a moment, since
+/// a scanner may still hold a file the helper wrote (the review of PR 2a,
+/// L5).
+pub(crate) fn remove_dir(dir: &std::path::Path) {
+    let tries = if cfg!(windows) { 20 } else { 1 };
+    for _ in 0..tries {
+        match std::fs::remove_dir_all(dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            _ => return,
+        }
+    }
+}
+
 /// The reader thread: every frame the helper sends, until the first that
-/// is not one or the channel's end.
+/// is not one or the channel's end. Its channel holds one frame, so a
+/// helper that floods it waits in its own pipe rather than in fitment's
+/// memory (the review of PR 2a, P5).
 fn read_thread(
     pid: u32,
     mut stdout: impl Read + Send + 'static,
 ) -> std::io::Result<Receiver<Result<Frame, FrameError>>> {
-    let (to, frames) = mpsc::channel();
+    let (to, frames) = mpsc::sync_channel(1);
     named("reader", pid).spawn(move || {
         loop {
             let read = frame::read_frame(&mut stdout, Caps::REPLY);
@@ -358,7 +457,7 @@ fn drain_thread(
     pid: u32,
     mut stderr: impl Read + Send + 'static,
     ring: Arc<Mutex<Ring>>,
-) -> std::io::Result<()> {
+) -> std::io::Result<thread::JoinHandle<()>> {
     named("stderr", pid).spawn(move || {
         let mut buf = [0u8; 8192];
         loop {
@@ -372,13 +471,20 @@ fn drain_thread(
                 Err(_) => break,
             }
         }
-    })?;
-    Ok(())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reviews of PR 2a (P1): a deadline past what `Instant` holds
+    /// waits far, and never panics.
+    #[test]
+    fn a_deadline_too_far_never_panics() {
+        let far = Wait::new(Duration::MAX, None);
+        assert!(far.deadline > Instant::now() + Duration::from_secs(3600));
+    }
 
     #[test]
     fn the_ring_keeps_the_last_64_kib() {

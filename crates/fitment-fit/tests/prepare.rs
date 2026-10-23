@@ -30,6 +30,8 @@ fn main() {
         the_fit_directory_is_private_and_written_whole,
         the_helper_is_spawned_from_the_manifest_with_nothing_inherited,
         the_crate_is_pure_rust_on_four_crates,
+        a_fit_directory_other_users_can_write_is_refused,
+        stale_helper_directories_never_block_a_spawn,
     ];
 }
 
@@ -247,13 +249,23 @@ fn the_fit_directory_is_private_and_written_whole() {
         .collect();
     names.sort();
     assert_eq!(names, [SCRIPT, LOCK, MANIFEST, TMP]);
+    #[cfg(unix)]
+    for name in [SCRIPT, LOCK, MANIFEST] {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(fake.dir.join(name))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{name}: whatever the umask");
+    }
     let dir = FitDir::open(&fake.dir).unwrap();
     let written = Manifest::new(
         std::env::current_exe().unwrap(),
         root.join("site-packages"),
         FAKE_PYTHON,
         &fake.files,
-    );
+    )
+    .unwrap();
     assert_eq!(dir.read_manifest().unwrap(), written);
     assert_eq!(dir.check(&fake.files).unwrap(), written);
     // Creating it again changes nothing.
@@ -353,4 +365,99 @@ fn the_crate_is_pure_rust_on_four_crates() {
     assert!(manifest.contains(r#"include = ["src/**", "helper/**", "README.md", "LICENSE"]"#));
     let workspace = std::fs::read_to_string(here.join("../../Cargo.toml")).unwrap();
     assert!(workspace.contains("[workspace.lints.rust]\nunsafe_code = \"forbid\""));
+}
+
+/// The reviews of PR 2a (P4): a fit directory, `tmp/` or file another
+/// user could write would let them run any program as this one: each is
+/// refused when the helper is opened and again before every spawn (Unix;
+/// on Windows the directory's ACLs are not read, and FY5's trust boundary,
+/// the user's account, holds). An interpreter that is not the one the
+/// manifest hashed is refused too.
+fn a_fit_directory_other_users_can_write_is_refused() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let root = root("others");
+        for (name, mode) in [
+            ("", 0o777),
+            (TMP, 0o777),
+            (MANIFEST, 0o666),
+            (SCRIPT, 0o666),
+            (LOCK, 0o660),
+        ] {
+            let fake = Fake::install(&root.join(format!("{name}-{mode:o}")), Scenario::Replay);
+            let path = if name.is_empty() {
+                fake.dir.clone()
+            } else {
+                fake.dir.join(name)
+            };
+            let kept = std::fs::metadata(&path).unwrap().permissions();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            let error = refused(&fake.dir, &fake.files);
+            assert!(
+                matches!(error, PrepareError::NotPrivate { .. }),
+                "{name} {mode:o}: {error:?}"
+            );
+            assert!(error.sentence().contains("group- or world-writable"));
+            // Opened while private, then opened up: the next spawn refuses.
+            std::fs::set_permissions(&path, kept.clone()).unwrap();
+            let helper = fake.helper(fast());
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            let Err(HelperError::Failed(report)) = helper.check() else {
+                panic!("{name} {mode:o}: spawned");
+            };
+            assert!(
+                report.why.contains("group- or world-writable"),
+                "{report:?}"
+            );
+            std::fs::set_permissions(&path, kept).unwrap();
+        }
+    }
+    let root = root("interpreter");
+    let fake = Fake::install(&root, Scenario::Replay);
+    rewrite(&fake.dir, |m| {
+        m["interpreter_sha256"] = Value::from("0".repeat(64));
+    });
+    let error = refused(&fake.dir, &fake.files);
+    assert!(
+        matches!(
+            error,
+            PrepareError::Changed {
+                what: "interpreter",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+/// The reviews of PR 2a (P3): directories a crashed run left under `tmp/`
+/// with this process's names never block a spawn, and those older than a
+/// day are swept when a helper is opened.
+fn stale_helper_directories_never_block_a_spawn() {
+    let root = root("stale-dirs");
+    let fake = Fake::install(&root, Scenario::Replay);
+    let tmp = fake.dir.join(TMP);
+    let next = fitment_fit::testing::next_helper_dir();
+    for n in next..next + 300 {
+        std::fs::create_dir(tmp.join(format!("helper-{}-{n}", std::process::id()))).unwrap();
+    }
+    let helper = fake.helper(fast());
+    assert!(helper.check().is_ok());
+    #[cfg(unix)]
+    {
+        let old = tmp.join("helper-1-1");
+        let young = tmp.join("helper-1-2");
+        for dir in [&old, &young] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let two_days = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600);
+        std::fs::File::open(&old)
+            .unwrap()
+            .set_modified(two_days)
+            .unwrap();
+        let _helper = fake.helper(fast());
+        assert!(!old.exists(), "swept");
+        assert!(young.exists(), "kept");
+    }
 }

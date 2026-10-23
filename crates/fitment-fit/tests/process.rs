@@ -27,6 +27,8 @@ fn main() {
         every_helper_ends_with_its_session,
         a_helper_that_ignores_bye_is_killed_after_two_seconds,
         the_server_s_helpers_have_a_process_group_of_their_own,
+        a_helper_unavailable_mid_session_leaves_the_run_incomplete,
+        a_server_s_helper_is_killed_with_its_group,
     ];
 }
 
@@ -267,5 +269,63 @@ fn the_server_s_helpers_have_a_process_group_of_their_own() {
             group_of(std::process::id())
         };
         assert_eq!(group_of(pid), expected, "own: {own}");
+    }
+}
+
+/// The reviews of PR 2a (P2): once a session has had a helper, one that
+/// cannot start (here its `tmp/` made unwritable mid-session) depends on
+/// the machine: a protocol failure, the run incomplete, never a complete
+/// `helper_unavailable` (Unix: Windows has no mode that stops it).
+fn a_helper_unavailable_mid_session_leaves_the_run_incomplete() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let root = root("mid-session");
+        let fake = Fake::install(&root, Scenario::Replay);
+        let helper = fake.helper(fast().with_max_checks(1));
+        let document = s01();
+        let session = OcctSession::open(&helper, S01.to_vec(), &document).unwrap();
+        let replaying = Replaying::new(&session, &fake);
+        assert!(verified(&judge(&replaying)));
+        let tmp = fake.dir.join(fitment_fit::TMP);
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = judge(&replaying);
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(code(&result), Some(FitCode::HelperProtocol));
+        assert!(result.fit_incomplete());
+        let reports = session.take_reports();
+        assert!(
+            reports
+                .iter()
+                .any(|r| r.why.contains("after the session's first helper")),
+            "{reports:#?}"
+        );
+    }
+}
+
+/// The reviews of PR 2a (L2): the server's helper has a process group of
+/// its own, and a kill ends the group: a child the helper started (here a
+/// launcher's) dies with it, rather than living on while it holds the
+/// pipes (Unix, by kill(1) on the group).
+fn a_server_s_helper_is_killed_with_its_group() {
+    #[cfg(unix)]
+    {
+        let root = root("group-kill");
+        let fake = Fake::install(&root, Scenario::Launcher);
+        let Err(HelperError::Failed(_)) = fake.helper(fast().with_own_process_group(true)).check()
+        else {
+            panic!("the launcher was accepted");
+        };
+        let grandchild: u32 = fake
+            .read_state("grandchild.pid")
+            .expect("the launcher's child")
+            .trim()
+            .parse()
+            .unwrap();
+        // Without the group's kill it lives three seconds past its stdin.
+        assert!(
+            common::eventually(Duration::from_millis(1500), || !common::alive(grandchild)),
+            "the launcher's child outlived its group's kill"
+        );
     }
 }

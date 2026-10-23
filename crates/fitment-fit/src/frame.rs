@@ -149,7 +149,7 @@ fn announced(header: &[u8]) -> Result<Vec<u64>, FrameError> {
     }
     serde_json::from_slice::<Announce>(header)
         .map(|a| a.payloads)
-        .map_err(|e| FrameError::Header(e.to_string()))
+        .map_err(|e| FrameError::Header(crate::protocol::quoted(&e.to_string())))
 }
 
 /// Fills `buf` as far as the channel goes: the number of bytes read.

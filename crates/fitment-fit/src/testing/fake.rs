@@ -13,16 +13,17 @@
     clippy::disallowed_methods
 )]
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use fitment_core::sha256_hex;
 use serde_json::{Value, json};
 
-use super::{Death, FAKE_PYTHON, FAKE_SCRIPT, Scenario};
+use super::{Death, FAKE_PYTHON, FAKE_SCRIPT, FLOOD_COUNT, Scenario};
 use crate::frame::{self, Caps, Frame, FrameError, MAGIC};
 use crate::{BINDING, FIT_PROTOCOL, KERNEL_NAME, LOCK};
 
@@ -52,6 +53,7 @@ struct Fake {
     script: PathBuf,
     site: String,
     launched: bool,
+    places: std::cell::Cell<usize>,
 }
 
 impl Fake {
@@ -82,6 +84,7 @@ impl Fake {
             script,
             site: site.to_string_lossy().into_owned(),
             launched: rest.first().is_some_and(|a| a == "--launched"),
+            places: std::cell::Cell::new(0),
         })
     }
 
@@ -151,6 +154,8 @@ impl Fake {
         let mut stdin = io::stdin().lock();
         let mut stdout = io::stdout().lock();
         let mut seen_hello = false;
+        let mut earlier: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut checks = 0;
         loop {
             if seen_hello && self.scenario == Scenario::StopsReading {
                 linger();
@@ -182,14 +187,42 @@ impl Fake {
                 "scene" | "place" | "check" => self.reply(&op, &header, &request, number),
                 _ => None,
             };
-            let bytes = match reply {
+            let mut bytes = match reply {
                 Some(reply) => self.envelope(&op, &request.header, &header, &reply),
                 None => error_frame(&header),
             };
+            if self.scenario == Scenario::StaleReply && op != "hello" && op != "scene" {
+                // An earlier request's own reply, its nonce and digests.
+                if let Some(stale) = earlier.get(&op) {
+                    bytes.clone_from(stale);
+                } else {
+                    earlier.insert(op.clone(), bytes.clone());
+                }
+            }
             if self.write(&mut stdout, &op, &bytes).is_err() {
                 return 4;
             }
+            checks += usize::from(op == "check");
+            if self.scenario == Scenario::Floods && checks == 2 {
+                self.flood(&mut stdout);
+            }
         }
+    }
+
+    /// P5: frames nobody asked for, each counted once written.
+    fn flood(&self, out: &mut impl Write) -> ! {
+        let pad = "x".repeat(1 << 20);
+        let header = json!({"op": "flood", "pad": pad}).to_string();
+        let Ok(frame) = frame::encode(header.as_bytes(), &[]) else {
+            linger();
+        };
+        for written in 1..=64 {
+            if out.write_all(&frame).and_then(|()| out.flush()).is_err() {
+                break;
+            }
+            let _ = fs::write(self.state.join(FLOOD_COUNT), written.to_string());
+        }
+        linger();
     }
 
     fn at_end(&self) -> i32 {
@@ -288,16 +321,26 @@ impl Fake {
     }
 
     fn at_place(&self, number: usize) {
+        self.places.set(self.places.get() + 1);
         match self.scenario {
+            // The first helper is slow with the candidates, so a second is
+            // spawned beside it.
+            Scenario::CrashSecondHelperOnce if number == 0 && self.places.get() > 1 => {
+                std::thread::sleep(Duration::from_millis(1500));
+            }
             Scenario::Dies(death) => die(death),
             Scenario::CrashOnce | Scenario::CrashOnceThenAnotherScene if number == 0 => {
                 die(Death::Segv);
             }
+            Scenario::CrashSecondHelperOnce if number == 1 => die(Death::Segv),
             _ => {}
         }
     }
 
     fn at_check(&self, body: &mut Value) {
+        if self.scenario == Scenario::CrashAtCheck {
+            die(Death::Segv);
+        }
         let Some(pairs) = body["pairs"].as_array_mut() else {
             return;
         };
@@ -354,16 +397,24 @@ impl Fake {
         if let Some(digest) = header.get("digest") {
             envelope["digest"] = digest.clone();
         }
-        if op == "scene" {
-            match self.scenario {
-                Scenario::WrongOp => envelope["op"] = json!("place"),
-                Scenario::WrongNonce => envelope["nonce"] = json!("0".repeat(32)),
-                Scenario::WrongRequestSha256 => envelope["request_sha256"] = json!("0".repeat(64)),
-                Scenario::WrongDigest => envelope["digest"] = json!("0".repeat(64)),
-                Scenario::AnnouncedPayload => envelope["payloads"] = json!([1000]),
-                Scenario::ErrorFrame => return error_frame(header),
-                _ => {}
+        let other = match op {
+            "scene" => "place",
+            "place" => "check",
+            _ => "scene",
+        };
+        match self.scenario {
+            Scenario::WrongOp(at) if at.op() == op => envelope["op"] = json!(other),
+            Scenario::WrongNonce(at) if at.op() == op => envelope["nonce"] = json!("0".repeat(32)),
+            Scenario::WrongRequestSha256(at) if at.op() == op => {
+                envelope["request_sha256"] = json!("0".repeat(64));
             }
+            Scenario::WrongDigest(at) if at.op() == op => {
+                envelope["digest"] = json!("0".repeat(64));
+            }
+            Scenario::ErrorFrame(at) if at.op() == op => return error_frame(header),
+            Scenario::AnnouncedPayload if op == "scene" => envelope["payloads"] = json!([1000]),
+            Scenario::HostileErrorFrame if op == "scene" => return hostile_error_frame(header),
+            _ => {}
         }
         envelope
             .to_string()
@@ -429,6 +480,19 @@ fn error_frame(header: &Value) -> Vec<u8> {
     .into_bytes()
 }
 
+/// L3: an `error` frame whose text tries to forge the log.
+fn hostile_error_frame(header: &Value) -> Vec<u8> {
+    let forged = "\u{1b}[31mrefused\nERROR fitment: the fit is verified\r";
+    json!({
+        "op": "error",
+        "nonce": header.get("nonce").cloned().unwrap_or(Value::Null),
+        "request_sha256": null,
+        "error": {"code": forged, "sentence": format!("{forged}{}", "y".repeat(100_000))},
+    })
+    .to_string()
+    .into_bytes()
+}
+
 /// Waits for fitment to end this process, at most a minute.
 fn linger() -> ! {
     std::thread::sleep(AT_MOST);
@@ -438,6 +502,8 @@ fn linger() -> ! {
 /// Ends this process as `death` says (FV8): by its signal on Unix, by an
 /// NTSTATUS code on Windows.
 fn die(death: Death) -> ! {
+    // Its last words, which the report must hold (the reviews of PR 2a).
+    eprintln!("fake helper: dying by {}", death.signal());
     if death == Death::Abrt {
         std::process::abort();
     }
@@ -445,7 +511,7 @@ fn die(death: Death) -> ! {
     {
         let kill = ["/bin/kill", "/usr/bin/kill"]
             .into_iter()
-            .find(|k| Path::new(k).exists())
+            .find(|k| std::path::Path::new(k).exists())
             .unwrap_or("kill");
         // Rust's runtime catches the first SIGSEGV or SIGBUS to tell a
         // stack overflow, and puts the default back: the next one ends it.

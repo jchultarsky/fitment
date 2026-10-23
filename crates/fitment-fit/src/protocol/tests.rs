@@ -248,3 +248,44 @@ fn a_check_reply_holds_every_pair_asked_in_range() {
         .is_ok()
     );
 }
+
+/// The reviews of PR 2a (L3): an error frame's code and sentence, a
+/// reply's operation and serde's own messages, whatever the helper put in
+/// them, reach a refusal escaped and capped: no escape, newline or
+/// carriage return, a forged log line kept on one line, never 100,000
+/// characters.
+#[test]
+fn a_helper_s_text_is_escaped_and_capped_in_every_refusal() {
+    let forged = "\u{1b}[31mok\nERROR fitment: verified\r";
+    let long = format!("{forged}{}", "y".repeat(100_000));
+    let expect = || sent(Op::Scene, scene_expect());
+    let error = json!({"op": "error", "error": {"code": forged, "sentence": long}});
+    let op = json!({"op": long, "nonce": "", "request_sha256": "", "reply": {}});
+    let field = format!(r#"{{"op":"scene","{long}":1}}"#);
+    for header in [
+        serde_json::to_vec(&error).unwrap(),
+        serde_json::to_vec(&op).unwrap(),
+        envelope(
+            &long,
+            &serde_json::to_value(scene_reply(&one_body())).unwrap(),
+        ),
+        field.into_bytes(),
+    ] {
+        let refused = scene_measures(&header, &expect()).unwrap_err().0;
+        assert!(refused.len() < 1000, "{} characters", refused.len());
+        assert!(!refused.contains(['\u{1b}', '\n', '\r']), "{refused}");
+    }
+    assert_eq!(quoted(forged), r"\x1b[31mok\nERROR fitment: verified\r");
+}
+
+/// The reviews of PR 2a: the measures carry core's digest as the helper
+/// echoed it, so core's own check reads the helper's answer.
+#[test]
+fn the_measures_carry_the_helper_s_echo() {
+    let body = serde_json::to_value(scene_reply(&one_body())).unwrap();
+    let read = scene_measures(&envelope("scene", &body), &sent(Op::Scene, scene_expect())).unwrap();
+    assert_eq!(
+        read.request_sha256.as_deref(),
+        Some("ef".repeat(32).as_str())
+    );
+}

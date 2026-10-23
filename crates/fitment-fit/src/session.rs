@@ -21,7 +21,7 @@ use crate::dir::{FitDir, HelperFiles, Manifest, PrepareError, SCRIPT};
 use crate::exit::ExitClass;
 use crate::nonce::Nonces;
 use crate::process::{Ended, Process, Spawn, Wait};
-use crate::protocol::{self, EncodeError, HelloRequest, ProtocolError, Request, Sent};
+use crate::protocol::{self, EncodeError, HelloRequest, ProtocolError, Request, Sent, quoted};
 use crate::{BINDING, FIT_PROTOCOL, KERNEL, KERNEL_NAME, KERNEL_VERSION, PYTHON};
 
 /// How a session runs its helpers (FL1, FL3, FL4, FL5).
@@ -209,6 +209,7 @@ impl From<Ended> for Failed {
                 let kind = match class {
                     ExitClass::Crash => Kind::Crash,
                     ExitClass::Resource => Kind::Resource,
+                    ExitClass::Interrupted => Kind::Cancelled,
                     ExitClass::Other => Kind::Protocol,
                 };
                 (
@@ -270,6 +271,7 @@ impl OcctHelper {
         options: HelperOptions,
     ) -> Result<Self, PrepareError> {
         let dir = FitDir::open(dir)?;
+        dir.sweep();
         dir.check(&files)?;
         let probe = dir.helper_dir()?;
         std::fs::remove_dir(&probe).map_err(|e| PrepareError::TmpUnwritable {
@@ -431,12 +433,6 @@ impl OcctHelper {
     }
 }
 
-/// Text a helper sent, made safe for a sentence: escaped, and capped.
-fn quoted(text: &str) -> String {
-    let escaped = text.as_bytes().escape_ascii().to_string();
-    escaped.chars().take(200).collect()
-}
-
 /// FH3: the helper's `hello` against the spawned process, the manifest
 /// and this build; each refusal a fixed sentence with no path in it.
 fn identify(
@@ -565,12 +561,41 @@ pub struct OcctSession<'h> {
     freed: Condvar,
     scenes: Mutex<BTreeMap<String, Vec<u8>>>,
     ended: AtomicBool,
+    handshaken: AtomicBool,
     reports: Mutex<Vec<HelperReport>>,
     spawned: AtomicUsize,
+    #[cfg(feature = "test-support")]
+    panic_next: AtomicBool,
 }
 
 fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One of a session's `jobs` places for a helper (FL1), given back when
+/// dropped, so that a panic between taking a helper and giving it back
+/// never leaks one (the review of PR 2a, P1).
+struct Slot<'s, 'h> {
+    session: &'s OcctSession<'h>,
+    held: bool,
+}
+
+impl Slot<'_, '_> {
+    /// The place passes to the pool with its helper.
+    fn keep(mut self) {
+        self.held = false;
+    }
+}
+
+impl Drop for Slot<'_, '_> {
+    fn drop(&mut self) {
+        if self.held {
+            let mut pool = locked(&self.session.pool);
+            pool.live = pool.live.saturating_sub(1);
+            drop(pool);
+            self.session.freed.notify_one();
+        }
+    }
 }
 
 impl<'h> OcctSession<'h> {
@@ -600,8 +625,11 @@ impl<'h> OcctSession<'h> {
             freed: Condvar::new(),
             scenes: Mutex::new(BTreeMap::new()),
             ended: AtomicBool::new(false),
+            handshaken: AtomicBool::new(false),
             reports: Mutex::new(Vec::new()),
             spawned: AtomicUsize::new(0),
+            #[cfg(feature = "test-support")]
+            panic_next: AtomicBool::new(false),
         })
     }
 
@@ -640,60 +668,79 @@ impl<'h> OcctSession<'h> {
         locked(&self.reports).push(report(failed, process));
     }
 
-    /// FL1: an idle helper, else a new one while fewer than `jobs` run,
-    /// else the next one given back. A `fresh` one is always new (FV8's
-    /// retry), an idle helper retired to make room if need be.
-    fn take(&self, fresh: bool) -> Result<Live, Failed> {
+    /// FL1: a place for a helper, and the idle helper in it if there is
+    /// one: an idle helper, else a new place while fewer than `jobs` are
+    /// held, else the next one given back, waiting at most until
+    /// `deadline` (the review of PR 2a, P1).
+    fn place(&self, deadline: Instant) -> Result<(Slot<'_, 'h>, Option<Live>), Failed> {
         let mut pool = locked(&self.pool);
-        let retire = loop {
+        loop {
             if self.cancelled() {
                 return Err(Ended::Cancelled.into());
             }
-            if !fresh {
-                if let Some(live) = pool.idle.pop() {
-                    return Ok(live);
-                }
+            if let Some(live) = pool.idle.pop() {
+                let slot = Slot {
+                    session: self,
+                    held: true,
+                };
+                return Ok((slot, Some(live)));
             }
             if pool.live < self.helper.options.jobs.max(1) {
                 pool.live += 1;
-                break None;
+                drop(pool);
+                let slot = Slot {
+                    session: self,
+                    held: true,
+                };
+                return Ok((slot, None));
             }
-            if let Some(idle) = pool.idle.pop() {
-                // Its slot passes to the fresh helper.
-                break Some(idle);
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(Failed {
+                    kind: Kind::Timeout,
+                    why: "no helper was free before the request's deadline".to_owned(),
+                });
             }
             pool = self
                 .freed
-                .wait_timeout(pool, Duration::from_millis(100))
+                .wait_timeout(pool, left.min(Duration::from_millis(100)))
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
-        };
-        drop(pool);
-        if let Some(mut idle) = retire {
-            self.helper.finish(&mut [&mut idle]);
         }
-        self.spawned.fetch_add(1, Ordering::Relaxed);
-        self.helper.start(self.cancel).map_err(|(failed, process)| {
-            self.record(&failed, process.as_deref());
-            self.release();
-            failed
-        })
     }
 
-    fn release(&self) {
-        let mut pool = locked(&self.pool);
-        pool.live = pool.live.saturating_sub(1);
-        drop(pool);
-        self.freed.notify_one();
+    /// FL2: a new helper; once a session has had one, a helper that cannot
+    /// start depends on the machine, not on the installation the session
+    /// was opened with: a protocol failure, the run incomplete (the review
+    /// of PR 2a, P2).
+    fn spawn(&self) -> Result<Live, Failed> {
+        self.spawned.fetch_add(1, Ordering::Relaxed);
+        match self.helper.start(self.cancel) {
+            Ok(live) => {
+                self.handshaken.store(true, Ordering::Relaxed);
+                Ok(live)
+            }
+            Err((mut failed, process)) => {
+                if matches!(failed.kind, Kind::Unavailable(_))
+                    && self.handshaken.load(Ordering::Relaxed)
+                {
+                    failed.kind = Kind::Protocol;
+                    failed.why = format!("after the session's first helper: {}", failed.why);
+                }
+                self.record(&failed, process.as_deref());
+                Err(failed)
+            }
+        }
     }
 
     /// FL3: back to the pool, or retired after `max_checks` checks.
-    fn give(&self, mut live: Live) {
+    fn give(&self, slot: Slot<'_, 'h>, mut live: Live) {
         if live.checks >= self.helper.options.max_checks {
             self.helper.finish(&mut [&mut live]);
-            self.release();
+            drop(slot);
         } else {
             locked(&self.pool).idle.push(live);
+            slot.keep();
             self.freed.notify_one();
         }
     }
@@ -735,6 +782,12 @@ impl<'h> OcctSession<'h> {
     /// One candidate's `place` and `check` on `live`, under one deadline.
     fn serve(&self, live: &mut Live, request: &FitRequest<'_>) -> Result<FitMeasures, Failed> {
         let scene = self.scene(live, request)?;
+        #[cfg(feature = "test-support")]
+        // The review of PR 2a (P1): a panic while a helper is taken.
+        assert!(
+            !self.panic_next.swap(false, Ordering::Relaxed),
+            "a panic forced by the test while a helper is taken"
+        );
         let wait = Wait::new(self.helper.options.timeout, self.cancel);
         let sent = protocol::place(self.helper.nonces.next(), request)?;
         let place = round(&mut live.process, sent, &wait, protocol::place_measures)?;
@@ -745,11 +798,29 @@ impl<'h> OcctSession<'h> {
         Ok(FitMeasures::new(scene, place, check))
     }
 
-    fn measure_once(&self, request: &FitRequest<'_>, fresh: bool) -> Result<FitMeasures, Failed> {
-        let mut live = self.take(fresh)?;
-        match self.serve(&mut live, request) {
+    /// The measures of `request` in the helper of `slot`, or `None` in a
+    /// new one. An idle helper that sent anything while idle breaks the
+    /// protocol and is retired (the review of PR 2a, P5).
+    fn serve_in<'s>(
+        &'s self,
+        slot: Slot<'s, 'h>,
+        live: Option<Live>,
+        request: &FitRequest<'_>,
+    ) -> Result<FitMeasures, (Failed, Slot<'s, 'h>)> {
+        let mut live = match live {
+            Some(live) => live,
+            None => match self.spawn() {
+                Ok(live) => live,
+                Err(failed) => return Err((failed, slot)),
+            },
+        };
+        let served = match live.process.unasked() {
+            Some(why) => Err(Failed::protocol(why)),
+            None => self.serve(&mut live, request),
+        };
+        match served {
             Ok(measures) => {
-                self.give(live);
+                self.give(slot, live);
                 Ok(measures)
             }
             Err(failed) => {
@@ -757,8 +828,7 @@ impl<'h> OcctSession<'h> {
                 live.process.kill();
                 self.record(&failed, Some(&live.process));
                 drop(live);
-                self.release();
-                Err(failed)
+                Err((failed, slot))
             }
         }
     }
@@ -774,21 +844,21 @@ impl FitVerifier for OcctSession<'_> {
     }
 
     /// FV8: the helper's measures, or how it failed. A crash is retried
-    /// once in a fresh helper; a second is `kernel_crashed`.
+    /// once in a fresh helper, spawned in the crashed one's place, so the
+    /// retry never waits for another; a second is `kernel_crashed`.
     fn measure(&self, request: &FitRequest<'_>) -> Result<FitMeasures, FitFailure> {
-        let mut retried = false;
-        loop {
-            if self.ended.load(Ordering::Relaxed) {
-                return Err(FitFailure::Protocol);
-            }
-            if self.cancelled() {
-                return Err(FitFailure::Cancelled);
-            }
-            match self.measure_once(request, retried) {
-                Ok(measures) => return Ok(measures),
-                Err(failed) if failed.kind == Kind::Crash && !retried => retried = true,
-                Err(failed) => return Err(failed.failure()),
-            }
+        if self.ended.load(Ordering::Relaxed) {
+            return Err(FitFailure::Protocol);
+        }
+        let options = &self.helper.options;
+        let wait = Wait::new(options.setup_timeout.saturating_add(options.timeout), None);
+        let (slot, live) = self.place(wait.deadline).map_err(|f| f.failure())?;
+        match self.serve_in(slot, live, request) {
+            Ok(measures) => Ok(measures),
+            Err((failed, slot)) if failed.kind == Kind::Crash && !self.cancelled() => self
+                .serve_in(slot, None, request)
+                .map_err(|(f, _)| f.failure()),
+            Err((failed, _)) => Err(failed.failure()),
         }
     }
 }
@@ -800,6 +870,13 @@ impl Drop for OcctSession<'_> {
         let mut lives: Vec<&mut Live> = idle.iter_mut().collect();
         self.helper.finish(&mut lives);
     }
+}
+
+/// The review of PR 2a (P1), for the tests: the session's next `serve`
+/// panics while its helper is taken.
+#[cfg(feature = "test-support")]
+pub(crate) fn panic_in_next_serve(session: &OcctSession<'_>) {
+    session.panic_next.store(true, Ordering::Relaxed);
 }
 
 /// VT55's write deadline (FL4), for the tests: a helper started from

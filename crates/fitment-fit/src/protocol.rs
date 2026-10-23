@@ -447,29 +447,51 @@ struct ErrorEnvelope {
     error: ErrorBody,
 }
 
+/// Text a helper sent, made safe for a sentence and a log: every byte
+/// that is not printable ASCII escaped, and capped at 200 characters
+/// (the reviews of PR 2a, L3).
+pub(crate) fn quoted(text: &str) -> String {
+    let escaped = text.as_bytes().escape_ascii().to_string();
+    escaped.chars().take(200).collect()
+}
+
+/// A reply decoded: its body, and core's digest of the request as the
+/// helper echoed it (which core checks again when it decides).
+pub(crate) struct Echoed<T> {
+    pub reply: T,
+    pub digest: Option<String>,
+}
+
 /// FH2, FH5: the reply to `sent` in `header`, its envelope checked: the
 /// operation, nonce, request header's SHA-256 and core's digest echoed,
 /// no payload. An `error` frame is a protocol error with the helper's
-/// code.
-pub(crate) fn reply<T: DeserializeOwned>(header: &[u8], sent: &Sent) -> Result<T, ProtocolError> {
-    let head: Head = serde_json::from_slice(header)
-        .map_err(|e| ProtocolError(format!("a reply's header is not a reply: {e}")))?;
+/// code. Every string the helper sent that a refusal repeats, serde's
+/// messages included, is [`quoted`].
+pub(crate) fn reply<T: DeserializeOwned>(
+    header: &[u8],
+    sent: &Sent,
+) -> Result<Echoed<T>, ProtocolError> {
+    let broke = |what: &str, e: &serde_json::Error| {
+        ProtocolError(format!("{what}: {}", quoted(&e.to_string())))
+    };
+    let head: Head =
+        serde_json::from_slice(header).map_err(|e| broke("a reply's header is not a reply", &e))?;
     if head.op == "error" {
-        let error: ErrorEnvelope = serde_json::from_slice(header)
-            .map_err(|e| ProtocolError(format!("an error frame breaks FH5: {e}")))?;
+        let error: ErrorEnvelope =
+            serde_json::from_slice(header).map_err(|e| broke("an error frame breaks FH5", &e))?;
         return refuse(format!(
             "the helper refused the {} request: {} ({})",
             sent.op.name(),
-            error.error.code,
-            error.error.sentence
+            quoted(&error.error.code),
+            quoted(&error.error.sentence)
         ));
     }
     let envelope: Envelope<T> = serde_json::from_slice(header)
-        .map_err(|e| ProtocolError(format!("the {} reply breaks FH5: {e}", sent.op.name())))?;
+        .map_err(|e| broke(&format!("the {} reply breaks FH5", sent.op.name()), &e))?;
     if envelope.op != sent.op.name() {
         return refuse(format!(
             "a {} reply to a {} request",
-            envelope.op,
+            quoted(&envelope.op),
             sent.op.name()
         ));
     }
@@ -485,7 +507,10 @@ pub(crate) fn reply<T: DeserializeOwned>(header: &[u8], sent: &Sent) -> Result<T
     if !envelope.payloads.is_empty() {
         return refuse("a reply that announces a payload");
     }
-    Ok(envelope.reply)
+    Ok(Echoed {
+        reply: envelope.reply,
+        digest: envelope.digest,
+    })
 }
 
 /// FY4: a volume, tolerance or distance is never negative.
@@ -503,7 +528,10 @@ fn sorted<T: Ord>(xs: &[T]) -> bool {
 
 /// FH4, FH5, FY4: the `scene` reply as measures.
 pub(crate) fn scene_measures(header: &[u8], sent: &Sent) -> Result<SceneMeasures, ProtocolError> {
-    let body: SceneReply = reply(header, sent)?;
+    let Echoed {
+        reply: body,
+        digest,
+    } = reply::<SceneReply>(header, sent)?;
     let Expect::Scene(expected) = &sent.expect else {
         return refuse("a scene reply to another request");
     };
@@ -524,7 +552,8 @@ pub(crate) fn scene_measures(header: &[u8], sent: &Sent) -> Result<SceneMeasures
         return refuse("a scene reply with a solid's faces unsorted");
     }
     let mut out = SceneMeasures::default();
-    out.request_sha256.clone_from(&sent.digest);
+    // The helper's echo, which core checks against its own digest.
+    out.request_sha256 = digest;
     out.bodies = body
         .bodies
         .into_iter()
@@ -540,7 +569,10 @@ pub(crate) fn scene_measures(header: &[u8], sent: &Sent) -> Result<SceneMeasures
 
 /// FH4, FH5, FY4: the `place` reply as measures.
 pub(crate) fn place_measures(header: &[u8], sent: &Sent) -> Result<PlaceMeasures, ProtocolError> {
-    let body: PlaceReply = reply(header, sent)?;
+    let Echoed {
+        reply: body,
+        digest,
+    } = reply::<PlaceReply>(header, sent)?;
     let Expect::Place(occurrences, landmarks) = &sent.expect else {
         return refuse("a place reply to another request");
     };
@@ -563,7 +595,8 @@ pub(crate) fn place_measures(header: &[u8], sent: &Sent) -> Result<PlaceMeasures
     non_negative("candidate's volume", body.volume_mm3)?;
     non_negative("candidate's tolerance", body.tolerance_mm)?;
     let mut out = PlaceMeasures::default();
-    out.request_sha256.clone_from(&sent.digest);
+    // The helper's echo, which core checks against its own digest.
+    out.request_sha256 = digest;
     out.valid = body.valid;
     out.volume_mm3 = wire::zero(body.volume_mm3);
     out.tolerance_mm = wire::zero(body.tolerance_mm);
@@ -607,7 +640,10 @@ fn pair_in_range(p: &wire::WirePair) -> Result<(), ProtocolError> {
 
 /// FH4, FH5, FY4: the `check` reply as measures.
 pub(crate) fn check_measures(header: &[u8], sent: &Sent) -> Result<CheckMeasures, ProtocolError> {
-    let body: CheckReply = reply(header, sent)?;
+    let Echoed {
+        reply: body,
+        digest,
+    } = reply::<CheckReply>(header, sent)?;
     let Expect::Check(keys) = &sent.expect else {
         return refuse("a check reply to another request");
     };
@@ -629,7 +665,8 @@ pub(crate) fn check_measures(header: &[u8], sent: &Sent) -> Result<CheckMeasures
         pair_in_range(p)?;
     }
     let mut out = CheckMeasures::default();
-    out.request_sha256.clone_from(&sent.digest);
+    // The helper's echo, which core checks against its own digest.
+    out.request_sha256 = digest;
     out.pairs = body
         .pairs
         .into_iter()
@@ -646,7 +683,7 @@ pub(crate) fn check_measures(header: &[u8], sent: &Sent) -> Result<CheckMeasures
 /// FH3: the `hello` reply, its envelope checked; the identity is the
 /// session's to judge.
 pub(crate) fn hello_reply(header: &[u8], sent: &Sent) -> Result<HelloReply, ProtocolError> {
-    reply(header, sent)
+    reply(header, sent).map(|e| e.reply)
 }
 
 /// The reply bodies a kernel would send for `measures`, for the fake

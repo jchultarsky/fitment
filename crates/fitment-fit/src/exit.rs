@@ -5,7 +5,9 @@
 //! out-of-memory killer's mark) are resource failures (`resource_exhausted`,
 //! the run incomplete). On Windows by its exit code: one in the
 //! `0xC0000000` range (an NTSTATUS error: an access violation, a stack
-//! overflow, a fast fail) is a crash. Anything else, an exit with a code
+//! overflow, a fast fail) is a crash, but for the out-of-memory codes,
+//! which are resource failures, and `STATUS_CONTROL_C_EXIT`, a console's
+//! Ctrl-C, which is a cancel. Anything else, an exit with a code
 //! included, is a protocol failure: the helper ended without answering.
 
 use std::process::ExitStatus;
@@ -17,6 +19,8 @@ pub(crate) enum ExitClass {
     Crash,
     /// A resource limit ended it: the run is incomplete.
     Resource,
+    /// A console's Ctrl-C ended it (Windows): the fit is cancelled.
+    Interrupted,
     /// It ended some other way: a protocol failure.
     Other,
 }
@@ -82,6 +86,7 @@ pub(crate) mod signal {
 }
 
 /// FV8 on Unix: a helper fitment did not kill ended by signal `number`.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn by_signal(number: i32) -> ExitClass {
     let Some(table) = signal::TABLE else {
         return ExitClass::Other;
@@ -93,12 +98,30 @@ pub(crate) fn by_signal(number: i32) -> ExitClass {
     }
 }
 
+/// NTSTATUS codes of a process out of memory or quota: `STATUS_NO_MEMORY`,
+/// `STATUS_QUOTA_EXCEEDED`, `STATUS_PAGEFILE_QUOTA_EXCEEDED`,
+/// `STATUS_COMMITMENT_LIMIT` and `STATUS_COMMITMENT_MINIMUM`.
+const WINDOWS_OUT_OF_MEMORY: [u32; 5] = [
+    0xC000_0017,
+    0xC000_0044,
+    0xC000_012C,
+    0xC000_012D,
+    0xC000_0112,
+];
+
+/// `STATUS_CONTROL_C_EXIT`: the process ended by a console's Ctrl-C.
+const WINDOWS_CONTROL_C: u32 = 0xC000_013A;
+
 /// FV8 on Windows: a helper fitment did not kill exited with `code`; an
-/// NTSTATUS error (`0xC0000000` and up) is a crash. Pure, so every OS's
-/// tests check it.
+/// NTSTATUS error (`0xC0000000` and up) is a crash, but for the
+/// out-of-memory codes and a Ctrl-C. Pure, so every OS's tests check it.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn by_windows_code(code: u32) -> ExitClass {
-    if code & 0xC000_0000 == 0xC000_0000 {
+    if WINDOWS_OUT_OF_MEMORY.contains(&code) {
+        ExitClass::Resource
+    } else if code == WINDOWS_CONTROL_C {
+        ExitClass::Interrupted
+    } else if code & 0xC000_0000 == 0xC000_0000 {
         ExitClass::Crash
     } else {
         ExitClass::Other
@@ -200,5 +223,11 @@ mod tests {
         for other in [0, 1, 3, 101, 0x8000_0003, 0x4000_0015] {
             assert_eq!(by_windows_code(other), ExitClass::Other, "{other:#X}");
         }
+        // The review of PR 2a (L4): memory and a Ctrl-C are not the kernel's
+        // crash.
+        for memory in WINDOWS_OUT_OF_MEMORY {
+            assert_eq!(by_windows_code(memory), ExitClass::Resource, "{memory:#X}");
+        }
+        assert_eq!(by_windows_code(0xC000_013A), ExitClass::Interrupted);
     }
 }
