@@ -54,7 +54,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # setup-uv publishes no moving major tag, so pin the release.
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@v10.3.3
       - name: Cache fixtures
         uses: actions/cache@v6
         with:
@@ -164,7 +164,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@v10.3.3
       # The same files, but for the last digit of a number: Open CASCADE's
       # trigonometry rounds by the platform's maths library.
       - run: tools/gen-corpus.py --unit-set "$RUNNER_TEMP/unit" --check crates/fitment-core/tests/data
